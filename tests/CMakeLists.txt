@@ -14,6 +14,8 @@ endfunction()
 streamview_add_core_test(streamview_coordinates_tests core/coordinates_test.cpp)
 streamview_add_core_test(streamview_source_tests core/source_test.cpp)
 streamview_add_core_test(streamview_bit_reader_tests core/bit_reader_test.cpp)
+streamview_add_core_test(streamview_analysis_model_tests core/analysis_model_test.cpp)
+streamview_add_core_test(streamview_cancellation_tests core/cancellation_test.cpp)
 
 add_test(NAME svtool_version COMMAND svtool --version)
 set_tests_properties(svtool_version PROPERTIES PASS_REGULAR_EXPRESSION "svtool 0[.]1[.]0 [(]DSL 0[.]1[)]")

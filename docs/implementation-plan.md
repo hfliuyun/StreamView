@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 1
-Last Completed Step: Phase 1 source/bit/mapping slice completed in `23ac7dd`
-Next Action: Implement analysis nodes, diagnostics, partial results, and cancellation
-Last Verification: Hosted run `29692399047` — Windows 2022/MSVC, macOS 15/Apple Clang, and Ubuntu 24.04/GCC all passed Build, 6/6 Test, Install, and Upload steps
+Last Completed Step: Phase 1 analysis node, diagnostic, partial-result, and cancellation model implemented locally
+Next Action: Commit the second Phase 1 core slice and verify the hosted three-platform matrix
+Last Verification: Debug, Release, and ASan/UBSan builds — 8/8 tests passed in each configuration
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -138,3 +138,4 @@ Blockers: None
 - 2026-07-19：阶段 0 完成。实现提交 `1554e3b` 对应 hosted run `29691705979`；Windows 2022/MSVC、macOS 15/Apple Clang、Ubuntu 24.04/GCC 的 Build、3/3 Test、Install 和 Upload 全部通过，`streamview_version` 覆盖 Qt 应用运行时启动。Windows Qt 6.10.1 临时 fallback 继续按 ADR-0017 追踪。
 - 2026-07-19：阶段 1 第一项已在本机实现：严格只读随机访问文件源、MSB-first 1–64 bit reader、source/logical 坐标、字段位置和多 source-span mapping；新增中英文核心模型文档以及溢出、截断、跨排除字节映射和只读文件测试。Debug、Release、ASan/UBSan 均为 6/6 测试通过；本机未安装 `clang-format`，已执行 diff 与 100 列机械检查。
 - 2026-07-19：阶段 1 第一项完成并提交为 `23ac7dd`；hosted run `29692399047` 的 Windows、macOS、Ubuntu 三平台 Build、6/6 Test、Install、Upload 全部通过。
+- 2026-07-19：阶段 1 第二项已在本机实现：append-only 分析树、稳定 snapshot、节点状态转换、source-located diagnostics、部分结果保留和 C++20 cancellation token/source；新增中英文分析模型文档及状态/取消测试。Debug、Release、ASan/UBSan 均为 8/8 测试通过。

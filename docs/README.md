@@ -12,6 +12,7 @@ English is the normative language for technical specifications, ADRs, the format
 
 - [Product Requirements](product-requirements.md)
 - [Core source and bit model](core-model.md)
+- [Analysis node and diagnostic model](analysis-model.md)
 - [Format Definition Language](format-language/README.md)
 - [Normative references](standards.md)
 - [Implementation plan and progress](implementation-plan.md)
