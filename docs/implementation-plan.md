@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 0
 Last Completed Step: Local macOS baseline verified
 Next Action: Configure a GitHub remote and run the Windows/macOS/Ubuntu CI matrix
-Last Verification: `cmake --preset ci && cmake --build --preset ci && ctest --preset ci && cmake --install build/ci --prefix dist/ci` — passed on macOS arm64
+Last Verification: `cmake --preset ci && cmake --build --preset ci && ctest --preset ci && cmake --install build/ci --prefix dist/ci` — passed on macOS arm64; baseline commit `5732f31`
 Blockers: No Git remote is configured, so the required GitHub-hosted Windows and Ubuntu jobs cannot run yet
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -125,3 +125,4 @@ Blockers: No Git remote is configured, so the required GitHub-hosted Windows and
 
 - 2026-07-19：计划已批准并持久化。下一步初始化工程基线。
 - 2026-07-19：Git/CMake/Qt 工程骨架、测试和 CI 工作流已建立；Qt 6.11.1 本机 Debug/Release 构建、3 项测试与 macOS 部署树验证通过。等待配置 GitHub remote 后运行三平台门禁。
+- 2026-07-19：阶段 0 基线已提交为 `5732f31`（`chore: establish StreamView project baseline`）。
