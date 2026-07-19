@@ -21,6 +21,8 @@ is an upstream artifact publication gap, not a source or compiler failure.
 - Keep Ubuntu and macOS CI on Qt 6.11.1.
 - Use Qt 6.10.1 only for the Windows CI job until the official Windows Qt
   6.11.1 metadata and package are published.
+- Keep the CMake minimum Qt version at 6.11 by default. The Windows CI job may
+  explicitly set `STREAMVIEW_MINIMUM_QT_VERSION=6.10` for this fallback only.
 - Keep the Windows fallback explicit in the workflow matrix and do not use it
   for release artifacts.
 - Revert the Windows matrix entry to 6.11.1 as soon as the following public
@@ -32,4 +34,5 @@ is an upstream artifact publication gap, not a source or compiler failure.
 The phase-0 hosted build gate can run on all three platforms immediately, but
 the Windows job does not yet exercise the exact preferred Qt patch version.
 The fallback must be removed before release packaging is treated as a fully
-uniform Qt 6.11.1 matrix.
+uniform Qt 6.11.1 matrix. Release builds must not lower
+`STREAMVIEW_MINIMUM_QT_VERSION`.

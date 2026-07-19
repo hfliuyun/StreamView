@@ -16,17 +16,23 @@ set(CMAKE_AUTOMOC ON)
 option(STREAMVIEW_BUILD_APP "Build the StreamView desktop application" ON)
 option(STREAMVIEW_BUILD_TESTS "Build StreamView tests" ON)
 option(STREAMVIEW_ENABLE_SANITIZERS "Enable supported sanitizers" OFF)
+set(
+    STREAMVIEW_MINIMUM_QT_VERSION
+    "6.11"
+    CACHE STRING
+    "Minimum Qt version; release builds use the default"
+)
 
-find_package(Qt6 6.11 REQUIRED COMPONENTS Core Concurrent Sql)
+find_package(Qt6 ${STREAMVIEW_MINIMUM_QT_VERSION} REQUIRED COMPONENTS Core Concurrent Sql)
 
 if(STREAMVIEW_BUILD_APP)
-    find_package(Qt6 6.11 REQUIRED COMPONENTS Gui Widgets)
+    find_package(Qt6 ${STREAMVIEW_MINIMUM_QT_VERSION} REQUIRED COMPONENTS Gui Widgets)
 endif()
 
 if(STREAMVIEW_BUILD_TESTS)
     include(CTest)
     enable_testing()
-    find_package(Qt6 6.11 REQUIRED COMPONENTS Test)
+    find_package(Qt6 ${STREAMVIEW_MINIMUM_QT_VERSION} REQUIRED COMPONENTS Test)
 endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")

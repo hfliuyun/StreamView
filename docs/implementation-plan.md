@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 0
-Last Completed Step: Diagnosed Windows toolchain mismatch from run `29690948648`
-Next Action: Push the MSVC x64 environment step and verify the three-platform matrix
-Last Verification: Windows Configure log — CMake selected `C:/mingw64/bin/c++.exe` (GNU 14.2) against MSVC Qt 6.10.1; Ubuntu/macOS passed
-Blockers: None; MSVC environment fix is ready for hosted verification
+Last Completed Step: ADR-documented CI-only Qt minimum override implemented and verified locally
+Next Action: Push the Qt minimum override and verify the three-platform matrix
+Last Verification: Default `cmake --preset ci`, 6.10 override configure, Release build, 3/3 tests, and absolute-prefix deployment all passed locally
+Blockers: None; hosted CI rerun pending
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -132,3 +132,6 @@ Blockers: None; MSVC environment fix is ready for hosted verification
 - 2026-07-19：运行 `29690756262` 确认 Windows Qt 6.10.1 安装成功，但 Configure 失败。新增 Windows 专用 Configure 步骤，直接传入 runner 上的 `Qt6_DIR` 与 `CMAKE_PREFIX_PATH`，避免依赖跨步骤环境变量解析。
 - 2026-07-19：显式 Qt 路径修复已提交为 `355ed68`；运行 `29690948648` 的 Ubuntu/macOS job 通过，Windows 仍在 `Configure (Windows)` 失败。公开 API 仅提供失败步骤而不提供原始日志，等待最新 Configure 日志后继续。
 - 2026-07-19：最新日志确认 Windows CMake 选中了 MinGW GNU 14.2，而 Qt 包为 MSVC 2022；workflow 增加固定 SHA 的 `ilammy/msvc-dev-cmd` x64 环境步骤，使 Configure、Build、Test 和 Install 使用同一 MSVC 工具链。
+- 2026-07-19：MSVC 环境修复已提交为 `06b776b`；运行 `29691377216` 的 Ubuntu/macOS job 通过，Windows 仍在 `Configure (Windows)` 失败，等待新日志确认编译器选择或后续 CMake 错误。
+- 2026-07-19：新日志确认 MSVC 19.44 与 `cl.exe` 已正确选中；失败原因是默认 `find_package(Qt6 6.11)` 拒绝 CI fallback 的 6.10.1。ADR-0017 已补充：CMake 默认最低版本保持 6.11，仅 Windows CI 可显式覆盖为 6.10，发布构建不得使用该覆盖。
+- 2026-07-19：实现 `STREAMVIEW_MINIMUM_QT_VERSION`，默认值为 6.11；Windows CI 显式覆盖为 6.10。默认配置、6.10 override 配置、Release 构建、3/3 测试和绝对前缀部署均在本机通过，等待 hosted matrix 重跑。

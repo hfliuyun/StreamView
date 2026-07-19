@@ -105,7 +105,8 @@ jobs:
           }
           cmake --preset ci `
             "-DCMAKE_PREFIX_PATH=$qtPrefix" `
-            "-DQt6_DIR=$(Join-Path $qtPrefix 'lib/cmake/Qt6')"
+            "-DQt6_DIR=$(Join-Path $qtPrefix 'lib/cmake/Qt6')" `
+            "-DSTREAMVIEW_MINIMUM_QT_VERSION=6.10"
 
       - name: Build
         run: cmake --build --preset ci
