@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 1
-Last Completed Step: Phase 1 analysis node, diagnostic, partial-result, and cancellation model implemented locally
-Next Action: Commit the second Phase 1 core slice and verify the hosted three-platform matrix
-Last Verification: Debug, Release, and ASan/UBSan builds — 8/8 tests passed in each configuration
-Blockers: None
+Last Completed Step: Portable cancellation state passed local Debug, Release, and ASan/UBSan gates
+Next Action: Commit and push the macOS compatibility fix after Git metadata write access is restored
+Last Verification: Debug, Release, and ASan/UBSan builds completed; 8/8 tests passed in each configuration
+Blockers: Current Codex session cannot create `.git/index.lock`; repository metadata is read-only
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -16,6 +16,7 @@ Blockers: None
 - 中断前更新 `Current Phase`、`Last Completed Step`、`Next Action` 和 `Blockers`。
 - 发现计划外决策时先暂停，实现前补充 ADR 和中英文文档。
 - 不删除已完成记录；需求变化通过追加修订记录追踪。
+- 每次 push 前必须先完成本机 Debug、Release、ASan/UBSan 构建与全部测试；CI 专属平台差异仍需由 hosted matrix 验证。
 
 ## 架构与接口
 
@@ -139,3 +140,7 @@ Blockers: None
 - 2026-07-19：阶段 1 第一项已在本机实现：严格只读随机访问文件源、MSB-first 1–64 bit reader、source/logical 坐标、字段位置和多 source-span mapping；新增中英文核心模型文档以及溢出、截断、跨排除字节映射和只读文件测试。Debug、Release、ASan/UBSan 均为 6/6 测试通过；本机未安装 `clang-format`，已执行 diff 与 100 列机械检查。
 - 2026-07-19：阶段 1 第一项完成并提交为 `23ac7dd`；hosted run `29692399047` 的 Windows、macOS、Ubuntu 三平台 Build、6/6 Test、Install、Upload 全部通过。
 - 2026-07-19：阶段 1 第二项已在本机实现：append-only 分析树、稳定 snapshot、节点状态转换、source-located diagnostics、部分结果保留和 C++20 cancellation token/source；新增中英文分析模型文档及状态/取消测试。Debug、Release、ASan/UBSan 均为 8/8 测试通过。
+- 2026-07-19：提交 `1acb8d4` 的 hosted run `29693108274` 中 Ubuntu 与 Windows 通过，macOS 在 Build 失败。虽然 push 前本机 Debug/Release/ASan 均为 8/8，通过用户要求进一步固定“本机完整门禁后再 push”的执行规则，等待 macOS Build 日志定位 runner 工具链差异。
+- 2026-07-19：macOS Build 日志确认固定 runner 的 Apple libc++ 未提供 C++20 `std::stop_token`/`std::stop_source`，而本机 Apple Clang 21 已提供，因此产生 CI-only 编译失败。ADR-0018 决定保持取消 API 行为不变，底层改用引用计数共享状态与原子标志；等待完整本机门禁验证后再提交和 push。
+- 2026-07-19：可移植取消状态已通过本机 Apple Clang 21 的 Debug、Release、ASan/UBSan 完整配置与构建；三套配置均为 8/8 测试通过，包含跨线程观察、幂等请求和 token 生命周期回归。按本机门禁规则，可以提交并 push 后运行 hosted 三平台矩阵。
+- 2026-07-20：尝试创建修复提交时，当前 Codex 会话因 `.git` 元数据只读而无法创建 `index.lock`；源码与文档均已完成，本机三套门禁仍为 8/8，通过恢复 Git 写权限或由用户执行提交后继续 hosted CI 验证。

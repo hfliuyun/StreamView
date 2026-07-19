@@ -17,6 +17,7 @@ English is the normative language for technical specifications, ADRs, the format
 - [Normative references](standards.md)
 - [Implementation plan and progress](implementation-plan.md)
 - [Windows Qt CI artifact fallback ADR](adr/0017-windows-qt-ci-artifact-fallback.md)
+- [Portable cancellation state ADR](adr/0018-portable-cancellation-state.md)
 
 ## Architecture Decisions
 

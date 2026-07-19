@@ -58,9 +58,11 @@ parent that is not indexing, and changing an invalid node back to indexing.
 
 ## Cancellation
 
-A cancellation source creates copyable cancellation tokens backed by C++20
-`std::stop_source` and `std::stop_token`. Requesting cancellation is
-thread-safe and idempotent. Consumers poll the token at documented cancellation
-points; the token does not throw, terminate work, or mutate the analysis tree by
-itself. The worker that observes the request publishes its completed work and
-marks the unresolved node cancelled with a diagnostic.
+A cancellation source creates copyable cancellation tokens backed by a shared
+state whose lifetime extends through every source and token that references it.
+Requesting cancellation is thread-safe, non-throwing, and idempotent. Consumers
+poll the token at documented cancellation points; the token does not throw,
+terminate work, or mutate the analysis tree by itself. The worker that observes
+the request publishes its completed work and marks the unresolved node
+cancelled with a diagnostic. The storage mechanism is an implementation detail;
+see [ADR-0018](adr/0018-portable-cancellation-state.md).
