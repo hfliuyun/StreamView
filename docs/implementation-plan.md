@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 1
-Last Completed Step: Portable cancellation state passed local Debug, Release, and ASan/UBSan gates
-Next Action: Commit and push the macOS compatibility fix after Git metadata write access is restored
-Last Verification: Debug, Release, and ASan/UBSan builds completed; 8/8 tests passed in each configuration
-Blockers: Current Codex session cannot create `.git/index.lock`; repository metadata is read-only
+Last Completed Step: Phase 1 analysis node, diagnostic, partial-result, and cancellation model completed
+Next Action: Commit and push the Phase 1 second-item checkpoint, then implement the minimum DSL
+Last Verification: Local Debug/Release/ASan/UBSan each passed 8/8; hosted run `29694921048` passed all three platforms
+Blockers: Git metadata write approval service returned HTTP 503 while staging the checkpoint
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -41,7 +41,7 @@ Blockers: Current Codex session cannot create `.git/index.lock`; repository meta
 ## 阶段 1：H.264 NAL 端到端纵切面
 
 - [x] 实现严格只读随机访问源、bit reader、源/逻辑坐标和多区间映射。
-- [ ] 实现节点、诊断、部分结果与取消模型。
+- [x] 实现节点、诊断、部分结果与取消模型。
 - [ ] 实现最小 DSL：结构、1–64 bit 字段、注解、入口和渐进 start-code 扫描。
 - [ ] 编写 Annex B 规则，解析 start code 和 NAL header。
 - [ ] 完成文件打开、格式检测、分析树、hex/binary 视图、字段检查器和双向 bit 选择。
@@ -144,3 +144,6 @@ Blockers: Current Codex session cannot create `.git/index.lock`; repository meta
 - 2026-07-19：macOS Build 日志确认固定 runner 的 Apple libc++ 未提供 C++20 `std::stop_token`/`std::stop_source`，而本机 Apple Clang 21 已提供，因此产生 CI-only 编译失败。ADR-0018 决定保持取消 API 行为不变，底层改用引用计数共享状态与原子标志；等待完整本机门禁验证后再提交和 push。
 - 2026-07-19：可移植取消状态已通过本机 Apple Clang 21 的 Debug、Release、ASan/UBSan 完整配置与构建；三套配置均为 8/8 测试通过，包含跨线程观察、幂等请求和 token 生命周期回归。按本机门禁规则，可以提交并 push 后运行 hosted 三平台矩阵。
 - 2026-07-20：尝试创建修复提交时，当前 Codex 会话因 `.git` 元数据只读而无法创建 `index.lock`；源码与文档均已完成，本机三套门禁仍为 8/8，通过恢复 Git 写权限或由用户执行提交后继续 hosted CI 验证。
+- 2026-07-20：阶段 1 第二项完成。可移植取消修复提交为 `1f2af3d`；hosted run `29694921048` 的 Windows 2022、macOS 15 ARM64、Ubuntu 24.04 三平台 Build、8/8 Test、Install、Upload 全部通过。上一条 Git 元数据只读阻塞已由用户提交并推送解除，下一步实现最小 DSL 与渐进 start-code 扫描。
+- 2026-07-20：阶段 1 第二项检查点提交前，本机重新完成 `cmake --preset dev/ci/sanitize`、三套构建和三套 `ctest`；Debug、Release、ASan/UBSan 均为 8/8 测试通过。计划记录可提交并推送。
+- 2026-07-20：计划检查点内容已完成，但当前 Codex Git 写入审批服务返回 HTTP 503，无法执行 `git add`；等待用户代为提交并推送该文档，或审批服务恢复后继续。
