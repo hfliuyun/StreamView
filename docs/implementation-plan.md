@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 1
-Last Completed Step: Phase 1 read-only source, bit reader, coordinates, and multi-span mapping implemented locally
-Next Action: Commit the first Phase 1 core slice and verify the hosted three-platform matrix
-Last Verification: Debug, Release, and ASan/UBSan builds — 6/6 tests passed in each configuration; diff and 100-column checks passed
+Last Completed Step: Phase 1 source/bit/mapping slice completed in `23ac7dd`
+Next Action: Implement analysis nodes, diagnostics, partial results, and cancellation
+Last Verification: Hosted run `29692399047` — Windows 2022/MSVC, macOS 15/Apple Clang, and Ubuntu 24.04/GCC all passed Build, 6/6 Test, Install, and Upload steps
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -39,7 +39,7 @@ Blockers: None
 
 ## 阶段 1：H.264 NAL 端到端纵切面
 
-- [ ] 实现严格只读随机访问源、bit reader、源/逻辑坐标和多区间映射。
+- [x] 实现严格只读随机访问源、bit reader、源/逻辑坐标和多区间映射。
 - [ ] 实现节点、诊断、部分结果与取消模型。
 - [ ] 实现最小 DSL：结构、1–64 bit 字段、注解、入口和渐进 start-code 扫描。
 - [ ] 编写 Annex B 规则，解析 start code 和 NAL header。
@@ -137,3 +137,4 @@ Blockers: None
 - 2026-07-19：实现 `STREAMVIEW_MINIMUM_QT_VERSION`，默认值为 6.11；Windows CI 显式覆盖为 6.10。默认配置、6.10 override 配置、Release 构建、3/3 测试和绝对前缀部署均在本机通过，等待 hosted matrix 重跑。
 - 2026-07-19：阶段 0 完成。实现提交 `1554e3b` 对应 hosted run `29691705979`；Windows 2022/MSVC、macOS 15/Apple Clang、Ubuntu 24.04/GCC 的 Build、3/3 Test、Install 和 Upload 全部通过，`streamview_version` 覆盖 Qt 应用运行时启动。Windows Qt 6.10.1 临时 fallback 继续按 ADR-0017 追踪。
 - 2026-07-19：阶段 1 第一项已在本机实现：严格只读随机访问文件源、MSB-first 1–64 bit reader、source/logical 坐标、字段位置和多 source-span mapping；新增中英文核心模型文档以及溢出、截断、跨排除字节映射和只读文件测试。Debug、Release、ASan/UBSan 均为 6/6 测试通过；本机未安装 `clang-format`，已执行 diff 与 100 列机械检查。
+- 2026-07-19：阶段 1 第一项完成并提交为 `23ac7dd`；hosted run `29692399047` 的 Windows、macOS、Ubuntu 三平台 Build、6/6 Test、Install、Upload 全部通过。
