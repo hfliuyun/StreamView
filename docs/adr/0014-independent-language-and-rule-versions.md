@@ -1,0 +1,3 @@
+# Independent Language And Rule Versions
+
+StreamView application releases, the format-definition language, and rule packages will use independent semantic versions. A package declares its language contract and engine compatibility range; incompatible packages are rejected with explicit diagnostics. Documented breaking language changes are permitted during `0.x`, while language `1.0` and later preserve compatibility within a major version. First-release rule packages are self-contained and perform no network dependency resolution during analysis, keeping sessions reproducible and usable offline.

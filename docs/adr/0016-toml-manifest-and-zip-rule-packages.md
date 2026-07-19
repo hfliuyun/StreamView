@@ -1,0 +1,3 @@
+# TOML Manifest And ZIP Rule Packages
+
+Rule packages will provisionally use a human-readable TOML manifest and C-style DSL source files. Authors work with an ordinary directory containing source, localized documentation, and distributable tests; local installation accepts that directory or a deterministic ZIP-container package with a dedicated extension. Packages contain no native code or symbolic links, are validated against path traversal and normalization attacks, and are stored read-only by content hash. Exact keys, canonical archive rules, extension, and limits remain design-draft details until the package specification is stabilized.

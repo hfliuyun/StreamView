@@ -1,0 +1,10 @@
+.DS_Store
+/build/
+/out/
+/dist/
+/.cache/
+/.idea/
+/.vscode/
+*.user
+*.autosave
+compile_commands.json
