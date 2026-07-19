@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 0
-Last Completed Step: Windows Qt installation and Linux deployment CI failures fixed locally
-Next Action: Push the CI fix and verify the Windows/macOS/Ubuntu matrix
-Last Verification: `ctest --preset ci` and absolute-prefix `cmake --install` — 3/3 tests passed and the macOS deployable tree was generated
-Blockers: None; hosted CI rerun pending
+Last Completed Step: Documented the unavailable Windows Qt 6.11.1 artifact and added an explicit CI fallback
+Next Action: Push the documented Windows Qt 6.10.1 CI fallback and verify the three-platform matrix
+Last Verification: Qt repository probe — Windows Qt 6.11.1 metadata returned 404; Windows Qt 6.10.1 MSVC 2022 metadata is available; prior Ubuntu/macOS run `29689997545` passed those jobs
+Blockers: Windows Qt 6.11.1 is not published by the upstream repository; CI uses the ADR-approved 6.10.1 fallback until publication
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -26,7 +26,7 @@ Blockers: None; hosted CI rerun pending
 - 文件接口固定为 `.svfmt`、`.svrule`、`rule.toml` 和 `.svsession`；应用、DSL、官方规则初始版本分别为 `0.1.0`、`0.1`、`0.1.0`。
 - SQLite WAL 保存大型索引和物化结果；内存只保留 64 KiB 源页面及节点 LRU，默认预算 128 MiB。
 - 单窗口单会话；Qt UI 采用左右 dock、中央自绘原始数据视图、分页分析树和全局诊断面板。
-- Qt 基线为 6.11.x，CI 固定 6.11.1；CMake 最低 3.28。FFmpeg 只用于开发验证，不进入运行时。
+- Qt 基线为 6.11.x，CI 默认固定 6.11.1；Windows 暂时按 ADR-0017 使用 6.10.1，CMake 最低 3.28。FFmpeg 只用于开发验证，不进入运行时。
 
 ## 阶段 0：持久化计划与工程基线
 
@@ -128,3 +128,4 @@ Blockers: None; hosted CI rerun pending
 - 2026-07-19：阶段 0 基线已提交为 `5732f31`（`chore: establish StreamView project baseline`）。
 - 2026-07-19：已配置并推送 GitHub remote；`18ab02f` 的 Actions 矩阵中 macOS 通过，Windows 与 Ubuntu 失败。当前环境无法读取 GitHub 日志，等待失败步骤日志后继续修复。
 - 2026-07-19：根据下载的日志确认 Windows 因 Qt 仓库元数据获取失败而中止，Ubuntu 构建及 3/3 测试通过但相对安装前缀不满足 Qt 6.11 部署要求。Windows 安装已增加有限重试，三平台部署统一改用绝对前缀；本机 3/3 测试及 macOS 部署树回归通过，等待 hosted CI 重跑。
+- 2026-07-19：确认 Qt 官方 Windows `qt6_6111` 元数据为 404，而 `qt6_6101` 提供 MSVC 2022 64 位包。按新增 ADR-0017 及中英文说明，Windows CI 暂时显式使用 6.10.1；产品与开发基线仍为 Qt 6.11.x，待上游发布后恢复 Windows 6.11.1。
