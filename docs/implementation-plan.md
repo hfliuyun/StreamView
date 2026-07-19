@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 0
-Last Completed Step: Windows Qt 6.10.1 installation passes in hosted CI; Configure failed before build
-Next Action: Push the explicit Windows Qt prefix Configure fix and verify the three-platform matrix
-Last Verification: Hosted run `29690756262` — Ubuntu/macOS passed; Windows Qt installation passed, Configure failed; Qt 6.10.1 MSVC 2022 metadata is available
-Blockers: Windows Qt 6.11.1 is not published by the upstream repository; CI uses the ADR-approved 6.10.1 fallback until publication
+Last Completed Step: Diagnosed Windows toolchain mismatch from run `29690948648`
+Next Action: Push the MSVC x64 environment step and verify the three-platform matrix
+Last Verification: Windows Configure log — CMake selected `C:/mingw64/bin/c++.exe` (GNU 14.2) against MSVC Qt 6.10.1; Ubuntu/macOS passed
+Blockers: None; MSVC environment fix is ready for hosted verification
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -130,3 +130,5 @@ Blockers: Windows Qt 6.11.1 is not published by the upstream repository; CI uses
 - 2026-07-19：根据下载的日志确认 Windows 因 Qt 仓库元数据获取失败而中止，Ubuntu 构建及 3/3 测试通过但相对安装前缀不满足 Qt 6.11 部署要求。Windows 安装已增加有限重试，三平台部署统一改用绝对前缀；本机 3/3 测试及 macOS 部署树回归通过，等待 hosted CI 重跑。
 - 2026-07-19：确认 Qt 官方 Windows `qt6_6111` 元数据为 404，而 `qt6_6101` 提供 MSVC 2022 64 位包。按新增 ADR-0017 及中英文说明，Windows CI 暂时显式使用 6.10.1；产品与开发基线仍为 Qt 6.11.x，待上游发布后恢复 Windows 6.11.1。
 - 2026-07-19：运行 `29690756262` 确认 Windows Qt 6.10.1 安装成功，但 Configure 失败。新增 Windows 专用 Configure 步骤，直接传入 runner 上的 `Qt6_DIR` 与 `CMAKE_PREFIX_PATH`，避免依赖跨步骤环境变量解析。
+- 2026-07-19：显式 Qt 路径修复已提交为 `355ed68`；运行 `29690948648` 的 Ubuntu/macOS job 通过，Windows 仍在 `Configure (Windows)` 失败。公开 API 仅提供失败步骤而不提供原始日志，等待最新 Configure 日志后继续。
+- 2026-07-19：最新日志确认 Windows CMake 选中了 MinGW GNU 14.2，而 Qt 包为 MSVC 2022；workflow 增加固定 SHA 的 `ilammy/msvc-dev-cmd` x64 环境步骤，使 Configure、Build、Test 和 Install 使用同一 MSVC 工具链。

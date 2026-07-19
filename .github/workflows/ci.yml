@@ -83,6 +83,13 @@ jobs:
           ) | Add-Content -Path $env:GITHUB_ENV
           Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $qtPrefix 'bin')
 
+      - name: Enable MSVC x64 environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        with:
+          arch: x64
+          vsversion: 2022
+
       - name: Configure
         if: runner.os != 'Windows'
         run: cmake --preset ci
