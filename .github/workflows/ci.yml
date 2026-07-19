@@ -23,10 +23,62 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Install Qt
+        if: runner.os != 'Windows'
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730
         with:
           version: 6.11.1
           cache: true
+
+      - name: Set up Python for Windows Qt installation
+        if: runner.os == 'Windows'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+
+      - name: Install Qt (Windows with retry)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --disable-pip-version-check --quiet `
+            'aqtinstall==3.3.*' `
+            'py7zr==1.0.*'
+
+          $qtRoot = Join-Path $env:GITHUB_WORKSPACE 'Qt'
+          $qtVersion = '6.11.1'
+          $qtArch = 'win64_msvc2022_64'
+          $qtPrefix = Join-Path $qtRoot "$qtVersion/msvc2022_64"
+          $installed = $false
+
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Host "Installing Qt $qtVersion (attempt $attempt/3)"
+            if (Test-Path $qtRoot) {
+              Remove-Item -Recurse -Force $qtRoot
+            }
+            New-Item -ItemType Directory -Force $qtRoot | Out-Null
+            python -m aqt install-qt windows desktop $qtVersion $qtArch `
+              --autodesktop --outputdir $qtRoot
+            if ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $qtPrefix 'lib/cmake/Qt6/Qt6Config.cmake'))) {
+              $installed = $true
+              break
+            }
+            if ($attempt -lt 3) {
+              Start-Sleep -Seconds (10 * $attempt)
+            }
+          }
+
+          if (-not $installed) {
+            throw "Qt $qtVersion installation failed after three attempts"
+          }
+
+          @(
+            "CMAKE_PREFIX_PATH=$qtPrefix"
+            "Qt6_DIR=$(Join-Path $qtPrefix 'lib/cmake/Qt6')"
+            "QT_ROOT_DIR=$qtPrefix"
+            "QT_PLUGIN_PATH=$(Join-Path $qtPrefix 'plugins')"
+            "QML2_IMPORT_PATH=$(Join-Path $qtPrefix 'qml')"
+          ) | Add-Content -Path $env:GITHUB_ENV
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $qtPrefix 'bin')
 
       - name: Configure
         run: cmake --preset ci
@@ -38,7 +90,7 @@ jobs:
         run: ctest --preset ci
 
       - name: Install deployable tree
-        run: cmake --install build/ci --prefix dist
+        run: cmake --install build/ci --prefix "${{ github.workspace }}/dist"
 
       - name: Upload package tree
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 0
-Last Completed Step: Local macOS baseline verified
-Next Action: Configure a GitHub remote and run the Windows/macOS/Ubuntu CI matrix
-Last Verification: `cmake --preset ci && cmake --build --preset ci && ctest --preset ci && cmake --install build/ci --prefix dist/ci` — passed on macOS arm64; baseline commit `5732f31`
-Blockers: No Git remote is configured, so the required GitHub-hosted Windows and Ubuntu jobs cannot run yet
+Last Completed Step: Windows Qt installation and Linux deployment CI failures fixed locally
+Next Action: Push the CI fix and verify the Windows/macOS/Ubuntu matrix
+Last Verification: `ctest --preset ci` and absolute-prefix `cmake --install` — 3/3 tests passed and the macOS deployable tree was generated
+Blockers: None; hosted CI rerun pending
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -126,3 +126,5 @@ Blockers: No Git remote is configured, so the required GitHub-hosted Windows and
 - 2026-07-19：计划已批准并持久化。下一步初始化工程基线。
 - 2026-07-19：Git/CMake/Qt 工程骨架、测试和 CI 工作流已建立；Qt 6.11.1 本机 Debug/Release 构建、3 项测试与 macOS 部署树验证通过。等待配置 GitHub remote 后运行三平台门禁。
 - 2026-07-19：阶段 0 基线已提交为 `5732f31`（`chore: establish StreamView project baseline`）。
+- 2026-07-19：已配置并推送 GitHub remote；`18ab02f` 的 Actions 矩阵中 macOS 通过，Windows 与 Ubuntu 失败。当前环境无法读取 GitHub 日志，等待失败步骤日志后继续修复。
+- 2026-07-19：根据下载的日志确认 Windows 因 Qt 仓库元数据获取失败而中止，Ubuntu 构建及 3/3 测试通过但相对安装前缀不满足 Qt 6.11 部署要求。Windows 安装已增加有限重试，三平台部署统一改用绝对前缀；本机 3/3 测试及 macOS 部署树回归通过，等待 hosted CI 重跑。

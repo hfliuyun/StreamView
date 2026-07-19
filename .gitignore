@@ -2,6 +2,7 @@
 /build/
 /out/
 /dist/
+/ci-logs/
 /.cache/
 /.idea/
 /.vscode/
