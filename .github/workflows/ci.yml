@@ -84,7 +84,21 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $qtPrefix 'bin')
 
       - name: Configure
+        if: runner.os != 'Windows'
         run: cmake --preset ci
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $qtPrefix = Join-Path $env:GITHUB_WORKSPACE "Qt/${{ matrix.qt-version }}/msvc2022_64"
+          $qtConfig = Join-Path $qtPrefix 'lib/cmake/Qt6/Qt6Config.cmake'
+          if (-not (Test-Path $qtConfig)) {
+            throw "Qt configuration was not found at $qtConfig"
+          }
+          cmake --preset ci `
+            "-DCMAKE_PREFIX_PATH=$qtPrefix" `
+            "-DQt6_DIR=$(Join-Path $qtPrefix 'lib/cmake/Qt6')"
 
       - name: Build
         run: cmake --build --preset ci
