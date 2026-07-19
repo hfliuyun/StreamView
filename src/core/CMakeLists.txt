@@ -1,4 +1,10 @@
 add_library(streamview_core STATIC
+    bit_reader.cpp
+    coordinates.cpp
+    source.cpp
+    include/streamview/core/bit_reader.h
+    include/streamview/core/coordinates.h
+    include/streamview/core/source.h
     include/streamview/core/version.h
     version.cpp
 )

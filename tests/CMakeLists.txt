@@ -4,6 +4,17 @@ streamview_set_warnings(streamview_core_tests)
 
 add_test(NAME streamview_core_tests COMMAND streamview_core_tests)
 
+function(streamview_add_core_test target source)
+    qt_add_executable(${target} ${source})
+    target_link_libraries(${target} PRIVATE StreamView::Core Qt6::Test)
+    streamview_set_warnings(${target})
+    add_test(NAME ${target} COMMAND ${target})
+endfunction()
+
+streamview_add_core_test(streamview_coordinates_tests core/coordinates_test.cpp)
+streamview_add_core_test(streamview_source_tests core/source_test.cpp)
+streamview_add_core_test(streamview_bit_reader_tests core/bit_reader_test.cpp)
+
 add_test(NAME svtool_version COMMAND svtool --version)
 set_tests_properties(svtool_version PROPERTIES PASS_REGULAR_EXPRESSION "svtool 0[.]1[.]0 [(]DSL 0[.]1[)]")
 
