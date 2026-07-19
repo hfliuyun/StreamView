@@ -1,11 +1,11 @@
 # StreamView v0.1 分阶段实施计划
 
 Status: In Progress
-Current Phase: 0
-Last Completed Step: ADR-documented CI-only Qt minimum override implemented and verified locally
-Next Action: Push the Qt minimum override and verify the three-platform matrix
-Last Verification: Default `cmake --preset ci`, 6.10 override configure, Release build, 3/3 tests, and absolute-prefix deployment all passed locally
-Blockers: None; hosted CI rerun pending
+Current Phase: 1
+Last Completed Step: Phase 0 three-platform gate completed for implementation commit `1554e3b`
+Next Action: Implement the strict read-only random-access source, bit reader, coordinates, and multi-span mapping
+Last Verification: Hosted run `29691705979` — Windows 2022/MSVC, macOS 15/Apple Clang, and Ubuntu 24.04/GCC all passed Build, 3/3 Test, Install, and Upload steps
+Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -35,7 +35,7 @@ Blockers: None; hosted CI rerun pending
 - [x] 建立核心、规则运行时、应用、内部 CLI 和测试目标。
 - [x] 建立 Windows 2022/MSVC、macOS 15 ARM64/Apple Clang、Ubuntu 24.04/GCC CI。
 - [x] 固定规范基线：ITU‑T H.264 (08/2024)、ISO/IEC 14496‑3:2019、14496‑12:2026、14496‑15:2024+Amd1:2025、14496‑1:2010。
-- [ ] 验证三个平台均能构建、测试、启动并生成空应用包。
+- [x] 验证三个平台均能构建、测试、启动并生成空应用包。
 
 ## 阶段 1：H.264 NAL 端到端纵切面
 
@@ -135,3 +135,4 @@ Blockers: None; hosted CI rerun pending
 - 2026-07-19：MSVC 环境修复已提交为 `06b776b`；运行 `29691377216` 的 Ubuntu/macOS job 通过，Windows 仍在 `Configure (Windows)` 失败，等待新日志确认编译器选择或后续 CMake 错误。
 - 2026-07-19：新日志确认 MSVC 19.44 与 `cl.exe` 已正确选中；失败原因是默认 `find_package(Qt6 6.11)` 拒绝 CI fallback 的 6.10.1。ADR-0017 已补充：CMake 默认最低版本保持 6.11，仅 Windows CI 可显式覆盖为 6.10，发布构建不得使用该覆盖。
 - 2026-07-19：实现 `STREAMVIEW_MINIMUM_QT_VERSION`，默认值为 6.11；Windows CI 显式覆盖为 6.10。默认配置、6.10 override 配置、Release 构建、3/3 测试和绝对前缀部署均在本机通过，等待 hosted matrix 重跑。
+- 2026-07-19：阶段 0 完成。实现提交 `1554e3b` 对应 hosted run `29691705979`；Windows 2022/MSVC、macOS 15/Apple Clang、Ubuntu 24.04/GCC 的 Build、3/3 Test、Install 和 Upload 全部通过，`streamview_version` 覆盖 Qt 应用运行时启动。Windows Qt 6.10.1 临时 fallback 继续按 ADR-0017 追踪。
