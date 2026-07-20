@@ -3,9 +3,9 @@
 Status: In Progress
 Current Phase: 1
 Last Completed Step: Phase 1 analysis node, diagnostic, partial-result, and cancellation model completed
-Next Action: Commit and push the Phase 1 second-item checkpoint, then implement the minimum DSL
-Last Verification: Local Debug/Release/ASan/UBSan each passed 8/8; hosted run `29694921048` passed all three platforms
-Blockers: Git metadata write approval service returned HTTP 503 while staging the checkpoint
+Next Action: Implement the Phase 1 minimum DSL and progressive start-code scanning
+Last Verification: Hosted run `29694921048` passed all three platforms; Markdown-only CI skip recorded in ADR-0019
+Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -147,3 +147,4 @@ Blockers: Git metadata write approval service returned HTTP 503 while staging th
 - 2026-07-20：阶段 1 第二项完成。可移植取消修复提交为 `1f2af3d`；hosted run `29694921048` 的 Windows 2022、macOS 15 ARM64、Ubuntu 24.04 三平台 Build、8/8 Test、Install、Upload 全部通过。上一条 Git 元数据只读阻塞已由用户提交并推送解除，下一步实现最小 DSL 与渐进 start-code 扫描。
 - 2026-07-20：阶段 1 第二项检查点提交前，本机重新完成 `cmake --preset dev/ci/sanitize`、三套构建和三套 `ctest`；Debug、Release、ASan/UBSan 均为 8/8 测试通过。计划记录可提交并推送。
 - 2026-07-20：计划检查点内容已完成，但当前 Codex Git 写入审批服务返回 HTTP 503，无法执行 `git add`；等待用户代为提交并推送该文档，或审批服务恢复后继续。
+- 2026-07-20：用户已提交并推送阶段 1 第二项计划检查点 `4e2782a`。根据用户要求，ADR-0019 记录 Markdown-only 提交跳过 hosted CI；混合代码与文档的提交仍运行完整矩阵。
