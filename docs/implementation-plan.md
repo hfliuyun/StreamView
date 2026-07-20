@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 1
-Last Completed Step: Phase 1 analysis node, diagnostic, partial-result, and cancellation model completed
-Next Action: Implement the Phase 1 minimum DSL and progressive start-code scanning
-Last Verification: Hosted run `29694921048` passed all three platforms; Markdown-only CI skip recorded in ADR-0019
+Last Completed Step: Phase 1 minimum DSL, direct executor, and progressive start-code scanner completed locally
+Next Action: Commit and push the minimum DSL slice, verify hosted CI, then implement the Annex B rule
+Last Verification: Local Debug/Release/ASan/UBSan each passed 11/11
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -42,7 +42,7 @@ Blockers: None
 
 - [x] 实现严格只读随机访问源、bit reader、源/逻辑坐标和多区间映射。
 - [x] 实现节点、诊断、部分结果与取消模型。
-- [ ] 实现最小 DSL：结构、1–64 bit 字段、注解、入口和渐进 start-code 扫描。
+- [x] 实现最小 DSL：结构、1–64 bit 字段、注解、入口和渐进 start-code 扫描。
 - [ ] 编写 Annex B 规则，解析 start code 和 NAL header。
 - [ ] 完成文件打开、格式检测、分析树、hex/binary 视图、字段检查器和双向 bit 选择。
 - [ ] 提供内部 `svtool rule check` 与 `svtool analyze`。
@@ -148,3 +148,4 @@ Blockers: None
 - 2026-07-20：阶段 1 第二项检查点提交前，本机重新完成 `cmake --preset dev/ci/sanitize`、三套构建和三套 `ctest`；Debug、Release、ASan/UBSan 均为 8/8 测试通过。计划记录可提交并推送。
 - 2026-07-20：计划检查点内容已完成，但当前 Codex Git 写入审批服务返回 HTTP 503，无法执行 `git add`；等待用户代为提交并推送该文档，或审批服务恢复后继续。
 - 2026-07-20：用户已提交并推送阶段 1 第二项计划检查点 `4e2782a`。根据用户要求，ADR-0019 记录 Markdown-only 提交跳过 hosted CI；混合代码与文档的提交仍运行完整矩阵。
+- 2026-07-20：阶段 1 第三项已在本机实现：手写 lexer、递归下降 parser、静态最小 IR、`@equals` 约束执行器、direct source mapping 字段物化，以及支持三/四字节前缀、64 KiB 窗口跨界、分批和取消的 `h264_start_code` scanner。Debug、Release、ASan/UBSan 均为 11/11 测试通过；待提交后验证 hosted 矩阵。

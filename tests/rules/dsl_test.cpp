@@ -1,0 +1,135 @@
+#include <streamview/rules/dsl.h>
+
+#include <QTest>
+
+#include <algorithm>
+
+using streamview::rules::DslAnnotationValueKind;
+using streamview::rules::DslDiagnosticCode;
+using streamview::rules::DslLexer;
+using streamview::rules::DslParser;
+using streamview::rules::DslTokenKind;
+
+namespace {
+
+[[nodiscard]] bool hasDiagnostic(const streamview::rules::DslParseResult& result,
+                                 DslDiagnosticCode code) {
+    return std::any_of(result.diagnostics.begin(),
+                       result.diagnostics.end(),
+                       [code](const auto& diagnostic) { return diagnostic.code == code; });
+}
+
+} // namespace
+
+class DslTest final : public QObject {
+    Q_OBJECT
+
+private slots:
+    void lexesCommentsLiteralsAndPositions() {
+        const auto result = DslLexer::lex(QStringLiteral(
+            "// heading\n@tag(0x10, \"line\\nvalue\", progressive)"));
+
+        QVERIFY(result.succeeded());
+        QCOMPARE(result.tokens.at(0).kind, DslTokenKind::At);
+        QCOMPARE(result.tokens.at(0).range.start.line, quint32(2));
+        QCOMPARE(result.tokens.at(1).lexeme, QStringLiteral("tag"));
+        QCOMPARE(result.tokens.at(3).kind, DslTokenKind::IntegerLiteral);
+        QCOMPARE(result.tokens.at(3).integerValue, quint64(16));
+        QCOMPARE(result.tokens.at(5).kind, DslTokenKind::StringLiteral);
+        QCOMPARE(result.tokens.at(5).lexeme, QStringLiteral("line\nvalue"));
+        QCOMPARE(result.tokens.back().kind, DslTokenKind::EndOfFile);
+    }
+
+    void parsesMinimumProgramIntoTypedIr() {
+        const auto result = DslParser::parse(QStringLiteral(R"(
+            @spec("ITU-T H.264", "7.3.1")
+            struct NalUnitHeader {
+                bits<1> forbidden_zero_bit @equals(0);
+                bits<2> nal_ref_idc;
+                bits<5> nal_unit_type;
+            }
+
+            @index(progressive)
+            sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+            entry nal_units;
+        )"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        QCOMPARE(result.program.structs.size(), std::size_t(1));
+        const auto& structure = result.program.structs.front();
+        QCOMPARE(structure.name, QStringLiteral("NalUnitHeader"));
+        QCOMPARE(structure.annotations.size(), std::size_t(1));
+        QCOMPARE(structure.annotations.front().arguments.size(), std::size_t(2));
+        QCOMPARE(structure.annotations.front().arguments.front().kind,
+                 DslAnnotationValueKind::String);
+        QCOMPARE(structure.fields.size(), std::size_t(3));
+        QCOMPARE(structure.fields.at(0).width, quint8(1));
+        QCOMPARE(structure.fields.at(1).width, quint8(2));
+        QCOMPARE(structure.fields.at(2).width, quint8(5));
+        QCOMPARE(structure.fields.front().annotations.front().name,
+                 QStringLiteral("equals"));
+        QCOMPARE(structure.fields.front().annotations.front().arguments.front().integerValue,
+                 quint64(0));
+
+        QCOMPARE(result.program.scans.size(), std::size_t(1));
+        QCOMPARE(result.program.scans.front().elementType, QStringLiteral("NalUnitHeader"));
+        QCOMPARE(result.program.scans.front().name, QStringLiteral("nal_units"));
+        QCOMPARE(result.program.scans.front().scannerName,
+                 QStringLiteral("h264_start_code"));
+        QVERIFY(result.program.hasEntry);
+        QCOMPARE(result.program.entry.targetName, QStringLiteral("nal_units"));
+    }
+
+    void rejectsOutOfRangeBitWidths() {
+        const auto zero = DslParser::parse(QStringLiteral(
+            "struct Header { bits<0> bad; } entry Header;"));
+        const auto tooWide = DslParser::parse(QStringLiteral(
+            "struct Header { bits<65> bad; } entry Header;"));
+
+        QVERIFY(hasDiagnostic(zero, DslDiagnosticCode::InvalidBitWidth));
+        QVERIFY(hasDiagnostic(tooWide, DslDiagnosticCode::InvalidBitWidth));
+    }
+
+    void rejectsMissingOrUnknownEntry() {
+        const auto missing =
+            DslParser::parse(QStringLiteral("struct Header { bits<1> value; }"));
+        const auto unknown = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value; } entry Missing;"));
+
+        QVERIFY(hasDiagnostic(missing, DslDiagnosticCode::MissingEntry));
+        QVERIFY(hasDiagnostic(unknown, DslDiagnosticCode::UnknownReference));
+    }
+
+    void rejectsDuplicateNamesAndUnsupportedScans() {
+        const auto duplicate = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value; bits<2> value; } entry Header;"));
+        const auto unsupported = DslParser::parse(QStringLiteral(R"(
+            struct Header { bits<1> value; }
+            sequence<Header> units = scan(other_scanner);
+            entry units;
+        )"));
+
+        QVERIFY(hasDiagnostic(duplicate, DslDiagnosticCode::DuplicateName));
+        QVERIFY(hasDiagnostic(unsupported, DslDiagnosticCode::UnsupportedScanner));
+        QVERIFY(hasDiagnostic(unsupported, DslDiagnosticCode::InvalidProgressiveAnnotation));
+    }
+
+    void reportsLexicalFailuresWithoutCrashingParser() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "@spec(\"unterminated) struct Header { bits<1> value; } entry Header;"));
+
+        QVERIFY(!result.succeeded());
+        QVERIFY(std::any_of(result.diagnostics.begin(),
+                            result.diagnostics.end(),
+                            [](const auto& diagnostic) {
+                                return diagnostic.code == DslDiagnosticCode::UnterminatedString;
+                            }));
+    }
+};
+
+QTEST_GUILESS_MAIN(DslTest)
+
+#include "dsl_test.moc"

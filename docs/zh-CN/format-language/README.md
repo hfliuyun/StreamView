@@ -1,6 +1,6 @@
 # StreamView 格式定义语言
 
-状态：设计草案。本页解释已经达成共识的语义；在语法和拼写被逐项确认以前，示例不构成最终语法规范。英文版是规范性来源：[Format Definition Language](../../format-language/README.md)。
+状态：设计草案；下方的最小 0.1 子集已经接受。除此之外的功能在单独接受前仍是暂定设计。英文版是规范性来源：[Format Definition Language](../../format-language/README.md)。
 
 StreamView 格式定义语言用于描述容器和编解码格式的语法，不执行不受限制的原生代码或通用脚本。内置规则和用户安装的规则使用同一套语言与运行时。
 
@@ -43,7 +43,68 @@ struct NalUnitHeader {
 }
 ```
 
-最终参考文档必须分别定义基本类型、有无符号、字节序、bit 顺序、溢出行为、数组、枚举、结构、条件、分支、有界循环、纯函数、作用域、名称解析和规范注解。
+最终参考文档必须分别定义基本类型、有无符号、字节序、bit 顺序、溢出行为、数组、枚举、结构、条件、分支、有界循环、纯函数、作用域、名称解析和规范注解。当前接受的最小子集有意更小，暂不包含表达式、数组和控制流。
+
+## DSL 0.1 最小子集
+
+首个可执行子集使用以下语法。token 之间可以有空白，以及 `//` 或 `/* ... */`
+注释。标识符使用 ASCII 字母、数字和 `_`，但不能以数字开头。整数是经过检查的
+无符号十进制或 `0x` 十六进制数。字符串支持 `"`、`\\`、`\n`、`\r` 和 `\t` 转义。
+
+```text
+program       := { declaration }
+declaration   := { annotation } ( struct | sequence | entry )
+struct        := "struct" identifier "{" { field } "}" [ ";" ]
+field         := { annotation } "bits" "<" integer ">" identifier
+                 { annotation } ";"
+sequence      := "sequence" "<" identifier ">" identifier "="
+                 "scan" "(" identifier ")" ";"
+entry         := "entry" identifier ";"
+annotation    := "@" identifier [ "(" [ value { "," value } ] ")" ]
+value         := integer | string | identifier
+```
+
+该子集的静态规则如下：
+
+- 程序必须且只能有一个 `entry`；target 必须是已声明的结构或 sequence。
+- 结构名和 sequence 名在整个程序中不能重复；字段名在结构内不能重复；结构至少包含一个字段。
+- `bits<N>` 的宽度必须是 `1..64` 的整数。字段是无符号值，按声明顺序以 MSB-first 消耗输入。
+- 唯一接受的渐进 sequence 形式是
+  `@index(progressive) sequence<Element> name = scan(h264_start_code);`。
+  `Element` 必须是已声明结构。
+- `@equals(integer)` 字段注解是会执行检查的约束；其他注解保留为元数据。
+  `@spec("standard", "clause")` 是约定的规范引用形式。
+- 出现词法或静态诊断时，source 不会生成可执行规则；parser 仍返回部分 IR 以及带行列范围的全部诊断，便于编辑器一次报告多个错误。
+
+最小运行时通过 bounded bit reader 按顺序执行结构。成功字段会成为带无符号解码值和
+源位置的 syntax-field 节点。读取截断或失败时保留之前的字段，并把结构标记为 invalid
+并附 source 诊断。`@equals` 不匹配时保留该字段，再用 invalid-syntax 诊断标记结构。
+最小执行器要求逻辑范围映射到一个连续的 direct source 区间；跨多个 source 区间的
+mapped transformation 留到后续转换运行时实现。
+
+内建 `h264_start_code` scanner 通过 64 KiB 随机访问窗口读取 source，并按调用方指定
+的批大小发布 `H264StartCodeRecord`。每条记录包含三字节或四字节 start code 的 source
+区间，以及后续 NAL unit 区间（最后一个空 unit 没有 payload 区间）。start code 可以跨窗口。
+每检查至少 1,024 个 source position 就检查一次取消；已经发布的记录保持有效，batch 返回
+`cancelled`。
+
+最小合法示例：
+
+```cpp
+@spec("ITU-T H.264", "7.3.1")
+struct NalUnitHeader {
+    bits<1> forbidden_zero_bit @equals(0);
+    bits<2> nal_ref_idc;
+    bits<5> nal_unit_type;
+}
+
+@index(progressive)
+sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+entry nal_units;
+```
+
+最小非法示例包括 `bits<0> flag;`、`bits<65> flag;`、缺少 `@index(progressive)` 的
+sequence、`scan(other_scanner)`、重复声明同名，以及没有 `entry` 的程序。
 
 ## 源坐标与逻辑坐标
 

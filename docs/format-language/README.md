@@ -1,6 +1,7 @@
 # StreamView Format Definition Language
 
-Status: design draft. Examples illustrate agreed semantics; exact grammar and spelling remain provisional until separately accepted.
+Status: design draft with the minimum 0.1 subset accepted below. Features outside
+that subset remain provisional until separately accepted.
 
 The StreamView Format Definition Language describes container and codec syntax without executing unrestricted native or scripting-language code. Built-in and user-installed rules use the same language and runtime.
 
@@ -43,7 +44,82 @@ struct NalUnitHeader {
 }
 ```
 
-The eventual reference must define primitive types, signedness, byte order, bit order, overflow behavior, arrays, enums, structures, conditionals, switches, bounded loops, pure helpers, scope, name resolution, and specification annotations.
+The eventual reference must define primitive types, signedness, byte order, bit order, overflow behavior, arrays, enums, structures, conditionals, switches, bounded loops, pure helpers, scope, name resolution, and specification annotations. The accepted minimum subset is intentionally smaller and does not yet include expressions, arrays, or control flow.
+
+## Minimum DSL 0.1 Subset
+
+The first executable subset uses the following grammar. Whitespace and `//` or
+`/* ... */` comments may appear between tokens. Identifiers use ASCII letters,
+digits, and `_`, but cannot begin with a digit. Integer literals are checked
+unsigned decimal or `0x` hexadecimal values. String literals use `"`, `\\`,
+`\n`, `\r`, and `\t` escapes.
+
+```text
+program       := { declaration }
+declaration   := { annotation } ( struct | sequence | entry )
+struct        := "struct" identifier "{" { field } "}" [ ";" ]
+field         := { annotation } "bits" "<" integer ">" identifier
+                 { annotation } ";"
+sequence      := "sequence" "<" identifier ">" identifier "="
+                 "scan" "(" identifier ")" ";"
+entry         := "entry" identifier ";"
+annotation    := "@" identifier [ "(" [ value { "," value } ] ")" ]
+value         := integer | string | identifier
+```
+
+The static rules for this subset are:
+
+- A program has exactly one `entry`; its target names a declared structure or
+  sequence.
+- Structure and sequence names are unique across the program. Field names are
+  unique within a structure, and a structure contains at least one field.
+- A `bits<N>` width is an integer in `1..64`. Fields are unsigned and consume
+  input in declaration order, most-significant bit first.
+- The only accepted progressive sequence form is
+  `@index(progressive) sequence<Element> name = scan(h264_start_code);`.
+  `Element` must name a declared structure.
+- An `@equals(integer)` field annotation is a checked constraint. Other
+  annotations are retained as metadata; `@spec("standard", "clause")` is the
+  conventional specification reference.
+- A source with lexical or static diagnostics produces no executable rule. The
+  parser still returns its partial IR and all diagnostics with line/column
+  ranges so an editor can report more than the first error.
+
+The minimum runtime executes a structure by reading each field through the
+bounded bit reader. A successful field becomes a syntax-field node with its
+decoded unsigned value and source location. A truncated or failed read retains
+earlier fields and marks the structure invalid with a source diagnostic. An
+`@equals` mismatch retains the field, then marks the structure invalid with an
+invalid-syntax diagnostic. The minimum executor requires the logical range to
+map to one contiguous direct source span; mapped multi-span transformations are
+reserved for the later mapped-transformation runtime.
+
+The built-in `h264_start_code` scanner reads the source through a 64 KiB random
+access window and publishes `H264StartCodeRecord` values in caller-sized
+batches. Each record contains the three- or four-byte start-code span and the
+following NAL-unit span (an empty final unit has no payload span). Prefixes may
+cross a window boundary. Cancellation is checked at least every 1,024 inspected
+source positions; already published records remain valid and the batch reports
+`cancelled`.
+
+Valid minimum example:
+
+```cpp
+@spec("ITU-T H.264", "7.3.1")
+struct NalUnitHeader {
+    bits<1> forbidden_zero_bit @equals(0);
+    bits<2> nal_ref_idc;
+    bits<5> nal_unit_type;
+}
+
+@index(progressive)
+sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+entry nal_units;
+```
+
+Invalid minimum examples include `bits<0> flag;`, `bits<65> flag;`, a sequence
+without `@index(progressive)`, `scan(other_scanner)`, two declarations with the
+same name, or a program with no `entry`.
 
 ## Source And Logical Coordinates
 
