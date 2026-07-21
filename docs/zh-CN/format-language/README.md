@@ -86,7 +86,22 @@ mapped transformation 留到后续转换运行时实现。
 的批大小发布 `H264StartCodeRecord`。每条记录包含三字节或四字节 start code 的 source
 区间，以及后续 NAL unit 区间（最后一个空 unit 没有 payload 区间）。start code 可以跨窗口。
 每检查至少 1,024 个 source position 就检查一次取消；已经发布的记录保持有效，batch 返回
-`cancelled`。
+`cancelled`。空 unit 虽然没有可选 payload 区间，其 NAL offset 和零 length 仍然有效。
+如果 source 字节大小无法用 64 位源 bit 坐标模型表示，scanner 会在读取前拒绝该 source。
+
+### 内置 Annex B profile
+
+内置最小 H.264 规则使用上面的语法；本节的分析树投影属于 profile/运行时行为，不是新增
+DSL 语法。Annex B runner 为每条 scanner record 发布一个 `nal_unit[index]` region，其源位置
+覆盖 start code 和非空 NAL payload。它的 `start_code` 子节点只覆盖三字节或四字节前缀。
+`NalUnitHeader` 子节点只消耗 payload 的前 8 bit，并公开 `forbidden_zero_bit`、
+`nal_ref_idc` 和 `nal_unit_type`；最小 profile 不解释 header 之后的 payload bit。
+
+最后一个空 NAL 仍会发布 NAL region 和 start-code 子节点，并发布一个没有字段的 invalid
+`NalUnitHeader`；所属 NAL 的 `truncated-source` 汇总诊断锚定在已知 NAL region。
+`@equals(0)` 不匹配时保留 `forbidden_zero_bit`，把 header 和所属 NAL 标记为 invalid，
+但不阻止整体扫描完成。header 读取失败时保留已发布节点，把 root 标记为 invalid，并返回
+`source-error`；取消时保留已完成的 NAL region，并把 root 标记为 cancelled。
 
 最小合法示例：
 

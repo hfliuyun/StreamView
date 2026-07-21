@@ -24,4 +24,17 @@ cmake --build --preset dev
 ctest --preset dev
 ```
 
+## 内部 CLI
+
+开发构建包含 `svtool`，用于规则校验和当前的 Annex B 分析纵切面：
+
+```sh
+svtool --version
+svtool rule check <rule.svfmt>
+svtool analyze <source>
+```
+
+退出码 `0` 表示成功，`1` 表示规则或分析产生了诊断/部分结果，`2` 表示用法无效或无法
+打开输入。该 CLI 是内部开发工具，不是计划中延期的正式公共 CLI 契约。
+
 StreamView 自有代码采用 [MIT License](LICENSE)，Qt 及其他依赖保留各自许可证。

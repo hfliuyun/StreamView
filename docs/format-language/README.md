@@ -100,7 +100,30 @@ batches. Each record contains the three- or four-byte start-code span and the
 following NAL-unit span (an empty final unit has no payload span). Prefixes may
 cross a window boundary. Cancellation is checked at least every 1,024 inspected
 source positions; already published records remain valid and the batch reports
-`cancelled`.
+`cancelled`. The NAL offset and zero length remain valid for an empty unit even
+though its optional payload span is absent. A source whose byte size cannot be
+represented by the 64-bit source-bit coordinate model is rejected before the
+scanner reads it.
+
+### Bundled Annex B Profile
+
+The bundled minimum H.264 rule uses the grammar above; the tree projection in
+this section is profile/runtime behavior rather than additional DSL syntax. For
+each scanner record, the Annex B runner publishes a `nal_unit[index]` region
+whose source location covers the start code and any non-empty NAL payload. Its
+`start_code` child covers only the three- or four-byte prefix. A
+`NalUnitHeader` child consumes exactly the first eight payload bits and exposes
+`forbidden_zero_bit`, `nal_ref_idc`, and `nal_unit_type`; payload bits after the
+header remain uninterpreted by this minimum profile.
+
+An empty final NAL still publishes its NAL region and start-code child. It also
+publishes an invalid, zero-field `NalUnitHeader`; the containing NAL's
+`truncated-source` summary diagnostic is anchored to the known NAL region. An
+`@equals(0)` mismatch retains `forbidden_zero_bit`, marks the header and
+containing NAL invalid, and does not prevent the overall scan from completing.
+Header read failures retain published nodes, mark the root invalid, and report
+`source-error`. Cancellation retains completed NAL regions and marks the root
+cancelled.
 
 Valid minimum example:
 

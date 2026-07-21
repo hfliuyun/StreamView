@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 1
-Last Completed Step: Phase 1 minimum DSL, direct executor, and progressive start-code scanner completed locally
-Next Action: Commit and push the minimum DSL slice, verify hosted CI, then implement the Annex B rule
-Last Verification: Local Debug/Release/ASan/UBSan each passed 11/11
+Last Completed Step: Phase 1 bundled Annex B runner and internal `svtool` commands completed locally
+Next Action: Design the file-open/session boundary, then write the failing paged raw-data model test before implementing the first GUI slice
+Last Verification: Local Debug/Release/ASan/UBSan configure, full build, and CTest each passed 13/13
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -29,6 +29,84 @@ Blockers: None
 - 单窗口单会话；Qt UI 采用左右 dock、中央自绘原始数据视图、分页分析树和全局诊断面板。
 - Qt 基线为 6.11.x，CI 默认固定 6.11.1；Windows 暂时按 ADR-0017 使用 6.10.1，CMake 最低 3.28。FFmpeg 只用于开发验证，不进入运行时。
 
+## 剩余工作重排（2026-07-21）
+
+现有阶段 1–7 仍是范围清单；下面的里程碑是实际执行顺序。每个里程碑都必须产出可运行、可测试的增量，并在完成时回写对应阶段复选框，避免让 GUI、CLI 和规则各自复制一套解析路径。
+
+### M0：恢复点与跨平台基线
+
+- [x] 确认 `2e90d98`、`c316269` 已推送到 `origin/main`。
+- [x] 记录 hosted run `29758037457` 的三平台成功结果；Windows Qt 6.10.1 fallback 继续受 ADR-0017 约束。
+
+### M1：统一规则分析入口（runner 已完成，等待 GUI 接入）
+
+依赖：阶段 1 已完成的 source、coordinates、analysis model、DSL parser/executor 和 start-code scanner。
+
+- [x] 新增官方最小 Annex B 规则资产（`NalUnitHeader`、`h264_start_code`、`entry`）及其加载/校验入口。
+- [x] 新增共享 runner：把 scanner record 转成分析树 region，限制 header reader 到 NAL 前 8 bit，并调用 `DslExecutor`；支持批次、取消、空/截断 payload 和 source error 的部分结果。
+- [x] 用端到端测试锁定三/四字节 start code、NAL header 字段值、精确 source spans、非法 `forbidden_zero_bit` 和截断诊断。
+- [ ] GUI 与 `svtool` 只能调用该 runner，不在入口层复制解析逻辑。
+
+验收：合法样例完整 materialized；非法或截断样例保留已发布节点、附 source-located diagnostic，并且所有字段可反查到原始 bit。
+
+### M2：阶段 1 桌面/工具纵切面
+
+依赖：M1 的共享 runner。
+
+- [ ] 实现本地文件打开、Annex B 候选检测和会话生命周期；打开失败不得替换当前会话。
+- [ ] 实现虚拟化 raw hex/binary 视图及统一 source-bit selection，字段选择与原始视图双向同步。
+- [ ] 实现 `QAbstractItemModel` 分页分析树和字段检查器，展示值、宽度、逻辑/绝对坐标、说明、规范引用和诊断。
+- [x] 实现内部 `svtool rule check` 与 `svtool analyze`，输出与 GUI 使用同一 runner；固定用法、诊断和退出码。
+- [ ] 增加最小 UI/CLI 回归样例，并验证合法、截断和无 start code 输入。
+
+验收：从一个本地 Annex B 文件可完成打开、树/原始视图查看、字段与 bit 双向选择，以及 CLI 文本分析；全部行为不修改源文件。
+
+### M3：DSL v0.1 执行骨架
+
+依赖：M1/M2 暴露出的稳定 rule-runner 接口；先定义类型/IR/预算边界，再逐项扩展语法。
+
+- [ ] 建立静态类型 IR 与受限 bytecode/VM 边界，统一错误、资源预算和确定性。
+- [ ] 逐项加入 enum、显式 endian、`ue/se`、数组、条件、switch、有界循环、纯函数和 computed fields；每项先补英文规范、中文说明、正反例和 TDD。
+- [ ] 固化调用/视图深度 64、节点深度 256、单次物化 100,000 节点和每 1,024 指令取消检查。
+
+验收：稳定子集在三平台生成相同 IR/结果，超限与取消保留部分树且诊断可定位。
+
+### M4：映射、lazy 与大型文件底座
+
+依赖：M3 的运行时边界。
+
+- [ ] 实现 mapping-preserving EBSP→RBSP、excluded span、lazy boundary 和可恢复 progressive index。
+- [ ] 实现位置感知上下文目录，支持按源位置选择最近有效 SPS/PPS/ASC/sample description。
+- [ ] 以稀疏/虚拟 100 GB 源验证初始打开、已知 offset 读取、批次发布、取消和恢复；再接 SQLite WAL 分页缓存。
+
+验收：内存不随源大小线性增长，跨排除字节的字段仍能返回多个 source spans。
+
+### M5：规则分发、身份与持久化
+
+依赖：M3 的语言/引擎版本契约和 M4 的稳定 source/rule identity。
+
+- [ ] 先固定 TOML manifest、content hash、兼容范围和 rule catalog，再实现目录导入与 `.svrule` deterministic ZIP。
+- [ ] 拒绝绝对路径、parent traversal、重复/非规范路径、符号链接和 zip bomb；安装内容按 hash 只读保存。
+- [ ] 统一 source fingerprint、SQLite cache namespace 与 `.svsession` 精确规则 pinning，使用版本化 JSON/QSaveFile 原子保存。
+
+验收：规则版本冲突、源变化和损坏包均显式诊断；旧会话不会静默绑定新源或新规则。
+
+### M6：正式格式增量
+
+依赖：M4 的映射/上下文和 M5 的规则资产管理。每个格式按“规则、fixture、诊断、双语字段文档、source-span 断言”独立验收。
+
+- [ ] H.264：EBSP/RBSP、trailing bits、SPS/PPS/VUI/HRD、slice header、SEI 与按位置重定义。
+- [ ] AAC-LC：ADTS、AudioSpecificConfig/GASpecificConfig/PCE，压缩 payload 保持 opaque。
+- [ ] MP4/MOV：box 层级、sample tables、`avcC`/`esds`、分页 sample index 与跨层导航；对 `moof` 明确 unsupported。
+
+### M7：安全、性能与发布门禁
+
+依赖：M2–M6 的稳定接口和可分发样例。
+
+- [ ] fuzz lexer/parser/VM、映射、规则包和官方规则；三平台静态检查，Linux/macOS ASan/UBSan。
+- [ ] 验证约两秒初始视图、100 GB RSS 不超过 512 MiB、已知 offset p95 小于 100 ms。
+- [ ] 生成并校验 Windows ZIP、macOS `.app.zip`、Linux AppImage、SHA-256、SBOM 和许可证材料，再按 alpha/beta/rc/v0.1.0 发布。
+
 ## 阶段 0：持久化计划与工程基线
 
 - [x] 将本计划写入 `docs/implementation-plan.md`。
@@ -43,10 +121,10 @@ Blockers: None
 - [x] 实现严格只读随机访问源、bit reader、源/逻辑坐标和多区间映射。
 - [x] 实现节点、诊断、部分结果与取消模型。
 - [x] 实现最小 DSL：结构、1–64 bit 字段、注解、入口和渐进 start-code 扫描。
-- [ ] 编写 Annex B 规则，解析 start code 和 NAL header。
+- [x] 编写 Annex B 规则，解析 start code 和 NAL header。
 - [ ] 完成文件打开、格式检测、分析树、hex/binary 视图、字段检查器和双向 bit 选择。
-- [ ] 提供内部 `svtool rule check` 与 `svtool analyze`。
-- [ ] 验证合法和截断 H.264 均能显示精确字段与部分结果。
+- [x] 提供内部 `svtool rule check` 与 `svtool analyze`。
+- [x] 验证合法和截断 H.264 均能显示精确字段与部分结果。
 
 ## 阶段 2：DSL v0.1、沙箱与大型文件基础设施
 
@@ -149,3 +227,6 @@ Blockers: None
 - 2026-07-20：计划检查点内容已完成，但当前 Codex Git 写入审批服务返回 HTTP 503，无法执行 `git add`；等待用户代为提交并推送该文档，或审批服务恢复后继续。
 - 2026-07-20：用户已提交并推送阶段 1 第二项计划检查点 `4e2782a`。根据用户要求，ADR-0019 记录 Markdown-only 提交跳过 hosted CI；混合代码与文档的提交仍运行完整矩阵。
 - 2026-07-20：阶段 1 第三项已在本机实现：手写 lexer、递归下降 parser、静态最小 IR、`@equals` 约束执行器、direct source mapping 字段物化，以及支持三/四字节前缀、64 KiB 窗口跨界、分批和取消的 `h264_start_code` scanner。Debug、Release、ASan/UBSan 均为 11/11 测试通过；待提交后验证 hosted 矩阵。
+- 2026-07-21：用户已将阶段 1 第三项拆分为两笔本地提交：`2e90d98`（Markdown-only CI 跳过）与 `c316269`（最小 DSL/执行器/start-code scanner）。本机 Debug/Release/ASan/UBSan 再次 11/11 通过；下一步 push 并由 hosted 矩阵验证 DSL 提交。
+- 2026-07-21：已确认 `c316269` 位于本地与远端 `main`；hosted run `29758037457` 的 Windows 2022/Qt 6.10.1、macOS 15/Qt 6.11.1、Ubuntu 24.04/Qt 6.11.1 Build/Test/Install/Upload 全部通过。阶段 1 第三项跨平台门禁完成。
+- 2026-07-21：剩余工作按 M0–M7 依赖重排；本机完成 bundled `h264_annex_b.svfmt`、scanner→DSL→analysis-tree 共享 runner、source-located partial diagnostics、oversized-source 防护，以及内部 `svtool rule check`/`analyze`。合法、非法 forbidden bit、空 NAL、header I/O failure、取消、无 start code 和 CLI 进程路径均有回归测试。Debug、Release、ASan/UBSan 三套完整配置、构建与 CTest 均为 13/13；代码尚未 push，等待后续 hosted matrix。

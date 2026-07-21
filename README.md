@@ -29,5 +29,21 @@ cmake --build --preset dev
 ctest --preset dev
 ```
 
+## Internal CLI
+
+The development build includes `svtool` for rule validation and the current
+Annex B analysis slice:
+
+```sh
+svtool --version
+svtool rule check <rule.svfmt>
+svtool analyze <source>
+```
+
+Exit code `0` means success, `1` means the rule or analysis produced
+diagnostics/partial results, and `2` means invalid usage or an input could not
+be opened. The CLI is an internal development tool, not the deferred public CLI
+contract.
+
 StreamView is licensed under the [MIT License](LICENSE). Qt and other bundled
 dependencies retain their respective licenses.
