@@ -1,0 +1,10 @@
+@spec("ITU-T H.264", "7.3.1")
+struct NalUnitHeader {
+    bits<1> forbidden_zero_bit @equals(0);
+    bits<2> nal_ref_idc;
+    bits<5> nal_unit_type;
+}
+
+@index(progressive)
+sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+entry nal_units;

@@ -29,6 +29,21 @@ streamview_add_rules_test(
     streamview_h264_start_code_scanner_tests
     rules/h264_start_code_scanner_test.cpp
 )
+streamview_add_rules_test(
+    streamview_h264_annex_b_analyzer_tests
+    rules/h264_annex_b_analyzer_test.cpp
+)
+
+qt_add_executable(streamview_svtool_tests tools/svtool_test.cpp)
+target_link_libraries(streamview_svtool_tests PRIVATE Qt6::Test)
+target_compile_definitions(
+    streamview_svtool_tests
+    PRIVATE
+        SVTOOL_PATH="$<TARGET_FILE:svtool>"
+)
+streamview_set_warnings(streamview_svtool_tests)
+add_dependencies(streamview_svtool_tests svtool)
+add_test(NAME streamview_svtool_tests COMMAND streamview_svtool_tests)
 
 add_test(NAME svtool_version COMMAND svtool --version)
 set_tests_properties(svtool_version PROPERTIES PASS_REGULAR_EXPRESSION "svtool 0[.]1[.]0 [(]DSL 0[.]1[)]")
