@@ -109,6 +109,13 @@ StartCodeScanBatch H264StartCodeScanner::scanBatch(std::size_t maximumRecords) {
         result.errorMessage = QStringLiteral("Maximum scan records must be greater than zero");
         return result;
     }
+    if (source_->sizeBytes() > std::numeric_limits<quint64>::max() / 8U) {
+        failed_ = true;
+        result.status = StartCodeScanStatus::SourceError;
+        result.errorMessage =
+            QStringLiteral("Source size exceeds the bit coordinate representation limit");
+        return result;
+    }
     if (failed_) {
         result.status = StartCodeScanStatus::SourceError;
         result.errorMessage = QStringLiteral("Start-code scanner is in a failed state");

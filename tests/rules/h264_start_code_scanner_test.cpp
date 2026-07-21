@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <initializer_list>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -56,6 +57,25 @@ public:
 
 private:
     std::vector<std::byte> data_;
+};
+
+class OversizedSource final : public RandomAccessSource {
+public:
+    [[nodiscard]] quint64 sizeBytes() const noexcept override {
+        return std::numeric_limits<quint64>::max();
+    }
+    [[nodiscard]] QString identity() const override { return QStringLiteral("oversized"); }
+
+    [[nodiscard]] SourceReadResult
+    readAt(quint64, std::span<std::byte>) const override {
+        ++readCount_;
+        return {SourceReadStatus::Error, 0, QStringLiteral("unexpected read")};
+    }
+
+    [[nodiscard]] std::size_t readCount() const noexcept { return readCount_; }
+
+private:
+    mutable std::size_t readCount_ = 0;
 };
 
 } // namespace
@@ -138,6 +158,17 @@ private slots:
         QCOMPARE(result.status, StartCodeScanStatus::InvalidBatchSize);
         QCOMPARE(scanner.cursor(), quint64(0));
         QVERIFY(!result.errorMessage.isEmpty());
+    }
+
+    void rejectsSourcesThatExceedBitCoordinatesBeforeReading() {
+        OversizedSource source;
+        H264StartCodeScanner scanner(source);
+
+        const auto result = scanner.scanBatch();
+
+        QCOMPARE(result.status, StartCodeScanStatus::SourceError);
+        QCOMPARE(source.readCount(), std::size_t(0));
+        QVERIFY(result.errorMessage.contains(QStringLiteral("bit coordinate")));
     }
 };
 

@@ -2,6 +2,7 @@
 
 #include <QVariant>
 
+#include <algorithm>
 #include <limits>
 
 namespace streamview::rules {
@@ -97,6 +98,16 @@ DslExecutionResult DslExecutor::decodeStruct(const DslProgram& program,
             diagnostic.severity = core::DiagnosticSeverity::Error;
             diagnostic.message = result.errorMessage;
             diagnostic.fieldPath = structure->name + QLatin1Char('.') + field.name;
+            if (!addWouldOverflow(logicalStart, fieldStart)) {
+                const quint64 availableBits =
+                    std::min<quint64>(field.width, reader.remainingBits());
+                const auto range = core::LogicalRange::create(
+                    core::LogicalBitAddress(mapping.viewId(), logicalStart + fieldStart),
+                    availableBits);
+                if (range) {
+                    diagnostic.location = mapping.locate(*range);
+                }
+            }
             (void)tree.markPartial(
                 *result.structureNode, core::MaterializationState::Invalid, std::move(diagnostic));
             return result;

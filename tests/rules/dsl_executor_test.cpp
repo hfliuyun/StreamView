@@ -142,6 +142,18 @@ private slots:
         QCOMPARE(structure->diagnostics().size(), std::size_t(1));
         QCOMPARE(structure->diagnostics().front().code,
                  streamview::core::DiagnosticCode::TruncatedSource);
+        QVERIFY(structure->diagnostics().front().location.has_value());
+        QCOMPARE(structure->diagnostics().front().location->sourceSpans().size(),
+                 std::size_t(1));
+        QCOMPARE(structure->diagnostics()
+                     .front()
+                     .location->sourceSpans()
+                     .front()
+                     .start()
+                     .absoluteBitOffset(),
+                 quint64(3));
+        QCOMPARE(structure->diagnostics().front().location->sourceSpans().front().bitLength(),
+                 quint64(5));
         QVERIFY(tree->hasPartialResults());
     }
 
