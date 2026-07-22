@@ -9,6 +9,7 @@ add_library(streamview_app STATIC
     raw_data_model.h
     raw_data_view.cpp
     raw_data_view.h
+    source_selection.h
 )
 
 add_library(StreamView::App ALIAS streamview_app)

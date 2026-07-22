@@ -51,6 +51,8 @@ public:
 
     /// Return the AnalysisNodeId stored at the given model index, if valid.
     [[nodiscard]] std::optional<core::AnalysisNodeId> nodeIdAt(const QModelIndex& index) const;
+    [[nodiscard]] QModelIndex indexForNodeId(core::AnalysisNodeId id,
+                                             int column = Name) const;
 
 private:
     /// Flat snapshot of one AnalysisNode, stored by index for O(1) lookup.

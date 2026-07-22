@@ -79,12 +79,8 @@ QModelIndex AnalysisTreeModel::index(int row, int column, const QModelIndex& par
 }
 
 QModelIndex AnalysisTreeModel::parent(const QModelIndex& child) const {
-    if (!child.isValid()) {
-        return {};
-    }
-
-    const int myFlatIndex = static_cast<int>(child.internalId());
-    if (myFlatIndex <= 0 || myFlatIndex >= static_cast<int>(nodes_.size())) {
+    const int myFlatIndex = flatIndexAt(child);
+    if (myFlatIndex <= 0) {
         return {};
     }
 
@@ -189,9 +185,22 @@ std::optional<core::AnalysisNodeId> AnalysisTreeModel::nodeIdAt(const QModelInde
     return node->id;
 }
 
+QModelIndex AnalysisTreeModel::indexForNodeId(core::AnalysisNodeId id, int column) const {
+    if (column < 0 || column >= ColumnCount) {
+        return {};
+    }
+    for (std::size_t flatIndex = 1; flatIndex < nodes_.size(); ++flatIndex) {
+        const FlatNode& node = nodes_[flatIndex];
+        if (node.id == id) {
+            return createIndex(node.rowInParent, column, static_cast<quintptr>(flatIndex));
+        }
+    }
+    return {};
+}
+
 int AnalysisTreeModel::flatIndexAt(const QModelIndex& index) const {
-    if (!index.isValid()) {
-        return 0;
+    if (!index.isValid() || index.model() != this) {
+        return -1;
     }
     const int flatIndex = static_cast<int>(index.internalId());
     if (flatIndex < 0 || flatIndex >= static_cast<int>(nodes_.size())) {

@@ -1,11 +1,13 @@
 #pragma once
 
 #include "analysis_session.h"
+#include "source_selection.h"
 
 #include <QMainWindow>
 
 #include <memory>
 class QTreeView;
+class QModelIndex;
 
 namespace streamview::app {
 
@@ -28,9 +30,14 @@ private slots:
 private:
     void setupMenus();
     void setupDocks();
+    void selectAnalysisNode(const QModelIndex& current);
+    void selectSourceBit(quint64 absoluteBitOffset);
+    void setSourceSelection(SourceSelection selection);
+    void clearSourceSelection();
     QTreeView* analysisTreeView_ = nullptr;
     AnalysisTreeModel* analysisModel_ = nullptr;
     RawDataView* rawDataView_ = nullptr;
+    SourceSelection sourceSelection_;
 
     std::unique_ptr<AnalysisSession> session_;
 };

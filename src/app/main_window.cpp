@@ -7,10 +7,12 @@
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QHeaderView>
+#include <QItemSelectionModel>
 #include <QKeySequence>
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QSignalBlocker>
 #include <QStatusBar>
 #include <QTreeView>
 
@@ -25,6 +27,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     setupDocks();
     setupMenus();
+    connect(rawDataView_, &RawDataView::sourceBitSelected,
+            this, &MainWindow::selectSourceBit);
 
     statusBar()->showMessage(tr("Ready"));
 }
@@ -46,8 +50,14 @@ void MainWindow::setupDocks() {
     analysisModel_ = new AnalysisTreeModel(this);
     analysisTreeView_->setModel(analysisModel_);
     analysisTreeView_->setAlternatingRowColors(true);
+    analysisTreeView_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    analysisTreeView_->setSelectionMode(QAbstractItemView::SingleSelection);
     analysisTreeView_->setUniformRowHeights(true);
     analysisTreeView_->header()->setStretchLastSection(true);
+    connect(analysisTreeView_->selectionModel(), &QItemSelectionModel::currentChanged,
+            this, [this](const QModelIndex& current, const QModelIndex&) {
+                selectAnalysisNode(current);
+            });
     analysisDock->setWidget(analysisTreeView_);
     addDockWidget(Qt::LeftDockWidgetArea, analysisDock);
 
@@ -91,6 +101,7 @@ bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
         (void)candidate->analyzeBatch();
     }
 
+    clearSourceSelection();
     rawDataView_->clear();
     analysisModel_->clear();
     session_ = std::move(candidate);
@@ -128,6 +139,72 @@ bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
 
 QString MainWindow::currentSourceIdentity() const {
     return session_ ? session_->identity() : QString();
+}
+
+void MainWindow::selectAnalysisNode(const QModelIndex& current) {
+    if (!session_) {
+        clearSourceSelection();
+        return;
+    }
+    const auto nodeId = analysisModel_->nodeIdAt(current);
+    const auto node = nodeId ? session_->tree().node(*nodeId) : std::nullopt;
+    if (!node || !node->location() || node->location()->sourceSpans().empty()) {
+        clearSourceSelection();
+        return;
+    }
+
+    SourceSelection selection;
+    selection.sourceIdentity = session_->identity();
+    selection.sourceSpans = node->location()->sourceSpans();
+    setSourceSelection(std::move(selection));
+}
+
+void MainWindow::selectSourceBit(quint64 absoluteBitOffset) {
+    if (!session_) {
+        return;
+    }
+    const auto selectedSpan =
+        core::SourceSpan::create(core::SourceBitAddress(absoluteBitOffset), 1);
+    if (!selectedSpan) {
+        return;
+    }
+
+    SourceSelection selection;
+    selection.sourceIdentity = session_->identity();
+    selection.sourceSpans = {*selectedSpan};
+    setSourceSelection(std::move(selection));
+
+    const auto nodeId = session_->tree().mostSpecificMaterializedNodeAt(
+        core::SourceBitAddress(absoluteBitOffset));
+    const QModelIndex nodeIndex =
+        nodeId ? analysisModel_->indexForNodeId(*nodeId) : QModelIndex{};
+    QSignalBlocker blocker(analysisTreeView_->selectionModel());
+    if (!nodeIndex.isValid()) {
+        analysisTreeView_->selectionModel()->clear();
+        return;
+    }
+
+    for (QModelIndex ancestor = nodeIndex.parent(); ancestor.isValid();
+         ancestor = ancestor.parent()) {
+        analysisTreeView_->expand(ancestor);
+    }
+    analysisTreeView_->selectionModel()->setCurrentIndex(
+        nodeIndex, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    analysisTreeView_->scrollTo(nodeIndex, QAbstractItemView::PositionAtCenter);
+}
+
+void MainWindow::setSourceSelection(SourceSelection selection) {
+    if (!session_ || selection.isEmpty() || selection.sourceIdentity != session_->identity()) {
+        clearSourceSelection();
+        return;
+    }
+    sourceSelection_ = std::move(selection);
+    rawDataView_->setSourceSelection(sourceSelection_.sourceSpans);
+}
+
+void MainWindow::clearSourceSelection() {
+    sourceSelection_ = {};
+    rawDataView_->setSourceSelection({});
 }
 
 } // namespace streamview::app

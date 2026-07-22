@@ -4,6 +4,7 @@
 
 #include <QFile>
 #include <QStatusBar>
+#include <QTableView>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolButton>
@@ -23,6 +24,22 @@ QString writeFixture(QTemporaryDir& directory, const QString& name, const QByteA
         return {};
     }
     return path;
+}
+
+QModelIndex findIndexByName(const QAbstractItemModel& model,
+                            const QString& name,
+                            const QModelIndex& parent = {}) {
+    for (int row = 0; row < model.rowCount(parent); ++row) {
+        const QModelIndex index = model.index(row, 0, parent);
+        if (model.data(index).toString() == name) {
+            return index;
+        }
+        const QModelIndex descendant = findIndexByName(model, name, index);
+        if (descendant.isValid()) {
+            return descendant;
+        }
+    }
+    return {};
 }
 
 } // namespace
@@ -73,6 +90,14 @@ private slots:
         QVERIFY(rawView != nullptr);
         QVERIFY(treeView != nullptr);
         const int treeRows = treeView->model()->rowCount();
+        const QModelIndex nalUnitType =
+            findIndexByName(*treeView->model(), QStringLiteral("nal_unit_type"));
+        QVERIFY(nalUnitType.isValid());
+        treeView->setCurrentIndex(nalUnitType);
+        const QModelIndex fourthByte =
+            rawView->model()->index(0, RawDataModel::FirstByte + 3);
+        QCOMPARE(rawView->model()->data(fourthByte, RawDataModel::SelectedBitsRole).toUInt(),
+                 0x1FU);
 
         QVERIFY(!window.openMediaSource(directory.filePath(QStringLiteral("missing.264")),
                                         &errorMessage));
@@ -84,6 +109,9 @@ private slots:
                      ->data(rawView->model()->index(0, RawDataModel::FirstByte + 3))
                      .toString(),
                  QStringLiteral("41"));
+        QCOMPARE(rawView->model()->data(fourthByte, RawDataModel::SelectedBitsRole).toUInt(),
+                 0x1FU);
+        QCOMPARE(treeView->currentIndex(), nalUnitType);
     }
 
     void switchesRawDisplayModeThroughTheViewControls() {
@@ -108,6 +136,147 @@ private slots:
                      ->data(rawView->model()->index(0, RawDataModel::FirstByte + 3))
                      .toString(),
                  QStringLiteral("01100101"));
+    }
+
+    void highlightsExactSourceBitsWhenAFieldIsSelected() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = writeFixture(
+            directory, QStringLiteral("selection.264"), QByteArray::fromHex("00000165"));
+        QVERIFY(!path.isEmpty());
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(path, &errorMessage), qPrintable(errorMessage));
+        auto* rawView = window.findChild<RawDataView*>(QStringLiteral("rawDataView"));
+        auto* treeView =
+            window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        QVERIFY(rawView != nullptr);
+        QVERIFY(treeView != nullptr);
+        const QModelIndex nalUnitType =
+            findIndexByName(*treeView->model(), QStringLiteral("nal_unit_type"));
+        QVERIFY(nalUnitType.isValid());
+
+        treeView->setCurrentIndex(nalUnitType);
+
+        QCOMPARE(rawView->model()
+                     ->data(rawView->model()->index(0, RawDataModel::FirstByte + 3),
+                            RawDataModel::SelectedBitsRole)
+                     .toUInt(),
+                 0x1FU);
+    }
+
+    void locatesTheMostSpecificAnalysisNodeForARawSourceBit() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = writeFixture(
+            directory, QStringLiteral("reverse-selection.264"),
+            QByteArray::fromHex("00000165"));
+        QVERIFY(!path.isEmpty());
+        MainWindow window;
+        window.resize(1280, 800);
+        window.show();
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(path, &errorMessage), qPrintable(errorMessage));
+        QCoreApplication::processEvents();
+        auto* rawView = window.findChild<RawDataView*>(QStringLiteral("rawDataView"));
+        auto* table = window.findChild<QTableView*>(QStringLiteral("rawDataTable"));
+        auto* treeView =
+            window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        QVERIFY(rawView != nullptr);
+        QVERIFY(table != nullptr);
+        QVERIFY(treeView != nullptr);
+        const QModelIndex fourthByte =
+            rawView->model()->index(0, RawDataModel::FirstByte + 3);
+        const QRect cell = table->visualRect(fourthByte);
+        QVERIFY(cell.isValid());
+        constexpr int selectedBitInByte = 4;
+        const QPoint clickPoint(
+            cell.left() + ((selectedBitInByte * 2 + 1) * cell.width()) / 16,
+            cell.center().y());
+
+        QTest::mouseClick(table->viewport(), Qt::LeftButton, Qt::NoModifier, clickPoint);
+
+        QVERIFY(treeView->currentIndex().isValid());
+        QCOMPARE(treeView->currentIndex().data().toString(), QStringLiteral("nal_unit_type"));
+        QCOMPARE(rawView->model()
+                     ->data(fourthByte, RawDataModel::SelectedBitsRole)
+                     .toUInt(),
+                 0x08U);
+    }
+
+    void keepsAnUnmatchedRawBitSelectedWhileClearingTheTreeSelection() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = writeFixture(
+            directory, QStringLiteral("leading-byte.264"),
+            QByteArray::fromHex("FF00000165"));
+        QVERIFY(!path.isEmpty());
+        MainWindow window;
+        window.resize(1280, 800);
+        window.show();
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(path, &errorMessage), qPrintable(errorMessage));
+        QCoreApplication::processEvents();
+        auto* rawView = window.findChild<RawDataView*>(QStringLiteral("rawDataView"));
+        auto* table = window.findChild<QTableView*>(QStringLiteral("rawDataTable"));
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        QVERIFY(rawView != nullptr);
+        QVERIFY(table != nullptr);
+        QVERIFY(treeView != nullptr);
+        const QModelIndex nalUnitType =
+            findIndexByName(*treeView->model(), QStringLiteral("nal_unit_type"));
+        QVERIFY(nalUnitType.isValid());
+        treeView->setCurrentIndex(nalUnitType);
+
+        const QModelIndex leadingByte =
+            rawView->model()->index(0, RawDataModel::FirstByte);
+        const QRect cell = table->visualRect(leadingByte);
+        QVERIFY(cell.isValid());
+        const QPoint clickPoint(cell.left() + cell.width() / 16, cell.center().y());
+        QTest::mouseClick(table->viewport(), Qt::LeftButton, Qt::NoModifier, clickPoint);
+
+        QVERIFY(!treeView->currentIndex().isValid());
+        QCOMPARE(rawView->model()
+                     ->data(leadingByte, RawDataModel::SelectedBitsRole)
+                     .toUInt(),
+                 0x80U);
+    }
+
+    void clearsSelectionWhenAValidSessionIsReplaced() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString firstPath = writeFixture(
+            directory, QStringLiteral("first.264"), QByteArray::fromHex("00000165"));
+        const QString secondPath = writeFixture(
+            directory, QStringLiteral("second.264"), QByteArray::fromHex("00000141"));
+        QVERIFY(!firstPath.isEmpty());
+        QVERIFY(!secondPath.isEmpty());
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(firstPath, &errorMessage), qPrintable(errorMessage));
+        auto* rawView = window.findChild<RawDataView*>(QStringLiteral("rawDataView"));
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        QVERIFY(rawView != nullptr);
+        QVERIFY(treeView != nullptr);
+        const QModelIndex firstNalUnitType =
+            findIndexByName(*treeView->model(), QStringLiteral("nal_unit_type"));
+        QVERIFY(firstNalUnitType.isValid());
+        treeView->setCurrentIndex(firstNalUnitType);
+        QCOMPARE(rawView->model()
+                     ->data(rawView->model()->index(0, RawDataModel::FirstByte + 3),
+                            RawDataModel::SelectedBitsRole)
+                     .toUInt(),
+                 0x1FU);
+
+        QVERIFY2(window.openMediaSource(secondPath, &errorMessage), qPrintable(errorMessage));
+
+        QCOMPARE(window.currentSourceIdentity(), secondPath);
+        QVERIFY(!treeView->currentIndex().isValid());
+        QCOMPARE(rawView->model()
+                     ->data(rawView->model()->index(0, RawDataModel::FirstByte + 3),
+                            RawDataModel::SelectedBitsRole)
+                     .toUInt(),
+                 0U);
     }
 
     void keepsRawBytesVisibleForATruncatedNalUnit() {
