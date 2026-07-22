@@ -3,10 +3,12 @@ add_library(streamview_core STATIC
     bit_reader.cpp
     coordinates.cpp
     source.cpp
+    source_pager.cpp
     include/streamview/core/analysis_model.h
     include/streamview/core/bit_reader.h
     include/streamview/core/coordinates.h
     include/streamview/core/source.h
+    include/streamview/core/source_pager.h
     include/streamview/core/version.h
     version.cpp
 )
