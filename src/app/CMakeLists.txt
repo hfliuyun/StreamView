@@ -1,4 +1,6 @@
 qt_add_executable(streamview
+    analysis_tree_model.cpp
+    analysis_tree_model.h
     main.cpp
     main_window.cpp
     main_window.h
