@@ -55,6 +55,22 @@ A read reports one of:
 An end-of-source read may contain a valid partial byte count. Callers must not
 interpret bytes beyond that count.
 
+## Paged Source Access
+
+`SourcePager` exposes a bounded page view over a `RandomAccessSource`. Each page
+is at most 64 KiB and is addressed by a checked page index; loading one page
+does not read adjacent pages or retain a cache of earlier pages. A source whose
+size is not a multiple of 64 KiB has a final page containing only the declared
+remaining bytes. A page that reaches the declared source end is reported as
+`end-of-source` while remaining a successful page result.
+
+If a source reports `end-of-source` before the bytes declared by
+`sizeBytes()` have been returned, the page is an error rather than a valid
+short page. Source errors preserve only the bytes explicitly reported by the
+source and never expose the unwritten part of the page buffer. An out-of-range
+page is an empty end-of-source result; an overflowing page coordinate is an
+error.
+
 ## Bit Reader
 
 The bounded bit reader consumes 1 through 64 bits at a time in

@@ -48,6 +48,18 @@ mapping 会拒绝请求。没有精确 mapping 的值后续必须表示为 compu
 
 `end-of-source` 可以包含有效的部分字节数，调用方不得解释该长度之后的内容。
 
+## 分页 Source 访问
+
+`SourcePager` 在 `RandomAccessSource` 之上提供有界分页视图。每页最多 64 KiB，
+通过经过检查的 page index 定位；加载一页不会读取相邻页，也不会保留历史页缓存。
+当 source 大小不是 64 KiB 的整数倍时，最后一页只包含声明的剩余字节。到达声明的
+source 末尾的页会标记为 `end-of-source`，但仍属于成功的页结果。
+
+如果 source 在 `sizeBytes()` 声明的字节返回完之前报告 `end-of-source`，该页会被
+视为错误，而不是合法的短页。source 错误只保留 source 明确报告的字节，不会暴露页
+buffer 中未写入的部分。超出范围的 page 是空的 end-of-source 结果；发生 page 坐标
+溢出则是错误。
+
 ## Bit Reader
 
 有界 bit reader 每次按最高有效位优先顺序读取 1 至 64 bit，位置相对于声明的
