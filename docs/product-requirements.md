@@ -38,6 +38,12 @@ Fragmented MP4, MPEG-TS, Matroska/WebM, H.264 CAVLC/CABAC macroblock and residua
 - A virtualized raw data view provides hexadecimal, binary, and combined modes with bit-level highlighting.
 - A field inspector shows value, width, absolute and logical coordinates, meaning, specification reference, and diagnostics.
 - Selection is bidirectional between fields and their exact source spans.
+- Raw byte cells divide left-to-right into eight equal source-bit targets, from
+  most-significant bit 0 through least-significant bit 7. Field selection keeps
+  every mapped span highlighted across page changes and reveals the first span.
+- Selection is scoped to the active source identity. A successful session
+  replacement clears stale selection; a failed replacement preserves the
+  current session, rendering, and selection.
 - Cross-layer navigation moves from MP4 sample metadata into the contained codec syntax and back.
 
 ## Large Files

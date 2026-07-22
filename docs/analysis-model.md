@@ -22,6 +22,19 @@ are appended; callers do not retain pointers into mutable tree storage. Tree
 mutation is owned by one analysis worker. Thread-safe publication and UI model
 updates are separate responsibilities.
 
+## Source-Bit Resolution
+
+A source-bit lookup considers only materialized nodes whose field location
+contains the requested bit in at least one half-open source span. Disjoint
+spans are tested independently; a bit in a gap does not match the node.
+
+The result is deterministic. The deepest matching node wins. At equal depth,
+the node with the smaller total source-span coverage wins; if coverage is also
+equal, the lower stable node identifier wins. Non-materialized nodes never
+shadow a materialized ancestor or sibling. A lookup with no matching node
+returns no identifier, allowing the raw bit selection to remain visible while
+the analysis-tree selection is cleared.
+
 ## Materialization States
 
 The core distinguishes:

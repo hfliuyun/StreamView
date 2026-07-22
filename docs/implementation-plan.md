@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 1
-Last Completed Step: Phase 1 runner/CLI plus the first M2 file-session, paged raw-data GUI, and bounded Annex B candidate detection slices completed locally
-Next Action: Implement unified source-bit selection, then publish incremental analysis-tree updates
-Last Verification: Local Debug/Release/ASan/UBSan configure, full build, and CTest each passed 18/18
+Last Completed Step: Phase 1 runner/CLI plus the M2 file-session, paged raw-data GUI, bounded Annex B detection, and unified source-bit selection slices completed locally
+Next Action: Publish incremental analysis-tree updates and implement the field inspector
+Last Verification: Local Debug/Release/ASan/UBSan configure, full build, and CTest each passed 20/20
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -54,7 +54,7 @@ Blockers: None
 依赖：M1 的共享 runner。
 
 - [x] 实现本地文件打开、Annex B 候选检测和会话生命周期；打开失败不得替换当前会话。（本地打开、原子 session 替换、首 64 KiB bounded detector、source-located evidence/confidence 已完成；手动规则选择后续实现。）
-- [ ] 实现虚拟化 raw hex/binary 视图及统一 source-bit selection，字段选择与原始视图双向同步。（64 KiB 分页、Hex/Binary/Combined 首个视图已完成；bit selection 与双向同步待补。）
+- [x] 实现虚拟化 raw hex/binary 视图及统一 source-bit selection，字段选择与原始视图双向同步。（已完成 64 KiB 分页、Hex/Binary/Combined、精确 per-bit 高亮、跨页保留，以及 tree/raw 双向定位。）
 - [ ] 实现 `QAbstractItemModel` 分页分析树和字段检查器，展示值、宽度、逻辑/绝对坐标、说明、规范引用和诊断。
 - [x] 实现内部 `svtool rule check` 与 `svtool analyze`，输出与 GUI 使用同一 runner；固定用法、诊断和退出码。
 - [x] 增加最小 UI/CLI 回归样例，并验证合法、截断和无 start code 输入。
@@ -122,7 +122,7 @@ Blockers: None
 - [x] 实现节点、诊断、部分结果与取消模型。
 - [x] 实现最小 DSL：结构、1–64 bit 字段、注解、入口和渐进 start-code 扫描。
 - [x] 编写 Annex B 规则，解析 start code 和 NAL header。
-- [ ] 完成文件打开、格式检测、分析树、hex/binary 视图、字段检查器和双向 bit 选择。（文件打开与首个 raw/tree 视图已完成，其余仍待补。）
+- [ ] 完成文件打开、格式检测、分析树、hex/binary 视图、字段检查器和双向 bit 选择。（文件打开、候选检测、首个 raw/tree 视图和双向 bit 选择已完成；增量树发布与字段检查器待补。）
 - [x] 提供内部 `svtool rule check` 与 `svtool analyze`。
 - [x] 验证合法和截断 H.264 均能显示精确字段与部分结果。
 
@@ -233,3 +233,4 @@ Blockers: None
 - 2026-07-22：确认 `911ce28` 已加入 File > Open 与最小分析树后，继续完成首个 M2 session/raw-data 纵切面：新增 64 KiB `SourcePager`、原子 `AnalysisSession`、可复用 `StreamView::App` target、分页 Hex/Binary/Combined raw view 及窗口/UI 回归。打开或首 raw page 失败不会替换当前会话；合法、截断、无 start code 和模式切换均有 UI 测试。本机 Debug、Release、ASan/UBSan 三套重新配置、完整构建与 CTest 均为 17/17；本轮增量尚未提交。
 - 2026-07-22：上一条 M2 session/raw-data 增量已拆分为 `7d6df25`（core pager）、`2763581`（app raw workspace）和 `a8043e4`（进度文档）；用户确认对应 hosted CI 已成功，`main` 与 `origin/main` 同步。
 - 2026-07-22：完成 M2 Annex B bounded candidate detection：rules 层最多检查首 64 KiB，发布 start-code/NAL-header source evidence 与 weak/probable/strong confidence；`AnalysisSession` 复用首 raw page 保存报告，未命中不拒绝未知 source。规则与 session 实现分别提交为 `e2f2c90`、`5057f37`；本机 Debug、Release/CI、ASan/UBSan 完整构建与 CTest 均为 18/18，双语格式语言契约同步更新。
+- 2026-07-22：完成 M2 unified source-bit selection：core 按树深度、source coverage 和稳定 NodeId 确定性解析最具体 materialized 节点；raw view 以 MSB-first 八段精确命中/绘制 bit，多 source span 与跨页高亮保持；`MainWindow` 统一 selection 写入并以 `QSignalBlocker` 实现无回写环的 tree/raw 双向定位，成功 session 替换清除选择而失败替换完整保留。实现拆分为 `58e6736`（core resolver）、`4a65439`（raw bit view）和 `4d25384`（bidirectional synchronization）。本机 Debug、Release/CI、ASan/UBSan 完整配置、构建与 CTest 均为 20/20；Hex/Binary/Combined 实际 Qt 渲染点验无文字遮挡，英文规范与中文伴随文档同步更新。下一步发布增量 analysis-tree update 并实现 field inspector。

@@ -164,7 +164,11 @@ same name, or a program with no `entry`.
 
 The unchanged media source uses absolute source coordinates. A logical view has its own logical coordinates and an ordered mapping back through all parent views to absolute source spans. A syntax field may map to multiple disjoint source spans.
 
-Selecting a syntax field highlights every mapped source span. Selecting source bits resolves to the most specific materialized field while preserving its analysis-tree ancestry.
+Selecting a syntax field highlights every mapped source span. Selecting a
+source bit resolves to the most specific materialized node while preserving its
+analysis-tree ancestry. Resolution uses the deterministic depth, source
+coverage, and stable-node-ID ordering defined by the
+[analysis model](../analysis-model.md#source-bit-resolution).
 
 ## Mapped Transformations
 
