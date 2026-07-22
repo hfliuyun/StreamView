@@ -1,6 +1,7 @@
 #include "analysis_session.h"
 
 #include <streamview/core/source.h>
+#include <streamview/rules/h264_annex_b_detector.h>
 
 #include <QTest>
 
@@ -86,6 +87,30 @@ std::vector<std::byte> validAnnexB() {
     return {std::byte{0x00}, std::byte{0x00}, std::byte{0x01}, std::byte{0x65}};
 }
 
+class SingleInitialReadSource final : public RandomAccessSource {
+public:
+    [[nodiscard]] quint64 sizeBytes() const noexcept override { return 4; }
+    [[nodiscard]] QString identity() const override { return QStringLiteral("single-read"); }
+    [[nodiscard]] SourceReadResult
+    readAt(quint64 byteOffset, std::span<std::byte> destination) const override {
+        ++readCount_;
+        if (readCount_ != 1U) {
+            return {SourceReadStatus::Error, 0, QStringLiteral("unexpected repeated read")};
+        }
+        const auto fixture = validAnnexB();
+        if (byteOffset != 0U || destination.size() != fixture.size()) {
+            return {SourceReadStatus::Error, 0, QStringLiteral("unexpected page request")};
+        }
+        std::copy(fixture.begin(), fixture.end(), destination.begin());
+        return {SourceReadStatus::Complete, fixture.size(), {}};
+    }
+
+    [[nodiscard]] std::size_t readCount() const noexcept { return readCount_; }
+
+private:
+    mutable std::size_t readCount_ = 0;
+};
+
 } // namespace
 
 class AnalysisSessionTest final : public QObject {
@@ -102,6 +127,9 @@ private slots:
         QCOMPARE(session->identity(), QStringLiteral("fixture.264"));
         QCOMPARE(session->sizeBytes(), quint64{4});
         QVERIFY(!session->finished());
+        QVERIFY(session->formatDetection().candidate.has_value());
+        QCOMPARE(session->formatDetection().candidate->confidence,
+                 streamview::rules::H264AnnexBDetectionConfidence::Probable);
 
         while (!session->finished()) {
             (void)session->analyzeBatch(1);
@@ -149,6 +177,37 @@ private slots:
         QVERIFY(session == nullptr);
         QVERIFY(destroyed);
         QCOMPARE(errorMessage, QStringLiteral("initial page unavailable"));
+    }
+
+    void reusesThePreparedRawPageForFormatDetection() {
+        QString errorMessage;
+        auto source = std::make_unique<SingleInitialReadSource>();
+        const auto* sourceObserver = source.get();
+
+        const auto session = AnalysisSession::create(std::move(source), &errorMessage);
+
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+        QCOMPARE(sourceObserver->readCount(), std::size_t{1});
+        QVERIFY(session->formatDetection().candidate.has_value());
+    }
+
+    void keepsUnknownSourceBytesAvailableWithoutACandidate() {
+        QString errorMessage;
+        auto session = AnalysisSession::create(
+            std::make_unique<MemorySource>(
+                std::vector<std::byte>{std::byte{0x12}, std::byte{0x34}, std::byte{0x56}}),
+            &errorMessage);
+
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+        QVERIFY(!session->formatDetection().candidate.has_value());
+        QCOMPARE(session->initialPage().bytes.size(), std::size_t{3});
+
+        while (!session->finished()) {
+            (void)session->analyzeBatch();
+        }
+        const auto root = session->tree().node(session->tree().rootId());
+        QVERIFY(root.has_value());
+        QCOMPARE(root->state(), MaterializationState::Invalid);
     }
 };
 

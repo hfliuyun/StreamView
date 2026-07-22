@@ -4,6 +4,7 @@
 #include <streamview/core/source.h>
 #include <streamview/core/source_pager.h>
 #include <streamview/rules/h264_annex_b_analyzer.h>
+#include <streamview/rules/h264_annex_b_detector.h>
 
 #include <QString>
 #include <QtGlobal>
@@ -32,6 +33,9 @@ public:
     [[nodiscard]] QString identity() const { return source_->identity(); }
     [[nodiscard]] quint64 sizeBytes() const noexcept { return source_->sizeBytes(); }
     [[nodiscard]] const core::SourcePage& initialPage() const noexcept { return initialPage_; }
+    [[nodiscard]] const rules::H264AnnexBDetectionResult& formatDetection() const noexcept {
+        return formatDetection_;
+    }
 
     [[nodiscard]] rules::H264AnnexBAnalysisBatch analyzeBatch(
         std::size_t maximumRecords = 256);
@@ -41,10 +45,12 @@ public:
 private:
     AnalysisSession(std::unique_ptr<core::RandomAccessSource> source,
                     core::SourcePage initialPage,
+                    rules::H264AnnexBDetectionResult formatDetection,
                     rules::H264AnnexBAnalyzer analyzer);
 
     std::unique_ptr<core::RandomAccessSource> source_;
     core::SourcePage initialPage_;
+    rules::H264AnnexBDetectionResult formatDetection_;
     rules::H264AnnexBAnalyzer analyzer_;
 };
 

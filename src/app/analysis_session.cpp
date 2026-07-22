@@ -4,11 +4,15 @@
 
 namespace streamview::app {
 
+static_assert(core::SourcePager::pageSizeBytes() ==
+              rules::h264AnnexBDetectionProbeSizeBytes());
+
 AnalysisSession::AnalysisSession(std::unique_ptr<core::RandomAccessSource> source,
                                  core::SourcePage initialPage,
+                                 rules::H264AnnexBDetectionResult formatDetection,
                                  rules::H264AnnexBAnalyzer analyzer)
     : source_(std::move(source)), initialPage_(std::move(initialPage)),
-      analyzer_(std::move(analyzer)) {}
+      formatDetection_(std::move(formatDetection)), analyzer_(std::move(analyzer)) {}
 
 std::unique_ptr<AnalysisSession> AnalysisSession::openFile(const QString& path,
                                                            QString* errorMessage) {
@@ -42,6 +46,9 @@ AnalysisSession::create(std::unique_ptr<core::RandomAccessSource> source,
         return nullptr;
     }
 
+    auto formatDetection =
+        rules::detectH264AnnexBCandidate(initialPage.bytes, source->sizeBytes());
+
     QString analyzerError;
     auto analyzer = rules::H264AnnexBAnalyzer::create(*source, &analyzerError);
     if (!analyzer) {
@@ -55,7 +62,8 @@ AnalysisSession::create(std::unique_ptr<core::RandomAccessSource> source,
         errorMessage->clear();
     }
     return std::unique_ptr<AnalysisSession>(
-        new AnalysisSession(std::move(source), std::move(initialPage), std::move(*analyzer)));
+        new AnalysisSession(std::move(source), std::move(initialPage),
+                            std::move(formatDetection), std::move(*analyzer)));
 }
 
 rules::H264AnnexBAnalysisBatch AnalysisSession::analyzeBatch(std::size_t maximumRecords) {
