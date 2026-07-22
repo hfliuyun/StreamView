@@ -2,10 +2,13 @@ add_library(streamview_rules STATIC
     dsl.cpp
     dsl_executor.cpp
     h264_annex_b_analyzer.cpp
+    h264_annex_b_detector.cpp
+    h264_start_code_prefix.h
     h264_start_code_scanner.cpp
     include/streamview/rules/dsl.h
     include/streamview/rules/dsl_executor.h
     include/streamview/rules/h264_annex_b_analyzer.h
+    include/streamview/rules/h264_annex_b_detector.h
     include/streamview/rules/h264_start_code_scanner.h
     include/streamview/rules/language_version.h
     language_version.cpp

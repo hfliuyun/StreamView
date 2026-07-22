@@ -38,6 +38,10 @@ streamview_add_rules_test(
     streamview_h264_start_code_scanner_tests
     rules/h264_start_code_scanner_test.cpp
 )
+streamview_add_rules_test(
+    streamview_h264_annex_b_detector_tests
+    rules/h264_annex_b_detector_test.cpp
+)
 
 if(TARGET streamview_app)
     streamview_add_app_test(streamview_analysis_session_tests app/analysis_session_test.cpp)

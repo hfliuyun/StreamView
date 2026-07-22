@@ -1,5 +1,7 @@
 #include <streamview/rules/h264_start_code_scanner.h>
 
+#include "h264_start_code_prefix.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <limits>
@@ -66,13 +68,17 @@ quint8 H264StartCodeScanner::prefixLengthAt(quint64 offset, QString* errorMessag
     if (readByte(offset + 2U, &third, errorMessage) == ReadByteStatus::Error) {
         return 0;
     }
-    if (third == 1) {
-        return 3;
-    }
-    if (third != 0 || readByte(offset + 3U, &fourth, errorMessage) == ReadByteStatus::Error) {
+    if (third != 0U && third != 1U) {
         return 0;
     }
-    return fourth == 1 ? 4 : 0;
+    std::optional<quint8> fourthByte;
+    if (third == 0U) {
+        if (readByte(offset + 3U, &fourth, errorMessage) == ReadByteStatus::Error) {
+            return 0;
+        }
+        fourthByte = fourth;
+    }
+    return detail::h264StartCodePrefixLength(first, second, third, fourthByte);
 }
 
 std::optional<H264StartCodeRecord>
