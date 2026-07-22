@@ -1,5 +1,6 @@
 #include "raw_data_model.h"
 
+#include <streamview/core/coordinates.h>
 #include <streamview/core/source.h>
 #include <streamview/core/source_pager.h>
 
@@ -14,8 +15,10 @@ using streamview::app::RawDataModel;
 using streamview::app::RawDisplayMode;
 using streamview::core::RandomAccessSource;
 using streamview::core::SourcePager;
+using streamview::core::SourceBitAddress;
 using streamview::core::SourceReadResult;
 using streamview::core::SourceReadStatus;
+using streamview::core::SourceSpan;
 
 namespace {
 
@@ -137,6 +140,86 @@ private slots:
         QCOMPARE(model.data(byteCell, RawDataModel::ByteOffsetRole).toULongLong(),
                  SourcePager::pageSizeBytes() + 20U);
         QCOMPARE(model.data(byteCell, RawDataModel::ByteValueRole).toUInt(), 20U);
+    }
+
+    void projectsPartialSourceSpansIntoPerByteBitMasks() {
+        RecordingSource source(2);
+        RawDataModel model;
+        QVERIFY(model.setSource(&source));
+        const auto selection = SourceSpan::create(SourceBitAddress(3), 10);
+        QVERIFY(selection.has_value());
+
+        model.setHighlightedSourceSpans({*selection});
+
+        QCOMPARE(model.data(model.index(0, RawDataModel::FirstByte),
+                            RawDataModel::SelectedBitsRole)
+                     .toUInt(),
+                 0x1FU);
+        QCOMPARE(model.data(model.index(0, RawDataModel::FirstByte + 1),
+                            RawDataModel::SelectedBitsRole)
+                     .toUInt(),
+                 0xF8U);
+    }
+
+    void clearsHighlightedBitsWhenTheSourceChanges() {
+        RecordingSource firstSource(1);
+        RecordingSource secondSource(1);
+        RawDataModel model;
+        QVERIFY(model.setSource(&firstSource));
+        const auto selection = SourceSpan::create(SourceBitAddress(0), 1);
+        QVERIFY(selection.has_value());
+        model.setHighlightedSourceSpans({*selection});
+        QCOMPARE(model.data(model.index(0, RawDataModel::FirstByte),
+                            RawDataModel::SelectedBitsRole)
+                     .toUInt(),
+                 0x80U);
+
+        QVERIFY(model.setSource(&secondSource));
+
+        QCOMPARE(model.data(model.index(0, RawDataModel::FirstByte),
+                            RawDataModel::SelectedBitsRole)
+                     .toUInt(),
+                 0U);
+    }
+
+    void keepsHighlightedBitsAcrossPageLoads() {
+        RecordingSource source(SourcePager::pageSizeBytes() + 1U);
+        RawDataModel model;
+        QVERIFY(model.setSource(&source));
+        const auto firstPageBit = SourceSpan::create(SourceBitAddress(0), 1);
+        const auto secondPageBit = SourceSpan::create(
+            SourceBitAddress(SourcePager::pageSizeBytes() * 8U + 1U), 1);
+        QVERIFY(firstPageBit.has_value());
+        QVERIFY(secondPageBit.has_value());
+
+        model.setHighlightedSourceSpans({*firstPageBit, *secondPageBit});
+        QCOMPARE(model.data(model.index(0, RawDataModel::FirstByte),
+                            RawDataModel::SelectedBitsRole)
+                     .toUInt(),
+                 0x80U);
+
+        QVERIFY(model.loadPage(1));
+
+        QCOMPARE(model.data(model.index(0, RawDataModel::FirstByte),
+                            RawDataModel::SelectedBitsRole)
+                     .toUInt(),
+                 0x40U);
+    }
+
+    void clearsHighlightsForAnEmptySelection() {
+        RecordingSource source(1);
+        RawDataModel model;
+        QVERIFY(model.setSource(&source));
+        const auto selectedBit = SourceSpan::create(SourceBitAddress(0), 1);
+        QVERIFY(selectedBit.has_value());
+        model.setHighlightedSourceSpans({*selectedBit});
+
+        model.setHighlightedSourceSpans({});
+
+        QCOMPARE(model.data(model.index(0, RawDataModel::FirstByte),
+                            RawDataModel::SelectedBitsRole)
+                     .toUInt(),
+                 0U);
     }
 
     void rejectsAnOutOfRangePageWithoutReplacingTheCurrentPage() {

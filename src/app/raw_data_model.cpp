@@ -100,6 +100,7 @@ bool RawDataModel::setSource(const core::RandomAccessSource* source,
     source_ = source;
     pager_ = newPager;
     page_ = std::move(preparedPage);
+    highlightedSourceSpans_.clear();
     lastError_ = page_.errorMessage;
     endResetModel();
 
@@ -115,6 +116,7 @@ void RawDataModel::clear() {
     pager_.reset();
     page_ = {};
     page_.status = core::SourcePageStatus::EndOfSource;
+    highlightedSourceSpans_.clear();
     lastError_.clear();
     endResetModel();
 }
@@ -145,6 +147,15 @@ void RawDataModel::setDisplayMode(RawDisplayMode mode) {
         emit dataChanged(index(0, FirstByte),
                          index(rowCount() - 1, ColumnCount - 1),
                          {Qt::DisplayRole, Qt::ToolTipRole});
+    }
+}
+
+void RawDataModel::setHighlightedSourceSpans(std::vector<core::SourceSpan> sourceSpans) {
+    highlightedSourceSpans_ = std::move(sourceSpans);
+    if (rowCount() > 0) {
+        emit dataChanged(index(0, FirstByte),
+                         index(rowCount() - 1, ColumnCount - 1),
+                         {SelectedBitsRole});
     }
 }
 
@@ -190,19 +201,21 @@ QVariant RawDataModel::data(const QModelIndex& index, int role) const {
     }
 
     const quint8 value = std::to_integer<quint8>(page_.bytes[byteIndex]);
+    const quint64 cellOffset =
+        byteOffset + static_cast<quint64>(index.column() - FirstByte);
     if (role == Qt::DisplayRole) {
         return formatByte(value);
     }
     if (role == ByteOffsetRole) {
-        return QVariant::fromValue<qulonglong>(byteOffset +
-                                                static_cast<quint64>(index.column() - FirstByte));
+        return QVariant::fromValue<qulonglong>(cellOffset);
     }
     if (role == ByteValueRole) {
         return value;
     }
+    if (role == SelectedBitsRole) {
+        return static_cast<unsigned int>(selectedBitsAt(cellOffset));
+    }
     if (role == Qt::ToolTipRole) {
-        const quint64 cellOffset = byteOffset +
-                                   static_cast<quint64>(index.column() - FirstByte);
         return QStringLiteral("Byte 0x%1").arg(cellOffset, 16, 16, QLatin1Char('0')).toUpper();
     }
     if (role == Qt::TextAlignmentRole) {
@@ -245,6 +258,23 @@ QString RawDataModel::formatByte(quint8 value) const {
         return binary;
     }
     return hex + QLatin1Char('\n') + binary;
+}
+
+quint8 RawDataModel::selectedBitsAt(quint64 byteOffset) const noexcept {
+    quint8 mask = 0;
+    for (quint8 bitOffset = 0; bitOffset < 8U; ++bitOffset) {
+        const auto sourceBit = core::SourceBitAddress::fromByteAndBit(byteOffset, bitOffset);
+        if (!sourceBit) {
+            continue;
+        }
+        for (const core::SourceSpan& span : highlightedSourceSpans_) {
+            if (span.start() <= *sourceBit && *sourceBit < span.endExclusive()) {
+                mask = static_cast<quint8>(mask | (quint8{0x80} >> bitOffset));
+                break;
+            }
+        }
+    }
+    return mask;
 }
 
 bool RawDataModel::applyPage(core::SourcePage page, QString* errorMessage) {

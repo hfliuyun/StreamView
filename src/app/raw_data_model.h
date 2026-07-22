@@ -1,5 +1,6 @@
 #pragma once
 
+#include <streamview/core/coordinates.h>
 #include <streamview/core/source_pager.h>
 
 #include <QAbstractTableModel>
@@ -9,6 +10,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <vector>
 
 namespace streamview::app {
 
@@ -32,6 +34,7 @@ public:
     enum DataRole : int {
         ByteOffsetRole = Qt::UserRole + 1,
         ByteValueRole,
+        SelectedBitsRole,
     };
 
     explicit RawDataModel(QObject* parent = nullptr);
@@ -49,6 +52,7 @@ public:
     [[nodiscard]] quint64 pageByteOffset() const noexcept { return page_.byteOffset; }
     [[nodiscard]] RawDisplayMode displayMode() const noexcept { return displayMode_; }
     void setDisplayMode(RawDisplayMode mode);
+    void setHighlightedSourceSpans(std::vector<core::SourceSpan> sourceSpans);
     [[nodiscard]] QString lastError() const { return lastError_; }
 
     [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
@@ -62,12 +66,14 @@ private:
     [[nodiscard]] static QString formatHex(quint8 value);
     [[nodiscard]] static QString formatBinary(quint8 value);
     [[nodiscard]] QString formatByte(quint8 value) const;
+    [[nodiscard]] quint8 selectedBitsAt(quint64 byteOffset) const noexcept;
     [[nodiscard]] bool applyPage(core::SourcePage page, QString* errorMessage);
 
     const core::RandomAccessSource* source_ = nullptr;
     std::optional<core::SourcePager> pager_;
     core::SourcePage page_;
     RawDisplayMode displayMode_ = RawDisplayMode::Hex;
+    std::vector<core::SourceSpan> highlightedSourceSpans_;
     QString lastError_;
 };
 

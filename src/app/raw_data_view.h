@@ -2,11 +2,15 @@
 
 #include "raw_data_model.h"
 
+#include <streamview/core/coordinates.h>
 #include <streamview/core/source.h>
 
 #include <QWidget>
 
+#include <vector>
+
 class QLabel;
+class QEvent;
 class QTableView;
 class QToolButton;
 
@@ -23,11 +27,16 @@ public:
     [[nodiscard]] bool setSource(const core::RandomAccessSource* source,
                                  core::SourcePage preparedPage,
                                  QString* errorMessage = nullptr);
+    void setSourceSelection(std::vector<core::SourceSpan> sourceSpans);
     void clear();
     [[nodiscard]] RawDataModel* model() const noexcept { return model_; }
 
 signals:
     void sourceReadFailed(const QString& errorMessage);
+    void sourceBitSelected(quint64 absoluteBitOffset);
+
+protected:
+    [[nodiscard]] bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     void loadPreviousPage();
