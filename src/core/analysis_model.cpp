@@ -1,5 +1,6 @@
 #include <streamview/core/analysis_model.h>
 
+#include <limits>
 #include <utility>
 
 namespace streamview::core {
@@ -22,6 +23,53 @@ std::optional<AnalysisNode> AnalysisTree::node(AnalysisNodeId id) const {
         return std::nullopt;
     }
     return *result;
+}
+
+std::optional<AnalysisNodeId>
+AnalysisTree::mostSpecificMaterializedNodeAt(SourceBitAddress sourceBit) const noexcept {
+    std::optional<AnalysisNodeId> bestId;
+    std::size_t bestDepth = 0;
+    quint64 bestCoverage = std::numeric_limits<quint64>::max();
+
+    for (const AnalysisNode& candidate : nodes_) {
+        if (candidate.state_ != MaterializationState::Materialized || !candidate.location_) {
+            continue;
+        }
+
+        bool containsSourceBit = false;
+        quint64 coverage = 0;
+        for (const SourceSpan& span : candidate.location_->sourceSpans()) {
+            if (span.start() <= sourceBit && sourceBit < span.endExclusive()) {
+                containsSourceBit = true;
+            }
+            if (coverage > std::numeric_limits<quint64>::max() - span.bitLength()) {
+                coverage = std::numeric_limits<quint64>::max();
+            } else {
+                coverage += span.bitLength();
+            }
+        }
+        if (!containsSourceBit) {
+            continue;
+        }
+
+        std::size_t depth = 0;
+        auto parentId = candidate.parentId_;
+        while (parentId) {
+            ++depth;
+            const AnalysisNode* parent = nodeForRead(*parentId);
+            parentId = parent != nullptr ? parent->parentId_ : std::nullopt;
+        }
+
+        if (!bestId || depth > bestDepth ||
+            (depth == bestDepth && coverage < bestCoverage) ||
+            (depth == bestDepth && coverage == bestCoverage &&
+             candidate.id_.value() < bestId->value())) {
+            bestId = candidate.id_;
+            bestDepth = depth;
+            bestCoverage = coverage;
+        }
+    }
+    return bestId;
 }
 
 std::optional<AnalysisNodeId>

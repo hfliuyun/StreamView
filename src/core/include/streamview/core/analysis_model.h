@@ -132,6 +132,9 @@ public:
     [[nodiscard]] AnalysisNodeId rootId() const noexcept { return AnalysisNodeId(1); }
     [[nodiscard]] std::size_t nodeCount() const noexcept { return nodes_.size(); }
     [[nodiscard]] std::optional<AnalysisNode> node(AnalysisNodeId id) const;
+    /// Prefer depth, then smaller total source coverage, then the lower stable node ID.
+    [[nodiscard]] std::optional<AnalysisNodeId>
+    mostSpecificMaterializedNodeAt(SourceBitAddress sourceBit) const noexcept;
 
     [[nodiscard]] std::optional<AnalysisNodeId>
     appendChild(AnalysisNodeId parentId, AnalysisNodeSpec spec);
