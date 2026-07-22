@@ -89,6 +89,18 @@ mapped transformation 留到后续转换运行时实现。
 `cancelled`。空 unit 虽然没有可选 payload 区间，其 NAL offset 和零 length 仍然有效。
 如果 source 字节大小无法用 64 位源 bit 坐标模型表示，scanner 会在读取前拒绝该 source。
 
+内置 H.264 Annex B 候选探测器最多检查 source 已加载前缀的前 64 KiB，不使用文件名或
+扩展名猜测格式。每个完整的三字节或四字节 start code 都会形成带 source 位置的证据；
+如果后续字节可用，证据还会记录 NAL unit header 的 source 区间、
+`forbidden_zero_bit` 检查结果和 `nal_unit_type`。
+
+只有完整 start code、但没有语法上可信 header 时，证据为 `weak`。一个满足
+`forbidden_zero_bit == 0` 且 `nal_unit_type` 位于 `1..23` 的 header 会把候选置信度提升为
+`probable`；两个或更多这样的 header 会提升为 `strong`。结果同时报告实际检查的字节数，
+以及该前缀是否已经覆盖完整 source。若 64 KiB 只覆盖 source 的一部分，那么没有候选只
+表示探测范围内未发现 Annex B signature，不能据此拒绝 source 或永久决定所用规则。
+格式探测始终只是推荐，显式规则选择可以覆盖它。
+
 ### 内置 Annex B profile
 
 内置最小 H.264 规则使用上面的语法；本节的分析树投影属于 profile/运行时行为，不是新增

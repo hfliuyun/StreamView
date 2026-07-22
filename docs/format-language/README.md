@@ -105,6 +105,22 @@ though its optional payload span is absent. A source whose byte size cannot be
 represented by the 64-bit source-bit coordinate model is rejected before the
 scanner reads it.
 
+The built-in H.264 Annex B candidate detector inspects at most the first 64 KiB
+of an already loaded source prefix. It does not use the file name or extension.
+Each detected three- or four-byte start code contributes source-located
+evidence; when the following byte is available, the evidence also records its
+NAL-unit-header span, `forbidden_zero_bit` result, and `nal_unit_type`.
+
+A complete start code without a syntactically plausible header is `weak`
+evidence. One header with `forbidden_zero_bit == 0` and `nal_unit_type` in
+`1..23` raises the candidate confidence to `probable`; two or more such headers
+raise it to `strong`. The result reports the exact number of inspected bytes and
+whether that prefix covered the complete source. No candidate in a partial
+64 KiB probe means only that no Annex B signature was found within the probe;
+it does not reject the source or make the eventual rule selection. Format
+detection remains a recommendation, and explicit rule selection may override
+it.
+
 ### Bundled Annex B Profile
 
 The bundled minimum H.264 rule uses the grammar above; the tree projection in
