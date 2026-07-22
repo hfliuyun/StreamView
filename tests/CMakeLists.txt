@@ -18,6 +18,14 @@ function(streamview_add_rules_test target source)
     add_test(NAME ${target} COMMAND ${target})
 endfunction()
 
+function(streamview_add_app_test target source)
+    qt_add_executable(${target} ${source})
+    target_link_libraries(${target} PRIVATE StreamView::App Qt6::Test)
+    streamview_set_warnings(${target})
+    add_test(NAME ${target} COMMAND ${target})
+    set_tests_properties(${target} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endfunction()
+
 streamview_add_core_test(streamview_coordinates_tests core/coordinates_test.cpp)
 streamview_add_core_test(streamview_source_tests core/source_test.cpp)
 streamview_add_core_test(streamview_source_pager_tests core/source_pager_test.cpp)
@@ -30,6 +38,12 @@ streamview_add_rules_test(
     streamview_h264_start_code_scanner_tests
     rules/h264_start_code_scanner_test.cpp
 )
+
+if(TARGET streamview_app)
+    streamview_add_app_test(streamview_analysis_session_tests app/analysis_session_test.cpp)
+    streamview_add_app_test(streamview_raw_data_model_tests app/raw_data_model_test.cpp)
+    streamview_add_app_test(streamview_main_window_tests app/main_window_test.cpp)
+endif()
 streamview_add_rules_test(
     streamview_h264_annex_b_analyzer_tests
     rules/h264_annex_b_analyzer_test.cpp

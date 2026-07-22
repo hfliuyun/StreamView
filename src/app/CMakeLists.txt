@@ -1,19 +1,32 @@
-qt_add_executable(streamview
+add_library(streamview_app STATIC
+    analysis_session.cpp
+    analysis_session.h
     analysis_tree_model.cpp
     analysis_tree_model.h
-    main.cpp
     main_window.cpp
     main_window.h
+    raw_data_model.cpp
+    raw_data_model.h
+    raw_data_view.cpp
+    raw_data_view.h
 )
 
+add_library(StreamView::App ALIAS streamview_app)
+
 target_link_libraries(
-    streamview
-    PRIVATE
+    streamview_app
+    PUBLIC
         StreamView::Core
         StreamView::Rules
         Qt6::Gui
         Qt6::Widgets
 )
+
+target_include_directories(streamview_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+streamview_set_warnings(streamview_app)
+
+qt_add_executable(streamview main.cpp)
+target_link_libraries(streamview PRIVATE StreamView::App)
 
 set_target_properties(
     streamview

@@ -1,10 +1,13 @@
 #include "main_window.h"
 
 #include "analysis_tree_model.h"
+#include "raw_data_view.h"
 
+#include <QAction>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QHeaderView>
+#include <QKeySequence>
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -17,9 +20,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle(tr("StreamView"));
     resize(1280, 800);
 
-    auto* rawDataPlaceholder = new QLabel(tr("Open a media file to inspect its bits."), this);
-    rawDataPlaceholder->setAlignment(Qt::AlignCenter);
-    setCentralWidget(rawDataPlaceholder);
+    rawDataView_ = new RawDataView(this);
+    setCentralWidget(rawDataView_);
 
     setupDocks();
     setupMenus();
@@ -40,6 +42,7 @@ void MainWindow::setupDocks() {
     analysisDock->setObjectName(QStringLiteral("analysisTreeDock"));
 
     analysisTreeView_ = new QTreeView(analysisDock);
+    analysisTreeView_->setObjectName(QStringLiteral("analysisTreeView"));
     analysisModel_ = new AnalysisTreeModel(this);
     analysisTreeView_->setModel(analysisModel_);
     analysisTreeView_->setAlternatingRowColors(true);
@@ -67,46 +70,35 @@ void MainWindow::openFile() {
     }
 
     QString errorMessage;
-    auto newSource = core::FileSource::open(path, &errorMessage);
-    if (!newSource) {
+    if (!openMediaSource(path, &errorMessage)) {
         QMessageBox::warning(this, tr("Cannot Open File"),
                              tr("Could not open %1:\n%2").arg(path, errorMessage));
-        return;
     }
-
-    // Replace current session.
-    source_ = std::move(newSource);
-    analyzer_.reset();
-    analysisModel_->clear();
-
-    statusBar()->showMessage(tr("Opened: %1 (%2 bytes)")
-                                 .arg(source_->identity())
-                                 .arg(source_->sizeBytes()));
-
-    analyzeCurrentSource();
 }
 
-void MainWindow::analyzeCurrentSource() {
-    if (!source_) {
-        return;
+bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
+    QString candidateError;
+    auto candidate = AnalysisSession::openFile(path, &candidateError);
+    if (!candidate) {
+        if (errorMessage != nullptr) {
+            *errorMessage = candidateError;
+        }
+        return false;
     }
 
-    QString errorMessage;
-    auto analyzer = rules::H264AnnexBAnalyzer::create(*source_, &errorMessage);
-    if (!analyzer) {
-        QMessageBox::warning(this, tr("Analysis Failed"),
-                             tr("Could not create analyzer:\n%1").arg(errorMessage));
-        return;
+    // Analysis remains synchronous until the M2 worker/publishing slice.
+    while (!candidate->finished()) {
+        (void)candidate->analyzeBatch();
     }
 
-    analyzer_ = std::move(*analyzer);
+    rawDataView_->clear();
+    analysisModel_->clear();
+    session_ = std::move(candidate);
 
-    // Run all batches synchronously for now (M2 will move to async).
-    while (!analyzer_->finished()) {
-        (void)analyzer_->analyzeBatch();
-    }
-
-    analysisModel_->resetFromTree(analyzer_->tree());
+    QString rawError;
+    const bool rawLoaded = rawDataView_->setSource(
+        &session_->source(), session_->initialPage(), &rawError);
+    analysisModel_->resetFromTree(session_->tree());
 
     // Auto-expand the first two levels for visibility.
     analysisTreeView_->expandToDepth(1);
@@ -116,15 +108,26 @@ void MainWindow::analyzeCurrentSource() {
         analysisTreeView_->resizeColumnToContents(i);
     }
 
-    const auto rootNode = analyzer_->tree().node(analyzer_->tree().rootId());
-    if (rootNode && rootNode->state() == core::MaterializationState::Materialized) {
+    if (!rawLoaded) {
+        statusBar()->showMessage(tr("Opened %1, but raw data could not be read: %2")
+                                     .arg(session_->identity(), rawError));
+    } else if (session_->tree().isFullyMaterialized()) {
         statusBar()->showMessage(
-            tr("Analysis complete: %1 nodes").arg(analyzer_->tree().nodeCount()));
+            tr("Analysis complete: %1 nodes").arg(session_->tree().nodeCount()));
     } else {
         statusBar()->showMessage(
             tr("Analysis finished with partial results: %1 nodes")
-                .arg(analyzer_->tree().nodeCount()));
+                .arg(session_->tree().nodeCount()));
     }
+
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return true;
+}
+
+QString MainWindow::currentSourceIdentity() const {
+    return session_ ? session_->identity() : QString();
 }
 
 } // namespace streamview::app
