@@ -341,6 +341,337 @@ private slots:
                  quint64(64));
     }
 
+    void materializesFixedLengthBitArrayElementsWithLocationsAndMetadata() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "@spec(\"Example\", \"A.1\") struct Header { "
+            "bits<2> flags[3] @description(\"Flags.\"); bits<2> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0b01101100}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("fixed-array-bits"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(8));
+        QCOMPARE(result.instructionsExecuted, quint64(6));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(4));
+
+        const std::vector<QString> names{
+            QStringLiteral("flags[0]"),
+            QStringLiteral("flags[1]"),
+            QStringLiteral("flags[2]"),
+            QStringLiteral("tail"),
+        };
+        const std::vector<quint64> values{1, 2, 3, 0};
+        for (std::size_t index = 0; index < names.size(); ++index) {
+            const auto field = tree->node(structure->children().at(index));
+            QVERIFY(field.has_value());
+            QCOMPARE(field->name(), names.at(index));
+            QCOMPARE(field->value().toULongLong(), values.at(index));
+            QCOMPARE(field->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     static_cast<quint64>(index * 2));
+            QCOMPARE(field->location()->sourceSpans().front().bitLength(), quint64(2));
+            QVERIFY(field->metadata().specification.has_value());
+            QCOMPARE(field->metadata().specification->standard, QStringLiteral("Example"));
+            if (index < 3) {
+                QCOMPARE(field->metadata().description, QStringLiteral("Flags."));
+            }
+        }
+    }
+
+    void decodesLittleEndianArrayElementsWithoutChangingTheirSourceLocations() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<16, little> values[2]; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0x34, 0x12, 0x78, 0x56}));
+        const auto mapping = mappingForBytes(4);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 32);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("fixed-array-little-endian"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(2));
+        const std::vector<quint64> values{0x1234, 0x5678};
+        for (std::size_t index = 0; index < values.size(); ++index) {
+            const auto field = tree->node(structure->children().at(index));
+            QVERIFY(field.has_value());
+            QCOMPARE(field->name(),
+                     QStringLiteral("values[%1]").arg(static_cast<qulonglong>(index)));
+            QCOMPARE(field->value().toULongLong(), values.at(index));
+            QCOMPARE(field->location()->logicalRange().bitLength(), quint64(16));
+            QCOMPARE(field->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     static_cast<quint64>(index * 16));
+            QCOMPARE(field->location()->sourceSpans().front().bitLength(), quint64(16));
+        }
+    }
+
+    void materializesFixedLengthExpGolombArraysWithExactLocations() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Codes { ue unsigned_values[3]; se signed_values[3]; } entry Codes;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0xa7, 0x4c}));
+        const auto mapping = mappingForBytes(2);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 16);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("fixed-array-exp-golomb"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Codes"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(14));
+        QCOMPARE(result.instructionsExecuted, quint64(8));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(6));
+
+        const std::vector<quint64> starts{0, 1, 4, 7, 8, 11};
+        const std::vector<quint64> lengths{1, 3, 3, 1, 3, 3};
+        const std::vector<quint64> unsignedValues{0, 1, 2};
+        for (std::size_t index = 0; index < unsignedValues.size(); ++index) {
+            const auto field = tree->node(structure->children().at(index));
+            QVERIFY(field.has_value());
+            QCOMPARE(field->name(),
+                     QStringLiteral("unsigned_values[%1]")
+                         .arg(static_cast<qulonglong>(index)));
+            QCOMPARE(field->value().metaType().id(), QMetaType::ULongLong);
+            QCOMPARE(field->value().toULongLong(), unsignedValues.at(index));
+            QCOMPARE(field->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     starts.at(index));
+            QCOMPARE(field->location()->sourceSpans().front().bitLength(), lengths.at(index));
+        }
+        const std::vector<qlonglong> signedValues{0, 1, -1};
+        for (std::size_t index = 0; index < signedValues.size(); ++index) {
+            const std::size_t childIndex = index + unsignedValues.size();
+            const auto field = tree->node(structure->children().at(childIndex));
+            QVERIFY(field.has_value());
+            QCOMPARE(field->name(),
+                     QStringLiteral("signed_values[%1]")
+                         .arg(static_cast<qulonglong>(index)));
+            QCOMPARE(field->value().metaType().id(), QMetaType::LongLong);
+            QCOMPARE(field->value().toLongLong(), signedValues.at(index));
+            QCOMPARE(field->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     starts.at(childIndex));
+            QCOMPARE(field->location()->sourceSpans().front().bitLength(),
+                     lengths.at(childIndex));
+        }
+    }
+
+    void retainsCompletedFixedArrayElementsWhenTheNextElementIsTruncated() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { bits<3> values[3]; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0b10111001}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("fixed-array-truncated"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::TruncatedSource);
+        QCOMPARE(result.bitsConsumed, quint64(6));
+        QCOMPARE(reader.position(), quint64(6));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->state(), MaterializationState::Invalid);
+        QCOMPARE(structure->children().size(), std::size_t(2));
+        QCOMPARE(tree->node(structure->children().at(0))->name(), QStringLiteral("values[0]"));
+        QCOMPARE(tree->node(structure->children().at(1))->name(), QStringLiteral("values[1]"));
+        QCOMPARE(structure->diagnostics().size(), std::size_t(1));
+        QCOMPARE(structure->diagnostics().front().code, DiagnosticCode::TruncatedSource);
+        QCOMPARE(structure->diagnostics().front().fieldPath,
+                 QStringLiteral("Header.values[2]"));
+        QCOMPARE(structure->diagnostics().front().location->sourceSpans().front().start()
+                     .absoluteBitOffset(),
+                 quint64(6));
+        QCOMPARE(structure->diagnostics().front().location->sourceSpans().front().bitLength(),
+                 quint64(2));
+        QVERIFY(tree->hasPartialResults());
+    }
+
+    void appliesConstraintsAndBudgetsPerFixedArrayElement() {
+        const auto constrained = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> reserved[2] @equals(0); } entry Header;"));
+        const auto budgeted = DslParser::parse(
+            QStringLiteral("struct Header { bits<1> flags[3]; } entry Header;"));
+        QVERIFY(constrained.succeeded());
+        QVERIFY(budgeted.succeeded());
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+
+        MemorySource constraintSource(bytes({0x40}));
+        BitReader constraintReader(constraintSource, *range);
+        auto constraintTree = AnalysisTree::create(QStringLiteral("fixed-array-constraint"));
+        QVERIFY(constraintTree.has_value());
+        const auto constraintResult = DslExecutor::decodeStruct(constrained.program,
+                                                                 QStringLiteral("Header"),
+                                                                 constraintReader,
+                                                                 *mapping,
+                                                                 0,
+                                                                 *constraintTree,
+                                                                 constraintTree->rootId());
+        QCOMPARE(constraintResult.status, DslExecutionStatus::InvalidSyntax);
+        const auto constraintStructure = constraintTree->node(*constraintResult.structureNode);
+        QVERIFY(constraintStructure.has_value());
+        QCOMPARE(constraintStructure->state(), MaterializationState::Invalid);
+        QCOMPARE(constraintStructure->children().size(), std::size_t(2));
+        QCOMPARE(constraintStructure->diagnostics().size(), std::size_t(1));
+        QCOMPARE(constraintStructure->diagnostics().front().code,
+                 DiagnosticCode::InvalidSyntax);
+        QCOMPARE(constraintStructure->diagnostics().front().fieldPath,
+                 QStringLiteral("Header.reserved[1]"));
+        QVERIFY(constraintTree->hasPartialResults());
+
+        MemorySource budgetSource(bytes({0xe0}));
+        BitReader budgetReader(budgetSource, *range);
+        auto budgetTree = AnalysisTree::create(QStringLiteral("fixed-array-budget"));
+        QVERIFY(budgetTree.has_value());
+        DslExecutionOptions options;
+        options.limits.maximumInstructions = 2;
+        const auto budgetResult = DslExecutor::decodeStruct(budgeted.program,
+                                                             QStringLiteral("Header"),
+                                                             budgetReader,
+                                                             *mapping,
+                                                             0,
+                                                             *budgetTree,
+                                                             budgetTree->rootId(),
+                                                             options);
+        QCOMPARE(budgetResult.status, DslExecutionStatus::ResourceLimit);
+        QCOMPARE(budgetResult.instructionsExecuted, quint64(2));
+        QCOMPARE(budgetResult.bitsConsumed, quint64(1));
+        const auto budgetStructure = budgetTree->node(*budgetResult.structureNode);
+        QVERIFY(budgetStructure.has_value());
+        QCOMPARE(budgetStructure->state(), MaterializationState::Invalid);
+        QCOMPARE(budgetStructure->children().size(), std::size_t(1));
+        QCOMPARE(budgetTree->node(budgetStructure->children().front())->name(),
+                 QStringLiteral("flags[0]"));
+        QCOMPARE(budgetStructure->diagnostics().size(), std::size_t(1));
+        QCOMPARE(budgetStructure->diagnostics().front().code, DiagnosticCode::ResourceLimit);
+        QVERIFY(budgetTree->hasPartialResults());
+
+        MemorySource nodeBudgetSource(bytes({0xe0}));
+        BitReader nodeBudgetReader(nodeBudgetSource, *range);
+        auto nodeBudgetTree = AnalysisTree::create(QStringLiteral("fixed-array-node-budget"));
+        QVERIFY(nodeBudgetTree.has_value());
+        DslExecutionOptions nodeBudgetOptions;
+        nodeBudgetOptions.limits.maximumMaterializedNodes = 2;
+        const auto nodeBudgetResult = DslExecutor::decodeStruct(budgeted.program,
+                                                                 QStringLiteral("Header"),
+                                                                 nodeBudgetReader,
+                                                                 *mapping,
+                                                                 0,
+                                                                 *nodeBudgetTree,
+                                                                 nodeBudgetTree->rootId(),
+                                                                 nodeBudgetOptions);
+        QCOMPARE(nodeBudgetResult.status, DslExecutionStatus::ResourceLimit);
+        QCOMPARE(nodeBudgetResult.nodesCreated, quint64(2));
+        QCOMPARE(nodeBudgetResult.bitsConsumed, quint64(1));
+        const auto nodeBudgetStructure =
+            nodeBudgetTree->node(*nodeBudgetResult.structureNode);
+        QVERIFY(nodeBudgetStructure.has_value());
+        QCOMPARE(nodeBudgetStructure->state(), MaterializationState::Invalid);
+        QCOMPARE(nodeBudgetStructure->children().size(), std::size_t(1));
+        QCOMPARE(nodeBudgetTree->node(nodeBudgetStructure->children().front())->name(),
+                 QStringLiteral("flags[0]"));
+        QCOMPARE(nodeBudgetStructure->diagnostics().size(), std::size_t(1));
+        QCOMPARE(nodeBudgetStructure->diagnostics().front().code,
+                 DiagnosticCode::ResourceLimit);
+        QCOMPARE(nodeBudgetStructure->diagnostics().front().fieldPath,
+                 QStringLiteral("Header.flags[1]"));
+        QVERIFY(nodeBudgetTree->hasPartialResults());
+    }
+
+    void validatesEachFixedArrayEnumElementAndRetainsUnknownValues() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "enum Type { one = 1; two = 2; } "
+            "struct Header { bits<2> values[2] @enum(Type); } entry Header;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+
+        MemorySource validSource(bytes({0x60}));
+        BitReader validReader(validSource, *range);
+        auto validTree = AnalysisTree::create(QStringLiteral("fixed-array-enum-valid"));
+        QVERIFY(validTree.has_value());
+        const auto valid = DslExecutor::decodeStruct(*compiled.program,
+                                                      quint32(0),
+                                                      validReader,
+                                                      *mapping,
+                                                      0,
+                                                      *validTree,
+                                                      validTree->rootId());
+        QCOMPARE(valid.status, DslExecutionStatus::Materialized);
+        const auto validStructure = validTree->node(*valid.structureNode);
+        QVERIFY(validStructure.has_value());
+        QCOMPARE(validStructure->children().size(), std::size_t(2));
+        QCOMPARE(validTree->node(validStructure->children().at(0))->value().toULongLong(),
+                 quint64(1));
+        QCOMPARE(validTree->node(validStructure->children().at(1))->value().toULongLong(),
+                 quint64(2));
+
+        MemorySource invalidSource(bytes({0x70}));
+        BitReader invalidReader(invalidSource, *range);
+        auto invalidTree = AnalysisTree::create(QStringLiteral("fixed-array-enum-invalid"));
+        QVERIFY(invalidTree.has_value());
+        const auto invalid = DslExecutor::decodeStruct(*compiled.program,
+                                                        quint32(0),
+                                                        invalidReader,
+                                                        *mapping,
+                                                        0,
+                                                        *invalidTree,
+                                                        invalidTree->rootId());
+        QCOMPARE(invalid.status, DslExecutionStatus::InvalidSyntax);
+        const auto invalidStructure = invalidTree->node(*invalid.structureNode);
+        QVERIFY(invalidStructure.has_value());
+        QCOMPARE(invalidStructure->state(), MaterializationState::Invalid);
+        QCOMPARE(invalidStructure->children().size(), std::size_t(2));
+        const auto unknown = invalidTree->node(invalidStructure->children().at(1));
+        QVERIFY(unknown.has_value());
+        QCOMPARE(unknown->name(), QStringLiteral("values[1]"));
+        QCOMPARE(unknown->value().toULongLong(), quint64(3));
+        QCOMPARE(invalidStructure->diagnostics().size(), std::size_t(1));
+        QCOMPARE(invalidStructure->diagnostics().front().code, DiagnosticCode::InvalidSyntax);
+        QCOMPARE(invalidStructure->diagnostics().front().fieldPath,
+                 QStringLiteral("Header.values[1]"));
+        QCOMPARE(invalidStructure->diagnostics().front().location->sourceSpans().front().start()
+                     .absoluteBitOffset(),
+                 quint64(2));
+        QCOMPARE(invalidStructure->diagnostics().front().location->sourceSpans().front().bitLength(),
+                 quint64(2));
+        QVERIFY(invalidTree->hasPartialResults());
+    }
+
     void decodesExplicitLittleEndianWithoutChangingSourceLocation() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "struct Header { bits<16, little> value; bits<3> tail; } entry Header;"));
