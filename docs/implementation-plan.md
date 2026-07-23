@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 1
-Last Completed Step: Phase 1 runner/CLI plus the complete M2 file-session, paged raw-data GUI, bounded Annex B detection, unified source-bit selection, incremental analysis tree, and field inspector
-Next Action: Define the first M3 static-typing and execution-boundary slice
-Last Verification: Local Debug/Release/ASan/UBSan configure, full build, and CTest each passed 21/21
+Last Completed Step: M3 first static-typed IR and bounded bytecode/VM slice, including compile-once Annex B execution and compiled-rule CLI checks
+Next Action: Add the next documented M3 type/runtime feature, beginning with enum and explicit-endian values
+Last Verification: Local dev/ci/sanitize configure, full build, and CTest each passed 22/22
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -65,11 +65,11 @@ Blockers: None
 
 依赖：M1/M2 暴露出的稳定 rule-runner 接口；先定义类型/IR/预算边界，再逐项扩展语法。
 
-- [ ] 建立静态类型 IR 与受限 bytecode/VM 边界，统一错误、资源预算和确定性。
+- [x] 建立静态类型 IR 与受限 bytecode/VM 边界，统一错误、资源预算和确定性。（parser 输出 source-oriented model；compiler 生成 declaration-order typed IR 和确定性 bytecode；VM 拒绝 malformed IR，兼容入口保留。）
 - [ ] 逐项加入 enum、显式 endian、`ue/se`、数组、条件、switch、有界循环、纯函数和 computed fields；每项先补英文规范、中文说明、正反例和 TDD。
-- [ ] 固化调用/视图深度 64、节点深度 256、单次物化 100,000 节点和每 1,024 指令取消检查。
+- [x] 固化调用/视图深度 64、节点深度 256、单次物化 100,000 节点和每 1,024 指令取消检查。（另固化单次结构 1,000,000 指令预算；当前最小子集尚无嵌套调用或 view，预算已由 VM/API 保留。）
 
-验收：稳定子集在三平台生成相同 IR/结果，超限与取消保留部分树且诊断可定位。
+验收：稳定子集按声明顺序生成相同 typed IR/bytecode 和结果；超限与取消保留部分树并附可定位诊断，Annex B runner 在创建时编译一次规则，`svtool rule check` 同时执行 parser/compiler。
 
 ### M4：映射、lazy 与大型文件底座
 
@@ -235,3 +235,4 @@ Blockers: None
 - 2026-07-22：完成 M2 Annex B bounded candidate detection：rules 层最多检查首 64 KiB，发布 start-code/NAL-header source evidence 与 weak/probable/strong confidence；`AnalysisSession` 复用首 raw page 保存报告，未命中不拒绝未知 source。规则与 session 实现分别提交为 `e2f2c90`、`5057f37`；本机 Debug、Release/CI、ASan/UBSan 完整构建与 CTest 均为 18/18，双语格式语言契约同步更新。
 - 2026-07-22：完成 M2 unified source-bit selection：core 按树深度、source coverage 和稳定 NodeId 确定性解析最具体 materialized 节点；raw view 以 MSB-first 八段精确命中/绘制 bit，多 source span 与跨页高亮保持；`MainWindow` 统一 selection 写入并以 `QSignalBlocker` 实现无回写环的 tree/raw 双向定位，成功 session 替换清除选择而失败替换完整保留。实现拆分为 `58e6736`（core resolver）、`4a65439`（raw bit view）和 `4d25384`（bidirectional synchronization）。本机 Debug、Release/CI、ASan/UBSan 完整配置、构建与 CTest 均为 20/20；Hex/Binary/Combined 实际 Qt 渲染点验无文字遮挡，英文规范与中文伴随文档同步更新。下一步发布增量 analysis-tree update 并实现 field inspector。
 - 2026-07-23：完成 M2 最后一项：scanner/analyzer/session 以默认 64 KiB inspected-position work budget 分批推进并暴露 scan cursor；`AnalysisTreeModel` 按完整 NAL 子树 append-only 发布 `rowsInserted`，保留既有 `QModelIndex` 与 selection；`FieldInspector` 展示值、类型、逻辑宽度、source spans、逻辑范围、说明、规范引用和诊断，raw/tree 两条选择路径均显式同步。功能提交拆分为 `a1958bc`（field presentation metadata）、`e2cd5a2`（bounded analysis batches）和 `05c73a9`（incremental desktop workspace）。英文规范与中文伴随文档同步更新；本机 `dev`、`ci`、`sanitize` 完整构建与 CTest 均为 21/21 通过。下一步进入 M3 静态类型 IR 与受限执行边界。
+- 2026-07-23：完成 M3 第一切片：`DslCompiler` 把 parser model 编译为 declaration-order typed IR 和确定性 bytecode；`DslVirtualMachine`/`DslExecutor` 实现指令、节点、深度、取消和部分结果边界；重复 `@equals`、约束越界和 malformed bytecode 有确定性诊断；Annex B analyzer 创建时 compile-once 并保存 resolved structure index；`svtool rule check` 同时执行 parser/compiler。实现拆分为 `fdb2b18`（typed IR/bytecode VM 与预算/取消测试）、`9b30a5c`（Annex B compile-once runner 与 ResourceLimit UI 状态）、`7ba5a0f`（compiled-rule CLI check 与回归）和 `4d8c273`（拒绝超出沙箱契约的 VM 预算）。英文规范与中文伴随文档同步记录 IR/VM 契约和当前默认预算；本机 `cmake --preset dev/ci/sanitize`、三套 build preset 与三套 `ctest` 均通过 22/22。提交后等待 hosted matrix 验证，下一步实现 enum 与显式 endian。

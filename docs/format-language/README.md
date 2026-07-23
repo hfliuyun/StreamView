@@ -78,7 +78,8 @@ The static rules for this subset are:
 - The only accepted progressive sequence form is
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`.
   `Element` must name a declared structure.
-- An `@equals(integer)` field annotation is a checked constraint.
+- An `@equals(integer)` field annotation is a checked constraint and may appear
+  at most once on a field. Its value must fit the field's unsigned bit width.
   `@description("text")` supplies project-authored presentation text, and
   `@spec("standard", "clause")` supplies a specification reference. Fields
   inherit their structure's specification unless they provide their own.
@@ -86,7 +87,16 @@ The static rules for this subset are:
   parser still returns its partial IR and all diagnostics with line/column
   ranges so an editor can report more than the first error.
 
-The minimum runtime executes a structure by reading each field through the
+The parser produces a source-oriented declaration model for diagnostics. The
+static compiler resolves structure, sequence, and entry references into a typed
+program, preserves declaration order, and emits deterministic bytecode using
+`begin-structure`, `read-unsigned-bits`, `assert-equals`, and `end-structure`
+operations. A program with any parser or compiler diagnostic has no executable
+typed IR. `svtool rule check` runs both stages. The bundled Annex B runner also
+compiles its rule once when the analyzer is created and executes the resolved
+structure index for every record.
+
+The minimum VM executes a structure by reading each field through the
 bounded bit reader. A successful field becomes a syntax-field node with its
 decoded unsigned value and source location. A truncated or failed read retains
 earlier fields and marks the structure invalid with a source diagnostic. An
@@ -214,9 +224,34 @@ A lazy boundary is registered only after its size and enclosing limit have been 
 
 ## Sandbox And Resource Limits
 
-Rules receive bounded, read-only access to the current media source. The runtime limits execution steps, input and output ranges, recursion depth, node count, memory, and wall-clock work between cancellation points. Rules cannot access arbitrary files, networks, processes, environment variables, host pointers, or native plug-ins.
+Rules receive bounded, read-only access to the current media source. The runtime
+limits execution steps, input and output ranges, recursion depth, node count,
+memory, and wall-clock work between cancellation points. Rules cannot access
+arbitrary files, networks, processes, environment variables, host pointers, or
+native plug-ins.
 
-The exact default limits, configuration policy, and diagnostics remain to be designed and must be documented here before the language is implemented as stable.
+The current VM applies these defaults to one structure materialization:
+
+- at most 1,000,000 bytecode instructions;
+- call depth 64 and mapped-view depth 64;
+- analysis-node depth 256, counting the root as depth 1;
+- at most 100,000 newly materialized nodes; and
+- a cancellation poll before the first instruction and at least every 1,024
+  executed instructions thereafter.
+
+All limits must be greater than zero. The host may lower them for a particular
+execution but a rule cannot raise or inspect them. The accepted minimum subset
+does not yet contain nested calls or views; those operations must consume the
+already reserved depth budgets when introduced. An instruction, node-count, or
+node-depth breach reports `resource-limit`, retains nodes completed before the
+breach, and marks the active structure invalid. Cancellation reports
+`cancelled`, retains completed nodes, and marks the active structure (or its
+parent when cancellation precedes `begin-structure`) cancelled. Invalid or
+malformed typed bytecode is rejected as an invalid definition rather than
+executed heuristically.
+
+Exact input/output, memory, and wall-clock defaults remain provisional and must
+be documented before the features that consume them become stable.
 
 ## Rule Packages
 

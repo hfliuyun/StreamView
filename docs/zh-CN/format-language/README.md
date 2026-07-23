@@ -72,12 +72,19 @@ value         := integer | string | identifier
 - 唯一接受的渐进 sequence 形式是
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`。
   `Element` 必须是已声明结构。
-- `@equals(integer)` 字段注解是会执行检查的约束；`@description("text")` 提供项目编写的
+- `@equals(integer)` 字段注解是会执行检查的约束，在一个字段上最多出现一次，且参数值
+  必须能由该字段的无符号 bit 宽度表示；`@description("text")` 提供项目编写的
   展示说明，`@spec("standard", "clause")` 提供规范引用。字段默认继承所属结构的规范
   引用，也可以用自己的注解覆盖。
 - 出现词法或静态诊断时，source 不会生成可执行规则；parser 仍返回部分 IR 以及带行列范围的全部诊断，便于编辑器一次报告多个错误。
 
-最小运行时通过 bounded bit reader 按顺序执行结构。成功字段会成为带无符号解码值和
+parser 生成面向 source、用于诊断的声明模型。静态 compiler 把结构、sequence 和 entry
+引用解析成 typed program，保留声明顺序，并确定性生成 `begin-structure`、
+`read-unsigned-bits`、`assert-equals` 和 `end-structure` bytecode。parser 或 compiler
+出现任何诊断时都不生成可执行 typed IR。`svtool rule check` 会运行这两个阶段；内置
+Annex B runner 也只在 analyzer 创建时编译一次规则，之后按已解析的结构索引执行每条记录。
+
+最小 VM 通过 bounded bit reader 按顺序执行结构。成功字段会成为带无符号解码值和
 源位置的 syntax-field 节点。读取截断或失败时保留之前的字段，并把结构标记为 invalid
 并附 source 诊断。`@equals` 不匹配时保留该字段，再用 invalid-syntax 诊断标记结构。
 最小执行器要求逻辑范围映射到一个连续的 direct source 区间；跨多个 source 区间的
@@ -184,9 +191,27 @@ sequence<NalUnit> nal_units = scan(h264_start_code);
 
 ## 沙箱与资源限制
 
-规则只能以有界、只读方式访问当前媒体源。运行时限制执行步数、输入输出范围、递归深度、节点数量、内存，以及两次取消检查之间的执行时间。规则不能访问任意文件、网络、进程、环境变量、宿主指针或原生插件。
+规则只能以有界、只读方式访问当前媒体源。运行时限制执行步数、输入输出范围、递归深度、
+节点数量、内存，以及两次取消检查之间的执行时间。规则不能访问任意文件、网络、进程、
+环境变量、宿主指针或原生插件。
 
-默认限制、配置策略和诊断尚待设计；语言进入稳定状态前，必须在中英文文档中说明。
+当前 VM 对一次结构物化采用以下默认限制：
+
+- 最多执行 1,000,000 条 bytecode 指令；
+- 调用深度 64，mapped view 深度 64；
+- analysis node 深度 256，root 计为深度 1；
+- 最多新建 100,000 个物化节点；
+- 第一条指令执行前检查一次取消，之后至少每执行 1,024 条指令检查一次。
+
+所有限制都必须大于零。host 可以为一次执行降低限制，但规则本身不能提高或读取限制。
+当前最小子集尚无嵌套调用或 view；加入这些操作时必须消耗已经保留的深度预算。超过指令、
+节点数量或节点深度限制时报告 `resource-limit`，保留超限前已完成的节点，并把当前结构标记
+为 invalid。取消时报告 `cancelled`，保留已完成节点，并把当前结构标记为 cancelled；如果
+取消发生在 `begin-structure` 之前，则标记其 parent。非法或损坏的 typed bytecode 会作为
+invalid definition 被拒绝，运行时不会猜测执行。
+
+输入输出、内存和 wall-clock 的精确默认值仍是暂定设计；使用这些预算的语言功能进入稳定
+状态前，必须补齐对应契约。
 
 ## 规则包
 
