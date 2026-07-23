@@ -72,19 +72,22 @@ value         := integer | string | identifier
 - 唯一接受的渐进 sequence 形式是
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`。
   `Element` 必须是已声明结构。
-- `@equals(integer)` 字段注解是会执行检查的约束；其他注解保留为元数据。
-  `@spec("standard", "clause")` 是约定的规范引用形式。
+- `@equals(integer)` 字段注解是会执行检查的约束；`@description("text")` 提供项目编写的
+  展示说明，`@spec("standard", "clause")` 提供规范引用。字段默认继承所属结构的规范
+  引用，也可以用自己的注解覆盖。
 - 出现词法或静态诊断时，source 不会生成可执行规则；parser 仍返回部分 IR 以及带行列范围的全部诊断，便于编辑器一次报告多个错误。
 
 最小运行时通过 bounded bit reader 按顺序执行结构。成功字段会成为带无符号解码值和
 源位置的 syntax-field 节点。读取截断或失败时保留之前的字段，并把结构标记为 invalid
 并附 source 诊断。`@equals` 不匹配时保留该字段，再用 invalid-syntax 诊断标记结构。
 最小执行器要求逻辑范围映射到一个连续的 direct source 区间；跨多个 source 区间的
-mapped transformation 留到后续转换运行时实现。
+mapped transformation 留到后续转换运行时实现。执行器把字段类型、说明和规范引用保留
+在 analysis-node snapshot 上；展示宽度由节点的逻辑范围推导。
 
-内建 `h264_start_code` scanner 通过 64 KiB 随机访问窗口读取 source，并按调用方指定
-的批大小发布 `H264StartCodeRecord`。每条记录包含三字节或四字节 start code 的 source
-区间，以及后续 NAL unit 区间（最后一个空 unit 没有 payload 区间）。start code 可以跨窗口。
+内建 `h264_start_code` scanner 通过 64 KiB 随机访问窗口读取 source，并按记录数和已检查
+source position 数量双重限制每个 batch。默认每次最多检查 64 KiB source position，单调
+递增的 scan cursor 用于 UI 进度。每条记录包含三字节或四字节 start code 的 source 区间，
+以及后续 NAL unit 区间（最后一个空 unit 没有 payload 区间）。start code 可以跨窗口。
 每检查至少 1,024 个 source position 就检查一次取消；已经发布的记录保持有效，batch 返回
 `cancelled`。空 unit 虽然没有可选 payload 区间，其 NAL offset 和零 length 仍然有效。
 如果 source 字节大小无法用 64 位源 bit 坐标模型表示，scanner 会在读取前拒绝该 source。

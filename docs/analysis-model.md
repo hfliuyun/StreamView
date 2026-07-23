@@ -9,7 +9,8 @@ accessibility.
 An analysis tree is append-only with monotonically assigned, one-based node
 identifiers. Identifiers are never reused. A node records its kind, name,
 materialization state, optional value, optional field location, child IDs, and
-attached diagnostics.
+attached diagnostics. Presentation metadata may additionally carry a type name,
+project-authored description, and a specification standard/clause pair.
 
 Node kinds are root, structure, syntax field, computed field, compressed
 payload, and region. A syntax field must have an exact field location. A
@@ -21,6 +22,12 @@ Tree lookups return node snapshots. A snapshot remains valid after later nodes
 are appended; callers do not retain pointers into mutable tree storage. Tree
 mutation is owned by one analysis worker. Thread-safe publication and UI model
 updates are separate responsibilities.
+
+Presentation metadata is copied into the same stable node snapshot as the
+decoded value and coordinates. It does not change parsing or validation
+semantics. A field's displayed width is derived from its logical range rather
+than stored twice; absolute source spans and the logical view/range remain the
+coordinate authority.
 
 ## Source-Bit Resolution
 

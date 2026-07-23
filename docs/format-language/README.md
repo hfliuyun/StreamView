@@ -78,9 +78,10 @@ The static rules for this subset are:
 - The only accepted progressive sequence form is
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`.
   `Element` must name a declared structure.
-- An `@equals(integer)` field annotation is a checked constraint. Other
-  annotations are retained as metadata; `@spec("standard", "clause")` is the
-  conventional specification reference.
+- An `@equals(integer)` field annotation is a checked constraint.
+  `@description("text")` supplies project-authored presentation text, and
+  `@spec("standard", "clause")` supplies a specification reference. Fields
+  inherit their structure's specification unless they provide their own.
 - A source with lexical or static diagnostics produces no executable rule. The
   parser still returns its partial IR and all diagnostics with line/column
   ranges so an editor can report more than the first error.
@@ -92,11 +93,15 @@ earlier fields and marks the structure invalid with a source diagnostic. An
 `@equals` mismatch retains the field, then marks the structure invalid with an
 invalid-syntax diagnostic. The minimum executor requires the logical range to
 map to one contiguous direct source span; mapped multi-span transformations are
-reserved for the later mapped-transformation runtime.
+reserved for the later mapped-transformation runtime. The executor retains the
+field type, description, and specification reference on the analysis-node
+snapshot; presentation derives field width from that node's logical range.
 
 The built-in `h264_start_code` scanner reads the source through a 64 KiB random
-access window and publishes `H264StartCodeRecord` values in caller-sized
-batches. Each record contains the three- or four-byte start-code span and the
+access window and publishes `H264StartCodeRecord` values in batches bounded by
+both record count and inspected source positions. The default work budget is
+64 KiB of source positions per call, and the monotonic scan cursor provides UI
+progress. Each record contains the three- or four-byte start-code span and the
 following NAL-unit span (an empty final unit has no payload span). Prefixes may
 cross a window boundary. Cancellation is checked at least every 1,024 inspected
 source positions; already published records remain valid and the batch reports

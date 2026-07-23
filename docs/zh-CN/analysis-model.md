@@ -6,7 +6,8 @@
 ## 分析节点
 
 分析树采用 append-only 结构，节点 ID 从 1 开始单调分配且永不复用。节点记录
-kind、名称、物化状态、可选值、可选字段位置、子节点 ID 和附加诊断。
+kind、名称、物化状态、可选值、可选字段位置、子节点 ID 和附加诊断。展示元数据还可
+携带类型名、项目编写的说明，以及由标准名和条款组成的规范引用。
 
 节点 kind 包括 root、structure、syntax field、computed field、compressed
 payload 和 region。Syntax field 必须具有精确字段位置；computed field 不能伪装
@@ -16,6 +17,10 @@ payload 和 region。Syntax field 必须具有精确字段位置；computed fiel
 树查询返回节点 snapshot；后续追加节点不会使既有 snapshot 失效，调用方也不会
 持有指向可变树存储的裸指针。分析树由单个分析 worker 负责修改，线程安全发布与
 UI model 更新由后续独立机制负责。
+
+展示元数据与解码值和坐标一起复制到同一份稳定节点 snapshot 中，不改变解析或校验
+语义。字段显示宽度由逻辑范围推导，不重复存储；绝对 source span 与逻辑视图/范围仍是
+坐标的权威来源。
 
 ## Source Bit 定位
 
