@@ -9,6 +9,8 @@ namespace streamview::rules {
 
 namespace {
 
+constexpr quint64 maximumExpandedFieldsPerStructure = 99'999;
+
 void addDiagnostic(std::vector<DslDiagnostic>& diagnostics,
                    DslDiagnosticCode code,
                    const QString& message,
@@ -211,7 +213,29 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         }
 
         std::optional<quint64> fieldOffset = 0;
+        std::vector<QString> declaredFieldNames;
+        declaredFieldNames.reserve(structure.fields.size());
         for (const DslBitField& field : structure.fields) {
+            if (std::find(declaredFieldNames.begin(), declaredFieldNames.end(), field.name) !=
+                declaredFieldNames.end()) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::DuplicateName,
+                              QStringLiteral("Duplicate field name"),
+                              field.range);
+            }
+            declaredFieldNames.push_back(field.name);
+
+            const quint64 elementCount = field.arrayLength.value_or(1);
+            if (elementCount == 0 ||
+                elementCount > maximumExpandedFieldsPerStructure - typedStruct.fields.size()) {
+                addDiagnostic(
+                    result.diagnostics,
+                    DslDiagnosticCode::InvalidArrayLength,
+                    QStringLiteral(
+                        "Fixed array expansion exceeds the structure materialization limit"),
+                    field.range);
+                continue;
+            }
             const bool isBits = field.encoding == DslFieldEncoding::Bits;
             const bool isUnsignedExpGolomb =
                 field.encoding == DslFieldEncoding::UnsignedExpGolomb;
@@ -265,16 +289,6 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                         "Little-endian fields must begin at a byte boundary within the structure"),
                     field.range);
             }
-            for (const DslTypedField& previous : typedStruct.fields) {
-                if (previous.name == field.name) {
-                    addDiagnostic(result.diagnostics,
-                                  DslDiagnosticCode::DuplicateName,
-                                  QStringLiteral("Duplicate field name"),
-                                  field.range);
-                    break;
-                }
-            }
-
             DslTypedField typedField;
             typedField.name = field.name;
             const DslValueTypeKind valueKind =
@@ -353,19 +367,35 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                   return field.range;
                               }());
             }
-            typedStruct.fields.push_back(std::move(typedField));
+            if (field.arrayLength) {
+                for (quint64 elementIndex = 0; elementIndex < elementCount; ++elementIndex) {
+                    DslTypedField element = typedField;
+                    element.name = QStringLiteral("%1[%2]").arg(field.name).arg(elementIndex);
+                    typedStruct.fields.push_back(std::move(element));
+                }
+            } else {
+                typedStruct.fields.push_back(std::move(typedField));
+            }
             if (!isBits) {
                 fieldOffset = std::nullopt;
-            } else if (!fieldOffset ||
-                       *fieldOffset > std::numeric_limits<quint64>::max() - field.width) {
-                if (fieldOffset) {
+            } else if (elementCount >
+                       std::numeric_limits<quint64>::max() / field.width) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidArrayLength,
+                              QStringLiteral("Fixed array bit width is too large"),
+                              field.range);
+                fieldOffset = std::nullopt;
+            } else if (fieldOffset) {
+                const quint64 totalWidth = elementCount * field.width;
+                if (*fieldOffset > std::numeric_limits<quint64>::max() - totalWidth) {
                     addDiagnostic(result.diagnostics,
                                   DslDiagnosticCode::InvalidType,
                                   QStringLiteral("Structure bit width is too large"),
                                   structure.range);
+                    fieldOffset = std::nullopt;
+                } else {
+                    *fieldOffset += totalWidth;
                 }
-            } else {
-                *fieldOffset += field.width;
             }
         }
         typed.structs.push_back(std::move(typedStruct));

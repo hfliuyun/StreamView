@@ -191,6 +191,12 @@ private:
         case ')':
             punctuation(DslTokenKind::RightParen);
             return;
+        case '[':
+            punctuation(DslTokenKind::LeftBracket);
+            return;
+        case ']':
+            punctuation(DslTokenKind::RightBracket);
+            return;
         case ';':
             punctuation(DslTokenKind::Semicolon);
             return;
@@ -579,6 +585,24 @@ private:
                 recoverField();
                 continue;
             }
+            if (match(DslTokenKind::LeftBracket)) {
+                if (at(DslTokenKind::IntegerLiteral)) {
+                    const DslToken length = consume();
+                    field.arrayLength = length.integerValue;
+                    if (*field.arrayLength == 0) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidArrayLength,
+                             QStringLiteral("Fixed array length must be at least one"),
+                             length.range});
+                    }
+                } else {
+                    field.arrayLength = 0;
+                    error(DslDiagnosticCode::MissingToken,
+                          QStringLiteral("Expected fixed array length"));
+                }
+                expect(DslTokenKind::RightBracket,
+                       QStringLiteral("']' after fixed array length"));
+            }
             const std::vector<DslAnnotation> trailingAnnotations = parseAnnotations();
             field.annotations.insert(
                 field.annotations.end(), trailingAnnotations.begin(), trailingAnnotations.end());
@@ -864,12 +888,26 @@ private:
                          field.range});
                 }
                 if (field.encoding != DslFieldEncoding::Bits || field.width == 0 ||
-                    !fieldOffset) {
+                    !fieldOffset || (field.arrayLength && *field.arrayLength == 0)) {
                     fieldOffset = std::nullopt;
-                } else if (*fieldOffset <= std::numeric_limits<quint64>::max() - field.width) {
-                    *fieldOffset += field.width;
                 } else {
-                    fieldOffset = std::nullopt;
+                    const quint64 elementCount = field.arrayLength.value_or(1);
+                    if (elementCount >
+                        std::numeric_limits<quint64>::max() / field.width) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidArrayLength,
+                             QStringLiteral("Fixed array bit width is too large"),
+                             field.range});
+                        fieldOffset = std::nullopt;
+                    } else {
+                        const quint64 totalWidth = elementCount * field.width;
+                        if (*fieldOffset <=
+                            std::numeric_limits<quint64>::max() - totalWidth) {
+                            *fieldOffset += totalWidth;
+                        } else {
+                            fieldOffset = std::nullopt;
+                        }
+                    }
                 }
             }
         }

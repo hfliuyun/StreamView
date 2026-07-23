@@ -3,6 +3,7 @@
 #include <QTest>
 
 #include <algorithm>
+#include <optional>
 
 using streamview::rules::DslAnnotationValueKind;
 using streamview::rules::DslDiagnosticCode;
@@ -142,6 +143,55 @@ private slots:
 
         QVERIFY(hasDiagnostic(annotations, DslDiagnosticCode::InvalidAnnotation));
         QVERIFY(hasDiagnostic(alignment, DslDiagnosticCode::InvalidEndian));
+    }
+
+    void parsesFixedLengthArraysForAllScalarFieldEncodings() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct Header { bits<3> flags[3] @description(\"Flags.\"); "
+            "ue codes[2]; se deltas[2]; } entry Header;"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        QCOMPARE(result.program.structs.front().fields.size(), std::size_t(3));
+        const auto& flags = result.program.structs.front().fields.at(0);
+        QCOMPARE(flags.name, QStringLiteral("flags"));
+        QCOMPARE(flags.arrayLength, std::optional<quint64>(3));
+        QCOMPARE(flags.annotations.back().name, QStringLiteral("description"));
+        QCOMPARE(result.program.structs.front().fields.at(1).arrayLength,
+                 std::optional<quint64>(2));
+        QCOMPARE(result.program.structs.front().fields.at(2).arrayLength,
+                 std::optional<quint64>(2));
+    }
+
+    void rejectsZeroAndMalformedFixedLengthArrays() {
+        const auto zero = DslParser::parse(
+            QStringLiteral("struct Header { bits<1> flags[0]; } entry Header;"));
+        const auto missingLength = DslParser::parse(
+            QStringLiteral("struct Header { bits<1> flags[]; } entry Header;"));
+        const auto missingBracket = DslParser::parse(
+            QStringLiteral("struct Header { bits<1> flags[2; } entry Header;"));
+
+        QCOMPARE(zero.diagnostics.size(), std::size_t(1));
+        QVERIFY(hasDiagnostic(zero, DslDiagnosticCode::InvalidArrayLength));
+        QCOMPARE(missingLength.diagnostics.size(), std::size_t(1));
+        QVERIFY(hasDiagnostic(missingLength, DslDiagnosticCode::MissingToken));
+        QCOMPARE(missingBracket.diagnostics.size(), std::size_t(1));
+        QVERIFY(hasDiagnostic(missingBracket, DslDiagnosticCode::MissingToken));
+    }
+
+    void computesStaticAlignmentAcrossFixedLengthArrays() {
+        const auto aligned = DslParser::parse(QStringLiteral(
+            "struct Header { bits<4> prefix[2]; bits<16, little> value; } entry Header;"));
+        const auto unaligned = DslParser::parse(QStringLiteral(
+            "struct Header { bits<3> prefix[2]; bits<16, little> value; } entry Header;"));
+
+        QVERIFY2(aligned.succeeded(),
+                 aligned.diagnostics.empty()
+                     ? ""
+                     : qPrintable(aligned.diagnostics.front().message));
+        QVERIFY(hasDiagnostic(unaligned, DslDiagnosticCode::InvalidEndian));
     }
 
     void rejectsInvalidEndianAndUnknownEnumReferences() {

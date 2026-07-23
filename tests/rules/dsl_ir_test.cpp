@@ -131,6 +131,74 @@ private slots:
         }
     }
 
+    void expandsFixedLengthArraysIntoDeterministicTypedFieldsAndBytecode() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> flags[3] @description(\"Flags.\") @equals(0); "
+            "ue codes[2]; se deltas[2]; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& fields = compiled.program->structs.front().fields;
+        QCOMPARE(fields.size(), std::size_t(7));
+        QCOMPARE(fields.at(0).name, QStringLiteral("flags[0]"));
+        QCOMPARE(fields.at(1).name, QStringLiteral("flags[1]"));
+        QCOMPARE(fields.at(2).name, QStringLiteral("flags[2]"));
+        QCOMPARE(fields.at(0).type.kind, DslValueTypeKind::UnsignedBits);
+        QCOMPARE(fields.at(0).metadata.description, QStringLiteral("Flags."));
+        QCOMPARE(fields.at(0).equalsConstraint, std::optional<quint64>(0));
+        QCOMPARE(fields.at(3).name, QStringLiteral("codes[0]"));
+        QCOMPARE(fields.at(4).name, QStringLiteral("codes[1]"));
+        QCOMPARE(fields.at(3).type.kind, DslValueTypeKind::UnsignedExpGolomb);
+        QCOMPARE(fields.at(5).name, QStringLiteral("deltas[0]"));
+        QCOMPARE(fields.at(6).name, QStringLiteral("deltas[1]"));
+        QCOMPARE(fields.at(5).type.kind, DslValueTypeKind::SignedExpGolomb);
+
+        const std::vector<DslOpcode> expected{
+            DslOpcode::BeginStructure,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::AssertEquals,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::AssertEquals,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::AssertEquals,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::ReadSignedExpGolomb,
+            DslOpcode::ReadSignedExpGolomb,
+            DslOpcode::EndStructure,
+        };
+        QCOMPARE(compiled.program->bytecode.size(), expected.size());
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            QCOMPARE(compiled.program->bytecode.at(index).opcode, expected.at(index));
+        }
+    }
+
+    void propagatesEnumTypesAcrossFixedArrayElements() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "enum Type { one = 1; two = 2; } "
+            "struct Header { bits<2> values[2] @enum(Type); } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& fields = compiled.program->structs.front().fields;
+        QCOMPARE(fields.size(), std::size_t(2));
+        QCOMPARE(fields.at(0).name, QStringLiteral("values[0]"));
+        QCOMPARE(fields.at(1).name, QStringLiteral("values[1]"));
+        for (const auto& field : fields) {
+            QCOMPARE(field.type.kind, DslValueTypeKind::Enum);
+            QCOMPARE(field.type.enumIndex, std::optional<quint32>(0));
+            QCOMPARE(field.metadata.typeName, QStringLiteral("Type"));
+        }
+    }
+
     void rejectsEnumValuesThatDoNotFitAndUnalignedLittleEndianFields() {
         const auto tooWide = DslParser::parse(QStringLiteral(
             "enum Type { too_large = 8; } "
@@ -167,6 +235,51 @@ private slots:
         QVERIFY(!compiled.succeeded());
         QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidAnnotation));
         QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidEndian));
+
+        const auto variableArray = DslParser::parse(QStringLiteral(
+            "struct Header { ue values[2]; bits<16, little> value; } entry Header;"));
+        const auto compiledVariableArray = DslCompiler::compile(variableArray.program);
+        QVERIFY(!compiledVariableArray.succeeded());
+        QVERIFY(hasDiagnostic(compiledVariableArray, DslDiagnosticCode::InvalidEndian));
+    }
+
+    void rejectsInvalidOrSandboxExceedingFixedArrayLengthsInCompiler() {
+        const auto zero = DslParser::parse(
+            QStringLiteral("struct Header { bits<1> flags[0]; } entry Header;"));
+        const auto atLimit = DslParser::parse(
+            QStringLiteral("struct Header { bits<1> flags[99998]; bits<1> tail; } entry Header;"));
+        const auto overLimit = DslParser::parse(
+            QStringLiteral("struct Header { bits<1> flags[99999]; bits<1> tail; } entry Header;"));
+        QVERIFY(!zero.succeeded());
+        QVERIFY(atLimit.succeeded());
+        QVERIFY(overLimit.succeeded());
+
+        const auto compiledZero = DslCompiler::compile(zero.program);
+        const auto compiledAtLimit = DslCompiler::compile(atLimit.program);
+        const auto compiledOverLimit = DslCompiler::compile(overLimit.program);
+        QVERIFY(!compiledZero.succeeded());
+        QCOMPARE(compiledZero.diagnostics.size(), std::size_t(1));
+        QVERIFY(compiledAtLimit.succeeded());
+        QCOMPARE(compiledAtLimit.program->structs.front().fields.size(), std::size_t(99'999));
+        QVERIFY(!compiledOverLimit.succeeded());
+        QCOMPARE(compiledOverLimit.diagnostics.size(), std::size_t(1));
+        QVERIFY(hasDiagnostic(compiledZero, DslDiagnosticCode::InvalidArrayLength));
+        QVERIFY(hasDiagnostic(compiledOverLimit, DslDiagnosticCode::InvalidArrayLength));
+    }
+
+    void computesCompilerAlignmentAcrossExpandedFixedArrays() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<4> prefix[2]; bits<16, little> value; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        QCOMPARE(compiled.program->structs.front().fields.size(), std::size_t(3));
+        QCOMPARE(compiled.program->structs.front().fields.at(2).type.endian,
+                 DslEndian::Little);
     }
 
     void rejectsDuplicateEqualsConstraints() {

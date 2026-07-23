@@ -4,6 +4,7 @@
 #include <QtGlobal>
 
 #include <cstddef>
+#include <optional>
 #include <vector>
 
 namespace streamview::rules {
@@ -30,6 +31,8 @@ enum class DslTokenKind : quint8 {
     RightBrace,
     LeftParen,
     RightParen,
+    LeftBracket,
+    RightBracket,
     Semicolon,
     Comma,
     Equals,
@@ -65,6 +68,7 @@ enum class DslDiagnosticCode : quint8 {
     EmptyEnum,
     InvalidEndian,
     EnumValueOutOfRange,
+    InvalidArrayLength,
 };
 
 struct DslDiagnostic final {
@@ -132,6 +136,7 @@ struct DslBitField final {
     DslFieldEncoding encoding = DslFieldEncoding::Bits;
     quint8 width = 0;
     DslEndian endian = DslEndian::Big;
+    std::optional<quint64> arrayLength;
     std::vector<DslAnnotation> annotations;
     DslSourceRange range;
 };
