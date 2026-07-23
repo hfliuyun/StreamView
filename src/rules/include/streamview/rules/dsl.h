@@ -62,6 +62,9 @@ enum class DslDiagnosticCode : quint8 {
     InvalidAnnotation,
     InvalidType,
     ConstraintOutOfRange,
+    EmptyEnum,
+    InvalidEndian,
+    EnumValueOutOfRange,
 };
 
 struct DslDiagnostic final {
@@ -100,9 +103,28 @@ struct DslAnnotation final {
     DslSourceRange range;
 };
 
+enum class DslEndian : quint8 {
+    Big,
+    Little,
+};
+
+struct DslEnumValue final {
+    QString name;
+    quint64 value = 0;
+    DslSourceRange range;
+};
+
+struct DslEnum final {
+    QString name;
+    std::vector<DslAnnotation> annotations;
+    std::vector<DslEnumValue> values;
+    DslSourceRange range;
+};
+
 struct DslBitField final {
     QString name;
     quint8 width = 0;
+    DslEndian endian = DslEndian::Big;
     std::vector<DslAnnotation> annotations;
     DslSourceRange range;
 };
@@ -129,6 +151,7 @@ struct DslEntry final {
 };
 
 struct DslProgram final {
+    std::vector<DslEnum> enums;
     std::vector<DslStruct> structs;
     std::vector<DslProgressiveScan> scans;
     DslEntry entry;

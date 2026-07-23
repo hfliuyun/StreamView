@@ -6,6 +6,7 @@
 
 using streamview::rules::DslAnnotationValueKind;
 using streamview::rules::DslDiagnosticCode;
+using streamview::rules::DslEndian;
 using streamview::rules::DslLexer;
 using streamview::rules::DslParser;
 using streamview::rules::DslTokenKind;
@@ -81,6 +82,47 @@ private slots:
                  QStringLiteral("h264_start_code"));
         QVERIFY(result.program.hasEntry);
         QCOMPARE(result.program.entry.targetName, QStringLiteral("nal_units"));
+    }
+
+    void parsesEnumsAndExplicitEndianFields() {
+        const auto result = DslParser::parse(QStringLiteral(R"(
+            enum NalUnitType {
+                non_idr = 1;
+                idr = 5;
+            }
+            struct Header {
+                bits<16, little> value;
+                bits<5> nal_unit_type @enum(NalUnitType);
+            }
+            entry Header;
+        )"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        QCOMPARE(result.program.enums.size(), std::size_t(1));
+        QCOMPARE(result.program.enums.front().name, QStringLiteral("NalUnitType"));
+        QCOMPARE(result.program.enums.front().values.size(), std::size_t(2));
+        QCOMPARE(result.program.enums.front().values.at(1).name, QStringLiteral("idr"));
+        QCOMPARE(result.program.enums.front().values.at(1).value, quint64(5));
+        QCOMPARE(result.program.structs.front().fields.at(0).endian, DslEndian::Little);
+        QCOMPARE(result.program.structs.front().fields.at(1).endian, DslEndian::Big);
+        QCOMPARE(result.program.structs.front().fields.at(1).annotations.back().name,
+                 QStringLiteral("enum"));
+    }
+
+    void rejectsInvalidEndianAndUnknownEnumReferences() {
+        const auto badWidth = DslParser::parse(
+            QStringLiteral("struct Header { bits<5, little> value; } entry Header;"));
+        const auto badName = DslParser::parse(
+            QStringLiteral("struct Header { bits<8, network> value; } entry Header;"));
+        const auto unknownEnum = DslParser::parse(QStringLiteral(
+            "struct Header { bits<8> value @enum(Missing); } entry Header;"));
+
+        QVERIFY(hasDiagnostic(badWidth, DslDiagnosticCode::InvalidEndian));
+        QVERIFY(hasDiagnostic(badName, DslDiagnosticCode::InvalidEndian));
+        QVERIFY(hasDiagnostic(unknownEnum, DslDiagnosticCode::UnknownReference));
     }
 
     void rejectsOutOfRangeBitWidths() {

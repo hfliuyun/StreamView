@@ -8,6 +8,7 @@
 using streamview::rules::DslCompileResult;
 using streamview::rules::DslCompiler;
 using streamview::rules::DslDiagnosticCode;
+using streamview::rules::DslEndian;
 using streamview::rules::DslEntryKind;
 using streamview::rules::DslOpcode;
 using streamview::rules::DslParser;
@@ -74,6 +75,44 @@ private slots:
             QCOMPARE(first.program->bytecode.at(index).immediate,
                      second.program->bytecode.at(index).immediate);
         }
+    }
+
+    void compilesEnumAndExplicitEndianIntoTypedIr() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "enum NalUnitType { non_idr = 1; idr = 5; } "
+            "struct Header { bits<16, little> value; "
+            "bits<3> type @enum(NalUnitType); } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        QCOMPARE(compiled.program->enums.size(), std::size_t(1));
+        QCOMPARE(compiled.program->enumIndex(QStringLiteral("NalUnitType")),
+                 std::optional<quint32>(0));
+        const auto& fields = compiled.program->structs.front().fields;
+        QCOMPARE(fields.at(0).type.endian, DslEndian::Little);
+        QCOMPARE(fields.at(0).type.kind, DslValueTypeKind::UnsignedBits);
+        QCOMPARE(fields.at(1).type.kind, DslValueTypeKind::Enum);
+        QCOMPARE(fields.at(1).type.enumIndex, std::optional<quint32>(0));
+        QCOMPARE(fields.at(1).metadata.typeName, QStringLiteral("NalUnitType"));
+    }
+
+    void rejectsEnumValuesThatDoNotFitAndUnalignedLittleEndianFields() {
+        const auto tooWide = DslParser::parse(QStringLiteral(
+            "enum Type { too_large = 8; } "
+            "struct Header { bits<3> value @enum(Type); } entry Header;"));
+        const auto parsedTooWide = DslCompiler::compile(tooWide.program);
+        QVERIFY(!parsedTooWide.succeeded());
+        QVERIFY(hasDiagnostic(parsedTooWide, DslDiagnosticCode::EnumValueOutOfRange));
+
+        const auto unaligned = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> prefix; bits<16, little> value; } entry Header;"));
+        const auto compiledUnaligned = DslCompiler::compile(unaligned.program);
+        QVERIFY(!compiledUnaligned.succeeded());
+        QVERIFY(hasDiagnostic(compiledUnaligned, DslDiagnosticCode::InvalidEndian));
     }
 
     void rejectsConstraintsOutsideTheStaticFieldType() {

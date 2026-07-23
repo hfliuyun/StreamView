@@ -2,6 +2,7 @@
 
 #include <QtGlobal>
 
+#include <algorithm>
 #include <limits>
 #include <utility>
 
@@ -362,7 +363,9 @@ public:
                 }
                 break;
             }
-            if (isIdentifier(QStringLiteral("struct"))) {
+            if (isIdentifier(QStringLiteral("enum"))) {
+                parseEnum(annotations);
+            } else if (isIdentifier(QStringLiteral("struct"))) {
                 parseStruct(annotations);
             } else if (isIdentifier(QStringLiteral("sequence"))) {
                 parseScan(annotations);
@@ -370,7 +373,7 @@ public:
                 parseEntry(annotations);
             } else {
                 error(DslDiagnosticCode::UnexpectedToken,
-                      QStringLiteral("Expected struct, sequence, or entry declaration"));
+                      QStringLiteral("Expected enum, struct, sequence, or entry declaration"));
                 recoverDeclaration();
             }
         }
@@ -472,6 +475,51 @@ private:
         return annotations;
     }
 
+    void parseEnum(const std::vector<DslAnnotation>& annotations) {
+        const DslSourcePosition start = consume().range.start;
+        DslEnum enumeration;
+        enumeration.annotations = annotations;
+        if (!expectIdentifier(&enumeration.name, QStringLiteral("enum name"))) {
+            recoverDeclaration();
+            return;
+        }
+        if (!expect(DslTokenKind::LeftBrace, QStringLiteral("'{' after enum name"))) {
+            recoverDeclaration();
+            return;
+        }
+
+        while (!at(DslTokenKind::RightBrace) && !at(DslTokenKind::EndOfFile)) {
+            const DslSourcePosition valueStart = current().range.start;
+            DslEnumValue value;
+            if (!expectIdentifier(&value.name, QStringLiteral("enum member name"))) {
+                recoverField();
+                continue;
+            }
+            expect(DslTokenKind::Equals, QStringLiteral("'=' after enum member name"));
+            if (at(DslTokenKind::IntegerLiteral)) {
+                value.value = consume().integerValue;
+            } else {
+                error(DslDiagnosticCode::MissingToken,
+                      QStringLiteral("Expected integer enum member value"));
+            }
+            expect(DslTokenKind::Semicolon, QStringLiteral("';' after enum member"));
+            value.range = {valueStart, lexResult_.tokens.at(index_ - 1).range.end};
+            enumeration.values.push_back(std::move(value));
+        }
+
+        const bool closed =
+            expect(DslTokenKind::RightBrace, QStringLiteral("'}' after enum members"));
+        match(DslTokenKind::Semicolon);
+        enumeration.range = {start, lexResult_.tokens.at(index_ - 1).range.end};
+        if (enumeration.values.empty() && closed) {
+            result_.diagnostics.push_back(
+                {DslDiagnosticCode::EmptyEnum,
+                 QStringLiteral("An enum must contain at least one member"),
+                 enumeration.range});
+        }
+        result_.program.enums.push_back(std::move(enumeration));
+    }
+
     void parseStruct(const std::vector<DslAnnotation>& annotations) {
         const DslSourcePosition start = consume().range.start;
         DslStruct structure;
@@ -490,7 +538,8 @@ private:
             const DslSourcePosition fieldStart = current().range.start;
             if (!matchIdentifier(QStringLiteral("bits"))) {
                 error(DslDiagnosticCode::UnexpectedToken,
-                      QStringLiteral("Only bits<N> fields are supported in the minimum DSL"));
+                      QStringLiteral(
+                          "Only bits<N[, endian]> fields are supported in the minimum DSL"));
                 recoverField();
                 continue;
             }
@@ -501,10 +550,25 @@ private:
             } else {
                 error(DslDiagnosticCode::MissingToken, QStringLiteral("Expected bit width"));
             }
-            expect(DslTokenKind::Greater, QStringLiteral("'>' after bit width"));
+            DslEndian endian = DslEndian::Big;
+            if (match(DslTokenKind::Comma)) {
+                QString endianName;
+                if (expectIdentifier(&endianName, QStringLiteral("byte order (big or little)"))) {
+                    if (endianName == QStringLiteral("little")) {
+                        endian = DslEndian::Little;
+                    } else if (endianName != QStringLiteral("big")) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidEndian,
+                             QStringLiteral("Byte order must be 'big' or 'little'"),
+                             lexResult_.tokens.at(index_ - 1).range});
+                    }
+                }
+            }
+            expect(DslTokenKind::Greater, QStringLiteral("'>' after bit width and byte order"));
 
             DslBitField field;
             field.annotations = fieldAnnotations;
+            field.endian = endian;
             if (!expectIdentifier(&field.name, QStringLiteral("field name"))) {
                 recoverField();
                 continue;
@@ -519,6 +583,13 @@ private:
                 result_.diagnostics.push_back(
                     {DslDiagnosticCode::InvalidBitWidth,
                      QStringLiteral("Bit field width must be in the range 1..64"),
+                     field.range});
+            }
+            if (field.endian == DslEndian::Little && field.width != 0 && field.width % 8 != 0) {
+                result_.diagnostics.push_back(
+                    {DslDiagnosticCode::InvalidEndian,
+                     QStringLiteral(
+                         "Little-endian fields must have a width that is a multiple of 8"),
                      field.range});
             }
             structure.fields.push_back(std::move(field));
@@ -615,6 +686,49 @@ private:
     }
 
     void validateProgram() {
+        for (std::size_t index = 0; index < result_.program.enums.size(); ++index) {
+            const DslEnum& enumeration = result_.program.enums.at(index);
+            validatePresentationAnnotations(enumeration.annotations);
+            for (std::size_t previous = 0; previous < index; ++previous) {
+                if (enumeration.name == result_.program.enums.at(previous).name) {
+                    result_.diagnostics.push_back({DslDiagnosticCode::DuplicateName,
+                                                   QStringLiteral("Duplicate enum name"),
+                                                   enumeration.range});
+                    break;
+                }
+            }
+            for (const DslStruct& structure : result_.program.structs) {
+                if (enumeration.name == structure.name) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::DuplicateName,
+                         QStringLiteral("Enum, structure, and sequence names must be unique"),
+                         enumeration.range});
+                    break;
+                }
+            }
+            for (const DslProgressiveScan& scan : result_.program.scans) {
+                if (enumeration.name == scan.name) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::DuplicateName,
+                         QStringLiteral("Enum, structure, and sequence names must be unique"),
+                         enumeration.range});
+                    break;
+                }
+            }
+            for (std::size_t valueIndex = 0; valueIndex < enumeration.values.size(); ++valueIndex) {
+                const DslEnumValue& value = enumeration.values.at(valueIndex);
+                for (std::size_t previous = 0; previous < valueIndex; ++previous) {
+                    if (value.name == enumeration.values.at(previous).name) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::DuplicateName,
+                             QStringLiteral("Duplicate enum member name"),
+                             value.range});
+                        break;
+                    }
+                }
+            }
+        }
+
         for (std::size_t index = 0; index < result_.program.structs.size(); ++index) {
             const DslStruct& structure = result_.program.structs.at(index);
             validatePresentationAnnotations(structure.annotations);
@@ -634,6 +748,16 @@ private:
                     break;
                 }
             }
+            for (const DslEnum& enumeration : result_.program.enums) {
+                if (structure.name == enumeration.name) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::DuplicateName,
+                         QStringLiteral("Enum, structure, and sequence names must be unique"),
+                         structure.range});
+                    break;
+                }
+            }
+            quint64 fieldOffset = 0;
             for (std::size_t fieldIndex = 0; fieldIndex < structure.fields.size(); ++fieldIndex) {
                 const DslBitField& field = structure.fields.at(fieldIndex);
                 validatePresentationAnnotations(field.annotations);
@@ -646,7 +770,52 @@ private:
                     }
                 }
                 bool equalsSeen = false;
+                bool enumSeen = false;
                 for (const DslAnnotation& annotation : field.annotations) {
+                    if (annotation.name == QStringLiteral("enum")) {
+                        if (enumSeen) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidAnnotation,
+                                 QStringLiteral("@enum may appear at most once on a field"),
+                                 annotation.range});
+                        }
+                        enumSeen = true;
+                        if (annotation.arguments.size() != 1 ||
+                            annotation.arguments.front().kind !=
+                                DslAnnotationValueKind::Identifier) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidAnnotation,
+                                 QStringLiteral("@enum requires one enum type name"),
+                                 annotation.range});
+                            continue;
+                        }
+                        const QString& enumName = annotation.arguments.front().text;
+                        const auto found = std::find_if(
+                            result_.program.enums.begin(),
+                            result_.program.enums.end(),
+                            [&enumName](const DslEnum& enumeration) {
+                                return enumeration.name == enumName;
+                            });
+                        if (found == result_.program.enums.end()) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::UnknownReference,
+                                 QStringLiteral("Field enum type is not declared"),
+                                 annotation.range});
+                        } else if (field.width != 0 && field.width < 64) {
+                            const quint64 exclusiveLimit = quint64{1} << field.width;
+                            for (const DslEnumValue& value : found->values) {
+                                if (value.value >= exclusiveLimit) {
+                                    result_.diagnostics.push_back(
+                                        {DslDiagnosticCode::EnumValueOutOfRange,
+                                         QStringLiteral(
+                                             "Enum member value does not fit the field width"),
+                                         annotation.range});
+                                    break;
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     if (annotation.name != QStringLiteral("equals")) {
                         continue;
                     }
@@ -663,6 +832,17 @@ private:
                                                        QStringLiteral("@equals requires one integer argument"),
                                                        annotation.range});
                     }
+                }
+                if (field.endian == DslEndian::Little && fieldOffset % 8 != 0) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidEndian,
+                         QStringLiteral(
+                             "Little-endian fields must begin at a byte boundary within the "
+                             "structure"),
+                         field.range});
+                }
+                if (fieldOffset <= std::numeric_limits<quint64>::max() - field.width) {
+                    fieldOffset += field.width;
                 }
             }
         }
@@ -682,6 +862,15 @@ private:
                     result_.diagnostics.push_back({DslDiagnosticCode::DuplicateName,
                                                    QStringLiteral("Structure and sequence names must be unique"),
                                                    scan.range});
+                    break;
+                }
+            }
+            for (const DslEnum& enumeration : result_.program.enums) {
+                if (scan.name == enumeration.name) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::DuplicateName,
+                         QStringLiteral("Enum, structure, and sequence names must be unique"),
+                         scan.range});
                     break;
                 }
             }

@@ -13,11 +13,26 @@ namespace streamview::rules {
 
 enum class DslValueTypeKind : quint8 {
     UnsignedBits,
+    Enum,
 };
 
 struct DslValueType final {
     DslValueTypeKind kind = DslValueTypeKind::UnsignedBits;
     quint8 bitWidth = 0;
+    DslEndian endian = DslEndian::Big;
+    std::optional<quint32> enumIndex;
+};
+
+struct DslTypedEnumValue final {
+    QString name;
+    quint64 value = 0;
+};
+
+struct DslTypedEnum final {
+    QString name;
+    std::vector<DslTypedEnumValue> values;
+    core::AnalysisNodeMetadata metadata;
+    DslSourceRange range;
 };
 
 struct DslTypedField final {
@@ -72,11 +87,13 @@ struct DslInstruction final {
 };
 
 struct DslTypedProgram final {
+    std::vector<DslTypedEnum> enums;
     std::vector<DslTypedStruct> structs;
     std::vector<DslTypedScan> scans;
     std::vector<DslInstruction> bytecode;
     DslTypedEntry entry;
 
+    [[nodiscard]] std::optional<quint32> enumIndex(const QString& name) const;
     [[nodiscard]] std::optional<quint32> structureIndex(const QString& name) const;
     [[nodiscard]] std::optional<quint32> scanIndex(const QString& name) const;
 };

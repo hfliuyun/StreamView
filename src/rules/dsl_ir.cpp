@@ -66,6 +66,47 @@ void addDiagnostic(std::vector<DslDiagnostic>& diagnostics,
     return result;
 }
 
+[[nodiscard]] std::optional<QString> enumTypeName(
+    const DslBitField& field,
+    std::vector<DslDiagnostic>& diagnostics) {
+    std::optional<QString> result;
+    bool seen = false;
+    for (const DslAnnotation& annotation : field.annotations) {
+        if (annotation.name != QStringLiteral("enum")) {
+            continue;
+        }
+        if (seen) {
+            addDiagnostic(diagnostics,
+                          DslDiagnosticCode::InvalidAnnotation,
+                          QStringLiteral("@enum may appear at most once on a field"),
+                          annotation.range);
+        }
+        seen = true;
+        if (annotation.arguments.size() != 1 ||
+            annotation.arguments.front().kind != DslAnnotationValueKind::Identifier) {
+            addDiagnostic(diagnostics,
+                          DslDiagnosticCode::InvalidAnnotation,
+                          QStringLiteral("@enum requires one enum type name"),
+                          annotation.range);
+            continue;
+        }
+        if (!result) {
+            result = annotation.arguments.front().text;
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] std::optional<quint32> findEnum(const DslTypedProgram& program,
+                                              const QString& name) {
+    for (quint32 index = 0; index < program.enums.size(); ++index) {
+        if (program.enums.at(index).name == name) {
+            return index;
+        }
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] std::optional<quint32> findStruct(const DslTypedProgram& program,
                                                 const QString& name) {
     for (quint32 index = 0; index < program.structs.size(); ++index) {
@@ -77,6 +118,10 @@ void addDiagnostic(std::vector<DslDiagnostic>& diagnostics,
 }
 
 } // namespace
+
+std::optional<quint32> DslTypedProgram::enumIndex(const QString& name) const {
+    return findEnum(*this, name);
+}
 
 std::optional<quint32> DslTypedProgram::structureIndex(const QString& name) const {
     return findStruct(*this, name);
@@ -106,13 +151,43 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         typed.bytecode.push_back(instruction);
         return true;
     };
-    if (program.structs.size() > std::numeric_limits<quint32>::max() ||
+    if (program.enums.size() > std::numeric_limits<quint32>::max() ||
+        program.structs.size() > std::numeric_limits<quint32>::max() ||
         program.scans.size() > std::numeric_limits<quint32>::max()) {
         addDiagnostic(result.diagnostics,
                       DslDiagnosticCode::InvalidType,
                       QStringLiteral("DSL program contains too many declarations"),
                       {});
         return result;
+    }
+
+    typed.enums.reserve(program.enums.size());
+    for (const DslEnum& enumeration : program.enums) {
+        DslTypedEnum typedEnum;
+        typedEnum.name = enumeration.name;
+        typedEnum.metadata = metadataForAnnotations(enumeration.annotations);
+        typedEnum.metadata.typeName = QStringLiteral("enum");
+        typedEnum.range = enumeration.range;
+        if (enumeration.values.empty()) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::EmptyEnum,
+                          QStringLiteral("An enum must contain at least one member"),
+                          enumeration.range);
+        }
+        for (std::size_t valueIndex = 0; valueIndex < enumeration.values.size(); ++valueIndex) {
+            const DslEnumValue& value = enumeration.values.at(valueIndex);
+            for (std::size_t previous = 0; previous < valueIndex; ++previous) {
+                if (value.name == enumeration.values.at(previous).name) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::DuplicateName,
+                                  QStringLiteral("Duplicate enum member name"),
+                                  value.range);
+                    break;
+                }
+            }
+            typedEnum.values.push_back({value.name, value.value});
+        }
+        typed.enums.push_back(std::move(typedEnum));
     }
 
     typed.structs.reserve(program.structs.size());
@@ -134,6 +209,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                           structure.range);
         }
 
+        quint64 fieldOffset = 0;
         for (const DslBitField& field : structure.fields) {
             if (field.width == 0 || field.width > 64) {
                 addDiagnostic(result.diagnostics,
@@ -141,6 +217,27 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                               QStringLiteral("Bit field width must be in the range 1..64"),
                               field.range);
                 continue;
+            }
+            if (field.endian != DslEndian::Big && field.endian != DslEndian::Little) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidEndian,
+                              QStringLiteral("Bit field byte order is invalid"),
+                              field.range);
+            }
+            if (field.endian == DslEndian::Little && field.width % 8 != 0) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidEndian,
+                              QStringLiteral(
+                                  "Little-endian fields must have a width that is a multiple of 8"),
+                              field.range);
+            }
+            if (field.endian == DslEndian::Little && fieldOffset % 8 != 0) {
+                addDiagnostic(
+                    result.diagnostics,
+                    DslDiagnosticCode::InvalidEndian,
+                    QStringLiteral(
+                        "Little-endian fields must begin at a byte boundary within the structure"),
+                    field.range);
             }
             for (const DslTypedField& previous : typedStruct.fields) {
                 if (previous.name == field.name) {
@@ -154,11 +251,40 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
 
             DslTypedField typedField;
             typedField.name = field.name;
-            typedField.type = {DslValueTypeKind::UnsignedBits, field.width};
+            typedField.type =
+                {DslValueTypeKind::UnsignedBits, field.width, field.endian, std::nullopt};
             typedField.metadata =
                 metadataForAnnotations(field.annotations, typedStruct.metadata.specification);
             typedField.metadata.typeName = QStringLiteral("bits");
             typedField.range = field.range;
+            const std::optional<QString> enumName = enumTypeName(field, result.diagnostics);
+            if (enumName) {
+                const auto enumIndex = typed.enumIndex(*enumName);
+                if (!enumIndex) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::UnknownReference,
+                                  QStringLiteral("Field enum type is not declared"),
+                                  field.range);
+                } else {
+                    typedField.type.kind = DslValueTypeKind::Enum;
+                    typedField.type.enumIndex = *enumIndex;
+                    typedField.metadata.typeName = *enumName;
+                    if (field.width < 64) {
+                        const quint64 exclusiveLimit = quint64{1} << field.width;
+                        for (const DslTypedEnumValue& value : typed.enums.at(*enumIndex).values) {
+                            if (value.value >= exclusiveLimit) {
+                                addDiagnostic(
+                                    result.diagnostics,
+                                    DslDiagnosticCode::EnumValueOutOfRange,
+                                    QStringLiteral(
+                                        "Enum member value does not fit the field width"),
+                                    field.range);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
             typedField.equalsConstraint = equalsConstraint(field, result.diagnostics);
             if (typedField.equalsConstraint && field.width < 64 &&
                 *typedField.equalsConstraint >= (quint64{1} << field.width)) {
@@ -175,8 +301,48 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                               }());
             }
             typedStruct.fields.push_back(std::move(typedField));
+            if (fieldOffset > std::numeric_limits<quint64>::max() - field.width) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              QStringLiteral("Structure bit width is too large"),
+                              structure.range);
+            } else {
+                fieldOffset += field.width;
+            }
         }
         typed.structs.push_back(std::move(typedStruct));
+    }
+
+    for (std::size_t index = 0; index < program.enums.size(); ++index) {
+        for (std::size_t previous = 0; previous < index; ++previous) {
+            if (program.enums.at(index).name == program.enums.at(previous).name) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::DuplicateName,
+                              QStringLiteral("Duplicate enum name"),
+                              program.enums.at(index).range);
+                break;
+            }
+        }
+        for (const DslStruct& structure : program.structs) {
+            if (program.enums.at(index).name == structure.name) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::DuplicateName,
+                              QStringLiteral(
+                                  "Enum, structure, and sequence names must be unique"),
+                              program.enums.at(index).range);
+                break;
+            }
+        }
+        for (const DslProgressiveScan& scan : program.scans) {
+            if (program.enums.at(index).name == scan.name) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::DuplicateName,
+                              QStringLiteral(
+                                  "Enum, structure, and sequence names must be unique"),
+                              program.enums.at(index).range);
+                break;
+            }
+        }
     }
 
     for (std::size_t index = 0; index < program.structs.size(); ++index) {
@@ -185,6 +351,16 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::DuplicateName,
                               QStringLiteral("Duplicate structure name"),
+                              program.structs.at(index).range);
+                break;
+            }
+        }
+        for (const DslEnum& enumeration : program.enums) {
+            if (program.structs.at(index).name == enumeration.name) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::DuplicateName,
+                              QStringLiteral(
+                                  "Enum, structure, and sequence names must be unique"),
                               program.structs.at(index).range);
                 break;
             }
@@ -208,6 +384,16 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::DuplicateName,
                               QStringLiteral("Structure and sequence names must be unique"),
+                              scan.range);
+                break;
+            }
+        }
+        for (const DslEnum& enumeration : program.enums) {
+            if (scan.name == enumeration.name) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::DuplicateName,
+                              QStringLiteral(
+                                  "Enum, structure, and sequence names must be unique"),
                               scan.range);
                 break;
             }
