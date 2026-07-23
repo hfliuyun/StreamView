@@ -7,6 +7,7 @@
 using streamview::rules::DslAnnotationValueKind;
 using streamview::rules::DslDiagnosticCode;
 using streamview::rules::DslEndian;
+using streamview::rules::DslFieldEncoding;
 using streamview::rules::DslLexer;
 using streamview::rules::DslParser;
 using streamview::rules::DslTokenKind;
@@ -110,6 +111,37 @@ private slots:
         QCOMPARE(result.program.structs.front().fields.at(1).endian, DslEndian::Big);
         QCOMPARE(result.program.structs.front().fields.at(1).annotations.back().name,
                  QStringLiteral("enum"));
+    }
+
+    void parsesUnsignedAndSignedExpGolombFields() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct SliceHeader { ue first_mb_in_slice; "
+            "se slice_qp_delta @description(\"QP delta.\"); } entry SliceHeader;"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        QCOMPARE(result.program.structs.front().fields.size(), std::size_t(2));
+        QCOMPARE(result.program.structs.front().fields.at(0).name,
+                 QStringLiteral("first_mb_in_slice"));
+        QCOMPARE(result.program.structs.front().fields.at(0).encoding,
+                 DslFieldEncoding::UnsignedExpGolomb);
+        QCOMPARE(result.program.structs.front().fields.at(1).name,
+                 QStringLiteral("slice_qp_delta"));
+        QCOMPARE(result.program.structs.front().fields.at(1).encoding,
+                 DslFieldEncoding::SignedExpGolomb);
+    }
+
+    void rejectsFixedWidthAnnotationsAndAlignmentAfterExpGolombFields() {
+        const auto annotations = DslParser::parse(QStringLiteral(
+            "enum Type { value = 1; } struct Header { "
+            "ue first @equals(0); se second @enum(Type); } entry Header;"));
+        const auto alignment = DslParser::parse(QStringLiteral(
+            "struct Header { ue prefix; bits<16, little> value; } entry Header;"));
+
+        QVERIFY(hasDiagnostic(annotations, DslDiagnosticCode::InvalidAnnotation));
+        QVERIFY(hasDiagnostic(alignment, DslDiagnosticCode::InvalidEndian));
     }
 
     void rejectsInvalidEndianAndUnknownEnumReferences() {

@@ -100,6 +100,37 @@ private slots:
         QCOMPARE(fields.at(1).metadata.typeName, QStringLiteral("NalUnitType"));
     }
 
+    void compilesExpGolombFieldsIntoTypedIrAndBytecode() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct SliceHeader { ue first_mb_in_slice; "
+            "se slice_qp_delta @description(\"QP delta.\"); } entry SliceHeader;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& fields = compiled.program->structs.front().fields;
+        QCOMPARE(fields.size(), std::size_t(2));
+        QCOMPARE(fields.at(0).type.kind, DslValueTypeKind::UnsignedExpGolomb);
+        QCOMPARE(fields.at(0).metadata.typeName, QStringLiteral("ue"));
+        QCOMPARE(fields.at(1).type.kind, DslValueTypeKind::SignedExpGolomb);
+        QCOMPARE(fields.at(1).metadata.typeName, QStringLiteral("se"));
+        QCOMPARE(fields.at(1).metadata.description, QStringLiteral("QP delta."));
+
+        const std::vector<DslOpcode> expected{
+            DslOpcode::BeginStructure,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::ReadSignedExpGolomb,
+            DslOpcode::EndStructure,
+        };
+        QCOMPARE(compiled.program->bytecode.size(), expected.size());
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            QCOMPARE(compiled.program->bytecode.at(index).opcode, expected.at(index));
+        }
+    }
+
     void rejectsEnumValuesThatDoNotFitAndUnalignedLittleEndianFields() {
         const auto tooWide = DslParser::parse(QStringLiteral(
             "enum Type { too_large = 8; } "
@@ -125,6 +156,17 @@ private slots:
         QVERIFY(!compiled.succeeded());
         QVERIFY(!compiled.program.has_value());
         QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::ConstraintOutOfRange));
+    }
+
+    void rejectsExpGolombAnnotationsAndUnknownLittleEndianAlignmentInCompiler() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { ue prefix @equals(0); bits<16, little> value; } entry Header;"));
+        QVERIFY(!parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(!compiled.succeeded());
+        QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidAnnotation));
+        QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidEndian));
     }
 
     void rejectsDuplicateEqualsConstraints() {

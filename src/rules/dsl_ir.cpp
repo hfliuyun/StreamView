@@ -1,5 +1,6 @@
 #include <streamview/rules/dsl_ir.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <limits>
 #include <utility>
@@ -209,29 +210,54 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                           structure.range);
         }
 
-        quint64 fieldOffset = 0;
+        std::optional<quint64> fieldOffset = 0;
         for (const DslBitField& field : structure.fields) {
-            if (field.width == 0 || field.width > 64) {
+            const bool isBits = field.encoding == DslFieldEncoding::Bits;
+            const bool isUnsignedExpGolomb =
+                field.encoding == DslFieldEncoding::UnsignedExpGolomb;
+            const bool isSignedExpGolomb = field.encoding == DslFieldEncoding::SignedExpGolomb;
+            if (!isBits && !isUnsignedExpGolomb && !isSignedExpGolomb) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              QStringLiteral("Field encoding is invalid"),
+                              field.range);
+                continue;
+            }
+            if (isBits && (field.width == 0 || field.width > 64)) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidBitWidth,
                               QStringLiteral("Bit field width must be in the range 1..64"),
                               field.range);
                 continue;
             }
+            if (!isBits && field.width != 0) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              QStringLiteral("Exp-Golomb fields cannot have a fixed bit width"),
+                              field.range);
+            }
             if (field.endian != DslEndian::Big && field.endian != DslEndian::Little) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidEndian,
-                              QStringLiteral("Bit field byte order is invalid"),
+                              QStringLiteral("Field byte order is invalid"),
                               field.range);
             }
-            if (field.endian == DslEndian::Little && field.width % 8 != 0) {
+            if (!isBits && field.endian != DslEndian::Big) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidEndian,
-                              QStringLiteral(
-                                  "Little-endian fields must have a width that is a multiple of 8"),
+                              QStringLiteral("Exp-Golomb fields use the default bit order"),
                               field.range);
             }
-            if (field.endian == DslEndian::Little && fieldOffset % 8 != 0) {
+            if (isBits && field.endian == DslEndian::Little && field.width % 8 != 0) {
+                addDiagnostic(
+                    result.diagnostics,
+                    DslDiagnosticCode::InvalidEndian,
+                    QStringLiteral(
+                        "Little-endian fields must have a width that is a multiple of 8"),
+                    field.range);
+            }
+            if (isBits && field.endian == DslEndian::Little &&
+                (!fieldOffset || *fieldOffset % 8 != 0)) {
                 addDiagnostic(
                     result.diagnostics,
                     DslDiagnosticCode::InvalidEndian,
@@ -251,13 +277,39 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
 
             DslTypedField typedField;
             typedField.name = field.name;
-            typedField.type =
-                {DslValueTypeKind::UnsignedBits, field.width, field.endian, std::nullopt};
+            const DslValueTypeKind valueKind =
+                isBits ? DslValueTypeKind::UnsignedBits
+                       : (isUnsignedExpGolomb ? DslValueTypeKind::UnsignedExpGolomb
+                                              : DslValueTypeKind::SignedExpGolomb);
+            typedField.type = {valueKind, isBits ? field.width : quint8(0),
+                               isBits ? field.endian : DslEndian::Big, std::nullopt};
             typedField.metadata =
                 metadataForAnnotations(field.annotations, typedStruct.metadata.specification);
-            typedField.metadata.typeName = QStringLiteral("bits");
+            typedField.metadata.typeName = isBits ? QStringLiteral("bits")
+                                                  : (isUnsignedExpGolomb ? QStringLiteral("ue")
+                                                                         : QStringLiteral("se"));
             typedField.range = field.range;
-            const std::optional<QString> enumName = enumTypeName(field, result.diagnostics);
+            const auto hasAnnotation = [&field](const QString& name) {
+                return std::any_of(field.annotations.begin(),
+                                   field.annotations.end(),
+                                   [&name](const DslAnnotation& annotation) {
+                                       return annotation.name == name;
+                                   });
+            };
+            if (!isBits && hasAnnotation(QStringLiteral("enum"))) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidAnnotation,
+                              QStringLiteral("@enum is only supported on bits fields"),
+                              field.range);
+            }
+            if (!isBits && hasAnnotation(QStringLiteral("equals"))) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidAnnotation,
+                              QStringLiteral("@equals is only supported on bits fields"),
+                              field.range);
+            }
+            const std::optional<QString> enumName =
+                isBits ? enumTypeName(field, result.diagnostics) : std::nullopt;
             if (enumName) {
                 const auto enumIndex = typed.enumIndex(*enumName);
                 if (!enumIndex) {
@@ -285,7 +337,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     }
                 }
             }
-            typedField.equalsConstraint = equalsConstraint(field, result.diagnostics);
+            typedField.equalsConstraint =
+                isBits ? equalsConstraint(field, result.diagnostics) : std::nullopt;
             if (typedField.equalsConstraint && field.width < 64 &&
                 *typedField.equalsConstraint >= (quint64{1} << field.width)) {
                 addDiagnostic(result.diagnostics,
@@ -301,13 +354,18 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                               }());
             }
             typedStruct.fields.push_back(std::move(typedField));
-            if (fieldOffset > std::numeric_limits<quint64>::max() - field.width) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::InvalidType,
-                              QStringLiteral("Structure bit width is too large"),
-                              structure.range);
+            if (!isBits) {
+                fieldOffset = std::nullopt;
+            } else if (!fieldOffset ||
+                       *fieldOffset > std::numeric_limits<quint64>::max() - field.width) {
+                if (fieldOffset) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidType,
+                                  QStringLiteral("Structure bit width is too large"),
+                                  structure.range);
+                }
             } else {
-                fieldOffset += field.width;
+                *fieldOffset += field.width;
             }
         }
         typed.structs.push_back(std::move(typedStruct));
@@ -455,8 +513,19 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         bool emitted = appendInstruction({DslOpcode::BeginStructure, structIndex, 0});
         for (std::size_t fieldIndex = 0; emitted && fieldIndex < structure.fields.size();
              ++fieldIndex) {
-            emitted = appendInstruction(
-                {DslOpcode::ReadUnsignedBits, static_cast<quint32>(fieldIndex), 0});
+            const DslOpcode readOpcode = [&]() {
+                switch (structure.fields.at(fieldIndex).type.kind) {
+                case DslValueTypeKind::UnsignedBits:
+                case DslValueTypeKind::Enum:
+                    return DslOpcode::ReadUnsignedBits;
+                case DslValueTypeKind::UnsignedExpGolomb:
+                    return DslOpcode::ReadUnsignedExpGolomb;
+                case DslValueTypeKind::SignedExpGolomb:
+                    return DslOpcode::ReadSignedExpGolomb;
+                }
+                return DslOpcode::ReadUnsignedBits;
+            }();
+            emitted = appendInstruction({readOpcode, static_cast<quint32>(fieldIndex), 0});
             if (emitted && structure.fields.at(fieldIndex).equalsConstraint) {
                 emitted = appendInstruction(
                     {DslOpcode::AssertEquals,

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <utility>
 
 namespace streamview::rules {
@@ -536,39 +537,44 @@ private:
         while (!at(DslTokenKind::RightBrace) && !at(DslTokenKind::EndOfFile)) {
             const std::vector<DslAnnotation> fieldAnnotations = parseAnnotations();
             const DslSourcePosition fieldStart = current().range.start;
-            if (!matchIdentifier(QStringLiteral("bits"))) {
+            DslBitField field;
+            field.annotations = fieldAnnotations;
+            quint64 width = 0;
+            if (matchIdentifier(QStringLiteral("bits"))) {
+                field.encoding = DslFieldEncoding::Bits;
+                expect(DslTokenKind::Less, QStringLiteral("'<' after bits"));
+                if (at(DslTokenKind::IntegerLiteral)) {
+                    width = consume().integerValue;
+                } else {
+                    error(DslDiagnosticCode::MissingToken,
+                          QStringLiteral("Expected bit width"));
+                }
+                if (match(DslTokenKind::Comma)) {
+                    QString endianName;
+                    if (expectIdentifier(&endianName,
+                                         QStringLiteral("byte order (big or little)"))) {
+                        if (endianName == QStringLiteral("little")) {
+                            field.endian = DslEndian::Little;
+                        } else if (endianName != QStringLiteral("big")) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidEndian,
+                                 QStringLiteral("Byte order must be 'big' or 'little'"),
+                                 lexResult_.tokens.at(index_ - 1).range});
+                        }
+                    }
+                }
+                expect(DslTokenKind::Greater,
+                       QStringLiteral("'>' after bit width and byte order"));
+            } else if (matchIdentifier(QStringLiteral("ue"))) {
+                field.encoding = DslFieldEncoding::UnsignedExpGolomb;
+            } else if (matchIdentifier(QStringLiteral("se"))) {
+                field.encoding = DslFieldEncoding::SignedExpGolomb;
+            } else {
                 error(DslDiagnosticCode::UnexpectedToken,
-                      QStringLiteral(
-                          "Only bits<N[, endian]> fields are supported in the minimum DSL"));
+                      QStringLiteral("Expected bits<N[, endian]>, ue, or se field type"));
                 recoverField();
                 continue;
             }
-            expect(DslTokenKind::Less, QStringLiteral("'<' after bits"));
-            quint64 width = 0;
-            if (at(DslTokenKind::IntegerLiteral)) {
-                width = consume().integerValue;
-            } else {
-                error(DslDiagnosticCode::MissingToken, QStringLiteral("Expected bit width"));
-            }
-            DslEndian endian = DslEndian::Big;
-            if (match(DslTokenKind::Comma)) {
-                QString endianName;
-                if (expectIdentifier(&endianName, QStringLiteral("byte order (big or little)"))) {
-                    if (endianName == QStringLiteral("little")) {
-                        endian = DslEndian::Little;
-                    } else if (endianName != QStringLiteral("big")) {
-                        result_.diagnostics.push_back(
-                            {DslDiagnosticCode::InvalidEndian,
-                             QStringLiteral("Byte order must be 'big' or 'little'"),
-                             lexResult_.tokens.at(index_ - 1).range});
-                    }
-                }
-            }
-            expect(DslTokenKind::Greater, QStringLiteral("'>' after bit width and byte order"));
-
-            DslBitField field;
-            field.annotations = fieldAnnotations;
-            field.endian = endian;
             if (!expectIdentifier(&field.name, QStringLiteral("field name"))) {
                 recoverField();
                 continue;
@@ -579,13 +585,14 @@ private:
             expect(DslTokenKind::Semicolon, QStringLiteral("';' after field"));
             field.width = width >= 1 && width <= 64 ? static_cast<quint8>(width) : 0;
             field.range = {fieldStart, lexResult_.tokens.at(index_ - 1).range.end};
-            if (field.width == 0) {
+            if (field.encoding == DslFieldEncoding::Bits && field.width == 0) {
                 result_.diagnostics.push_back(
                     {DslDiagnosticCode::InvalidBitWidth,
                      QStringLiteral("Bit field width must be in the range 1..64"),
                      field.range});
             }
-            if (field.endian == DslEndian::Little && field.width != 0 && field.width % 8 != 0) {
+            if (field.encoding == DslFieldEncoding::Bits &&
+                field.endian == DslEndian::Little && field.width != 0 && field.width % 8 != 0) {
                 result_.diagnostics.push_back(
                     {DslDiagnosticCode::InvalidEndian,
                      QStringLiteral(
@@ -757,7 +764,7 @@ private:
                     break;
                 }
             }
-            quint64 fieldOffset = 0;
+            std::optional<quint64> fieldOffset = 0;
             for (std::size_t fieldIndex = 0; fieldIndex < structure.fields.size(); ++fieldIndex) {
                 const DslBitField& field = structure.fields.at(fieldIndex);
                 validatePresentationAnnotations(field.annotations);
@@ -780,6 +787,13 @@ private:
                                  annotation.range});
                         }
                         enumSeen = true;
+                        if (field.encoding != DslFieldEncoding::Bits) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidAnnotation,
+                                 QStringLiteral("@enum is only supported on bits fields"),
+                                 annotation.range});
+                            continue;
+                        }
                         if (annotation.arguments.size() != 1 ||
                             annotation.arguments.front().kind !=
                                 DslAnnotationValueKind::Identifier) {
@@ -826,6 +840,13 @@ private:
                              annotation.range});
                     }
                     equalsSeen = true;
+                    if (field.encoding != DslFieldEncoding::Bits) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidAnnotation,
+                             QStringLiteral("@equals is only supported on bits fields"),
+                             annotation.range});
+                        continue;
+                    }
                     if (annotation.arguments.size() != 1 ||
                         annotation.arguments.front().kind != DslAnnotationValueKind::Integer) {
                         result_.diagnostics.push_back({DslDiagnosticCode::InvalidAnnotation,
@@ -833,7 +854,8 @@ private:
                                                        annotation.range});
                     }
                 }
-                if (field.endian == DslEndian::Little && fieldOffset % 8 != 0) {
+                if (field.endian == DslEndian::Little &&
+                    (!fieldOffset || *fieldOffset % 8 != 0)) {
                     result_.diagnostics.push_back(
                         {DslDiagnosticCode::InvalidEndian,
                          QStringLiteral(
@@ -841,8 +863,13 @@ private:
                              "structure"),
                          field.range});
                 }
-                if (fieldOffset <= std::numeric_limits<quint64>::max() - field.width) {
-                    fieldOffset += field.width;
+                if (field.encoding != DslFieldEncoding::Bits || field.width == 0 ||
+                    !fieldOffset) {
+                    fieldOffset = std::nullopt;
+                } else if (*fieldOffset <= std::numeric_limits<quint64>::max() - field.width) {
+                    *fieldOffset += field.width;
+                } else {
+                    fieldOffset = std::nullopt;
                 }
             }
         }

@@ -14,6 +14,8 @@ namespace streamview::rules {
 enum class DslValueTypeKind : quint8 {
     UnsignedBits,
     Enum,
+    UnsignedExpGolomb,
+    SignedExpGolomb,
 };
 
 struct DslValueType final {
@@ -76,6 +78,8 @@ struct DslTypedEntry final {
 enum class DslOpcode : quint8 {
     BeginStructure,
     ReadUnsignedBits,
+    ReadUnsignedExpGolomb,
+    ReadSignedExpGolomb,
     AssertEquals,
     EndStructure,
 };

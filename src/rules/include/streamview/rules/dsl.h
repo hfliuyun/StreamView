@@ -108,6 +108,12 @@ enum class DslEndian : quint8 {
     Little,
 };
 
+enum class DslFieldEncoding : quint8 {
+    Bits,
+    UnsignedExpGolomb,
+    SignedExpGolomb,
+};
+
 struct DslEnumValue final {
     QString name;
     quint64 value = 0;
@@ -123,6 +129,7 @@ struct DslEnum final {
 
 struct DslBitField final {
     QString name;
+    DslFieldEncoding encoding = DslFieldEncoding::Bits;
     quint8 width = 0;
     DslEndian endian = DslEndian::Big;
     std::vector<DslAnnotation> annotations;
