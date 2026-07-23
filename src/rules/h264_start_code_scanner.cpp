@@ -108,11 +108,13 @@ H264StartCodeScanner::makeRecord(PendingStartCode start,
     return record;
 }
 
-StartCodeScanBatch H264StartCodeScanner::scanBatch(std::size_t maximumRecords) {
+StartCodeScanBatch H264StartCodeScanner::scanBatch(std::size_t maximumRecords,
+                                                   quint64 maximumInspectedPositions) {
     StartCodeScanBatch result;
-    if (maximumRecords == 0) {
+    if (maximumRecords == 0 || maximumInspectedPositions == 0) {
         result.status = StartCodeScanStatus::InvalidBatchSize;
-        result.errorMessage = QStringLiteral("Maximum scan records must be greater than zero");
+        result.errorMessage =
+            QStringLiteral("Maximum scan records and inspected positions must be greater than zero");
         return result;
     }
     if (source_->sizeBytes() > std::numeric_limits<quint64>::max() / 8U) {
@@ -133,7 +135,9 @@ StartCodeScanBatch H264StartCodeScanner::scanBatch(std::size_t maximumRecords) {
     }
 
     QString errorMessage;
-    while (!finished_ && result.records.size() < maximumRecords) {
+    quint64 inspectedPositions = 0;
+    while (!finished_ && result.records.size() < maximumRecords &&
+           inspectedPositions < maximumInspectedPositions) {
         if (cancellation_ && (inspectedBytes_ % 1024U == 0) &&
             cancellation_->isCancellationRequested()) {
             result.status = StartCodeScanStatus::Cancelled;
@@ -163,6 +167,7 @@ StartCodeScanBatch H264StartCodeScanner::scanBatch(std::size_t maximumRecords) {
             return result;
         }
         ++inspectedBytes_;
+        ++inspectedPositions;
         if (prefixLength == 0) {
             ++cursor_;
             continue;

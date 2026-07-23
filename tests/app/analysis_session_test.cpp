@@ -132,8 +132,10 @@ private slots:
                  streamview::rules::H264AnnexBDetectionConfidence::Probable);
 
         while (!session->finished()) {
-            (void)session->analyzeBatch(1);
+            const auto batch = session->analyzeBatch(1);
+            QVERIFY(batch.status != streamview::rules::H264AnnexBAnalysisStatus::InvalidBatchSize);
         }
+        QCOMPARE(session->scanCursor(), session->sizeBytes());
 
         const auto root = session->tree().node(session->tree().rootId());
         QVERIFY(root.has_value());

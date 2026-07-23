@@ -121,12 +121,16 @@ private slots:
         MemorySource source(std::move(data));
         H264StartCodeScanner scanner(source);
 
-        const auto result = scanner.scanBatch();
-        QCOMPARE(result.status, StartCodeScanStatus::Complete);
-        QCOMPARE(result.records.size(), std::size_t(1));
-        QCOMPARE(result.records.front().startCodeOffset, quint64(65534));
-        QCOMPARE(result.records.front().startCodeLength, quint8(3));
-        QCOMPARE(result.records.front().nalUnitLength, quint64(1));
+        const auto first = scanner.scanBatch();
+        QCOMPARE(first.status, StartCodeScanStatus::InProgress);
+        QVERIFY(first.records.empty());
+
+        const auto second = scanner.scanBatch();
+        QCOMPARE(second.status, StartCodeScanStatus::Complete);
+        QCOMPARE(second.records.size(), std::size_t(1));
+        QCOMPARE(second.records.front().startCodeOffset, quint64(65534));
+        QCOMPARE(second.records.front().startCodeLength, quint8(3));
+        QCOMPARE(second.records.front().nalUnitLength, quint64(1));
     }
 
     void completesWhenNoPrefixExists() {
@@ -136,6 +140,22 @@ private slots:
         const auto result = scanner.scanBatch();
         QCOMPARE(result.status, StartCodeScanStatus::Complete);
         QVERIFY(result.records.empty());
+    }
+
+    void boundsWorkPerBatchWhenNoPrefixExists() {
+        MemorySource source(std::vector<std::byte>(20, std::byte{0x12}));
+        H264StartCodeScanner scanner(source);
+
+        const auto first = scanner.scanBatch(1, 8);
+        QCOMPARE(first.status, StartCodeScanStatus::InProgress);
+        QCOMPARE(scanner.cursor(), quint64(8));
+        const auto second = scanner.scanBatch(1, 8);
+        QCOMPARE(second.status, StartCodeScanStatus::InProgress);
+        QCOMPARE(scanner.cursor(), quint64(16));
+        const auto third = scanner.scanBatch(1, 8);
+        QCOMPARE(third.status, StartCodeScanStatus::Complete);
+        QCOMPARE(scanner.cursor(), quint64(20));
+        QVERIFY(third.records.empty());
     }
 
     void observesCancellationBeforeReading() {

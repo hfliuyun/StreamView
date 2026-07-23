@@ -43,11 +43,17 @@ struct StartCodeScanBatch final {
 
 class H264StartCodeScanner final {
 public:
+    [[nodiscard]] static constexpr quint64 defaultWorkBudget() noexcept {
+        return 64U * 1024U;
+    }
+
     explicit H264StartCodeScanner(const core::RandomAccessSource& source,
                                   std::optional<core::CancellationToken> cancellation = std::nullopt)
         : source_(&source), cancellation_(std::move(cancellation)) {}
 
-    [[nodiscard]] StartCodeScanBatch scanBatch(std::size_t maximumRecords = 256);
+    [[nodiscard]] StartCodeScanBatch scanBatch(
+        std::size_t maximumRecords = 256,
+        quint64 maximumInspectedPositions = defaultWorkBudget());
 
     [[nodiscard]] bool finished() const noexcept { return finished_; }
     [[nodiscard]] quint64 cursor() const noexcept { return cursor_; }

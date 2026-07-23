@@ -284,7 +284,8 @@ void H264AnnexBAnalyzer::markRootPartial(core::DiagnosticCode code,
     (void)tree_.markPartial(tree_.rootId(), state, std::move(diagnostic));
 }
 
-H264AnnexBAnalysisBatch H264AnnexBAnalyzer::analyzeBatch(std::size_t maximumRecords) {
+H264AnnexBAnalysisBatch H264AnnexBAnalyzer::analyzeBatch(
+    std::size_t maximumRecords, quint64 maximumInspectedPositions) {
     H264AnnexBAnalysisBatch result;
     if (terminal_) {
         result.status = terminalStatus_;
@@ -292,7 +293,8 @@ H264AnnexBAnalysisBatch H264AnnexBAnalyzer::analyzeBatch(std::size_t maximumReco
         return result;
     }
 
-    const StartCodeScanBatch scanBatch = scanner_.scanBatch(maximumRecords);
+    const StartCodeScanBatch scanBatch =
+        scanner_.scanBatch(maximumRecords, maximumInspectedPositions);
     result.status = analysisStatus(scanBatch.status);
     result.errorMessage = scanBatch.errorMessage;
     for (const H264StartCodeRecord& record : scanBatch.records) {

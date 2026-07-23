@@ -38,9 +38,11 @@ public:
     }
 
     [[nodiscard]] rules::H264AnnexBAnalysisBatch analyzeBatch(
-        std::size_t maximumRecords = 256);
+        std::size_t maximumRecords = 256,
+        quint64 maximumInspectedPositions = rules::H264StartCodeScanner::defaultWorkBudget());
     [[nodiscard]] const core::AnalysisTree& tree() const noexcept { return analyzer_.tree(); }
     [[nodiscard]] bool finished() const noexcept { return analyzer_.finished(); }
+    [[nodiscard]] quint64 scanCursor() const noexcept { return analyzer_.scanCursor(); }
 
 private:
     AnalysisSession(std::unique_ptr<core::RandomAccessSource> source,

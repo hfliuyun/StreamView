@@ -66,8 +66,9 @@ AnalysisSession::create(std::unique_ptr<core::RandomAccessSource> source,
                             std::move(formatDetection), std::move(*analyzer)));
 }
 
-rules::H264AnnexBAnalysisBatch AnalysisSession::analyzeBatch(std::size_t maximumRecords) {
-    return analyzer_.analyzeBatch(maximumRecords);
+rules::H264AnnexBAnalysisBatch AnalysisSession::analyzeBatch(
+    std::size_t maximumRecords, quint64 maximumInspectedPositions) {
+    return analyzer_.analyzeBatch(maximumRecords, maximumInspectedPositions);
 }
 
 } // namespace streamview::app

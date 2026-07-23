@@ -48,10 +48,13 @@ public:
     H264AnnexBAnalyzer& operator=(const H264AnnexBAnalyzer&) = delete;
     H264AnnexBAnalyzer& operator=(H264AnnexBAnalyzer&&) noexcept = default;
 
-    [[nodiscard]] H264AnnexBAnalysisBatch analyzeBatch(std::size_t maximumRecords = 256);
+    [[nodiscard]] H264AnnexBAnalysisBatch analyzeBatch(
+        std::size_t maximumRecords = 256,
+        quint64 maximumInspectedPositions = H264StartCodeScanner::defaultWorkBudget());
 
     [[nodiscard]] const core::AnalysisTree& tree() const noexcept { return tree_; }
     [[nodiscard]] bool finished() const noexcept { return terminal_; }
+    [[nodiscard]] quint64 scanCursor() const noexcept { return scanner_.cursor(); }
 
 private:
     H264AnnexBAnalyzer(const core::RandomAccessSource& source,

@@ -181,6 +181,13 @@ private slots:
         QCOMPARE(forbidden->value().toULongLong(), quint64(0));
         QCOMPARE(referenceIdc->value().toULongLong(), quint64(3));
         QCOMPARE(unitType->value().toULongLong(), quint64(5));
+        QVERIFY(forbidden->metadata().specification.has_value());
+        QCOMPARE(forbidden->metadata().specification->standard,
+                 QStringLiteral("ITU-T H.264"));
+        QCOMPARE(forbidden->metadata().specification->clause, QStringLiteral("7.3.1"));
+        QVERIFY(!forbidden->metadata().description.isEmpty());
+        QVERIFY(!referenceIdc->metadata().description.isEmpty());
+        QVERIFY(!unitType->metadata().description.isEmpty());
         QCOMPARE(forbidden->location()->sourceSpans().front().start().absoluteBitOffset(),
                  quint64(24));
         QCOMPARE(referenceIdc->location()->sourceSpans().front().start().absoluteBitOffset(),
@@ -209,6 +216,28 @@ private slots:
         const auto root = analyzer->tree().node(analyzer->tree().rootId());
         QVERIFY(root.has_value());
         QCOMPARE(root->state(), MaterializationState::Materialized);
+    }
+
+    void exposesBoundedScanProgressAndRejectsInvalidWorkBudget() {
+        MemorySource source(std::vector<std::byte>(20, std::byte{0x12}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto invalid = analyzer->analyzeBatch(1, 0);
+        QCOMPARE(invalid.status, H264AnnexBAnalysisStatus::InvalidBatchSize);
+        QCOMPARE(analyzer->scanCursor(), quint64(0));
+        QVERIFY(!analyzer->finished());
+
+        const auto first = analyzer->analyzeBatch(1, 8);
+        QCOMPARE(first.status, H264AnnexBAnalysisStatus::InProgress);
+        QCOMPARE(analyzer->scanCursor(), quint64(8));
+        const auto second = analyzer->analyzeBatch(1, 8);
+        QCOMPARE(second.status, H264AnnexBAnalysisStatus::InProgress);
+        QCOMPARE(analyzer->scanCursor(), quint64(16));
+        const auto third = analyzer->analyzeBatch(1, 8);
+        QCOMPARE(third.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(analyzer->scanCursor(), quint64(20));
     }
 
     void retainsTheInvalidForbiddenBitAsAPartialResult() {
