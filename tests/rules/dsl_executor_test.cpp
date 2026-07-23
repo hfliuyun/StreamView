@@ -126,6 +126,195 @@ private slots:
         QCOMPARE(structure->state(), streamview::core::MaterializationState::Materialized);
     }
 
+    void decodesExplicitLittleEndianWithoutChangingSourceLocation() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<16, little> value; bits<3> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0x34, 0x12, 0xa0}));
+        const auto mapping = mappingForBytes(3);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 24);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("little-endian"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(19));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        const auto value = tree->node(structure->children().at(0));
+        const auto tail = tree->node(structure->children().at(1));
+        QVERIFY(value.has_value());
+        QVERIFY(tail.has_value());
+        QCOMPARE(value->value().toULongLong(), quint64(0x1234));
+        QCOMPARE(tail->value().toULongLong(), quint64(5));
+        QCOMPARE(value->location()->logicalRange().bitLength(), quint64(16));
+        QCOMPARE(value->location()->sourceSpans().front().start().absoluteBitOffset(), quint64(0));
+        QCOMPARE(value->location()->sourceSpans().front().bitLength(), quint64(16));
+    }
+
+    void decodesAFullWidthLittleEndianValue() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { bits<64, little> value; } entry Header;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({1, 2, 3, 4, 5, 6, 7, 8}));
+        const auto mapping = mappingForBytes(8);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 64);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("little-endian-64"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                       quint32(0),
+                                                       reader,
+                                                       *mapping,
+                                                       0,
+                                                       *tree,
+                                                       tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        const auto value = tree->node(structure->children().front());
+        QVERIFY(value.has_value());
+        QCOMPARE(value->value().toULongLong(), quint64(0x0807060504030201ULL));
+    }
+
+    void rejectsLittleEndianAtAnUnalignedSourceAddress() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<16, little> value; } entry Header;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0x03, 0x41, 0x20}));
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(4), 16);
+        QVERIFY(range.has_value());
+        const auto mapping = streamview::core::SourceMapping::create(
+            streamview::core::LogicalViewId(1), {*range});
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("unaligned-little-endian"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                       quint32(0),
+                                                       reader,
+                                                       *mapping,
+                                                       0,
+                                                       *tree,
+                                                       tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(result.bitsConsumed, quint64(0));
+        QCOMPARE(result.nodesCreated, quint64(1));
+    }
+
+    void validatesEnumValuesAndRetainsUnknownValueLocation() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "enum Type { one = 1; five = 5; } "
+            "struct Header { bits<3> value @enum(Type); } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource validSource(bytes({0xa0}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader validReader(validSource, *range);
+        auto validTree = AnalysisTree::create(QStringLiteral("enum-valid"));
+        QVERIFY(validTree.has_value());
+        const auto valid = DslExecutor::decodeStruct(*compiled.program,
+                                                      quint32(0),
+                                                      validReader,
+                                                      *mapping,
+                                                      0,
+                                                      *validTree,
+                                                      validTree->rootId());
+        QCOMPARE(valid.status, DslExecutionStatus::Materialized);
+        const auto validStructure = validTree->node(*valid.structureNode);
+        QVERIFY(validStructure.has_value());
+        QCOMPARE(validTree->node(validStructure->children().front())->value().toULongLong(),
+                 quint64(5));
+
+        MemorySource invalidSource(bytes({0xe0}));
+        BitReader invalidReader(invalidSource, *range);
+        auto invalidTree = AnalysisTree::create(QStringLiteral("enum-invalid"));
+        QVERIFY(invalidTree.has_value());
+        const auto invalid = DslExecutor::decodeStruct(*compiled.program,
+                                                        quint32(0),
+                                                        invalidReader,
+                                                        *mapping,
+                                                        0,
+                                                        *invalidTree,
+                                                        invalidTree->rootId());
+        QCOMPARE(invalid.status, DslExecutionStatus::InvalidSyntax);
+        const auto invalidStructure = invalidTree->node(*invalid.structureNode);
+        QVERIFY(invalidStructure.has_value());
+        QCOMPARE(invalidStructure->children().size(), std::size_t(1));
+        QCOMPARE(invalidStructure->diagnostics().front().fieldPath,
+                 QStringLiteral("Header.value"));
+        QVERIFY(invalidStructure->diagnostics().front().location.has_value());
+        QCOMPARE(
+            invalidStructure->diagnostics().front().location->sourceSpans().front().bitLength(),
+            quint64(3));
+    }
+
+    void rejectsMalformedEnumAndEndianTypedIr() {
+        const auto enumParsed = DslParser::parse(QStringLiteral(
+            "enum Type { one = 1; } struct Header { bits<3> value @enum(Type); } entry Header;"));
+        const auto enumCompiled = DslCompiler::compile(enumParsed.program);
+        QVERIFY(enumCompiled.succeeded());
+        auto malformedEnum = *enumCompiled.program;
+        malformedEnum.structs.front().fields.front().type.enumIndex = quint32(99);
+
+        MemorySource source(bytes({0x20}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader enumReader(source, *range);
+        auto enumTree = AnalysisTree::create(QStringLiteral("malformed-enum"));
+        QVERIFY(enumTree.has_value());
+        const auto enumResult = DslExecutor::decodeStruct(malformedEnum,
+                                                           quint32(0),
+                                                           enumReader,
+                                                           *mapping,
+                                                           0,
+                                                           *enumTree,
+                                                           enumTree->rootId());
+        QCOMPARE(enumResult.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(enumResult.nodesCreated, quint64(1));
+
+        const auto endianParsed = DslParser::parse(
+            QStringLiteral("struct Header { bits<8> value; } entry Header;"));
+        const auto endianCompiled = DslCompiler::compile(endianParsed.program);
+        QVERIFY(endianCompiled.succeeded());
+        auto malformedEndian = *endianCompiled.program;
+        malformedEndian.structs.front().fields.front().type.endian =
+            streamview::rules::DslEndian::Little;
+        malformedEndian.structs.front().fields.front().type.bitWidth = 3;
+        BitReader endianReader(source, *range);
+        auto endianTree = AnalysisTree::create(QStringLiteral("malformed-endian"));
+        QVERIFY(endianTree.has_value());
+        const auto endianResult = DslExecutor::decodeStruct(malformedEndian,
+                                                             quint32(0),
+                                                             endianReader,
+                                                             *mapping,
+                                                             0,
+                                                             *endianTree,
+                                                             endianTree->rootId());
+        QCOMPARE(endianResult.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(endianResult.nodesCreated, quint64(1));
+    }
+
     void carriesPresentationMetadataIntoAnalysisNodes() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "@spec(\"Example Standard\", \"4.2\") "

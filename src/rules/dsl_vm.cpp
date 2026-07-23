@@ -74,6 +74,33 @@ namespace {
     return depth;
 }
 
+[[nodiscard]] bool fitsUnsignedBits(quint64 value, quint8 bitWidth) noexcept {
+    return bitWidth == 64 || (bitWidth != 0 && value < (quint64{1} << bitWidth));
+}
+
+[[nodiscard]] quint64 decodeValue(quint64 value, const DslValueType& type) noexcept {
+    if (type.endian != DslEndian::Little) {
+        return value;
+    }
+
+    // BitReader preserves source bit order; byte-order conversion belongs to value decoding.
+    quint64 decoded = 0;
+    const unsigned int byteCount = type.bitWidth / 8U;
+    for (unsigned int index = 0; index < byteCount; ++index) {
+        decoded = (decoded << 8U) | (value & 0xffU);
+        value >>= 8U;
+    }
+    return decoded;
+}
+
+[[nodiscard]] bool enumContains(const DslTypedEnum& enumeration, quint64 value) noexcept {
+    return std::any_of(enumeration.values.begin(),
+                       enumeration.values.end(),
+                       [value](const DslTypedEnumValue& member) {
+                           return member.value == value;
+                       });
+}
+
 } // namespace
 
 DslExecutionResult DslVirtualMachine::execute(
@@ -226,6 +253,58 @@ DslExecutionResult DslVirtualMachine::execute(
                 return result;
             }
             const DslTypedField& field = structure.fields.at(instruction.operand);
+            const quint64 fieldStart = reader.position();
+            const quint64 readerStart = reader.range().start().absoluteBitOffset();
+            const bool littleEndianMisaligned =
+                field.type.endian == DslEndian::Little &&
+                (field.type.bitWidth % 8 != 0 || addWouldOverflow(readerStart, fieldStart) ||
+                 (readerStart + fieldStart) % 8 != 0);
+            if (field.type.bitWidth == 0 || field.type.bitWidth > 64 ||
+                (field.type.endian != DslEndian::Big &&
+                 field.type.endian != DslEndian::Little) ||
+                littleEndianMisaligned) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR field type is invalid"),
+                            &field);
+                return result;
+            }
+
+            const DslTypedEnum* enumeration = nullptr;
+            switch (field.type.kind) {
+            case DslValueTypeKind::UnsignedBits:
+                if (field.type.enumIndex) {
+                    markFailure(DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Typed unsigned field has an enum reference"),
+                                &field);
+                    return result;
+                }
+                break;
+            case DslValueTypeKind::Enum:
+                if (!field.type.enumIndex || *field.type.enumIndex >= program.enums.size()) {
+                    markFailure(DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Typed enum field has an invalid enum reference"),
+                                &field);
+                    return result;
+                }
+                enumeration = &program.enums.at(*field.type.enumIndex);
+                if (enumeration->values.empty() ||
+                    std::any_of(enumeration->values.begin(),
+                                enumeration->values.end(),
+                                [&field](const DslTypedEnumValue& value) {
+                                    return !fitsUnsignedBits(value.value, field.type.bitWidth);
+                                })) {
+                    markFailure(DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Typed enum definition is invalid for the field"),
+                                &field);
+                    return result;
+                }
+                break;
+            default:
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR field value kind is invalid"),
+                            &field);
+                return result;
+            }
             const quint32 structureDepth = parentDepth + 1U;
             if (structureDepth >= options.limits.maximumNodeDepth) {
                 markFailure(DslExecutionStatus::ResourceLimit,
@@ -239,7 +318,6 @@ DslExecutionResult DslVirtualMachine::execute(
                             &field);
                 return result;
             }
-            const quint64 fieldStart = reader.position();
             const core::BitReadResult readResult = reader.readBits(field.type.bitWidth);
             result.bitsConsumed = reader.position();
             if (!readResult.complete()) {
@@ -251,6 +329,7 @@ DslExecutionResult DslVirtualMachine::execute(
                             &field);
                 return result;
             }
+            const quint64 decodedValue = decodeValue(readResult.value, field.type);
             if (addWouldOverflow(logicalStart, fieldStart)) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Logical field offset overflow"),
@@ -262,7 +341,6 @@ DslExecutionResult DslVirtualMachine::execute(
                                              fieldStart,
                                              field.type.bitWidth,
                                              field.type.bitWidth);
-            const quint64 readerStart = reader.range().start().absoluteBitOffset();
             if (addWouldOverflow(readerStart, fieldStart) || !location ||
                 location->sourceSpans().size() != 1 ||
                 location->sourceSpans().front().start().absoluteBitOffset() !=
@@ -278,7 +356,7 @@ DslExecutionResult DslVirtualMachine::execute(
             fieldSpec.kind = core::AnalysisNodeKind::SyntaxField;
             fieldSpec.name = field.name;
             fieldSpec.state = core::MaterializationState::Materialized;
-            fieldSpec.value = QVariant::fromValue<qulonglong>(readResult.value);
+            fieldSpec.value = QVariant::fromValue<qulonglong>(decodedValue);
             fieldSpec.location = *location;
             fieldSpec.metadata = field.metadata;
             if (!tree.appendChild(*result.structureNode, std::move(fieldSpec))) {
@@ -289,8 +367,27 @@ DslExecutionResult DslVirtualMachine::execute(
             }
             ++result.nodesCreated;
             lastField = instruction.operand;
-            lastValue = readResult.value;
+            lastValue = decodedValue;
             ++nextFieldIndex;
+            if (enumeration != nullptr && !enumContains(*enumeration, decodedValue)) {
+                result.status = DslExecutionStatus::InvalidSyntax;
+                result.errorMessage =
+                    QStringLiteral("Field value is not declared by its enum type");
+                core::ParseDiagnostic diagnostic;
+                diagnostic.code = core::DiagnosticCode::InvalidSyntax;
+                diagnostic.severity = core::DiagnosticSeverity::Error;
+                diagnostic.message = result.errorMessage;
+                diagnostic.fieldPath = structure.name + QLatin1Char('.') + field.name;
+                diagnostic.location = locationAt(mapping,
+                                                 logicalStart,
+                                                 fieldStart,
+                                                 field.type.bitWidth,
+                                                 field.type.bitWidth);
+                (void)tree.markPartial(*result.structureNode,
+                                       core::MaterializationState::Invalid,
+                                       std::move(diagnostic));
+                return result;
+            }
             break;
         }
         case DslOpcode::AssertEquals: {
