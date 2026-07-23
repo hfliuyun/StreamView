@@ -48,6 +48,9 @@ struct NalUnitHeader {
 当前接受的 M3 类型切片新增了按声明顺序保存的 enum，以及 `bits` 字段的显式字节序。
 enum 声明为无符号整数命名；字段通过 `@enum(Type)` 把这些名称关联到解码值。
 字节序只改变数值解释，source bit 地址仍是 MSB-first，字段 source location 仍对应实际消耗的 bit。
+当前接受的变长 primitive 切片新增了 H.264 风格的无符号和有符号 Exp-Golomb
+字段，类型关键字为 `ue` 和 `se`。这两种类型没有显式宽度或 endian 参数；其 source
+location 覆盖完整编码码字，而不是固定 bit 数。
 
 ## DSL 0.1 最小子集
 
@@ -61,8 +64,8 @@ declaration   := { annotation } ( enum | struct | sequence | entry )
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { field } "}" [ ";" ]
-field         := { annotation } "bits" "<" integer [ "," identifier ] ">" identifier
-                 { annotation } ";"
+field         := { annotation } field_type identifier { annotation } ";"
+field_type    := "bits" "<" integer [ "," identifier ] ">" | "ue" | "se"
 sequence      := "sequence" "<" identifier ">" identifier "="
                  "scan" "(" identifier ")" ";"
 entry         := "entry" identifier ";"
@@ -80,30 +83,36 @@ value         := integer | string | identifier
   省略第二个类型参数或写成 `big` 时，得到大端无符号值。`little` 只允许宽度为 8 的倍数、
   字段在结构内从字节边界开始，并且执行时 source span 也从字节边界开始；它只反转完整字节
   的数值权重，不改变实际消耗的 bit 顺序。
+- `ue` 和 `se` 是变长 Exp-Golomb 字段，不接受宽度或 endian 参数，并始终按
+  MSB-first 消耗编码码字。由于宽度不能静态确定，变长字段之后的小端字段会被拒绝，除非
+  后续语言功能能够证明其对齐。
 - 唯一接受的渐进 sequence 形式是
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`。
   `Element` 必须是已声明结构。
-- `@equals(integer)` 字段注解是会执行检查的约束，在一个字段上最多出现一次，且参数值
-  必须能由该字段的无符号 bit 宽度表示；`@enum(Type)` 最多出现一次，参数必须是已声明
-  enum 类型，并且它的每个 member 值都必须能由字段宽度表示。enum 字段仍解码为无符号整数，
-  enum 为该数值提供名称和有效值检查。`@description("text")` 提供项目编写的
+- `@equals(integer)` 字段注解是会执行检查的约束，在一个 `bits` 字段上最多出现一次，且
+  参数值必须能由该字段的无符号 bit 宽度表示；`@enum(Type)` 只能出现在 `bits` 字段上，
+  最多出现一次，参数必须是已声明 enum 类型，并且它的每个 member 值都必须能由字段宽度
+  表示。enum 字段仍解码为无符号整数，enum 为该数值提供名称和有效值检查。`ue` 和 `se`
+  拒绝这两个注解。`@description("text")` 提供项目编写的
   展示说明，`@spec("standard", "clause")` 提供规范引用。字段默认继承所属结构的规范
   引用，也可以用自己的注解覆盖。
 - 出现词法或静态诊断时，source 不会生成可执行规则；parser 仍返回部分 IR 以及带行列范围的全部诊断，便于编辑器一次报告多个错误。
 
-`enum`、`big` 和 `little` 只在上述语法位置作为上下文关键字，其他位置仍可作为普通
-identifier。既有 `bits<N>` source 不变，并且与 `bits<N, big>` 完全等价；本切片不弃用
-任何已接受的 0.1 语法。
+`enum`、`big`、`little`、`ue` 和 `se` 只在上述语法位置作为上下文关键字，其他位置仍可
+作为普通 identifier。既有 `bits<N>` source 不变，并且与 `bits<N, big>` 完全等价；本切片
+不弃用任何已接受的 0.1 语法。
 
 parser 生成面向 source、用于诊断的声明模型。静态 compiler 把 enum、结构、sequence 和
 entry 引用解析成 typed program，保留声明顺序，并确定性生成 `begin-structure`、
-`read-unsigned-bits`、`assert-equals` 和 `end-structure` bytecode。read 指令携带已解析的
-enum 与字节序类型信息，不增加另一套 source-coordinate 操作。parser 或 compiler 出现任何
-诊断时都不生成可执行 typed IR。`svtool rule check` 会运行这两个阶段；内置 Annex B runner
-也只在 analyzer 创建时编译一次规则，之后按已解析的结构索引执行每条记录。
+`read-unsigned-bits`、`read-unsigned-exp-golomb`、`read-signed-exp-golomb`、`assert-equals`
+和 `end-structure` bytecode。每个 read opcode 必须与字段类型匹配；Exp-Golomb typed field
+的静态 bit width 为零、使用默认 bit order，且没有 enum reference 或 equality constraint。
+parser 或 compiler 出现任何诊断时都不生成可执行 typed IR。`svtool rule check` 会运行这两个
+阶段；内置 Annex B runner 也只在 analyzer 创建时编译一次规则，之后按已解析的结构索引执行
+每条记录。
 
-最小 VM 通过 bounded bit reader 按顺序执行结构。成功字段会成为带无符号解码值和
-源位置的 syntax-field 节点。小端字段在读取完成后反转完整 source byte 的数值权重，
+最小 VM 通过 bounded bit reader 按顺序执行结构。成功字段会成为带解码值和源位置的
+syntax-field 节点。小端字段在读取完成后反转完整 source byte 的数值权重，
 不会改变 bit reader position 或 source mapping；若执行到该字段时绝对 source 地址没有
 按字节对齐，则 typed execution 非法，并且不消耗该字段。enum 字段保留数值和类型 metadata；
 若数值不属于已声明 member，则保留字段节点，把结构标记为 invalid，并在字段位置报告
@@ -112,6 +121,22 @@ enum 与字节序类型信息，不增加另一套 source-coordinate 操作。pa
 逻辑范围映射到一个连续的 direct source 区间；跨多个 source 区间的 mapped transformation
 留到后续转换运行时实现。执行器把字段类型、说明和规范引用保留在 analysis-node snapshot
 上；展示宽度由节点的逻辑范围推导。
+
+对 Exp-Golomb 码字，令 `leadingZeroBits` 为 marker bit 前的连续零 bit 数，`suffix` 为
+随后同宽度的无符号值。`ue` 返回无符号 64 位值
+`codeNum = (2^leadingZeroBits - 1) + suffix`。`se` 在 code number 为零时返回 `0`，奇数
+返回 `+(codeNum / 2 + 1)`，偶数返回 `-(codeNum / 2)`，并发布有符号 64 位值；因此开头的
+有符号值是 `0, +1, -1, +2, -2`。
+
+最多允许 63 个前导零；最长合法码字为 127 bit，最大的 `ue` 值为 `2^64 - 2`。遇到第 64
+个前导零时报告 `invalid-syntax`。前缀、marker 和 suffix 作为一次事务式字段读取：截断、
+source failure 或溢出都会把 reader seek 回字段起点，不创建半成品字段节点，保留此前完整
+字段，并在失败字段上附带 field-path 诊断。成功节点的 logical range 和 source span 覆盖完整
+码字。
+
+每个 `ue` 或 `se` 字段只占一条 VM instruction，即使该指令内部最多读取 127 bit。内部读取
+不会创建额外节点，也不会新增取消点；取消仍在文档规定的 instruction 间隔检查。127-bit
+上限保证单条指令的工作有界。
 
 内建 `h264_start_code` scanner 通过 64 KiB 随机访问窗口读取 source，并按记录数和已检查
 source position 数量双重限制每个 batch。默认每次最多检查 64 KiB source position，单调
@@ -178,9 +203,24 @@ struct PacketHeader {
 entry PacketHeader;
 ```
 
+Exp-Golomb 合法示例：
+
+```cpp
+@spec("ITU-T H.264", "7.3.3")
+struct SliceHeaderPrefix {
+    ue first_mb_in_slice;
+    ue slice_type;
+    se slice_qp_delta @description("有符号 QP delta。");
+}
+
+entry SliceHeaderPrefix;
+```
+
 最小非法示例包括 `bits<0> flag;`、`bits<65> flag;`、`bits<12, little> value;`、
-位于未对齐字段之后的小端字段、`@enum(Missing)`、无法放入字段宽度的 enum member 值、
-重复 enum member 名、缺少 `@index(progressive)` 的 sequence、`scan(other_scanner)`、
+位于未对齐字段之后的小端字段、`ue value @equals(0);`、`se value @enum(Type);`、
+变长字段之后的小端字段、截断的 Exp-Golomb 码字、64 个前导零、`@enum(Missing)`、
+无法放入字段宽度的 enum member 值、重复 enum member 名、缺少 `@index(progressive)` 的
+sequence、`scan(other_scanner)`、
 重复声明同名，以及没有 `entry` 的程序。enum 和字段解析在下一个 member/field 分号或
 右花括号处恢复，并保留全部 source range 和诊断。
 

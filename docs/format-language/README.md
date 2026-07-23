@@ -52,6 +52,11 @@ uses `@enum(Type)` to associate those names with its decoded value. Byte order
 changes numeric interpretation only. Source bit addresses remain MSB-first and
 source locations remain the bits consumed by the field.
 
+The accepted variable-length primitive slice adds H.264-style unsigned and
+signed Exp-Golomb fields with the contextual type words `ue` and `se`. These
+types have no explicit width or endian argument. Their source locations cover
+the complete encoded codeword rather than a fixed number of bits.
+
 ## Minimum DSL 0.1 Subset
 
 The first executable subset uses the following grammar. Whitespace and `//` or
@@ -66,8 +71,8 @@ declaration   := { annotation } ( enum | struct | sequence | entry )
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { field } "}" [ ";" ]
-field         := { annotation } "bits" "<" integer [ "," identifier ] ">" identifier
-                 { annotation } ";"
+field         := { annotation } field_type identifier { annotation } ";"
+field_type    := "bits" "<" integer [ "," identifier ] ">" | "ue" | "se"
 sequence      := "sequence" "<" identifier ">" identifier "="
                  "scan" "(" identifier ")" ";"
 entry         := "entry" identifier ";"
@@ -91,15 +96,20 @@ The static rules for this subset are:
   a byte boundary within its structure, and an execution whose source span
   begins at a byte boundary. It reverses byte significance without changing
   the consumed bit sequence.
+- `ue` and `se` are variable-length Exp-Golomb fields. They take no width or
+  endian argument and always consume the encoded codeword most-significant bit
+  first. Because their width is not statically known, a later little-endian
+  field is rejected unless a future language feature can prove its alignment.
 - The only accepted progressive sequence form is
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`.
   `Element` must name a declared structure.
 - An `@equals(integer)` field annotation is a checked constraint and may appear
-  at most once on a field. Its value must fit the field's unsigned bit width.
-  An `@enum(Type)` annotation may appear at most once and requires a declared
-  enum type. Every declared member value must fit the field's bit width. Enum
-  values are still decoded as unsigned integers; the enum supplies names and
-  validation for the decoded value.
+  at most once on a `bits` field. Its value must fit the field's unsigned bit
+  width. An `@enum(Type)` annotation may appear at most once on a `bits` field
+  and requires a declared enum type. Every declared member value must fit the
+  field's bit width. Enum values are still decoded as unsigned integers; the
+  enum supplies names and validation for the decoded value. `ue` and `se`
+  reject both annotations.
   `@description("text")` supplies project-authored presentation text, and
   `@spec("standard", "clause")` supplies a specification reference. Fields
   inherit their structure's specification unless they provide their own.
@@ -107,25 +117,28 @@ The static rules for this subset are:
   parser still returns its partial IR and all diagnostics with line/column
   ranges so an editor can report more than the first error.
 
-`enum`, `big`, and `little` are contextual words in the positions shown by the
-grammar and remain ordinary identifiers elsewhere. Existing `bits<N>` source
-is unchanged and is exactly equivalent to `bits<N, big>`; this slice deprecates
-no accepted 0.1 syntax.
+`enum`, `big`, `little`, `ue`, and `se` are contextual words in the positions
+shown by the grammar and remain ordinary identifiers elsewhere. Existing
+`bits<N>` source is unchanged and is exactly equivalent to `bits<N, big>`;
+this slice deprecates no accepted 0.1 syntax.
 
 The parser produces a source-oriented declaration model for diagnostics. The
 static compiler resolves enum, structure, sequence, and entry references into a
 typed program, preserves declaration order, and emits deterministic bytecode
-using `begin-structure`, `read-unsigned-bits`, `assert-equals`, and
-`end-structure` operations. The read instruction carries the resolved enum and
-byte-order type information; no alternate source-coordinate operation is
-introduced. A program with any parser or compiler diagnostic has no executable
-typed IR. `svtool rule check` runs both stages. The bundled Annex B runner also
-compiles its rule once when the analyzer is created and executes the resolved
-structure index for every record.
+using `begin-structure`, `read-unsigned-bits`, `read-unsigned-exp-golomb`,
+`read-signed-exp-golomb`, `assert-equals`, and `end-structure` operations. Each
+read opcode must match the resolved field type. The fixed-width read carries
+the resolved enum and byte-order information; the Exp-Golomb types have zero
+static bit width, default bit order, no enum reference, and no equality
+constraint. No alternate source-coordinate operation is introduced. A program
+with any parser or compiler diagnostic has no executable typed IR.
+`svtool rule check` runs both stages. The bundled Annex B runner also compiles its rule
+once when the analyzer is created and executes the resolved structure index
+for every record.
 
 The minimum VM executes a structure by reading each field through the bounded
 bit reader. A successful field becomes a syntax-field node with its decoded
-unsigned value and source location. For a little-endian field, the VM reverses
+value and source location. For a little-endian field, the VM reverses
 the significance of complete source bytes after reading them; it never changes
 the bit reader position or the source mapping. Reaching a little-endian field
 at a non-byte-aligned source address is an invalid typed execution and does not
@@ -140,6 +153,29 @@ contiguous direct source span; mapped multi-span transformations are reserved
 for the later mapped-transformation runtime. The executor retains the field
 type, description, and specification reference on the analysis-node snapshot;
 presentation derives field width from that node's logical range.
+
+For an Exp-Golomb codeword, let `leadingZeroBits` be the number of zero bits
+before the marker bit and let `suffix` be the following unsigned value of the
+same width. `ue` returns
+`codeNum = (2^leadingZeroBits - 1) + suffix` as an unsigned 64-bit value. `se`
+maps that code number to `0` when it is zero, `+(codeNum / 2 + 1)` when it is
+odd, and `-(codeNum / 2)` when it is even, and publishes a signed 64-bit value.
+Thus the first signed values are `0, +1, -1, +2, -2`.
+
+At most 63 leading zero bits are representable. The longest valid codeword is
+127 bits and the largest `ue` value is `2^64 - 2`. Encountering a 64th leading
+zero reports `invalid-syntax`. The prefix, marker, and suffix are one
+transactional field read: truncation, source failure, or overflow seeks the
+reader back to the field start, creates no partial field node, retains earlier
+complete fields, and attaches a field-path diagnostic anchored at the failed
+field. A successful node's logical range and source span cover the entire
+codeword.
+
+Each `ue` or `se` field is one VM instruction even though that instruction may
+read up to 127 bits. Its internal component reads create no additional nodes
+and add no cancellation point; cancellation remains checked at the documented
+instruction interval. The hard 127-bit bound keeps the work within one
+instruction bounded.
 
 The built-in `h264_start_code` scanner reads the source through a 64 KiB random
 access window and publishes `H264StartCodeRecord` values in batches bounded by
@@ -221,8 +257,23 @@ struct PacketHeader {
 entry PacketHeader;
 ```
 
+Valid Exp-Golomb example:
+
+```cpp
+@spec("ITU-T H.264", "7.3.3")
+struct SliceHeaderPrefix {
+    ue first_mb_in_slice;
+    ue slice_type;
+    se slice_qp_delta @description("Signed QP delta.");
+}
+
+entry SliceHeaderPrefix;
+```
+
 Invalid minimum examples include `bits<0> flag;`, `bits<65> flag;`,
 `bits<12, little> value;`, a little-endian field after an unaligned field,
+`ue value @equals(0);`, `se value @enum(Type);`, a little-endian field after a
+variable-length field, a truncated Exp-Golomb codeword, 64 leading zero bits,
 `@enum(Missing)`, an enum member value that does not fit its field, duplicate
 enum member names, a sequence without `@index(progressive)`,
 `scan(other_scanner)`, two declarations with the same name, or a program with
