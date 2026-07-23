@@ -59,6 +59,31 @@ private slots:
         QVERIFY(standardError.contains(QStringLiteral("1..64")));
     }
 
+    void rejectsRulesThatFailStaticCompilation() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString rulePath = directory.filePath(QStringLiteral("invalid-constraint.svfmt"));
+        QFile ruleFile(rulePath);
+        QVERIFY(ruleFile.open(QIODevice::WriteOnly | QIODevice::Text));
+        const QByteArray ruleSource =
+            "struct Header { bits<1> value @equals(2); }\n"
+            "entry Header;\n";
+        QCOMPARE(ruleFile.write(ruleSource), static_cast<qint64>(ruleSource.size()));
+        ruleFile.close();
+
+        QProcess process;
+        process.start(QStringLiteral(SVTOOL_PATH),
+                      {QStringLiteral("rule"), QStringLiteral("check"), rulePath});
+        QVERIFY2(process.waitForFinished(), qPrintable(process.errorString()));
+
+        QCOMPARE(process.exitStatus(), QProcess::NormalExit);
+        QCOMPARE(process.exitCode(), 1);
+        QVERIFY(process.readAllStandardOutput().isEmpty());
+        const QString standardError = QString::fromUtf8(process.readAllStandardError());
+        QVERIFY(standardError.contains(rulePath + QStringLiteral(":")));
+        QVERIFY(standardError.contains(QStringLiteral("does not fit the field width")));
+    }
+
     void analyzesAnnexBHeadersWithTheSharedRunner() {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());

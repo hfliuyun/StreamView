@@ -2,6 +2,7 @@
 #include <streamview/core/source.h>
 #include <streamview/core/version.h>
 #include <streamview/rules/dsl.h>
+#include <streamview/rules/dsl_ir.h>
 #include <streamview/rules/h264_annex_b_analyzer.h>
 #include <streamview/rules/language_version.h>
 
@@ -90,6 +91,20 @@ int checkRule(const QString& path) {
     if (!parsed.succeeded()) {
         QTextStream errorStream(stderr);
         for (const streamview::rules::DslDiagnostic& diagnostic : parsed.diagnostics) {
+            errorStream << path << ':' << diagnostic.range.start.line << ':'
+                        << diagnostic.range.start.column << ": error: " << diagnostic.message
+                        << '\n';
+        }
+        return 1;
+    }
+
+    const auto compiled = streamview::rules::DslCompiler::compile(parsed.program);
+    if (!compiled.succeeded()) {
+        QTextStream errorStream(stderr);
+        if (compiled.diagnostics.empty()) {
+            errorStream << path << ":1:1: error: unable to produce executable typed IR\n";
+        }
+        for (const streamview::rules::DslDiagnostic& diagnostic : compiled.diagnostics) {
             errorStream << path << ':' << diagnostic.range.start.line << ':'
                         << diagnostic.range.start.column << ": error: " << diagnostic.message
                         << '\n';
