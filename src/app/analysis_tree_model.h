@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 namespace streamview::app {
@@ -39,6 +40,15 @@ public:
     /// Clear all data.  Emits modelReset.
     void clear();
 
+    /// Append complete top-level subtrees without invalidating existing indexes.
+    /// Returns false when the supplied nodes are not new direct children of the root.
+    [[nodiscard]] bool appendTopLevelNodes(
+        const core::AnalysisTree& tree,
+        const std::vector<core::AnalysisNodeId>& nodeIds);
+
+    /// Refresh snapshots for nodes already published by this model.
+    void updateFromTree(const core::AnalysisTree& tree);
+
     // --- QAbstractItemModel overrides ---
     [[nodiscard]] QModelIndex index(int row, int column,
                                     const QModelIndex& parent = {}) const override;
@@ -63,6 +73,7 @@ private:
         core::MaterializationState state = core::MaterializationState::Materialized;
         QVariant value;
         std::optional<core::FieldLocation> location;
+        core::AnalysisNodeMetadata metadata;
         std::vector<core::ParseDiagnostic> diagnostics;
 
         int parentFlatIndex = -1; ///< -1 = invisible root
@@ -73,12 +84,17 @@ private:
     int flatten(const core::AnalysisTree& tree, core::AnalysisNodeId id, int parentFlatIndex,
                 int rowInParent);
 
+    [[nodiscard]] bool canAppendSubtree(const core::AnalysisTree& tree,
+                                         core::AnalysisNodeId id,
+                                         std::unordered_map<quint64, bool>& pending) const;
+
     [[nodiscard]] int flatIndexAt(const QModelIndex& index) const;
     [[nodiscard]] const FlatNode* flatNodeAt(const QModelIndex& index) const;
     [[nodiscard]] static QString formatBits(const std::optional<core::FieldLocation>& location);
     [[nodiscard]] static QString stateName(core::MaterializationState state);
 
     std::vector<FlatNode> nodes_;
+    std::unordered_map<quint64, int> flatIndexByNodeId_;
 };
 
 } // namespace streamview::app

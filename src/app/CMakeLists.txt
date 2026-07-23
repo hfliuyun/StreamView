@@ -3,6 +3,8 @@ add_library(streamview_app STATIC
     analysis_session.h
     analysis_tree_model.cpp
     analysis_tree_model.h
+    field_inspector.cpp
+    field_inspector.h
     main_window.cpp
     main_window.h
     raw_data_model.cpp

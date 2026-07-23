@@ -1,6 +1,7 @@
 #include "main_window.h"
 
 #include "analysis_tree_model.h"
+#include "field_inspector.h"
 #include "raw_data_view.h"
 
 #include <QAction>
@@ -9,14 +10,21 @@
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QKeySequence>
-#include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QSignalBlocker>
 #include <QStatusBar>
+#include <QTimer>
 #include <QTreeView>
 
 namespace streamview::app {
+
+namespace {
+
+constexpr std::size_t kAnalysisBatchRecords = 1;
+constexpr quint64 kAnalysisWorkBudget = 64U * 1024U;
+
+} // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle(tr("StreamView"));
@@ -64,9 +72,9 @@ void MainWindow::setupDocks() {
     // --- Field Inspector dock (right) ---
     auto* inspectorDock = new QDockWidget(tr("Field Inspector"), this);
     inspectorDock->setObjectName(QStringLiteral("fieldInspectorDock"));
-    auto* inspectorPlaceholder = new QLabel(tr("No field selected."), inspectorDock);
-    inspectorPlaceholder->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-    inspectorDock->setWidget(inspectorPlaceholder);
+    fieldInspector_ = new FieldInspector(inspectorDock);
+    fieldInspector_->setObjectName(QStringLiteral("fieldInspector"));
+    inspectorDock->setWidget(fieldInspector_);
     addDockWidget(Qt::RightDockWidgetArea, inspectorDock);
 }
 
@@ -96,20 +104,24 @@ bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
         return false;
     }
 
-    // Analysis remains synchronous until the M2 worker/publishing slice.
-    while (!candidate->finished()) {
-        (void)candidate->analyzeBatch();
-    }
-
+    const quint64 generation = ++analysisGeneration_;
     clearSourceSelection();
+    {
+        const QSignalBlocker blocker(analysisTreeView_->selectionModel());
+        analysisTreeView_->selectionModel()->clear();
+    }
+    fieldInspector_->clear();
     rawDataView_->clear();
     analysisModel_->clear();
     session_ = std::move(candidate);
 
-    QString rawError;
-    const bool rawLoaded = rawDataView_->setSource(
-        &session_->source(), session_->initialPage(), &rawError);
+    rawError_.clear();
+    rawLoaded_ = rawDataView_->setSource(
+        &session_->source(), session_->initialPage(), &rawError_);
     analysisModel_->resetFromTree(session_->tree());
+
+    // Publish the first batch before returning so the new session is immediately useful.
+    advanceAnalysis(generation);
 
     // Auto-expand the first two levels for visibility.
     analysisTreeView_->expandToDepth(1);
@@ -119,9 +131,85 @@ bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
         analysisTreeView_->resizeColumnToContents(i);
     }
 
-    if (!rawLoaded) {
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return true;
+}
+
+void MainWindow::advanceAnalysis(quint64 generation) {
+    if (generation != analysisGeneration_ || !session_) {
+        return;
+    }
+
+    const auto batch = session_->analyzeBatch(kAnalysisBatchRecords, kAnalysisWorkBudget);
+    if (!batch.nalUnitNodes.empty() &&
+        !analysisModel_->appendTopLevelNodes(session_->tree(), batch.nalUnitNodes)) {
+        analysisModel_->resetFromTree(session_->tree());
+        analysisModel_->updateFromTree(session_->tree());
+        ++analysisGeneration_;
+        statusBar()->showMessage(tr("Analysis tree publication failed"));
+        return;
+    }
+    analysisModel_->updateFromTree(session_->tree());
+
+    const QModelIndex currentIndex = analysisTreeView_->currentIndex();
+    if (currentIndex.isValid()) {
+        const auto currentId = analysisModel_->nodeIdAt(currentIndex);
+        const auto currentNode = currentId ? session_->tree().node(*currentId) : std::nullopt;
+        if (currentNode) {
+            fieldInspector_->setNode(*currentNode);
+        }
+    }
+
+    if (batch.status == rules::H264AnnexBAnalysisStatus::InvalidBatchSize) {
+        ++analysisGeneration_;
+        statusBar()->showMessage(
+            tr("Analysis batch rejected: %1").arg(batch.errorMessage));
+        return;
+    }
+    if (batch.status == rules::H264AnnexBAnalysisStatus::SourceError ||
+        batch.status == rules::H264AnnexBAnalysisStatus::Cancelled ||
+        batch.status == rules::H264AnnexBAnalysisStatus::InvalidRule) {
+        publishAnalysisStatus(batch.status, batch.errorMessage);
+        return;
+    }
+
+    if (!session_->finished()) {
+        const quint64 cursor = session_->scanCursor();
+        statusBar()->showMessage(
+            tr("Analyzing %1: %2/%3 bytes, %4 nodes")
+                .arg(session_->identity())
+                .arg(cursor)
+                .arg(session_->sizeBytes())
+                .arg(session_->tree().nodeCount()));
+        QTimer::singleShot(0, this, [this, generation] { advanceAnalysis(generation); });
+        return;
+    }
+
+    publishAnalysisStatus(batch.status, batch.errorMessage);
+}
+
+void MainWindow::publishAnalysisStatus(rules::H264AnnexBAnalysisStatus status,
+                                       const QString& errorMessage) {
+    if (!session_) {
+        return;
+    }
+    if (status == rules::H264AnnexBAnalysisStatus::Cancelled) {
+        statusBar()->showMessage(
+            tr("Analysis cancelled: %1 nodes").arg(session_->tree().nodeCount()));
+        return;
+    }
+    if (status == rules::H264AnnexBAnalysisStatus::SourceError ||
+        status == rules::H264AnnexBAnalysisStatus::InvalidRule) {
+        const QString detail = errorMessage.isEmpty() ? tr("unknown analysis error") : errorMessage;
+        statusBar()->showMessage(
+            tr("Analysis stopped: %1 (%2 nodes)").arg(detail).arg(session_->tree().nodeCount()));
+        return;
+    }
+    if (!rawLoaded_) {
         statusBar()->showMessage(tr("Opened %1, but raw data could not be read: %2")
-                                     .arg(session_->identity(), rawError));
+                                     .arg(session_->identity(), rawError_));
     } else if (session_->tree().isFullyMaterialized()) {
         statusBar()->showMessage(
             tr("Analysis complete: %1 nodes").arg(session_->tree().nodeCount()));
@@ -130,11 +218,6 @@ bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
             tr("Analysis finished with partial results: %1 nodes")
                 .arg(session_->tree().nodeCount()));
     }
-
-    if (errorMessage != nullptr) {
-        errorMessage->clear();
-    }
-    return true;
 }
 
 QString MainWindow::currentSourceIdentity() const {
@@ -143,12 +226,19 @@ QString MainWindow::currentSourceIdentity() const {
 
 void MainWindow::selectAnalysisNode(const QModelIndex& current) {
     if (!session_) {
+        fieldInspector_->clear();
         clearSourceSelection();
         return;
     }
     const auto nodeId = analysisModel_->nodeIdAt(current);
     const auto node = nodeId ? session_->tree().node(*nodeId) : std::nullopt;
-    if (!node || !node->location() || node->location()->sourceSpans().empty()) {
+    if (!node) {
+        fieldInspector_->clear();
+        clearSourceSelection();
+        return;
+    }
+    fieldInspector_->setNode(*node);
+    if (!node->location() || node->location()->sourceSpans().empty()) {
         clearSourceSelection();
         return;
     }
@@ -178,19 +268,27 @@ void MainWindow::selectSourceBit(quint64 absoluteBitOffset) {
         core::SourceBitAddress(absoluteBitOffset));
     const QModelIndex nodeIndex =
         nodeId ? analysisModel_->indexForNodeId(*nodeId) : QModelIndex{};
-    QSignalBlocker blocker(analysisTreeView_->selectionModel());
     if (!nodeIndex.isValid()) {
+        const QSignalBlocker blocker(analysisTreeView_->selectionModel());
         analysisTreeView_->selectionModel()->clear();
+        fieldInspector_->clear();
         return;
     }
 
-    for (QModelIndex ancestor = nodeIndex.parent(); ancestor.isValid();
-         ancestor = ancestor.parent()) {
-        analysisTreeView_->expand(ancestor);
+    {
+        const QSignalBlocker blocker(analysisTreeView_->selectionModel());
+        for (QModelIndex ancestor = nodeIndex.parent(); ancestor.isValid();
+             ancestor = ancestor.parent()) {
+            analysisTreeView_->expand(ancestor);
+        }
+        analysisTreeView_->selectionModel()->setCurrentIndex(
+            nodeIndex, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        analysisTreeView_->scrollTo(nodeIndex, QAbstractItemView::PositionAtCenter);
     }
-    analysisTreeView_->selectionModel()->setCurrentIndex(
-        nodeIndex, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
-    analysisTreeView_->scrollTo(nodeIndex, QAbstractItemView::PositionAtCenter);
+    const auto node = session_->tree().node(*nodeId);
+    if (node) {
+        fieldInspector_->setNode(*node);
+    }
 }
 
 void MainWindow::setSourceSelection(SourceSelection selection) {

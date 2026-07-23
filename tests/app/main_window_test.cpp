@@ -3,6 +3,7 @@
 #include "raw_data_view.h"
 
 #include <QFile>
+#include <QLabel>
 #include <QStatusBar>
 #include <QTableView>
 #include <QTemporaryDir>
@@ -73,6 +74,32 @@ private slots:
         QVERIFY(treeView != nullptr);
         QCOMPARE(treeView->model()->rowCount(), 1);
         QCOMPARE(window.currentSourceIdentity(), path);
+    }
+
+    void publishesAnalysisBatchesAfterTheFirstVisibleBatch() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = writeFixture(
+            directory, QStringLiteral("many.264"), QByteArray::fromHex("0000016500000141"));
+        QVERIFY(!path.isEmpty());
+        MainWindow window;
+        QString errorMessage;
+
+        QVERIFY2(window.openMediaSource(path, &errorMessage), qPrintable(errorMessage));
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        QVERIFY(treeView != nullptr);
+        QCOMPARE(treeView->model()->rowCount(), 1);
+        QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Analyzing")));
+
+        const QModelIndex firstNode = treeView->model()->index(0, 0);
+        QVERIFY(firstNode.isValid());
+        treeView->setCurrentIndex(firstNode);
+        const QModelIndex heldIndex = treeView->currentIndex();
+
+        QTRY_COMPARE(treeView->model()->rowCount(), 2);
+        QVERIFY(heldIndex.isValid());
+        QCOMPARE(treeView->currentIndex(), heldIndex);
+        QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Analysis complete")));
     }
 
     void keepsTheRenderedSessionWhenAnotherFileCannotOpen() {
@@ -165,6 +192,59 @@ private slots:
                  0x1FU);
     }
 
+    void presentsSelectedFieldMetadataInTheInspector() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = writeFixture(
+            directory, QStringLiteral("inspector.264"), QByteArray::fromHex("00000165"));
+        QVERIFY(!path.isEmpty());
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(path, &errorMessage), qPrintable(errorMessage));
+
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        auto* inspector = window.findChild<QWidget*>(QStringLiteral("fieldInspector"));
+        QVERIFY(treeView != nullptr);
+        QVERIFY(inspector != nullptr);
+        const QModelIndex field =
+            findIndexByName(*treeView->model(), QStringLiteral("nal_unit_type"));
+        QVERIFY(field.isValid());
+        treeView->setCurrentIndex(field);
+
+        auto* name = inspector->findChild<QLabel*>(QStringLiteral("fieldInspectorName"));
+        auto* value = inspector->findChild<QLabel*>(QStringLiteral("fieldInspectorValue"));
+        auto* type = inspector->findChild<QLabel*>(QStringLiteral("fieldInspectorType"));
+        auto* width = inspector->findChild<QLabel*>(QStringLiteral("fieldInspectorWidth"));
+        auto* spans = inspector->findChild<QLabel*>(QStringLiteral("fieldInspectorSourceSpans"));
+        auto* logical =
+            inspector->findChild<QLabel*>(QStringLiteral("fieldInspectorLogicalRange"));
+        auto* description =
+            inspector->findChild<QLabel*>(QStringLiteral("fieldInspectorDescription"));
+        auto* specification =
+            inspector->findChild<QLabel*>(QStringLiteral("fieldInspectorSpecification"));
+        auto* diagnostics =
+            inspector->findChild<QLabel*>(QStringLiteral("fieldInspectorDiagnostics"));
+        QVERIFY(name != nullptr);
+        QVERIFY(value != nullptr);
+        QVERIFY(type != nullptr);
+        QVERIFY(width != nullptr);
+        QVERIFY(spans != nullptr);
+        QVERIFY(logical != nullptr);
+        QVERIFY(description != nullptr);
+        QVERIFY(specification != nullptr);
+        QVERIFY(diagnostics != nullptr);
+
+        QCOMPARE(name->text(), QStringLiteral("nal_unit_type"));
+        QCOMPARE(value->text(), QStringLiteral("5"));
+        QCOMPARE(type->text(), QStringLiteral("bits"));
+        QCOMPARE(width->text(), QStringLiteral("5 bits"));
+        QCOMPARE(spans->text(), QStringLiteral("[27, 32)"));
+        QVERIFY(logical->text().contains(QStringLiteral("[3, 8)")));
+        QVERIFY(!description->text().isEmpty());
+        QVERIFY(specification->text().contains(QStringLiteral("ITU-T H.264")));
+        QCOMPARE(diagnostics->text(), QStringLiteral("-"));
+    }
+
     void locatesTheMostSpecificAnalysisNodeForARawSourceBit() {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
@@ -202,6 +282,10 @@ private slots:
                      ->data(fourthByte, RawDataModel::SelectedBitsRole)
                      .toUInt(),
                  0x08U);
+        auto* inspector = window.findChild<QWidget*>(QStringLiteral("fieldInspector"));
+        QVERIFY(inspector != nullptr);
+        QCOMPARE(inspector->findChild<QLabel*>(QStringLiteral("fieldInspectorValue"))->text(),
+                 QStringLiteral("5"));
     }
 
     void keepsAnUnmatchedRawBitSelectedWhileClearingTheTreeSelection() {
@@ -277,6 +361,10 @@ private slots:
                             RawDataModel::SelectedBitsRole)
                      .toUInt(),
                  0U);
+        auto* inspector = window.findChild<QWidget*>(QStringLiteral("fieldInspector"));
+        QVERIFY(inspector != nullptr);
+        QCOMPARE(inspector->findChild<QLabel*>(QStringLiteral("fieldInspectorValue"))->text(),
+                 QStringLiteral("-"));
     }
 
     void keepsRawBytesVisibleForATruncatedNalUnit() {
@@ -298,6 +386,17 @@ private slots:
         QCOMPARE(rawView->model()->rowCount(), 1);
         QCOMPARE(treeView->model()->rowCount(), 1);
         QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("partial")));
+
+        const QModelIndex header =
+            findIndexByName(*treeView->model(), QStringLiteral("NalUnitHeader"));
+        QVERIFY(header.isValid());
+        treeView->setCurrentIndex(header);
+        auto* inspector = window.findChild<QWidget*>(QStringLiteral("fieldInspector"));
+        QVERIFY(inspector != nullptr);
+        auto* diagnostics =
+            inspector->findChild<QLabel*>(QStringLiteral("fieldInspectorDiagnostics"));
+        QVERIFY(diagnostics != nullptr);
+        QVERIFY(diagnostics->text().contains(QStringLiteral("truncated-source")));
     }
 
     void keepsUnrecognizedBytesVisibleWithAnInvalidAnalysis() {
