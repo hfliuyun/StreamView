@@ -441,6 +441,33 @@ private slots:
         QCOMPARE(limits.maximumMaterializedNodes, quint64(100'000));
         QCOMPARE(limits.cancellationCheckInterval, quint64(1'024));
     }
+
+    void rejectsLimitsAboveTheSandboxContract() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { bits<1> flag; } entry Header;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0x00}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        auto tree = AnalysisTree::create(QStringLiteral("test"));
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        QVERIFY(tree.has_value());
+        BitReader reader(source, *range);
+        DslExecutionOptions options;
+        options.limits.maximumInstructions =
+            DslExecutionLimits::defaultMaximumInstructions() + 1U;
+
+        const auto result = DslExecutor::decodeStruct(
+            *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId(), options);
+
+        QCOMPARE(result.status, DslExecutionStatus::ResourceLimit);
+        const auto root = tree->node(tree->rootId());
+        QVERIFY(root.has_value());
+        QCOMPARE(root->diagnostics().front().code, DiagnosticCode::ResourceLimit);
+    }
 };
 
 QTEST_GUILESS_MAIN(DslExecutorTest)

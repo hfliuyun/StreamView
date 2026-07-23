@@ -122,12 +122,21 @@ DslExecutionResult DslVirtualMachine::execute(
         }
     };
 
-    if (options.limits.maximumCallDepth == 0 || options.limits.maximumViewDepth == 0 ||
-        options.limits.maximumNodeDepth == 0 || options.limits.maximumMaterializedNodes == 0 ||
-        options.limits.maximumInstructions == 0 ||
-        options.limits.cancellationCheckInterval == 0) {
+    const DslExecutionLimits& limits = options.limits;
+    if (limits.maximumCallDepth == 0 ||
+        limits.maximumCallDepth > DslExecutionLimits::defaultMaximumCallDepth() ||
+        limits.maximumViewDepth == 0 ||
+        limits.maximumViewDepth > DslExecutionLimits::defaultMaximumViewDepth() ||
+        limits.maximumNodeDepth == 0 ||
+        limits.maximumNodeDepth > DslExecutionLimits::defaultMaximumNodeDepth() ||
+        limits.maximumMaterializedNodes == 0 ||
+        limits.maximumMaterializedNodes > DslExecutionLimits::defaultMaximumMaterializedNodes() ||
+        limits.maximumInstructions == 0 ||
+        limits.maximumInstructions > DslExecutionLimits::defaultMaximumInstructions() ||
+        limits.cancellationCheckInterval == 0 ||
+        limits.cancellationCheckInterval > DslExecutionLimits::defaultCancellationCheckInterval()) {
         markFailure(DslExecutionStatus::ResourceLimit,
-                    QStringLiteral("DSL execution limits must be greater than zero"),
+                    QStringLiteral("DSL execution limits exceed the documented sandbox bounds"),
                     nullptr);
         return result;
     }
