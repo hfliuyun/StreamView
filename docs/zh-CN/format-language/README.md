@@ -43,7 +43,7 @@ struct NalUnitHeader {
 }
 ```
 
-最终参考文档必须分别定义基本类型、有无符号、字节序、bit 顺序、溢出行为、数组、枚举、结构、条件、分支、有界循环、纯函数、作用域、名称解析和规范注解。当前接受的最小子集有意更小，暂不包含表达式、数组和控制流。
+最终参考文档必须分别定义基本类型、有无符号、字节序、bit 顺序、溢出行为、数组、枚举、结构、条件、分支、有界循环、纯函数、作用域、名称解析和规范注解。当前接受的最小子集有意更小，暂不包含表达式和控制流。
 
 当前接受的 M3 类型切片新增了按声明顺序保存的 enum，以及 `bits` 字段的显式字节序。
 enum 声明为无符号整数命名；字段通过 `@enum(Type)` 把这些名称关联到解码值。
@@ -51,6 +51,10 @@ enum 声明为无符号整数命名；字段通过 `@enum(Type)` 把这些名称
 当前接受的变长 primitive 切片新增了 H.264 风格的无符号和有符号 Exp-Golomb
 字段，类型关键字为 `ue` 和 `se`。这两种类型没有显式宽度或 endian 参数；其 source
 location 覆盖完整编码码字，而不是固定 bit 数。
+
+当前接受的固定数组切片允许在 scalar 字段名后写一维正整数长度，例如
+`bits<8> payload[4]`、`ue codes[3]` 或 `se deltas[3]`。compiler 把声明展开为独立完成
+类型检查和执行的 `payload[0]` 到 `payload[3]`；不会新增数组值、容器节点或数组专用 opcode。
 
 ## DSL 0.1 最小子集
 
@@ -64,7 +68,8 @@ declaration   := { annotation } ( enum | struct | sequence | entry )
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { field } "}" [ ";" ]
-field         := { annotation } field_type identifier { annotation } ";"
+field         := { annotation } field_type identifier [ "[" integer "]" ]
+                 { annotation } ";"
 field_type    := "bits" "<" integer [ "," identifier ] ">" | "ue" | "se"
 sequence      := "sequence" "<" identifier ">" identifier "="
                  "scan" "(" identifier ")" ";"
@@ -86,6 +91,13 @@ value         := integer | string | identifier
 - `ue` 和 `se` 是变长 Exp-Golomb 字段，不接受宽度或 endian 参数，并始终按
   MSB-first 消耗编码码字。由于宽度不能静态确定，变长字段之后的小端字段会被拒绝，除非
   后续语言功能能够证明其对齐。
+- scalar 字段可以带一个 `[count]` 固定数组后缀。`count` 必须是大于零的无符号整数字面量；
+  不接受表达式、额外维度、结构数组或运行时长度。重复名称检查仍使用声明的基础字段名。
+  一个结构展开后最多投影 99,999 个 scalar 字段，从而在默认 100,000 个物化节点预算内
+  为结构节点保留一个名额；超过该上限时 compiler 不生成可执行 typed IR。
+- 固定宽度数组按 `width * count` bit 参与静态对齐。小端数组的每个元素宽度必须是 8 的
+  倍数，并且首元素必须从结构内的字节边界开始。`ue` 或 `se` 数组的总宽度未知，因此其
+  后续小端字段与单个 Exp-Golomb 字段之后的小端字段一样会被拒绝。
 - 唯一接受的渐进 sequence 形式是
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`。
   `Element` 必须是已声明结构。
@@ -95,19 +107,22 @@ value         := integer | string | identifier
   表示。enum 字段仍解码为无符号整数，enum 为该数值提供名称和有效值检查。`ue` 和 `se`
   拒绝这两个注解。`@description("text")` 提供项目编写的
   展示说明，`@spec("standard", "clause")` 提供规范引用。字段默认继承所属结构的规范
-  引用，也可以用自己的注解覆盖。
+  引用，也可以用自己的注解覆盖。数组声明解析出的类型、注解、metadata 和约束会分别
+  应用到每个展开元素。
 - 出现词法或静态诊断时，source 不会生成可执行规则；parser 仍返回部分 IR 以及带行列范围的全部诊断，便于编辑器一次报告多个错误。
 
 `enum`、`big`、`little`、`ue` 和 `se` 只在上述语法位置作为上下文关键字，其他位置仍可
-作为普通 identifier。既有 `bits<N>` source 不变，并且与 `bits<N, big>` 完全等价；本切片
-不弃用任何已接受的 0.1 语法。
+作为普通 identifier。既有 scalar 声明保持不变，`bits<N>` 仍与 `bits<N, big>` 完全等价；
+本切片不弃用任何已接受的 0.1 语法。
 
 parser 生成面向 source、用于诊断的声明模型。静态 compiler 把 enum、结构、sequence 和
 entry 引用解析成 typed program，保留声明顺序，并确定性生成 `begin-structure`、
 `read-unsigned-bits`、`read-unsigned-exp-golomb`、`read-signed-exp-golomb`、`assert-equals`
 和 `end-structure` bytecode。每个 read opcode 必须与字段类型匹配；Exp-Golomb typed field
 的静态 bit width 为零、使用默认 bit order，且没有 enum reference 或 equality constraint。
-parser 或 compiler 出现任何诊断时都不生成可执行 typed IR。`svtool rule check` 会运行这两个
+固定数组按 source 顺序展开成名为 `name[0]` 到 `name[count - 1]` 的 typed field；每个元素
+各自产生 read instruction，并在存在 `@equals` 时各自产生 assertion instruction。parser 或
+compiler 出现任何诊断时都不生成可执行 typed IR。`svtool rule check` 会运行这两个
 阶段；内置 Annex B runner 也只在 analyzer 创建时编译一次规则，之后按已解析的结构索引执行
 每条记录。
 
@@ -118,7 +133,9 @@ syntax-field 节点。小端字段在读取完成后反转完整 source byte 的
 若数值不属于已声明 member，则保留字段节点，把结构标记为 invalid，并在字段位置报告
 `invalid-syntax`。读取截断或失败时保留之前的字段，并把结构标记为 invalid 并附 source
 诊断。`@equals` 不匹配时保留该字段，再用 invalid-syntax 诊断标记结构。最小执行器要求
-逻辑范围映射到一个连续的 direct source 区间；跨多个 source 区间的 mapped transformation
+逻辑范围映射到一个连续的 direct source 区间。每个展开的数组元素都是独立 syntax-field 节点，
+source location 只覆盖该元素；失败时保留之前完成的元素，不为未完成元素创建节点，并把
+`Header.values[2]` 这样的展开路径写入诊断。跨多个 source 区间的 mapped transformation
 留到后续转换运行时实现。执行器把字段类型、说明和规范引用保留在 analysis-node snapshot
 上；展示宽度由节点的逻辑范围推导。
 
@@ -216,9 +233,27 @@ struct SliceHeaderPrefix {
 entry SliceHeaderPrefix;
 ```
 
+固定数组合法示例：
+
+```cpp
+enum SampleKind {
+    luma = 1;
+    chroma = 2;
+}
+
+struct Samples {
+    bits<2> kinds[4] @enum(SampleKind);
+    bits<16, little> values[2] @description("小端样本。");
+    ue run_lengths[3];
+}
+
+entry Samples;
+```
+
 最小非法示例包括 `bits<0> flag;`、`bits<65> flag;`、`bits<12, little> value;`、
 位于未对齐字段之后的小端字段、`ue value @equals(0);`、`se value @enum(Type);`、
-变长字段之后的小端字段、截断的 Exp-Golomb 码字、64 个前导零、`@enum(Missing)`、
+变长字段之后的小端字段、`bits<1> flags[0];`、`bits<1> flags[];`、数组长度表达式或第二
+维、展开后超过 99,999 字段的结构、截断的数组元素、截断的 Exp-Golomb 码字、64 个前导零、`@enum(Missing)`、
 无法放入字段宽度的 enum member 值、重复 enum member 名、缺少 `@index(progressive)` 的
 sequence、`scan(other_scanner)`、
 重复声明同名，以及没有 `entry` 的程序。enum 和字段解析在下一个 member/field 分号或
@@ -289,6 +324,11 @@ sequence<NalUnit> nal_units = scan(h264_start_code);
 
 enum 成员检查和字节序转换都属于现有的字段读取操作，不增加 source 读取或 analysis node，
 并使用同一套 instruction budget 和取消检查边界。
+
+数组语法不另占运行时预算。每个展开元素消耗一个物化节点和一条 read instruction；每个
+`@equals` 元素再增加一条 assertion instruction。因此截断、约束失败、指令上限或节点上限
+都可能发生在元素之间，同时保留失败前已经完成的元素。静态的 99,999 字段投影上限确保
+一次默认结构物化不会需要超过文档规定的 100,000 个节点。
 
 所有限制都必须大于零。host 可以为一次执行降低限制，但规则本身不能提高或读取限制。
 当前最小子集尚无嵌套调用或 view；加入这些操作时必须消耗已经保留的深度预算。超过指令、

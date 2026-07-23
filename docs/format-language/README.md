@@ -44,7 +44,7 @@ struct NalUnitHeader {
 }
 ```
 
-The eventual reference must define primitive types, signedness, byte order, bit order, overflow behavior, arrays, enums, structures, conditionals, switches, bounded loops, pure helpers, scope, name resolution, and specification annotations. The accepted minimum subset is intentionally smaller and does not yet include expressions, arrays, or control flow.
+The eventual reference must define primitive types, signedness, byte order, bit order, overflow behavior, arrays, enums, structures, conditionals, switches, bounded loops, pure helpers, scope, name resolution, and specification annotations. The accepted minimum subset is intentionally smaller and does not yet include expressions or control flow.
 
 The accepted M3 type slice adds declaration-order enums and an explicit byte
 order on `bits` fields. Enum declarations name unsigned integer values; a field
@@ -56,6 +56,12 @@ The accepted variable-length primitive slice adds H.264-style unsigned and
 signed Exp-Golomb fields with the contextual type words `ue` and `se`. These
 types have no explicit width or endian argument. Their source locations cover
 the complete encoded codeword rather than a fixed number of bits.
+
+The accepted fixed-array slice adds a one-dimensional positive integer length
+after a scalar field name, such as `bits<8> payload[4]`, `ue codes[3]`, or
+`se deltas[3]`. The compiler expands the declaration into independently typed
+and executed fields named `payload[0]` through `payload[3]`; it introduces no
+array value, container node, or array-specific opcode.
 
 ## Minimum DSL 0.1 Subset
 
@@ -71,7 +77,8 @@ declaration   := { annotation } ( enum | struct | sequence | entry )
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { field } "}" [ ";" ]
-field         := { annotation } field_type identifier { annotation } ";"
+field         := { annotation } field_type identifier [ "[" integer "]" ]
+                 { annotation } ";"
 field_type    := "bits" "<" integer [ "," identifier ] ">" | "ue" | "se"
 sequence      := "sequence" "<" identifier ">" identifier "="
                  "scan" "(" identifier ")" ";"
@@ -100,6 +107,20 @@ The static rules for this subset are:
   endian argument and always consume the encoded codeword most-significant bit
   first. Because their width is not statically known, a later little-endian
   field is rejected unless a future language feature can prove its alignment.
+- A scalar field may have one fixed array suffix `[count]`. `count` is an
+  unsigned integer literal greater than zero; expressions, additional array
+  dimensions, structure arrays, and runtime-sized arrays are not accepted.
+  The declared base name remains the field name for duplicate-name checking.
+  A structure may project at most 99,999 scalar fields after expansion, leaving
+  one node for the structure within the default 100,000-node materialization
+  budget. The compiler rejects a larger projection before producing executable
+  typed IR.
+- Fixed-width arrays contribute `width * count` bits to static alignment.
+  Every element of a little-endian array must therefore have a byte-multiple
+  width and the first element must begin at a structure-relative byte boundary.
+  An array of `ue` or `se` fields has unknown total width, so a later
+  little-endian field is rejected under the same rule as a scalar Exp-Golomb
+  field.
 - The only accepted progressive sequence form is
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`.
   `Element` must name a declared structure.
@@ -112,15 +133,17 @@ The static rules for this subset are:
   reject both annotations.
   `@description("text")` supplies project-authored presentation text, and
   `@spec("standard", "clause")` supplies a specification reference. Fields
-  inherit their structure's specification unless they provide their own.
+  inherit their structure's specification unless they provide their own. An
+  array declaration applies its resolved type, annotations, metadata, and
+  constraints independently to every expanded element.
 - A source with lexical or static diagnostics produces no executable rule. The
   parser still returns its partial IR and all diagnostics with line/column
   ranges so an editor can report more than the first error.
 
 `enum`, `big`, `little`, `ue`, and `se` are contextual words in the positions
 shown by the grammar and remain ordinary identifiers elsewhere. Existing
-`bits<N>` source is unchanged and is exactly equivalent to `bits<N, big>`;
-this slice deprecates no accepted 0.1 syntax.
+scalar declarations are unchanged, and `bits<N>` remains exactly equivalent
+to `bits<N, big>`; this slice deprecates no accepted 0.1 syntax.
 
 The parser produces a source-oriented declaration model for diagnostics. The
 static compiler resolves enum, structure, sequence, and entry references into a
@@ -130,8 +153,11 @@ using `begin-structure`, `read-unsigned-bits`, `read-unsigned-exp-golomb`,
 read opcode must match the resolved field type. The fixed-width read carries
 the resolved enum and byte-order information; the Exp-Golomb types have zero
 static bit width, default bit order, no enum reference, and no equality
-constraint. No alternate source-coordinate operation is introduced. A program
-with any parser or compiler diagnostic has no executable typed IR.
+constraint. A fixed array is expanded in source order into typed fields named
+`name[0]` through `name[count - 1]`; every element emits its own read and, when
+present, equality-check instruction. No alternate source-coordinate operation
+is introduced. A program with any parser or compiler diagnostic has no
+executable typed IR.
 `svtool rule check` runs both stages. The bundled Annex B runner also compiles its rule
 once when the analyzer is created and executes the resolved structure index
 for every record.
@@ -148,8 +174,12 @@ field node, marks the structure invalid, and reports an `invalid-syntax`
 diagnostic at that field. A truncated or failed read retains earlier fields and
 marks the structure invalid with a source diagnostic. An `@equals` mismatch
 retains the field, then marks the structure invalid with an invalid-syntax
-diagnostic. The minimum executor requires the logical range to map to one
-contiguous direct source span; mapped multi-span transformations are reserved
+diagnostic. Each expanded array element becomes a separate syntax-field node
+whose source location covers only that element. A failure keeps all earlier
+complete elements, creates no node for an incomplete element, and uses the
+expanded path such as `Header.values[2]` in its diagnostic. The minimum
+executor requires the logical range to map to one contiguous direct source
+span; mapped multi-span transformations are reserved
 for the later mapped-transformation runtime. The executor retains the field
 type, description, and specification reference on the analysis-node snapshot;
 presentation derives field width from that node's logical range.
@@ -270,12 +300,31 @@ struct SliceHeaderPrefix {
 entry SliceHeaderPrefix;
 ```
 
+Valid fixed-array example:
+
+```cpp
+enum SampleKind {
+    luma = 1;
+    chroma = 2;
+}
+
+struct Samples {
+    bits<2> kinds[4] @enum(SampleKind);
+    bits<16, little> values[2] @description("Little-endian samples.");
+    ue run_lengths[3];
+}
+
+entry Samples;
+```
+
 Invalid minimum examples include `bits<0> flag;`, `bits<65> flag;`,
 `bits<12, little> value;`, a little-endian field after an unaligned field,
 `ue value @equals(0);`, `se value @enum(Type);`, a little-endian field after a
-variable-length field, a truncated Exp-Golomb codeword, 64 leading zero bits,
-`@enum(Missing)`, an enum member value that does not fit its field, duplicate
-enum member names, a sequence without `@index(progressive)`,
+variable-length field, `bits<1> flags[0];`, `bits<1> flags[];`, an expression or
+second dimension in an array length, a structure projection above 99,999
+fields, a truncated array element, a truncated Exp-Golomb codeword, 64 leading
+zero bits, `@enum(Missing)`, an enum member value that does not fit its field,
+duplicate enum member names, a sequence without `@index(progressive)`,
 `scan(other_scanner)`, two declarations with the same name, or a program with
 no `entry`. Enum and field parsing recovers at the next member/field semicolon
 or closing brace and preserves all source ranges and diagnostics.
@@ -351,6 +400,14 @@ The current VM applies these defaults to one structure materialization:
 Enum membership validation and byte-order conversion are part of the existing
 field-read operation. They do not add source reads or analysis nodes, and they
 use the same instruction-budget and cancellation boundaries.
+
+Array syntax does not reserve a separate runtime budget. Every expanded
+element consumes one materialized node and one read instruction; `@equals`
+adds one assertion instruction per element. Truncation, a failed constraint,
+an instruction limit, or a node limit can therefore stop between elements
+while preserving the elements completed before the failure. The static
+99,999-field projection limit ensures one default structure materialization
+cannot require more than the documented 100,000 nodes.
 
 All limits must be greater than zero. The host may lower them for a particular
 execution but a rule cannot raise or inspect them. The accepted minimum subset

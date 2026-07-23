@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 2
-Last Completed Step: M3 ue/se fields, including parser grammar, typed IR bytecode, bounded VM decoding, rollback, diagnostics, and source-location preservation
-Next Action: Add the next documented M3 primitive runtime feature: fixed-size arrays
-Last Verification: Local dev/ci/sanitize reconfigure, full build, and CTest each passed 22/22; hosted runs 30002644468 and 30003006906 passed on Windows, macOS, and Ubuntu
+Last Completed Step: M3 fixed-size arrays, including one-dimensional grammar, compile-time expansion, alignment, metadata/constraint propagation, per-element VM semantics, partial results, and materialization limits
+Next Action: Add the next documented M3 primitive runtime feature: conditionals
+Last Verification: Local dev/ci/sanitize reconfigure, full build, and CTest each passed 22/22; hosted runs 30008470576 and 30008968266 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -66,7 +66,10 @@ Blockers: None
 依赖：M1/M2 暴露出的稳定 rule-runner 接口；先定义类型/IR/预算边界，再逐项扩展语法。
 
 - [x] 建立静态类型 IR 与受限 bytecode/VM 边界，统一错误、资源预算和确定性。（parser 输出 source-oriented model；compiler 生成 declaration-order typed IR 和确定性 bytecode；VM 拒绝 malformed IR，兼容入口保留。）
-- [ ] 逐项加入 enum、显式 endian、`ue/se`、数组、条件、switch、有界循环、纯函数和 computed fields；每项先补英文规范、中文说明、正反例和 TDD。（enum、显式 endian 与 `ue/se` 已完成；下一项为固定长度数组。）
+- [ ] 逐项加入 enum、显式 endian、`ue/se`、数组、条件、switch、有界循环、纯函数和 computed fields；每项先补英文规范、中文说明、正反例和 TDD。
+  - [x] enum、显式 endian、`ue/se`。
+  - [x] 固定长度数组：一维正整数长度，编译期扁平展开，逐元素 metadata/constraint、坐标、诊断和预算。
+  - [ ] 条件语句；随后再进入 switch、有界循环、纯函数和 computed fields。
 - [x] 固化调用/视图深度 64、节点深度 256、单次物化 100,000 节点和每 1,024 指令取消检查。（另固化单次结构 1,000,000 指令预算；当前最小子集尚无嵌套调用或 view，预算已由 VM/API 保留。）
 
 验收：稳定子集按声明顺序生成相同 typed IR/bytecode 和结果；超限与取消保留部分树并附可定位诊断，Annex B runner 在创建时编译一次规则，`svtool rule check` 同时执行 parser/compiler。
@@ -128,7 +131,7 @@ Blockers: None
 
 ## 阶段 2：DSL v0.1、沙箱与大型文件基础设施
 
-- [ ] 完成枚举、显式大小端、`ue/se`、数组、条件、switch、有界循环、纯函数和计算字段。（枚举、显式大小端与 `ue/se` 已完成；下一项为固定长度数组。）
+- [ ] 完成枚举、显式大小端、`ue/se`、数组、条件、switch、有界循环、纯函数和计算字段。（枚举、显式大小端、`ue/se` 与固定长度数组已完成；下一项为条件语句。）
 - [ ] 完成 mapped transformation、lazy 区域、渐进索引和位置感知上下文目录。
 - [ ] 完成 bytecode 预算和取消：调用/视图深度 64、节点深度 256、单次物化 100,000 节点，每 1,024 指令检查取消。
 - [ ] 完成 SQLite 分页缓存、后台批次提交、schema 版本和崩溃恢复。
@@ -239,3 +242,4 @@ Blockers: None
 - 2026-07-23：确认 M3 第一切片检查点 `5fd236a` 的 hosted run `29990574802` 成功；Windows 2022/Qt 6.10.1、macOS 15/Qt 6.11.1、Ubuntu 24.04/Qt 6.11.1 的 Build、22/22 Test、Install 和 Upload 全部通过。
 - 2026-07-23：完成 M3 enum 与显式 endian 切片：parser/AST 支持 declaration-order enum、`bits<N, big|little>` 和 `@enum(Type)`；compiler 解析 typed enum/endian、命名空间、宽度及字节对齐；VM 在不改变 MSB-first source coordinate 的前提下解释 8–64 bit 小端值，并对未知 enum 值、未对齐 source 及 malformed typed IR 保留部分结果和可定位诊断。实现拆分为 `0b69530`（enum/endian parser 与 typed IR）和 `c30f28a`（VM 数值语义与运行时回归）；英文规范、中文伴随说明及正反例已同步。本机 `cmake --preset dev/ci/sanitize`、三套 build preset 与三套 `ctest` 均通过 22/22。下一步实现 `ue/se`。
 - 2026-07-23：完成 M3 `ue/se` 切片：parser/AST 接受 `ue` 与 `se`；compiler 生成 `UnsignedExpGolomb`/`SignedExpGolomb` typed fields 和独立 read opcodes；VM 实现 H.264 Exp-Golomb 解码、signed 映射、63 个前导零/127-bit 码字上限、事务式 reader 回滚、部分结果保留、source-located diagnostics 及有符号/无符号节点值。实现拆分为 `a67099e`（parser/IR）和 `9b288c3`（VM 与运行时回归）；英文规范、中文伴随说明及正反例已同步。本机 `dev`、`ci`、`sanitize` 配置、完整构建与 CTest 均为 22/22；hosted run `30002644468` 验证 `a67099e` 三平台成功，hosted run `30003006906` 验证 `9b288c3` 三平台成功。下一步实现固定长度数组。
+- 2026-07-23：完成 M3 固定长度数组切片：parser/AST 接受 scalar 字段后的一维正整数字面量长度；compiler 在 99,999 字段结构上限内展开 `name[index]` typed fields 和逐元素 bytecode，并按数组总宽计算静态 endian 对齐；既有 VM 逐元素保留 metadata、`@enum`、`@equals`、source location、诊断和预算语义，截断、约束或资源超限保留此前元素。实现拆分为 `1b5f07b`（parser/compiler、展开上限与 typed IR 回归）和 `208b37d`（executor 的 bits/little/ue/se/enum/partial-results/budget 回归）；英文规范、中文伴随说明及正反例已同步。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 22/22；hosted run `30008470576` 与 `30008968266` 均在 Windows、macOS、Ubuntu 成功。下一步实现条件语句。
