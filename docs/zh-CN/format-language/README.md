@@ -45,6 +45,10 @@ struct NalUnitHeader {
 
 最终参考文档必须分别定义基本类型、有无符号、字节序、bit 顺序、溢出行为、数组、枚举、结构、条件、分支、有界循环、纯函数、作用域、名称解析和规范注解。当前接受的最小子集有意更小，暂不包含表达式、数组和控制流。
 
+当前接受的 M3 类型切片新增了按声明顺序保存的 enum，以及 `bits` 字段的显式字节序。
+enum 声明为无符号整数命名；字段通过 `@enum(Type)` 把这些名称关联到解码值。
+字节序只改变数值解释，source bit 地址仍是 MSB-first，字段 source location 仍对应实际消耗的 bit。
+
 ## DSL 0.1 最小子集
 
 首个可执行子集使用以下语法。token 之间可以有空白，以及 `//` 或 `/* ... */`
@@ -53,9 +57,11 @@ struct NalUnitHeader {
 
 ```text
 program       := { declaration }
-declaration   := { annotation } ( struct | sequence | entry )
+declaration   := { annotation } ( enum | struct | sequence | entry )
+enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
+enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { field } "}" [ ";" ]
-field         := { annotation } "bits" "<" integer ">" identifier
+field         := { annotation } "bits" "<" integer [ "," identifier ] ">" identifier
                  { annotation } ";"
 sequence      := "sequence" "<" identifier ">" identifier "="
                  "scan" "(" identifier ")" ";"
@@ -68,28 +74,44 @@ value         := integer | string | identifier
 
 - 程序必须且只能有一个 `entry`；target 必须是已声明的结构或 sequence。
 - 结构名和 sequence 名在整个程序中不能重复；字段名在结构内不能重复；结构至少包含一个字段。
-- `bits<N>` 的宽度必须是 `1..64` 的整数。字段是无符号值，按声明顺序以 MSB-first 消耗输入。
+- enum 名与结构、sequence 共用声明命名空间；enum member 名在所属 enum 内不能重复。
+  不同 member 可以使用相同整数值；这些别名接受同一个解码数值。
+- `bits<N>` 的宽度必须是 `1..64` 的整数。字段按声明顺序以 MSB-first 消耗输入。
+  省略第二个类型参数或写成 `big` 时，得到大端无符号值。`little` 只允许宽度为 8 的倍数、
+  字段在结构内从字节边界开始，并且执行时 source span 也从字节边界开始；它只反转完整字节
+  的数值权重，不改变实际消耗的 bit 顺序。
 - 唯一接受的渐进 sequence 形式是
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`。
   `Element` 必须是已声明结构。
 - `@equals(integer)` 字段注解是会执行检查的约束，在一个字段上最多出现一次，且参数值
-  必须能由该字段的无符号 bit 宽度表示；`@description("text")` 提供项目编写的
+  必须能由该字段的无符号 bit 宽度表示；`@enum(Type)` 最多出现一次，参数必须是已声明
+  enum 类型，并且它的每个 member 值都必须能由字段宽度表示。enum 字段仍解码为无符号整数，
+  enum 为该数值提供名称和有效值检查。`@description("text")` 提供项目编写的
   展示说明，`@spec("standard", "clause")` 提供规范引用。字段默认继承所属结构的规范
   引用，也可以用自己的注解覆盖。
 - 出现词法或静态诊断时，source 不会生成可执行规则；parser 仍返回部分 IR 以及带行列范围的全部诊断，便于编辑器一次报告多个错误。
 
-parser 生成面向 source、用于诊断的声明模型。静态 compiler 把结构、sequence 和 entry
-引用解析成 typed program，保留声明顺序，并确定性生成 `begin-structure`、
-`read-unsigned-bits`、`assert-equals` 和 `end-structure` bytecode。parser 或 compiler
-出现任何诊断时都不生成可执行 typed IR。`svtool rule check` 会运行这两个阶段；内置
-Annex B runner 也只在 analyzer 创建时编译一次规则，之后按已解析的结构索引执行每条记录。
+`enum`、`big` 和 `little` 只在上述语法位置作为上下文关键字，其他位置仍可作为普通
+identifier。既有 `bits<N>` source 不变，并且与 `bits<N, big>` 完全等价；本切片不弃用
+任何已接受的 0.1 语法。
+
+parser 生成面向 source、用于诊断的声明模型。静态 compiler 把 enum、结构、sequence 和
+entry 引用解析成 typed program，保留声明顺序，并确定性生成 `begin-structure`、
+`read-unsigned-bits`、`assert-equals` 和 `end-structure` bytecode。read 指令携带已解析的
+enum 与字节序类型信息，不增加另一套 source-coordinate 操作。parser 或 compiler 出现任何
+诊断时都不生成可执行 typed IR。`svtool rule check` 会运行这两个阶段；内置 Annex B runner
+也只在 analyzer 创建时编译一次规则，之后按已解析的结构索引执行每条记录。
 
 最小 VM 通过 bounded bit reader 按顺序执行结构。成功字段会成为带无符号解码值和
-源位置的 syntax-field 节点。读取截断或失败时保留之前的字段，并把结构标记为 invalid
-并附 source 诊断。`@equals` 不匹配时保留该字段，再用 invalid-syntax 诊断标记结构。
-最小执行器要求逻辑范围映射到一个连续的 direct source 区间；跨多个 source 区间的
-mapped transformation 留到后续转换运行时实现。执行器把字段类型、说明和规范引用保留
-在 analysis-node snapshot 上；展示宽度由节点的逻辑范围推导。
+源位置的 syntax-field 节点。小端字段在读取完成后反转完整 source byte 的数值权重，
+不会改变 bit reader position 或 source mapping；若执行到该字段时绝对 source 地址没有
+按字节对齐，则 typed execution 非法，并且不消耗该字段。enum 字段保留数值和类型 metadata；
+若数值不属于已声明 member，则保留字段节点，把结构标记为 invalid，并在字段位置报告
+`invalid-syntax`。读取截断或失败时保留之前的字段，并把结构标记为 invalid 并附 source
+诊断。`@equals` 不匹配时保留该字段，再用 invalid-syntax 诊断标记结构。最小执行器要求
+逻辑范围映射到一个连续的 direct source 区间；跨多个 source 区间的 mapped transformation
+留到后续转换运行时实现。执行器把字段类型、说明和规范引用保留在 analysis-node snapshot
+上；展示宽度由节点的逻辑范围推导。
 
 内建 `h264_start_code` scanner 通过 64 KiB 随机访问窗口读取 source，并按记录数和已检查
 source position 数量双重限制每个 batch。默认每次最多检查 64 KiB source position，单调
@@ -140,12 +162,34 @@ sequence<NalUnitHeader> nal_units = scan(h264_start_code);
 entry nal_units;
 ```
 
-最小非法示例包括 `bits<0> flag;`、`bits<65> flag;`、缺少 `@index(progressive)` 的
-sequence、`scan(other_scanner)`、重复声明同名，以及没有 `entry` 的程序。
+enum 与显式 endian 的合法示例：
+
+```cpp
+enum PacketKind {
+    payload = 1;
+    control = 2;
+}
+
+struct PacketHeader {
+    bits<16, little> payload_size;
+    bits<8> kind @enum(PacketKind);
+}
+
+entry PacketHeader;
+```
+
+最小非法示例包括 `bits<0> flag;`、`bits<65> flag;`、`bits<12, little> value;`、
+位于未对齐字段之后的小端字段、`@enum(Missing)`、无法放入字段宽度的 enum member 值、
+重复 enum member 名、缺少 `@index(progressive)` 的 sequence、`scan(other_scanner)`、
+重复声明同名，以及没有 `entry` 的程序。enum 和字段解析在下一个 member/field 分号或
+右花括号处恢复，并保留全部 source range 和诊断。
 
 ## 源坐标与逻辑坐标
 
 未经修改的媒体源使用绝对源坐标。逻辑视图拥有自己的逻辑坐标，同时保存经过所有父视图返回绝对源区间的有序映射。一个语法字段可以映射到多个不连续的源区间。
+
+字节序属于数值解释规则，不属于坐标规则。显式 `little` 因此不会改变逻辑范围、绝对
+source spans、selection 或诊断位置；这些坐标与默认大端读取完全相同。
 
 选择语法字段时，高亮它映射到的全部源区间；选择原始 bit 时，定位到当前已经物化的
 最具体节点，并保留它在分析树中的完整父级路径。解析顺序按
@@ -202,6 +246,9 @@ sequence<NalUnit> nal_units = scan(h264_start_code);
 - analysis node 深度 256，root 计为深度 1；
 - 最多新建 100,000 个物化节点；
 - 第一条指令执行前检查一次取消，之后至少每执行 1,024 条指令检查一次。
+
+enum 成员检查和字节序转换都属于现有的字段读取操作，不增加 source 读取或 analysis node，
+并使用同一套 instruction budget 和取消检查边界。
 
 所有限制都必须大于零。host 可以为一次执行降低限制，但规则本身不能提高或读取限制。
 当前最小子集尚无嵌套调用或 view；加入这些操作时必须消耗已经保留的深度预算。超过指令、

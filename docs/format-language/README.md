@@ -46,6 +46,12 @@ struct NalUnitHeader {
 
 The eventual reference must define primitive types, signedness, byte order, bit order, overflow behavior, arrays, enums, structures, conditionals, switches, bounded loops, pure helpers, scope, name resolution, and specification annotations. The accepted minimum subset is intentionally smaller and does not yet include expressions, arrays, or control flow.
 
+The accepted M3 type slice adds declaration-order enums and an explicit byte
+order on `bits` fields. Enum declarations name unsigned integer values; a field
+uses `@enum(Type)` to associate those names with its decoded value. Byte order
+changes numeric interpretation only. Source bit addresses remain MSB-first and
+source locations remain the bits consumed by the field.
+
 ## Minimum DSL 0.1 Subset
 
 The first executable subset uses the following grammar. Whitespace and `//` or
@@ -56,9 +62,11 @@ unsigned decimal or `0x` hexadecimal values. String literals use `"`, `\\`,
 
 ```text
 program       := { declaration }
-declaration   := { annotation } ( struct | sequence | entry )
+declaration   := { annotation } ( enum | struct | sequence | entry )
+enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
+enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { field } "}" [ ";" ]
-field         := { annotation } "bits" "<" integer ">" identifier
+field         := { annotation } "bits" "<" integer [ "," identifier ] ">" identifier
                  { annotation } ";"
 sequence      := "sequence" "<" identifier ">" identifier "="
                  "scan" "(" identifier ")" ";"
@@ -73,13 +81,25 @@ The static rules for this subset are:
   sequence.
 - Structure and sequence names are unique across the program. Field names are
   unique within a structure, and a structure contains at least one field.
-- A `bits<N>` width is an integer in `1..64`. Fields are unsigned and consume
-  input in declaration order, most-significant bit first.
+- Enum names share the declaration namespace with structures and sequences.
+  Enum member names are unique within their enum. Distinct members may name the
+  same integer value; aliases accept the same decoded numeric value.
+- A `bits<N>` width is an integer in `1..64`. Fields consume input in
+  declaration order, most-significant bit first. With no second type argument,
+  or with `big`, the resulting unsigned value is big-endian. `little` is
+  accepted only for a width that is a multiple of eight, a field that begins at
+  a byte boundary within its structure, and an execution whose source span
+  begins at a byte boundary. It reverses byte significance without changing
+  the consumed bit sequence.
 - The only accepted progressive sequence form is
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`.
   `Element` must name a declared structure.
 - An `@equals(integer)` field annotation is a checked constraint and may appear
   at most once on a field. Its value must fit the field's unsigned bit width.
+  An `@enum(Type)` annotation may appear at most once and requires a declared
+  enum type. Every declared member value must fit the field's bit width. Enum
+  values are still decoded as unsigned integers; the enum supplies names and
+  validation for the decoded value.
   `@description("text")` supplies project-authored presentation text, and
   `@spec("standard", "clause")` supplies a specification reference. Fields
   inherit their structure's specification unless they provide their own.
@@ -87,25 +107,39 @@ The static rules for this subset are:
   parser still returns its partial IR and all diagnostics with line/column
   ranges so an editor can report more than the first error.
 
+`enum`, `big`, and `little` are contextual words in the positions shown by the
+grammar and remain ordinary identifiers elsewhere. Existing `bits<N>` source
+is unchanged and is exactly equivalent to `bits<N, big>`; this slice deprecates
+no accepted 0.1 syntax.
+
 The parser produces a source-oriented declaration model for diagnostics. The
-static compiler resolves structure, sequence, and entry references into a typed
-program, preserves declaration order, and emits deterministic bytecode using
-`begin-structure`, `read-unsigned-bits`, `assert-equals`, and `end-structure`
-operations. A program with any parser or compiler diagnostic has no executable
+static compiler resolves enum, structure, sequence, and entry references into a
+typed program, preserves declaration order, and emits deterministic bytecode
+using `begin-structure`, `read-unsigned-bits`, `assert-equals`, and
+`end-structure` operations. The read instruction carries the resolved enum and
+byte-order type information; no alternate source-coordinate operation is
+introduced. A program with any parser or compiler diagnostic has no executable
 typed IR. `svtool rule check` runs both stages. The bundled Annex B runner also
 compiles its rule once when the analyzer is created and executes the resolved
 structure index for every record.
 
-The minimum VM executes a structure by reading each field through the
-bounded bit reader. A successful field becomes a syntax-field node with its
-decoded unsigned value and source location. A truncated or failed read retains
-earlier fields and marks the structure invalid with a source diagnostic. An
-`@equals` mismatch retains the field, then marks the structure invalid with an
-invalid-syntax diagnostic. The minimum executor requires the logical range to
-map to one contiguous direct source span; mapped multi-span transformations are
-reserved for the later mapped-transformation runtime. The executor retains the
-field type, description, and specification reference on the analysis-node
-snapshot; presentation derives field width from that node's logical range.
+The minimum VM executes a structure by reading each field through the bounded
+bit reader. A successful field becomes a syntax-field node with its decoded
+unsigned value and source location. For a little-endian field, the VM reverses
+the significance of complete source bytes after reading them; it never changes
+the bit reader position or the source mapping. Reaching a little-endian field
+at a non-byte-aligned source address is an invalid typed execution and does not
+consume that field. An enum field retains its numeric value and type metadata.
+A value not declared by that enum retains the
+field node, marks the structure invalid, and reports an `invalid-syntax`
+diagnostic at that field. A truncated or failed read retains earlier fields and
+marks the structure invalid with a source diagnostic. An `@equals` mismatch
+retains the field, then marks the structure invalid with an invalid-syntax
+diagnostic. The minimum executor requires the logical range to map to one
+contiguous direct source span; mapped multi-span transformations are reserved
+for the later mapped-transformation runtime. The executor retains the field
+type, description, and specification reference on the analysis-node snapshot;
+presentation derives field width from that node's logical range.
 
 The built-in `h264_start_code` scanner reads the source through a 64 KiB random
 access window and publishes `H264StartCodeRecord` values in batches bounded by
@@ -171,13 +205,37 @@ sequence<NalUnitHeader> nal_units = scan(h264_start_code);
 entry nal_units;
 ```
 
-Invalid minimum examples include `bits<0> flag;`, `bits<65> flag;`, a sequence
-without `@index(progressive)`, `scan(other_scanner)`, two declarations with the
-same name, or a program with no `entry`.
+Valid enum and endian example:
+
+```cpp
+enum PacketKind {
+    payload = 1;
+    control = 2;
+}
+
+struct PacketHeader {
+    bits<16, little> payload_size;
+    bits<8> kind @enum(PacketKind);
+}
+
+entry PacketHeader;
+```
+
+Invalid minimum examples include `bits<0> flag;`, `bits<65> flag;`,
+`bits<12, little> value;`, a little-endian field after an unaligned field,
+`@enum(Missing)`, an enum member value that does not fit its field, duplicate
+enum member names, a sequence without `@index(progressive)`,
+`scan(other_scanner)`, two declarations with the same name, or a program with
+no `entry`. Enum and field parsing recovers at the next member/field semicolon
+or closing brace and preserves all source ranges and diagnostics.
 
 ## Source And Logical Coordinates
 
 The unchanged media source uses absolute source coordinates. A logical view has its own logical coordinates and an ordered mapping back through all parent views to absolute source spans. A syntax field may map to multiple disjoint source spans.
+
+Byte order is a value-interpretation rule, not a coordinate rule. Explicit
+`little` therefore leaves the logical range, absolute source spans, selection,
+and diagnostics identical to the default big-endian read.
 
 Selecting a syntax field highlights every mapped source span. Selecting a
 source bit resolves to the most specific materialized node while preserving its
@@ -238,6 +296,10 @@ The current VM applies these defaults to one structure materialization:
 - at most 100,000 newly materialized nodes; and
 - a cancellation poll before the first instruction and at least every 1,024
   executed instructions thereafter.
+
+Enum membership validation and byte-order conversion are part of the existing
+field-read operation. They do not add source reads or analysis nodes, and they
+use the same instruction-budget and cancellation boundaries.
 
 All limits must be greater than zero. The host may lower them for a particular
 execution but a rule cannot raise or inspect them. The accepted minimum subset
