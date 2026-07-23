@@ -60,6 +60,8 @@ enum class DslDiagnosticCode : quint8 {
     UnsupportedScanner,
     InvalidProgressiveAnnotation,
     InvalidAnnotation,
+    InvalidType,
+    ConstraintOutOfRange,
 };
 
 struct DslDiagnostic final {

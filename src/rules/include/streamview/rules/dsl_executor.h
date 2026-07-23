@@ -1,38 +1,36 @@
 #pragma once
 
-#include <streamview/core/analysis_model.h>
-#include <streamview/core/bit_reader.h>
-#include <streamview/core/coordinates.h>
-#include <streamview/rules/dsl.h>
+#include <streamview/rules/dsl_ir.h>
+#include <streamview/rules/dsl_vm.h>
 
 #include <QString>
 #include <QtGlobal>
 
-#include <optional>
-
 namespace streamview::rules {
-
-enum class DslExecutionStatus : quint8 {
-    Materialized,
-    TruncatedSource,
-    InvalidSyntax,
-    SourceError,
-    InvalidDefinition,
-};
-
-struct DslExecutionResult final {
-    DslExecutionStatus status = DslExecutionStatus::InvalidDefinition;
-    std::optional<core::AnalysisNodeId> structureNode;
-    quint64 bitsConsumed = 0;
-    QString errorMessage;
-
-    [[nodiscard]] bool materialized() const noexcept {
-        return status == DslExecutionStatus::Materialized;
-    }
-};
 
 class DslExecutor final {
 public:
+    [[nodiscard]] static DslExecutionResult
+    decodeStruct(const DslTypedProgram& program,
+                 quint32 structureIndex,
+                 core::BitReader& reader,
+                 const core::SourceMapping& mapping,
+                 quint64 logicalStart,
+                 core::AnalysisTree& tree,
+                 core::AnalysisNodeId parentId,
+                 const DslExecutionOptions& options = {});
+
+    [[nodiscard]] static DslExecutionResult
+    decodeStruct(const DslTypedProgram& program,
+                 const QString& structureName,
+                 core::BitReader& reader,
+                 const core::SourceMapping& mapping,
+                 quint64 logicalStart,
+                 core::AnalysisTree& tree,
+                 core::AnalysisNodeId parentId,
+                 const DslExecutionOptions& options = {});
+
+    /// Compatibility entry point that compiles the parsed program before execution.
     [[nodiscard]] static DslExecutionResult
     decodeStruct(const DslProgram& program,
                  const QString& structureName,
@@ -40,7 +38,8 @@ public:
                  const core::SourceMapping& mapping,
                  quint64 logicalStart,
                  core::AnalysisTree& tree,
-                 core::AnalysisNodeId parentId);
+                 core::AnalysisNodeId parentId,
+                 const DslExecutionOptions& options = {});
 };
 
 } // namespace streamview::rules

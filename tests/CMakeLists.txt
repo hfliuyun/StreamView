@@ -33,6 +33,7 @@ streamview_add_core_test(streamview_bit_reader_tests core/bit_reader_test.cpp)
 streamview_add_core_test(streamview_analysis_model_tests core/analysis_model_test.cpp)
 streamview_add_core_test(streamview_cancellation_tests core/cancellation_test.cpp)
 streamview_add_rules_test(streamview_dsl_tests rules/dsl_test.cpp)
+streamview_add_rules_test(streamview_dsl_ir_tests rules/dsl_ir_test.cpp)
 streamview_add_rules_test(streamview_dsl_executor_tests rules/dsl_executor_test.cpp)
 streamview_add_rules_test(
     streamview_h264_start_code_scanner_tests

@@ -645,11 +645,20 @@ private:
                         break;
                     }
                 }
+                bool equalsSeen = false;
                 for (const DslAnnotation& annotation : field.annotations) {
-                    if (annotation.name == QStringLiteral("equals") &&
-                        (annotation.arguments.size() != 1 ||
-                         annotation.arguments.front().kind !=
-                             DslAnnotationValueKind::Integer)) {
+                    if (annotation.name != QStringLiteral("equals")) {
+                        continue;
+                    }
+                    if (equalsSeen) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidAnnotation,
+                             QStringLiteral("@equals may appear at most once on a field"),
+                             annotation.range});
+                    }
+                    equalsSeen = true;
+                    if (annotation.arguments.size() != 1 ||
+                        annotation.arguments.front().kind != DslAnnotationValueKind::Integer) {
                         result_.diagnostics.push_back({DslDiagnosticCode::InvalidAnnotation,
                                                        QStringLiteral("@equals requires one integer argument"),
                                                        annotation.range});
