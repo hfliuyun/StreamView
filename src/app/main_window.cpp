@@ -170,6 +170,7 @@ void MainWindow::advanceAnalysis(quint64 generation) {
     }
     if (batch.status == rules::H264AnnexBAnalysisStatus::SourceError ||
         batch.status == rules::H264AnnexBAnalysisStatus::Cancelled ||
+        batch.status == rules::H264AnnexBAnalysisStatus::ResourceLimit ||
         batch.status == rules::H264AnnexBAnalysisStatus::InvalidRule) {
         publishAnalysisStatus(batch.status, batch.errorMessage);
         return;
@@ -201,6 +202,7 @@ void MainWindow::publishAnalysisStatus(rules::H264AnnexBAnalysisStatus status,
         return;
     }
     if (status == rules::H264AnnexBAnalysisStatus::SourceError ||
+        status == rules::H264AnnexBAnalysisStatus::ResourceLimit ||
         status == rules::H264AnnexBAnalysisStatus::InvalidRule) {
         const QString detail = errorMessage.isEmpty() ? tr("unknown analysis error") : errorMessage;
         statusBar()->showMessage(

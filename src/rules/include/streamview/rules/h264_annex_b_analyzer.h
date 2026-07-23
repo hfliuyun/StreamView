@@ -3,7 +3,7 @@
 #include <streamview/core/analysis_model.h>
 #include <streamview/core/cancellation.h>
 #include <streamview/core/source.h>
-#include <streamview/rules/dsl.h>
+#include <streamview/rules/dsl_ir.h>
 #include <streamview/rules/h264_start_code_scanner.h>
 
 #include <QString>
@@ -21,6 +21,7 @@ enum class H264AnnexBAnalysisStatus : quint8 {
     Cancelled,
     SourceError,
     InvalidBatchSize,
+    ResourceLimit,
     InvalidRule,
 };
 
@@ -59,14 +60,15 @@ public:
 private:
     H264AnnexBAnalyzer(const core::RandomAccessSource& source,
                       std::optional<core::CancellationToken> cancellation,
-                      DslProgram program,
-                      QString elementType,
+                      DslTypedProgram program,
+                      quint32 elementStructIndex,
                       core::AnalysisTree tree);
 
     [[nodiscard]] std::optional<core::FieldLocation>
     makeLocation(std::vector<core::SourceSpan> sourceSpans);
     [[nodiscard]] bool publishRecord(const H264StartCodeRecord& record,
                                      H264AnnexBAnalysisBatch& batch,
+                                     bool allowExecutionCancellation,
                                      H264AnnexBAnalysisStatus* failureStatus,
                                      QString* errorMessage);
     void markRootPartial(core::DiagnosticCode code,
@@ -75,8 +77,9 @@ private:
 
     const core::RandomAccessSource* source_ = nullptr;
     H264StartCodeScanner scanner_;
-    DslProgram program_;
-    QString elementType_;
+    std::optional<core::CancellationToken> cancellation_;
+    DslTypedProgram program_;
+    quint32 elementStructIndex_ = 0;
     core::AnalysisTree tree_;
     quint64 nextViewId_ = 1;
     quint64 nextNalUnitIndex_ = 0;

@@ -18,18 +18,6 @@ namespace streamview::rules {
 
 namespace {
 
-[[nodiscard]] const DslProgressiveScan* findEntryScan(const DslProgram& program) {
-    if (!program.hasEntry) {
-        return nullptr;
-    }
-    for (const DslProgressiveScan& scan : program.scans) {
-        if (scan.name == program.entry.targetName) {
-            return &scan;
-        }
-    }
-    return nullptr;
-}
-
 [[nodiscard]] H264AnnexBAnalysisStatus analysisStatus(StartCodeScanStatus status) noexcept {
     switch (status) {
     case StartCodeScanStatus::InProgress:
@@ -44,6 +32,24 @@ namespace {
         return H264AnnexBAnalysisStatus::InvalidBatchSize;
     }
     return H264AnnexBAnalysisStatus::InvalidRule;
+}
+
+[[nodiscard]] core::DiagnosticCode
+diagnosticCode(H264AnnexBAnalysisStatus status) noexcept {
+    switch (status) {
+    case H264AnnexBAnalysisStatus::Cancelled:
+        return core::DiagnosticCode::Cancelled;
+    case H264AnnexBAnalysisStatus::SourceError:
+        return core::DiagnosticCode::SourceError;
+    case H264AnnexBAnalysisStatus::ResourceLimit:
+        return core::DiagnosticCode::ResourceLimit;
+    case H264AnnexBAnalysisStatus::InProgress:
+    case H264AnnexBAnalysisStatus::Complete:
+    case H264AnnexBAnalysisStatus::InvalidBatchSize:
+    case H264AnnexBAnalysisStatus::InvalidRule:
+        return core::DiagnosticCode::InvalidSyntax;
+    }
+    return core::DiagnosticCode::InvalidSyntax;
 }
 
 } // namespace
@@ -90,7 +96,7 @@ H264AnnexBAnalyzer::create(const core::RandomAccessSource& source,
         return std::nullopt;
     }
 
-    DslParseResult parsed = DslParser::parse(ruleSource);
+    const DslParseResult parsed = DslParser::parse(ruleSource);
     if (!parsed.succeeded()) {
         if (errorMessage != nullptr) {
             const DslDiagnostic& diagnostic = parsed.diagnostics.front();
@@ -102,14 +108,40 @@ H264AnnexBAnalyzer::create(const core::RandomAccessSource& source,
         return std::nullopt;
     }
 
-    const DslProgressiveScan* entryScan = findEntryScan(parsed.program);
-    if (entryScan == nullptr || entryScan->scannerName != QStringLiteral("h264_start_code")) {
+    DslCompileResult compiled = DslCompiler::compile(parsed.program);
+    if (!compiled.succeeded()) {
+        if (errorMessage != nullptr) {
+            if (compiled.diagnostics.empty()) {
+                *errorMessage = QStringLiteral("Bundled H.264 rule failed static compilation");
+            } else {
+                const DslDiagnostic& diagnostic = compiled.diagnostics.front();
+                *errorMessage =
+                    QStringLiteral("Bundled H.264 rule failed static compilation at %1:%2: %3")
+                        .arg(diagnostic.range.start.line)
+                        .arg(diagnostic.range.start.column)
+                        .arg(diagnostic.message);
+            }
+        }
+        return std::nullopt;
+    }
+
+    if (compiled.program->entry.kind != DslEntryKind::Sequence ||
+        compiled.program->entry.targetIndex >= compiled.program->scans.size()) {
         if (errorMessage != nullptr) {
             *errorMessage = QStringLiteral("Bundled H.264 rule has no Annex B entry scan");
         }
         return std::nullopt;
     }
-    const QString elementType = entryScan->elementType;
+    const DslTypedScan& entryScan =
+        compiled.program->scans.at(compiled.program->entry.targetIndex);
+    if (entryScan.scanner != DslScannerKind::H264StartCode ||
+        entryScan.elementStructIndex >= compiled.program->structs.size()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Bundled H.264 rule has no Annex B entry scan");
+        }
+        return std::nullopt;
+    }
+    const quint32 elementStructIndex = entryScan.elementStructIndex;
 
     auto tree = core::AnalysisTree::create(
         source.identity().isEmpty() ? QStringLiteral("H.264 Annex B") : source.identity());
@@ -122,19 +154,20 @@ H264AnnexBAnalyzer::create(const core::RandomAccessSource& source,
 
     H264AnnexBAnalyzer analyzer(source,
                                 std::move(cancellation),
-                                std::move(parsed.program),
-                                elementType,
+                                std::move(*compiled.program),
+                                elementStructIndex,
                                 std::move(*tree));
     return std::optional<H264AnnexBAnalyzer>(std::move(analyzer));
 }
 
 H264AnnexBAnalyzer::H264AnnexBAnalyzer(const core::RandomAccessSource& source,
                                        std::optional<core::CancellationToken> cancellation,
-                                       DslProgram program,
-                                       QString elementType,
+                                       DslTypedProgram program,
+                                       quint32 elementStructIndex,
                                        core::AnalysisTree tree)
-    : source_(&source), scanner_(source, std::move(cancellation)), program_(std::move(program)),
-      elementType_(std::move(elementType)), tree_(std::move(tree)) {}
+    : source_(&source), scanner_(source, cancellation), cancellation_(std::move(cancellation)),
+      program_(std::move(program)), elementStructIndex_(elementStructIndex),
+      tree_(std::move(tree)) {}
 
 std::optional<core::FieldLocation>
 H264AnnexBAnalyzer::makeLocation(std::vector<core::SourceSpan> sourceSpans) {
@@ -155,6 +188,7 @@ H264AnnexBAnalyzer::makeLocation(std::vector<core::SourceSpan> sourceSpans) {
 
 bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
                                        H264AnnexBAnalysisBatch& batch,
+                                       bool allowExecutionCancellation,
                                        H264AnnexBAnalysisStatus* failureStatus,
                                        QString* errorMessage) {
     *failureStatus = H264AnnexBAnalysisStatus::InvalidRule;
@@ -224,10 +258,33 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
     }
 
     core::BitReader reader(*source_, *headerSpan);
-    const DslExecutionResult execution = DslExecutor::decodeStruct(
-        program_, elementType_, reader, *mapping, 0, tree_, *nalNode);
+    DslExecutionOptions executionOptions;
+    if (allowExecutionCancellation) {
+        executionOptions.cancellation = cancellation_;
+    }
+    const DslExecutionResult execution = DslExecutor::decodeStruct(program_,
+                                                                    elementStructIndex_,
+                                                                    reader,
+                                                                    *mapping,
+                                                                    0,
+                                                                    tree_,
+                                                                    *nalNode,
+                                                                    executionOptions);
     if (!execution.materialized()) {
-        if (!execution.structureNode || execution.status == DslExecutionStatus::InvalidDefinition) {
+        if (!execution.structureNode) {
+            *errorMessage = execution.errorMessage.isEmpty()
+                              ? QStringLiteral("Unable to decode NAL unit header")
+                              : execution.errorMessage;
+            if (execution.status == DslExecutionStatus::Cancelled) {
+                *failureStatus = H264AnnexBAnalysisStatus::Cancelled;
+            } else if (execution.status == DslExecutionStatus::ResourceLimit) {
+                *failureStatus = H264AnnexBAnalysisStatus::ResourceLimit;
+            } else if (execution.status == DslExecutionStatus::SourceError) {
+                *failureStatus = H264AnnexBAnalysisStatus::SourceError;
+            }
+            return false;
+        }
+        if (execution.status == DslExecutionStatus::InvalidDefinition) {
             *errorMessage = execution.errorMessage.isEmpty()
                               ? QStringLiteral("Unable to decode NAL unit header")
                               : execution.errorMessage;
@@ -252,8 +309,10 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
                 diagnostic.location = *nalLocation;
             }
         }
-        if (!tree_.markPartial(
-                *nalNode, core::MaterializationState::Invalid, std::move(diagnostic))) {
+        const auto nalState = execution.status == DslExecutionStatus::Cancelled
+                                  ? core::MaterializationState::Cancelled
+                                  : core::MaterializationState::Invalid;
+        if (!tree_.markPartial(*nalNode, nalState, std::move(diagnostic))) {
             *errorMessage = QStringLiteral("Unable to mark NAL unit as a partial result");
             return false;
         }
@@ -262,6 +321,17 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
                           : execution.errorMessage;
         if (execution.status == DslExecutionStatus::SourceError) {
             *failureStatus = H264AnnexBAnalysisStatus::SourceError;
+            return false;
+        }
+        if (execution.status == DslExecutionStatus::Cancelled) {
+            *failureStatus = H264AnnexBAnalysisStatus::Cancelled;
+            return false;
+        }
+        if (execution.status == DslExecutionStatus::ResourceLimit ||
+            execution.status == DslExecutionStatus::InvalidDefinition) {
+            *failureStatus = execution.status == DslExecutionStatus::ResourceLimit
+                                 ? H264AnnexBAnalysisStatus::ResourceLimit
+                                 : H264AnnexBAnalysisStatus::InvalidRule;
             return false;
         }
         return true;
@@ -293,23 +363,35 @@ H264AnnexBAnalysisBatch H264AnnexBAnalyzer::analyzeBatch(
         return result;
     }
 
+    const bool cancellationRequestedBeforeScan =
+        cancellation_ && cancellation_->isCancellationRequested();
     const StartCodeScanBatch scanBatch =
         scanner_.scanBatch(maximumRecords, maximumInspectedPositions);
     result.status = analysisStatus(scanBatch.status);
     result.errorMessage = scanBatch.errorMessage;
+    const bool cancellationRequestedAfterScan =
+        cancellation_ && cancellation_->isCancellationRequested();
+    const bool allowExecutionCancellation =
+        cancellation_.has_value() && !cancellationRequestedBeforeScan &&
+        !cancellationRequestedAfterScan;
     for (const H264StartCodeRecord& record : scanBatch.records) {
         QString publishError;
         H264AnnexBAnalysisStatus failureStatus = H264AnnexBAnalysisStatus::InvalidRule;
-        if (!publishRecord(record, result, &failureStatus, &publishError)) {
+        if (!publishRecord(record,
+                           result,
+                           allowExecutionCancellation,
+                           &failureStatus,
+                           &publishError)) {
             result.status = failureStatus;
             result.errorMessage = publishError;
             terminal_ = true;
             terminalStatus_ = result.status;
             terminalErrorMessage_ = result.errorMessage;
-            markRootPartial(result.status == H264AnnexBAnalysisStatus::SourceError
-                                ? core::DiagnosticCode::SourceError
-                                : core::DiagnosticCode::InvalidSyntax,
-                            core::MaterializationState::Invalid,
+            const auto rootState = result.status == H264AnnexBAnalysisStatus::Cancelled
+                                       ? core::MaterializationState::Cancelled
+                                       : core::MaterializationState::Invalid;
+            markRootPartial(diagnosticCode(result.status),
+                            rootState,
                             result.errorMessage);
             return result;
         }
