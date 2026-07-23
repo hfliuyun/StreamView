@@ -7,10 +7,12 @@
 #include <streamview/rules/dsl_ir.h>
 
 #include <QTest>
+#include <QMetaType>
 
 #include <algorithm>
 #include <cstddef>
 #include <initializer_list>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -29,7 +31,9 @@ using streamview::rules::DslExecutionLimits;
 using streamview::rules::DslExecutionOptions;
 using streamview::rules::DslExecutor;
 using streamview::rules::DslCompiler;
+using streamview::rules::DslOpcode;
 using streamview::rules::DslParser;
+using streamview::rules::DslValueTypeKind;
 
 namespace {
 
@@ -72,6 +76,37 @@ public:
 
 private:
     std::vector<std::byte> data_;
+};
+
+class FailingAfterFirstReadSource final : public RandomAccessSource {
+public:
+    explicit FailingAfterFirstReadSource(std::vector<std::byte> data)
+        : data_(std::move(data)) {}
+
+    [[nodiscard]] quint64 sizeBytes() const noexcept override {
+        return static_cast<quint64>(data_.size());
+    }
+    [[nodiscard]] QString identity() const override {
+        return QStringLiteral("failing-after-first");
+    }
+
+    [[nodiscard]] SourceReadResult
+    readAt(quint64 byteOffset, std::span<std::byte> destination) const override {
+        if (readCount_++ > 0) {
+            return {SourceReadStatus::Error, 0, QStringLiteral("injected source failure")};
+        }
+        if (byteOffset >= data_.size() || destination.size() > data_.size() - byteOffset) {
+            return {SourceReadStatus::EndOfSource, 0, {}};
+        }
+        std::copy_n(data_.begin() + static_cast<std::ptrdiff_t>(byteOffset),
+                    static_cast<std::ptrdiff_t>(destination.size()),
+                    destination.begin());
+        return {SourceReadStatus::Complete, destination.size(), {}};
+    }
+
+private:
+    std::vector<std::byte> data_;
+    mutable quint64 readCount_ = 0;
 };
 
 [[nodiscard]] std::optional<streamview::core::SourceMapping>
@@ -124,6 +159,186 @@ private slots:
         QCOMPARE(first->location()->sourceSpans().front().start().absoluteBitOffset(), quint64(0));
         QCOMPARE(first->location()->sourceSpans().front().bitLength(), quint64(3));
         QCOMPARE(structure->state(), streamview::core::MaterializationState::Materialized);
+    }
+
+    void decodesUnsignedAndSignedExpGolombCodewordsWithExactLocations() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Codes { ue unsigned_zero; ue unsigned_one; ue unsigned_two; "
+            "se signed_zero; se positive_one; se negative_one; "
+            "se positive_two; se negative_two; } entry Codes;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0xa7, 0x4c, 0x85}));
+        const auto mapping = mappingForBytes(3);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 24);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("exp-golomb"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Codes"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(24));
+        QCOMPARE(result.instructionsExecuted, quint64(10));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(8));
+
+        const std::vector<quint64> unsignedValues{0, 1, 2};
+        const std::vector<quint64> starts{0, 1, 4, 7, 8, 11, 14, 19};
+        const std::vector<quint64> lengths{1, 3, 3, 1, 3, 3, 5, 5};
+        for (std::size_t index = 0; index < unsignedValues.size(); ++index) {
+            const auto field = tree->node(structure->children().at(index));
+            QVERIFY(field.has_value());
+            QCOMPARE(field->value().metaType().id(), QMetaType::ULongLong);
+            QCOMPARE(field->value().toULongLong(), unsignedValues.at(index));
+            QCOMPARE(field->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     starts.at(index));
+            QCOMPARE(field->location()->sourceSpans().front().bitLength(), lengths.at(index));
+        }
+
+        const std::vector<qlonglong> signedValues{0, 1, -1, 2, -2};
+        for (std::size_t index = 0; index < signedValues.size(); ++index) {
+            const std::size_t childIndex = index + unsignedValues.size();
+            const auto field = tree->node(structure->children().at(childIndex));
+            QVERIFY(field.has_value());
+            QCOMPARE(field->value().metaType().id(), QMetaType::LongLong);
+            QCOMPARE(field->value().toLongLong(), signedValues.at(index));
+            QCOMPARE(field->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     starts.at(childIndex));
+            QCOMPARE(field->location()->sourceSpans().front().bitLength(),
+                     lengths.at(childIndex));
+        }
+    }
+
+    void rollsBackAComponentExpGolombReadWhenTheCodewordIsTruncated() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> prefix; ue value; bits<1> suffix; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0b10100000}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 3);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("exp-golomb-truncated"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::TruncatedSource);
+        QCOMPARE(result.bitsConsumed, quint64(1));
+        QCOMPARE(result.instructionsExecuted, quint64(3));
+        QCOMPARE(result.nodesCreated, quint64(2));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(1));
+        const auto prefix = tree->node(structure->children().front());
+        QVERIFY(prefix.has_value());
+        QCOMPARE(prefix->value().toULongLong(), quint64(1));
+        QCOMPARE(structure->diagnostics().size(), std::size_t(1));
+        QCOMPARE(structure->diagnostics().front().code, DiagnosticCode::TruncatedSource);
+        QCOMPARE(structure->diagnostics().front().fieldPath, QStringLiteral("Header.value"));
+        QVERIFY(structure->diagnostics().front().location.has_value());
+        QCOMPARE(structure->diagnostics().front().location->sourceSpans().front().start()
+                     .absoluteBitOffset(),
+                 quint64(1));
+        QCOMPARE(structure->diagnostics().front().location->sourceSpans().front().bitLength(),
+                 quint64(2));
+        QVERIFY(tree->hasPartialResults());
+    }
+
+    void rollsBackAComponentExpGolombReadOnSourceError() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { bits<1> prefix; ue value; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        FailingAfterFirstReadSource source(bytes({0x80}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("exp-golomb-source-error"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::SourceError);
+        QCOMPARE(result.bitsConsumed, quint64(1));
+        QCOMPARE(reader.position(), quint64(1));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(1));
+        QCOMPARE(structure->diagnostics().front().code, DiagnosticCode::SourceError);
+        QCOMPARE(structure->diagnostics().front().fieldPath, QStringLiteral("Header.value"));
+        QVERIFY(structure->diagnostics().front().location.has_value());
+        QCOMPARE(structure->diagnostics().front().location->sourceSpans().front().start()
+                     .absoluteBitOffset(),
+                 quint64(1));
+        QCOMPARE(structure->diagnostics().front().location->sourceSpans().front().bitLength(),
+                 quint64(1));
+    }
+
+    void acceptsTheLongestRepresentableUnsignedExpGolombCodeword() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { ue value; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes(
+            {0, 0, 0, 0, 0, 0, 0, 1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe}));
+        const auto mapping = mappingForBytes(16);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 127);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("exp-golomb-maximum"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(127));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        const auto value = tree->node(structure->children().front());
+        QVERIFY(value.has_value());
+        QCOMPARE(value->value().toULongLong(), std::numeric_limits<quint64>::max() - 1U);
+        QCOMPARE(value->location()->sourceSpans().front().bitLength(), quint64(127));
+    }
+
+    void rejectsSixtyFourLeadingZeroBitsWithoutConsumingTheField() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { ue value; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0, 0, 0, 0, 0, 0, 0, 0}));
+        const auto mapping = mappingForBytes(8);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 64);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("exp-golomb-overflow"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::InvalidSyntax);
+        QCOMPARE(result.bitsConsumed, quint64(0));
+        QCOMPARE(reader.position(), quint64(0));
+        QCOMPARE(result.instructionsExecuted, quint64(2));
+        QCOMPARE(result.nodesCreated, quint64(1));
+        QVERIFY(result.errorMessage.contains(QStringLiteral("64-bit")));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QVERIFY(structure->children().empty());
+        QCOMPARE(structure->diagnostics().front().code, DiagnosticCode::InvalidSyntax);
+        QCOMPARE(structure->diagnostics().front().fieldPath, QStringLiteral("Header.value"));
+        QCOMPARE(structure->diagnostics().front().location->sourceSpans().front().bitLength(),
+                 quint64(64));
     }
 
     void decodesExplicitLittleEndianWithoutChangingSourceLocation() {
@@ -313,6 +528,51 @@ private slots:
                                                              endianTree->rootId());
         QCOMPARE(endianResult.status, DslExecutionStatus::InvalidDefinition);
         QCOMPARE(endianResult.nodesCreated, quint64(1));
+    }
+
+    void rejectsMalformedExpGolombOpcodeAndTypeWithoutConsumingInput() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { ue value; } entry Header;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0x80}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+
+        auto malformedOpcode = *compiled.program;
+        malformedOpcode.bytecode.at(1).opcode = DslOpcode::ReadUnsignedBits;
+        BitReader opcodeReader(source, *range);
+        auto opcodeTree = AnalysisTree::create(QStringLiteral("malformed-exp-opcode"));
+        QVERIFY(opcodeTree.has_value());
+        const auto opcodeResult = DslExecutor::decodeStruct(malformedOpcode,
+                                                             quint32(0),
+                                                             opcodeReader,
+                                                             *mapping,
+                                                             0,
+                                                             *opcodeTree,
+                                                             opcodeTree->rootId());
+        QCOMPARE(opcodeResult.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(opcodeResult.bitsConsumed, quint64(0));
+        QCOMPARE(opcodeResult.nodesCreated, quint64(1));
+
+        auto malformedType = *compiled.program;
+        malformedType.structs.front().fields.front().type.kind = DslValueTypeKind::UnsignedBits;
+        BitReader typeReader(source, *range);
+        auto typeTree = AnalysisTree::create(QStringLiteral("malformed-exp-type"));
+        QVERIFY(typeTree.has_value());
+        const auto typeResult = DslExecutor::decodeStruct(malformedType,
+                                                           quint32(0),
+                                                           typeReader,
+                                                           *mapping,
+                                                           0,
+                                                           *typeTree,
+                                                           typeTree->rootId());
+        QCOMPARE(typeResult.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(typeResult.bitsConsumed, quint64(0));
+        QCOMPARE(typeResult.nodesCreated, quint64(1));
     }
 
     void carriesPresentationMetadataIntoAnalysisNodes() {

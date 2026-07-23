@@ -101,6 +101,95 @@ namespace {
                        });
 }
 
+struct ExpGolombReadResult final {
+    DslExecutionStatus status = DslExecutionStatus::InvalidDefinition;
+    quint64 unsignedValue = 0;
+    qlonglong signedValue = 0;
+    quint64 bitCount = 0;
+    quint64 diagnosticBits = 0;
+    QString errorMessage;
+
+    [[nodiscard]] bool complete() const noexcept {
+        return status == DslExecutionStatus::Materialized;
+    }
+};
+
+[[nodiscard]] ExpGolombReadResult readExpGolomb(core::BitReader& reader,
+                                                 bool signedValue) {
+    const quint64 start = reader.position();
+    const quint64 rangeLength = reader.range().bitLength();
+    const quint64 availableAtStart = rangeLength >= start ? rangeLength - start : 0;
+    const auto fail = [&](DslExecutionStatus status,
+                          const QString& message,
+                          quint64 diagnosticBits) {
+        (void)reader.seek(start);
+        return ExpGolombReadResult{status, 0, 0, 0,
+                                   std::min(availableAtStart, diagnosticBits), message};
+    };
+    const auto readFailure = [&](const core::BitReadResult& readResult,
+                                 quint64 bitsRead,
+                                 quint64 requestedBits) {
+        const DslExecutionStatus status = statusForRead(readResult.status);
+        quint64 diagnosticBits = bitsRead;
+        if (readResult.status == core::BitReadStatus::EndOfRange) {
+            diagnosticBits = availableAtStart;
+        } else if (readResult.status == core::BitReadStatus::EndOfSource) {
+            diagnosticBits = bitsRead < std::numeric_limits<quint64>::max()
+                                  ? bitsRead + std::max<quint64>(requestedBits, 1)
+                                  : bitsRead;
+        } else if (diagnosticBits == 0) {
+            diagnosticBits = 1;
+        }
+        return fail(status,
+                    readResult.errorMessage.isEmpty()
+                        ? QStringLiteral("Unable to read complete Exp-Golomb codeword")
+                        : readResult.errorMessage,
+                    diagnosticBits);
+    };
+
+    quint64 leadingZeroBits = 0;
+    while (true) {
+        const core::BitReadResult prefix = reader.readBits(1);
+        if (!prefix.complete()) {
+            return readFailure(prefix, reader.position() - start, 1);
+        }
+        if (prefix.value != 0) {
+            break;
+        }
+        ++leadingZeroBits;
+        if (leadingZeroBits >= 64) {
+            return fail(DslExecutionStatus::InvalidSyntax,
+                        QStringLiteral("Exp-Golomb codeword exceeds the 64-bit value range"),
+                        leadingZeroBits);
+        }
+    }
+
+    quint64 suffix = 0;
+    if (leadingZeroBits != 0) {
+        const core::BitReadResult suffixResult =
+            reader.readBits(static_cast<unsigned int>(leadingZeroBits));
+        if (!suffixResult.complete()) {
+            return readFailure(suffixResult, reader.position() - start, leadingZeroBits);
+        }
+        suffix = suffixResult.value;
+    }
+
+    const quint64 base = (quint64{1} << leadingZeroBits) - 1U;
+    const quint64 codeNumber = base + suffix;
+    const quint64 bitCount = reader.position() - start;
+    if (!signedValue) {
+        return {DslExecutionStatus::Materialized, codeNumber, 0, bitCount, 0, {}};
+    }
+
+    qlonglong decoded = 0;
+    if (codeNumber != 0) {
+        const quint64 magnitude = (codeNumber + 1U) / 2U;
+        decoded = (codeNumber & 1U) != 0 ? static_cast<qlonglong>(magnitude)
+                                        : -static_cast<qlonglong>(magnitude);
+    }
+    return {DslExecutionStatus::Materialized, 0, decoded, bitCount, 0, {}};
+}
+
 } // namespace
 
 DslExecutionResult DslVirtualMachine::execute(
@@ -121,7 +210,9 @@ DslExecutionResult DslVirtualMachine::execute(
     const DslTypedStruct& structure = program.structs.at(structureIndex);
     const auto markFailure = [&](DslExecutionStatus status,
                                  const QString& message,
-                                 const DslTypedField* field) {
+                                 const DslTypedField* field,
+                                 std::optional<quint64> diagnosticPosition = std::nullopt,
+                                 std::optional<quint64> diagnosticBits = std::nullopt) {
         result.status = status;
         result.errorMessage = message;
         core::ParseDiagnostic diagnostic;
@@ -134,11 +225,15 @@ DslExecutionResult DslVirtualMachine::execute(
             diagnostic.fieldPath += QLatin1Char('.') + field->name;
             requestedBits = field->type.bitWidth;
         }
+        const quint64 position = diagnosticPosition.value_or(reader.position());
+        const quint64 availableBits = position <= reader.range().bitLength()
+                                           ? reader.range().bitLength() - position
+                                           : 0;
         diagnostic.location = locationAt(mapping,
                                           logicalStart,
-                                          reader.position(),
-                                          reader.remainingBits(),
-                                          requestedBits);
+                                          position,
+                                          availableBits,
+                                          diagnosticBits.value_or(requestedBits));
         const auto state = status == DslExecutionStatus::Cancelled
                                ? core::MaterializationState::Cancelled
                                : core::MaterializationState::Invalid;
@@ -244,7 +339,9 @@ DslExecutionResult DslVirtualMachine::execute(
             ++result.nodesCreated;
             break;
         }
-        case DslOpcode::ReadUnsignedBits: {
+        case DslOpcode::ReadUnsignedBits:
+        case DslOpcode::ReadUnsignedExpGolomb:
+        case DslOpcode::ReadSignedExpGolomb: {
             if (!result.structureNode || instruction.operand != nextFieldIndex ||
                 instruction.operand >= structure.fields.size()) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
@@ -255,55 +352,75 @@ DslExecutionResult DslVirtualMachine::execute(
             const DslTypedField& field = structure.fields.at(instruction.operand);
             const quint64 fieldStart = reader.position();
             const quint64 readerStart = reader.range().start().absoluteBitOffset();
-            const bool littleEndianMisaligned =
-                field.type.endian == DslEndian::Little &&
-                (field.type.bitWidth % 8 != 0 || addWouldOverflow(readerStart, fieldStart) ||
-                 (readerStart + fieldStart) % 8 != 0);
-            if (field.type.bitWidth == 0 || field.type.bitWidth > 64 ||
-                (field.type.endian != DslEndian::Big &&
-                 field.type.endian != DslEndian::Little) ||
-                littleEndianMisaligned) {
-                markFailure(DslExecutionStatus::InvalidDefinition,
-                            QStringLiteral("Typed IR field type is invalid"),
-                            &field);
-                return result;
-            }
-
+            const bool readsFixedBits = instruction.opcode == DslOpcode::ReadUnsignedBits;
+            const bool readsUnsignedExpGolomb =
+                instruction.opcode == DslOpcode::ReadUnsignedExpGolomb;
             const DslTypedEnum* enumeration = nullptr;
-            switch (field.type.kind) {
-            case DslValueTypeKind::UnsignedBits:
-                if (field.type.enumIndex) {
+            if (readsFixedBits) {
+                const bool littleEndianMisaligned =
+                    field.type.endian == DslEndian::Little &&
+                    (field.type.bitWidth % 8 != 0 || addWouldOverflow(readerStart, fieldStart) ||
+                     (readerStart + fieldStart) % 8 != 0);
+                if (field.type.bitWidth == 0 || field.type.bitWidth > 64 ||
+                    (field.type.endian != DslEndian::Big &&
+                     field.type.endian != DslEndian::Little) ||
+                    littleEndianMisaligned) {
                     markFailure(DslExecutionStatus::InvalidDefinition,
-                                QStringLiteral("Typed unsigned field has an enum reference"),
+                                QStringLiteral("Typed IR field type is invalid"),
                                 &field);
                     return result;
                 }
-                break;
-            case DslValueTypeKind::Enum:
-                if (!field.type.enumIndex || *field.type.enumIndex >= program.enums.size()) {
-                    markFailure(DslExecutionStatus::InvalidDefinition,
-                                QStringLiteral("Typed enum field has an invalid enum reference"),
-                                &field);
-                    return result;
-                }
-                enumeration = &program.enums.at(*field.type.enumIndex);
-                if (enumeration->values.empty() ||
-                    std::any_of(enumeration->values.begin(),
-                                enumeration->values.end(),
-                                [&field](const DslTypedEnumValue& value) {
-                                    return !fitsUnsignedBits(value.value, field.type.bitWidth);
-                                })) {
-                    markFailure(DslExecutionStatus::InvalidDefinition,
-                                QStringLiteral("Typed enum definition is invalid for the field"),
-                                &field);
-                    return result;
-                }
-                break;
-            default:
-                markFailure(DslExecutionStatus::InvalidDefinition,
-                            QStringLiteral("Typed IR field value kind is invalid"),
+                switch (field.type.kind) {
+                case DslValueTypeKind::UnsignedBits:
+                    if (field.type.enumIndex) {
+                        markFailure(DslExecutionStatus::InvalidDefinition,
+                                    QStringLiteral("Typed unsigned field has an enum reference"),
+                                    &field);
+                        return result;
+                    }
+                    break;
+                case DslValueTypeKind::Enum:
+                    if (!field.type.enumIndex || *field.type.enumIndex >= program.enums.size()) {
+                        markFailure(
+                            DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed enum field has an invalid enum reference"),
                             &field);
-                return result;
+                        return result;
+                    }
+                    enumeration = &program.enums.at(*field.type.enumIndex);
+                    if (enumeration->values.empty() ||
+                        std::any_of(enumeration->values.begin(),
+                                    enumeration->values.end(),
+                                    [&field](const DslTypedEnumValue& value) {
+                                        return !fitsUnsignedBits(value.value,
+                                                                 field.type.bitWidth);
+                                    })) {
+                        markFailure(
+                            DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed enum definition is invalid for the field"),
+                            &field);
+                        return result;
+                    }
+                    break;
+                case DslValueTypeKind::UnsignedExpGolomb:
+                case DslValueTypeKind::SignedExpGolomb:
+                    markFailure(DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Typed IR opcode does not match the field type"),
+                                &field);
+                    return result;
+                }
+            } else {
+                const DslValueTypeKind expectedKind =
+                    readsUnsignedExpGolomb ? DslValueTypeKind::UnsignedExpGolomb
+                                           : DslValueTypeKind::SignedExpGolomb;
+                if (field.type.kind != expectedKind || field.type.bitWidth != 0 ||
+                    field.type.endian != DslEndian::Big || field.type.enumIndex ||
+                    field.equalsConstraint) {
+                    markFailure(DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Typed Exp-Golomb field definition is invalid"),
+                                &field);
+                    return result;
+                }
             }
             const quint32 structureDepth = parentDepth + 1U;
             if (structureDepth >= options.limits.maximumNodeDepth) {
@@ -318,18 +435,39 @@ DslExecutionResult DslVirtualMachine::execute(
                             &field);
                 return result;
             }
-            const core::BitReadResult readResult = reader.readBits(field.type.bitWidth);
-            result.bitsConsumed = reader.position();
-            if (!readResult.complete()) {
-                const DslExecutionStatus status = statusForRead(readResult.status);
-                markFailure(status,
-                            readResult.errorMessage.isEmpty()
-                                ? QStringLiteral("Unable to read complete syntax field")
-                                : readResult.errorMessage,
-                            &field);
-                return result;
+            quint64 consumedBits = 0;
+            quint64 unsignedValue = 0;
+            qlonglong signedValue = 0;
+            if (readsFixedBits) {
+                const core::BitReadResult readResult = reader.readBits(field.type.bitWidth);
+                result.bitsConsumed = reader.position();
+                if (!readResult.complete()) {
+                    const DslExecutionStatus status = statusForRead(readResult.status);
+                    markFailure(status,
+                                readResult.errorMessage.isEmpty()
+                                    ? QStringLiteral("Unable to read complete syntax field")
+                                    : readResult.errorMessage,
+                                &field);
+                    return result;
+                }
+                consumedBits = field.type.bitWidth;
+                unsignedValue = decodeValue(readResult.value, field.type);
+            } else {
+                const ExpGolombReadResult readResult =
+                    readExpGolomb(reader, !readsUnsignedExpGolomb);
+                result.bitsConsumed = reader.position();
+                if (!readResult.complete()) {
+                    markFailure(readResult.status,
+                                readResult.errorMessage,
+                                &field,
+                                fieldStart,
+                                readResult.diagnosticBits);
+                    return result;
+                }
+                consumedBits = readResult.bitCount;
+                unsignedValue = readResult.unsignedValue;
+                signedValue = readResult.signedValue;
             }
-            const quint64 decodedValue = decodeValue(readResult.value, field.type);
             if (addWouldOverflow(logicalStart, fieldStart)) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Logical field offset overflow"),
@@ -339,13 +477,13 @@ DslExecutionResult DslVirtualMachine::execute(
             const auto location = locationAt(mapping,
                                              logicalStart,
                                              fieldStart,
-                                             field.type.bitWidth,
-                                             field.type.bitWidth);
+                                             consumedBits,
+                                             consumedBits);
             if (addWouldOverflow(readerStart, fieldStart) || !location ||
                 location->sourceSpans().size() != 1 ||
                 location->sourceSpans().front().start().absoluteBitOffset() !=
                     readerStart + fieldStart ||
-                location->sourceSpans().front().bitLength() != field.type.bitWidth) {
+                location->sourceSpans().front().bitLength() != consumedBits) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral(
                                 "Minimum DSL executor requires a contiguous direct source mapping"),
@@ -356,7 +494,9 @@ DslExecutionResult DslVirtualMachine::execute(
             fieldSpec.kind = core::AnalysisNodeKind::SyntaxField;
             fieldSpec.name = field.name;
             fieldSpec.state = core::MaterializationState::Materialized;
-            fieldSpec.value = QVariant::fromValue<qulonglong>(decodedValue);
+            fieldSpec.value = readsFixedBits || readsUnsignedExpGolomb
+                                  ? QVariant::fromValue<qulonglong>(unsignedValue)
+                                  : QVariant::fromValue<qlonglong>(signedValue);
             fieldSpec.location = *location;
             fieldSpec.metadata = field.metadata;
             if (!tree.appendChild(*result.structureNode, std::move(fieldSpec))) {
@@ -367,9 +507,9 @@ DslExecutionResult DslVirtualMachine::execute(
             }
             ++result.nodesCreated;
             lastField = instruction.operand;
-            lastValue = decodedValue;
+            lastValue = readsFixedBits ? std::optional<quint64>(unsignedValue) : std::nullopt;
             ++nextFieldIndex;
-            if (enumeration != nullptr && !enumContains(*enumeration, decodedValue)) {
+            if (enumeration != nullptr && !enumContains(*enumeration, unsignedValue)) {
                 result.status = DslExecutionStatus::InvalidSyntax;
                 result.errorMessage =
                     QStringLiteral("Field value is not declared by its enum type");
@@ -381,8 +521,8 @@ DslExecutionResult DslVirtualMachine::execute(
                 diagnostic.location = locationAt(mapping,
                                                  logicalStart,
                                                  fieldStart,
-                                                 field.type.bitWidth,
-                                                 field.type.bitWidth);
+                                                 consumedBits,
+                                                 consumedBits);
                 (void)tree.markPartial(*result.structureNode,
                                        core::MaterializationState::Invalid,
                                        std::move(diagnostic));
