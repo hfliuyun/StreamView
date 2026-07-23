@@ -118,6 +118,53 @@ private slots:
         QCOMPARE(structure->state(), streamview::core::MaterializationState::Materialized);
     }
 
+    void carriesPresentationMetadataIntoAnalysisNodes() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "@spec(\"Example Standard\", \"4.2\") "
+            "@description(\"A compact header.\") "
+            "struct Header { "
+            "bits<3> first @description(\"First field.\"); "
+            "bits<5> second; "
+            "} entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0b10110010}));
+        const auto mapping = mappingForBytes(1);
+        QVERIFY(mapping.has_value());
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("test"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+        QVERIFY(result.structureNode.has_value());
+
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->metadata().typeName, QStringLiteral("struct"));
+        QCOMPARE(structure->metadata().description, QStringLiteral("A compact header."));
+        QVERIFY(structure->metadata().specification.has_value());
+        QCOMPARE(structure->metadata().specification->standard,
+                 QStringLiteral("Example Standard"));
+        QCOMPARE(structure->metadata().specification->clause, QStringLiteral("4.2"));
+
+        const auto first = tree->node(structure->children().at(0));
+        const auto second = tree->node(structure->children().at(1));
+        QVERIFY(first.has_value());
+        QVERIFY(second.has_value());
+        QCOMPARE(first->metadata().typeName, QStringLiteral("bits"));
+        QCOMPARE(first->metadata().description, QStringLiteral("First field."));
+        QVERIFY(first->metadata().specification.has_value());
+        QCOMPARE(first->metadata().specification->standard,
+                 QStringLiteral("Example Standard"));
+        QCOMPARE(first->location()->logicalRange().bitLength(), quint64{3});
+        QCOMPARE(second->metadata().typeName, QStringLiteral("bits"));
+        QVERIFY(second->metadata().description.isEmpty());
+        QVERIFY(second->metadata().specification.has_value());
+    }
+
     void retainsCompleteFieldsWhenTheNextFieldIsTruncated() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "struct Header { bits<3> first; bits<8> second; } entry Header;"));

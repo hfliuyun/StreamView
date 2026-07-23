@@ -1,8 +1,12 @@
 @spec("ITU-T H.264", "7.3.1")
+@description("The eight-bit NAL unit header prefix.")
 struct NalUnitHeader {
-    bits<1> forbidden_zero_bit @equals(0);
-    bits<2> nal_ref_idc;
-    bits<5> nal_unit_type;
+    bits<1> forbidden_zero_bit @equals(0)
+        @description("Must be zero in a conforming NAL unit.");
+    bits<2> nal_ref_idc
+        @description("Indicates the reference priority of the NAL unit.");
+    bits<5> nal_unit_type
+        @description("Identifies the syntax carried by the NAL unit.");
 }
 
 @index(progressive)

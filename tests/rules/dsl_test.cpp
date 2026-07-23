@@ -93,6 +93,16 @@ private slots:
         QVERIFY(hasDiagnostic(tooWide, DslDiagnosticCode::InvalidBitWidth));
     }
 
+    void rejectsMalformedPresentationAnnotations() {
+        const auto badSpec = DslParser::parse(QStringLiteral(
+            "@spec(1, \"clause\") struct Header { bits<1> value; } entry Header;"));
+        const auto badDescription = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value @description(1); } entry Header;"));
+
+        QVERIFY(hasDiagnostic(badSpec, DslDiagnosticCode::InvalidAnnotation));
+        QVERIFY(hasDiagnostic(badDescription, DslDiagnosticCode::InvalidAnnotation));
+    }
+
     void rejectsMissingOrUnknownEntry() {
         const auto missing =
             DslParser::parse(QStringLiteral("struct Header { bits<1> value; }"));

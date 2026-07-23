@@ -28,6 +28,26 @@ namespace {
     return std::nullopt;
 }
 
+[[nodiscard]] core::AnalysisNodeMetadata metadataForAnnotations(
+    const std::vector<DslAnnotation>& annotations,
+    std::optional<core::AnalysisSpecification> inheritedSpecification = std::nullopt) {
+    core::AnalysisNodeMetadata metadata;
+    metadata.specification = std::move(inheritedSpecification);
+    for (const DslAnnotation& annotation : annotations) {
+        if (annotation.name == QStringLiteral("spec") && annotation.arguments.size() == 2 &&
+            annotation.arguments.at(0).kind == DslAnnotationValueKind::String &&
+            annotation.arguments.at(1).kind == DslAnnotationValueKind::String) {
+            metadata.specification = core::AnalysisSpecification{
+                annotation.arguments.at(0).text, annotation.arguments.at(1).text};
+        } else if (annotation.name == QStringLiteral("description") &&
+                   annotation.arguments.size() == 1 &&
+                   annotation.arguments.front().kind == DslAnnotationValueKind::String) {
+            metadata.description = annotation.arguments.front().text;
+        }
+    }
+    return metadata;
+}
+
 [[nodiscard]] bool addWouldOverflow(quint64 left, quint64 right) noexcept {
     return right > std::numeric_limits<quint64>::max() - left;
 }
@@ -74,10 +94,14 @@ DslExecutionResult DslExecutor::decodeStruct(const DslProgram& program,
         return result;
     }
 
+    core::AnalysisNodeMetadata structureMetadata =
+        metadataForAnnotations(structure->annotations);
+    structureMetadata.typeName = QStringLiteral("struct");
     core::AnalysisNodeSpec structureSpec;
     structureSpec.kind = core::AnalysisNodeKind::Structure;
     structureSpec.name = structure->name;
     structureSpec.state = core::MaterializationState::Indexing;
+    structureSpec.metadata = structureMetadata;
     result.structureNode = tree.appendChild(parentId, std::move(structureSpec));
     if (!result.structureNode) {
         result.errorMessage = QStringLiteral("Unable to append structure to analysis tree");
@@ -146,6 +170,9 @@ DslExecutionResult DslExecutor::decodeStruct(const DslProgram& program,
         fieldSpec.state = core::MaterializationState::Materialized;
         fieldSpec.value = QVariant::fromValue<qulonglong>(readResult.value);
         fieldSpec.location = *location;
+        fieldSpec.metadata =
+            metadataForAnnotations(field.annotations, structureMetadata.specification);
+        fieldSpec.metadata.typeName = QStringLiteral("bits");
         if (!tree.appendChild(*result.structureNode, std::move(fieldSpec))) {
             result.errorMessage = QStringLiteral("Unable to append syntax field to analysis tree");
             result.bitsConsumed = reader.position();

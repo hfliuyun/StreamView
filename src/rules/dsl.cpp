@@ -593,9 +593,31 @@ private:
         match(DslTokenKind::RightParen);
     }
 
+    void validatePresentationAnnotations(const std::vector<DslAnnotation>& annotations) {
+        for (const DslAnnotation& annotation : annotations) {
+            if (annotation.name == QStringLiteral("spec") &&
+                (annotation.arguments.size() != 2 ||
+                 annotation.arguments.at(0).kind != DslAnnotationValueKind::String ||
+                 annotation.arguments.at(1).kind != DslAnnotationValueKind::String)) {
+                result_.diagnostics.push_back(
+                    {DslDiagnosticCode::InvalidAnnotation,
+                     QStringLiteral("@spec requires two string arguments"), annotation.range});
+            }
+            if (annotation.name == QStringLiteral("description") &&
+                (annotation.arguments.size() != 1 ||
+                 annotation.arguments.front().kind != DslAnnotationValueKind::String)) {
+                result_.diagnostics.push_back(
+                    {DslDiagnosticCode::InvalidAnnotation,
+                     QStringLiteral("@description requires one string argument"),
+                     annotation.range});
+            }
+        }
+    }
+
     void validateProgram() {
         for (std::size_t index = 0; index < result_.program.structs.size(); ++index) {
             const DslStruct& structure = result_.program.structs.at(index);
+            validatePresentationAnnotations(structure.annotations);
             for (std::size_t previous = 0; previous < index; ++previous) {
                 if (structure.name == result_.program.structs.at(previous).name) {
                     result_.diagnostics.push_back({DslDiagnosticCode::DuplicateName,
@@ -614,6 +636,7 @@ private:
             }
             for (std::size_t fieldIndex = 0; fieldIndex < structure.fields.size(); ++fieldIndex) {
                 const DslBitField& field = structure.fields.at(fieldIndex);
+                validatePresentationAnnotations(field.annotations);
                 for (std::size_t previous = 0; previous < fieldIndex; ++previous) {
                     if (field.name == structure.fields.at(previous).name) {
                         result_.diagnostics.push_back({DslDiagnosticCode::DuplicateName,

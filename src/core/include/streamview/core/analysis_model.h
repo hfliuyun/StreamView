@@ -68,12 +68,24 @@ struct ParseDiagnostic final {
     std::optional<FieldLocation> location;
 };
 
+struct AnalysisSpecification final {
+    QString standard;
+    QString clause;
+};
+
+struct AnalysisNodeMetadata final {
+    QString typeName;
+    QString description;
+    std::optional<AnalysisSpecification> specification;
+};
+
 struct AnalysisNodeSpec final {
     AnalysisNodeKind kind = AnalysisNodeKind::Structure;
     QString name;
     MaterializationState state = MaterializationState::Materialized;
     QVariant value;
     std::optional<FieldLocation> location;
+    AnalysisNodeMetadata metadata;
 };
 
 class AnalysisNode final {
@@ -92,6 +104,7 @@ public:
     [[nodiscard]] const std::optional<FieldLocation>& location() const noexcept {
         return location_;
     }
+    [[nodiscard]] const AnalysisNodeMetadata& metadata() const noexcept { return metadata_; }
     [[nodiscard]] const std::vector<AnalysisNodeId>& children() const noexcept {
         return children_;
     }
@@ -107,7 +120,7 @@ private:
                  AnalysisNodeSpec spec)
         : id_(id), parentId_(parentId), kind_(spec.kind), name_(std::move(spec.name)),
           state_(spec.state), value_(std::move(spec.value)),
-          location_(std::move(spec.location)) {}
+          location_(std::move(spec.location)), metadata_(std::move(spec.metadata)) {}
 
     AnalysisNodeId id_;
     std::optional<AnalysisNodeId> parentId_;
@@ -116,6 +129,7 @@ private:
     MaterializationState state_ = MaterializationState::Materialized;
     QVariant value_;
     std::optional<FieldLocation> location_;
+    AnalysisNodeMetadata metadata_;
     std::vector<AnalysisNodeId> children_;
     std::vector<ParseDiagnostic> diagnostics_;
 };
