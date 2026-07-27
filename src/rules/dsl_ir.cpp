@@ -18,6 +18,18 @@ void addDiagnostic(std::vector<DslDiagnostic>& diagnostics,
     diagnostics.push_back({code, message, range});
 }
 
+void collectFields(const std::vector<DslStructItem>& items,
+                   std::vector<const DslBitField*>& fields) {
+    for (const DslStructItem& item : items) {
+        if (item.kind == DslStructItemKind::Field) {
+            fields.push_back(&item.field);
+        } else {
+            collectFields(item.thenItems, fields);
+            collectFields(item.elseItems, fields);
+        }
+    }
+}
+
 [[nodiscard]] core::AnalysisNodeMetadata metadataForAnnotations(
     const std::vector<DslAnnotation>& annotations,
     std::optional<core::AnalysisSpecification> inheritedSpecification = std::nullopt) {
@@ -195,27 +207,101 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
 
     typed.structs.reserve(program.structs.size());
     for (const DslStruct& structure : program.structs) {
+        std::vector<const DslBitField*> sourceFields;
+        collectFields(structure.items, sourceFields);
         DslTypedStruct typedStruct;
         typedStruct.name = structure.name;
         typedStruct.metadata = metadataForAnnotations(structure.annotations);
         typedStruct.metadata.typeName = QStringLiteral("struct");
-        if (structure.fields.size() > maximumIndexedSize) {
+        if (sourceFields.size() > maximumIndexedSize) {
             addDiagnostic(result.diagnostics,
                           DslDiagnosticCode::InvalidType,
                           QStringLiteral("A structure contains too many fields"),
                           structure.range);
         }
-        if (structure.fields.empty()) {
+        if (sourceFields.empty()) {
             addDiagnostic(result.diagnostics,
                           DslDiagnosticCode::EmptyStruct,
                           QStringLiteral("A structure must contain at least one field"),
                           structure.range);
         }
 
-        std::optional<quint64> fieldOffset = 0;
+        struct DeclaredField final {
+            const DslBitField* source = nullptr;
+            std::optional<quint32> typedIndex;
+            std::vector<DslTypedFieldCondition> conditions;
+        };
         std::vector<QString> declaredFieldNames;
-        declaredFieldNames.reserve(structure.fields.size());
-        for (const DslBitField& field : structure.fields) {
+        declaredFieldNames.reserve(sourceFields.size());
+        std::vector<DeclaredField> declaredFields;
+        declaredFields.reserve(sourceFields.size());
+        const auto sameCondition = [](const DslTypedFieldCondition& left,
+                                      const DslTypedFieldCondition& right) {
+            return left.fieldIndex == right.fieldIndex &&
+                   left.expectedValue == right.expectedValue &&
+                   left.negated == right.negated;
+        };
+        const auto resolveCondition = [&](const DslEqualityCondition& condition,
+                                          const std::vector<DslTypedFieldCondition>& active)
+            -> std::optional<DslTypedFieldCondition> {
+            const auto found = std::find_if(
+                declaredFields.rbegin(),
+                declaredFields.rend(),
+                [&condition](const DeclaredField& declared) {
+                    return declared.source->name == condition.fieldName;
+                });
+            if (found == declaredFields.rend()) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::UnknownReference,
+                              QStringLiteral(
+                                  "Condition field must be declared before the if statement"),
+                              condition.range);
+                return std::nullopt;
+            }
+            if (found->source->encoding != DslFieldEncoding::Bits ||
+                found->source->arrayLength || !found->typedIndex) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              QStringLiteral(
+                                  "Conditions require a previous scalar bits or enum field"),
+                              condition.range);
+                return std::nullopt;
+            }
+            const bool available = std::all_of(
+                found->conditions.begin(),
+                found->conditions.end(),
+                [&active, &sameCondition](const DslTypedFieldCondition& required) {
+                    return std::any_of(active.begin(),
+                                       active.end(),
+                                       [&required, &sameCondition](
+                                           const DslTypedFieldCondition& candidate) {
+                                           return sameCondition(required, candidate);
+                                       });
+                });
+            if (!available) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidCondition,
+                              QStringLiteral(
+                                  "Condition field is not guaranteed on the current branch"),
+                              condition.range);
+                return std::nullopt;
+            }
+            if (found->source->width != 0 && found->source->width < 64 &&
+                condition.expectedValue >= (quint64{1} << found->source->width)) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::ConstraintOutOfRange,
+                              QStringLiteral(
+                                  "Condition value does not fit the controlling field"),
+                              condition.range);
+                return std::nullopt;
+            }
+            return DslTypedFieldCondition{
+                *found->typedIndex, condition.expectedValue, false};
+        };
+        const auto compileField = [&](const DslBitField& field,
+                                      const std::vector<DslTypedFieldCondition>& conditions,
+                                      std::optional<quint64> fieldOffset)
+            -> std::optional<quint64> {
             if (std::find(declaredFieldNames.begin(), declaredFieldNames.end(), field.name) !=
                 declaredFieldNames.end()) {
                 addDiagnostic(result.diagnostics,
@@ -234,25 +320,29 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     QStringLiteral(
                         "Fixed array expansion exceeds the structure materialization limit"),
                     field.range);
-                continue;
+                declaredFields.push_back({&field, std::nullopt, conditions});
+                return std::nullopt;
             }
             const bool isBits = field.encoding == DslFieldEncoding::Bits;
             const bool isUnsignedExpGolomb =
                 field.encoding == DslFieldEncoding::UnsignedExpGolomb;
-            const bool isSignedExpGolomb = field.encoding == DslFieldEncoding::SignedExpGolomb;
+            const bool isSignedExpGolomb =
+                field.encoding == DslFieldEncoding::SignedExpGolomb;
             if (!isBits && !isUnsignedExpGolomb && !isSignedExpGolomb) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidType,
                               QStringLiteral("Field encoding is invalid"),
                               field.range);
-                continue;
+                declaredFields.push_back({&field, std::nullopt, conditions});
+                return std::nullopt;
             }
             if (isBits && (field.width == 0 || field.width > 64)) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidBitWidth,
                               QStringLiteral("Bit field width must be in the range 1..64"),
                               field.range);
-                continue;
+                declaredFields.push_back({&field, std::nullopt, conditions});
+                return std::nullopt;
             }
             if (!isBits && field.width != 0) {
                 addDiagnostic(result.diagnostics,
@@ -297,6 +387,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                               : DslValueTypeKind::SignedExpGolomb);
             typedField.type = {valueKind, isBits ? field.width : quint8(0),
                                isBits ? field.endian : DslEndian::Big, std::nullopt};
+            typedField.conditions = conditions;
             typedField.metadata =
                 metadataForAnnotations(field.annotations, typedStruct.metadata.specification);
             typedField.metadata.typeName = isBits ? QStringLiteral("bits")
@@ -367,6 +458,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                   return field.range;
                               }());
             }
+            const quint32 firstTypedIndex =
+                static_cast<quint32>(typedStruct.fields.size());
             if (field.arrayLength) {
                 for (quint64 elementIndex = 0; elementIndex < elementCount; ++elementIndex) {
                     DslTypedField element = typedField;
@@ -376,28 +469,64 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             } else {
                 typedStruct.fields.push_back(std::move(typedField));
             }
+            declaredFields.push_back({&field, firstTypedIndex, conditions});
             if (!isBits) {
-                fieldOffset = std::nullopt;
-            } else if (elementCount >
-                       std::numeric_limits<quint64>::max() / field.width) {
+                return std::nullopt;
+            }
+            if (elementCount > std::numeric_limits<quint64>::max() / field.width) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidArrayLength,
                               QStringLiteral("Fixed array bit width is too large"),
                               field.range);
-                fieldOffset = std::nullopt;
-            } else if (fieldOffset) {
-                const quint64 totalWidth = elementCount * field.width;
-                if (*fieldOffset > std::numeric_limits<quint64>::max() - totalWidth) {
-                    addDiagnostic(result.diagnostics,
-                                  DslDiagnosticCode::InvalidType,
-                                  QStringLiteral("Structure bit width is too large"),
-                                  structure.range);
-                    fieldOffset = std::nullopt;
-                } else {
-                    *fieldOffset += totalWidth;
-                }
+                return std::nullopt;
             }
-        }
+            if (!fieldOffset) {
+                return std::nullopt;
+            }
+            const quint64 totalWidth = elementCount * field.width;
+            if (*fieldOffset > std::numeric_limits<quint64>::max() - totalWidth) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              QStringLiteral("Structure bit width is too large"),
+                              structure.range);
+                return std::nullopt;
+            }
+            return *fieldOffset + totalWidth;
+        };
+        const auto compileItems = [&](const auto& self,
+                                      const std::vector<DslStructItem>& items,
+                                      const std::vector<DslTypedFieldCondition>& conditions,
+                                      std::optional<quint64> fieldOffset)
+            -> std::optional<quint64> {
+            for (const DslStructItem& item : items) {
+                if (item.kind == DslStructItemKind::Field) {
+                    fieldOffset = compileField(item.field, conditions, fieldOffset);
+                    continue;
+                }
+                const auto resolved = resolveCondition(item.condition, conditions);
+                std::vector<DslTypedFieldCondition> thenConditions = conditions;
+                std::vector<DslTypedFieldCondition> elseConditions = conditions;
+                if (resolved) {
+                    thenConditions.push_back(*resolved);
+                    DslTypedFieldCondition negated = *resolved;
+                    negated.negated = true;
+                    elseConditions.push_back(negated);
+                }
+                const auto thenOffset =
+                    self(self, item.thenItems, thenConditions, fieldOffset);
+                const auto elseOffset = item.elseItems.empty()
+                                            ? fieldOffset
+                                            : self(self,
+                                                   item.elseItems,
+                                                   elseConditions,
+                                                   fieldOffset);
+                fieldOffset = thenOffset && elseOffset && *thenOffset == *elseOffset
+                                  ? thenOffset
+                                  : std::nullopt;
+            }
+            return fieldOffset;
+        };
+        (void)compileItems(compileItems, structure.items, {}, quint64(0));
         typed.structs.push_back(std::move(typedStruct));
     }
 

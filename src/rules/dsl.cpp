@@ -204,6 +204,14 @@ private:
             punctuation(DslTokenKind::Comma);
             return;
         case '=':
+            if (index_ + 1 < source_.size() &&
+                source_.at(index_ + 1) == QLatin1Char('=')) {
+                advance();
+                advance();
+                result_.tokens.push_back(
+                    {DslTokenKind::EqualEqual, QStringLiteral("=="), 0, {start, position()}});
+                return;
+            }
             punctuation(DslTokenKind::Equals);
             return;
         default:
@@ -527,6 +535,154 @@ private:
         result_.program.enums.push_back(std::move(enumeration));
     }
 
+    void parseField(std::vector<DslStructItem>& items,
+                    const std::vector<DslAnnotation>& fieldAnnotations) {
+        const DslSourcePosition fieldStart = current().range.start;
+        DslBitField field;
+        field.annotations = fieldAnnotations;
+        quint64 width = 0;
+        if (matchIdentifier(QStringLiteral("bits"))) {
+            field.encoding = DslFieldEncoding::Bits;
+            expect(DslTokenKind::Less, QStringLiteral("'<' after bits"));
+            if (at(DslTokenKind::IntegerLiteral)) {
+                width = consume().integerValue;
+            } else {
+                error(DslDiagnosticCode::MissingToken, QStringLiteral("Expected bit width"));
+            }
+            if (match(DslTokenKind::Comma)) {
+                QString endianName;
+                if (expectIdentifier(&endianName,
+                                     QStringLiteral("byte order (big or little)"))) {
+                    if (endianName == QStringLiteral("little")) {
+                        field.endian = DslEndian::Little;
+                    } else if (endianName != QStringLiteral("big")) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidEndian,
+                             QStringLiteral("Byte order must be 'big' or 'little'"),
+                             lexResult_.tokens.at(index_ - 1).range});
+                    }
+                }
+            }
+            expect(DslTokenKind::Greater,
+                   QStringLiteral("'>' after bit width and byte order"));
+        } else if (matchIdentifier(QStringLiteral("ue"))) {
+            field.encoding = DslFieldEncoding::UnsignedExpGolomb;
+        } else if (matchIdentifier(QStringLiteral("se"))) {
+            field.encoding = DslFieldEncoding::SignedExpGolomb;
+        } else {
+            error(DslDiagnosticCode::UnexpectedToken,
+                  QStringLiteral("Expected bits<N[, endian]>, ue, or se field type"));
+            recoverField();
+            return;
+        }
+        if (!expectIdentifier(&field.name, QStringLiteral("field name"))) {
+            recoverField();
+            return;
+        }
+        if (match(DslTokenKind::LeftBracket)) {
+            if (at(DslTokenKind::IntegerLiteral)) {
+                const DslToken length = consume();
+                field.arrayLength = length.integerValue;
+                if (*field.arrayLength == 0) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidArrayLength,
+                         QStringLiteral("Fixed array length must be at least one"),
+                         length.range});
+                }
+            } else {
+                field.arrayLength = 0;
+                error(DslDiagnosticCode::MissingToken,
+                      QStringLiteral("Expected fixed array length"));
+            }
+            expect(DslTokenKind::RightBracket,
+                   QStringLiteral("']' after fixed array length"));
+        }
+        const std::vector<DslAnnotation> trailingAnnotations = parseAnnotations();
+        field.annotations.insert(
+            field.annotations.end(), trailingAnnotations.begin(), trailingAnnotations.end());
+        expect(DslTokenKind::Semicolon, QStringLiteral("';' after field"));
+        field.width = width >= 1 && width <= 64 ? static_cast<quint8>(width) : 0;
+        field.range = {fieldStart, lexResult_.tokens.at(index_ - 1).range.end};
+        if (field.encoding == DslFieldEncoding::Bits && field.width == 0) {
+            result_.diagnostics.push_back(
+                {DslDiagnosticCode::InvalidBitWidth,
+                 QStringLiteral("Bit field width must be in the range 1..64"),
+                 field.range});
+        }
+        if (field.encoding == DslFieldEncoding::Bits &&
+            field.endian == DslEndian::Little && field.width != 0 && field.width % 8 != 0) {
+            result_.diagnostics.push_back(
+                {DslDiagnosticCode::InvalidEndian,
+                 QStringLiteral(
+                     "Little-endian fields must have a width that is a multiple of 8"),
+                 field.range});
+        }
+        DslStructItem item;
+        item.kind = DslStructItemKind::Field;
+        item.field = std::move(field);
+        item.range = item.field.range;
+        items.push_back(std::move(item));
+    }
+
+    void parseConditional(std::vector<DslStructItem>& items) {
+        const DslSourcePosition start = consume().range.start;
+        DslStructItem item;
+        item.kind = DslStructItemKind::Conditional;
+        expect(DslTokenKind::LeftParen, QStringLiteral("'(' after if"));
+        const DslSourcePosition conditionStart = current().range.start;
+        expectIdentifier(&item.condition.fieldName, QStringLiteral("condition field name"));
+        if (!match(DslTokenKind::EqualEqual)) {
+            if (match(DslTokenKind::Equals)) {
+                error(DslDiagnosticCode::UnexpectedToken,
+                      QStringLiteral("Conditions require the '==' operator"));
+            } else {
+                error(DslDiagnosticCode::MissingToken, QStringLiteral("'==' in condition"));
+            }
+        }
+        if (at(DslTokenKind::IntegerLiteral)) {
+            item.condition.expectedValue = consume().integerValue;
+        } else {
+            error(DslDiagnosticCode::MissingToken,
+                  QStringLiteral("Expected integer condition value"));
+        }
+        item.condition.range = {conditionStart, lexResult_.tokens.at(index_ - 1).range.end};
+        expect(DslTokenKind::RightParen, QStringLiteral("')' after condition"));
+        if (expect(DslTokenKind::LeftBrace, QStringLiteral("'{' after condition"))) {
+            parseStructItems(item.thenItems);
+            expect(DslTokenKind::RightBrace, QStringLiteral("'}' after conditional body"));
+        } else {
+            recoverField();
+        }
+        if (matchIdentifier(QStringLiteral("else"))) {
+            if (expect(DslTokenKind::LeftBrace, QStringLiteral("'{' after else"))) {
+                parseStructItems(item.elseItems);
+                expect(DslTokenKind::RightBrace,
+                       QStringLiteral("'}' after alternative conditional body"));
+            } else {
+                recoverField();
+            }
+        }
+        item.range = {start, lexResult_.tokens.at(index_ - 1).range.end};
+        items.push_back(std::move(item));
+    }
+
+    void parseStructItems(std::vector<DslStructItem>& items) {
+        while (!at(DslTokenKind::RightBrace) && !at(DslTokenKind::EndOfFile)) {
+            const std::vector<DslAnnotation> annotations = parseAnnotations();
+            if (isIdentifier(QStringLiteral("if"))) {
+                if (!annotations.empty()) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidAnnotation,
+                         QStringLiteral("Annotations are not allowed before if statements"),
+                         annotations.front().range});
+                }
+                parseConditional(items);
+            } else {
+                parseField(items, annotations);
+            }
+        }
+    }
+
     void parseStruct(const std::vector<DslAnnotation>& annotations) {
         const DslSourcePosition start = consume().range.start;
         DslStruct structure;
@@ -540,96 +696,11 @@ private:
             return;
         }
 
-        while (!at(DslTokenKind::RightBrace) && !at(DslTokenKind::EndOfFile)) {
-            const std::vector<DslAnnotation> fieldAnnotations = parseAnnotations();
-            const DslSourcePosition fieldStart = current().range.start;
-            DslBitField field;
-            field.annotations = fieldAnnotations;
-            quint64 width = 0;
-            if (matchIdentifier(QStringLiteral("bits"))) {
-                field.encoding = DslFieldEncoding::Bits;
-                expect(DslTokenKind::Less, QStringLiteral("'<' after bits"));
-                if (at(DslTokenKind::IntegerLiteral)) {
-                    width = consume().integerValue;
-                } else {
-                    error(DslDiagnosticCode::MissingToken,
-                          QStringLiteral("Expected bit width"));
-                }
-                if (match(DslTokenKind::Comma)) {
-                    QString endianName;
-                    if (expectIdentifier(&endianName,
-                                         QStringLiteral("byte order (big or little)"))) {
-                        if (endianName == QStringLiteral("little")) {
-                            field.endian = DslEndian::Little;
-                        } else if (endianName != QStringLiteral("big")) {
-                            result_.diagnostics.push_back(
-                                {DslDiagnosticCode::InvalidEndian,
-                                 QStringLiteral("Byte order must be 'big' or 'little'"),
-                                 lexResult_.tokens.at(index_ - 1).range});
-                        }
-                    }
-                }
-                expect(DslTokenKind::Greater,
-                       QStringLiteral("'>' after bit width and byte order"));
-            } else if (matchIdentifier(QStringLiteral("ue"))) {
-                field.encoding = DslFieldEncoding::UnsignedExpGolomb;
-            } else if (matchIdentifier(QStringLiteral("se"))) {
-                field.encoding = DslFieldEncoding::SignedExpGolomb;
-            } else {
-                error(DslDiagnosticCode::UnexpectedToken,
-                      QStringLiteral("Expected bits<N[, endian]>, ue, or se field type"));
-                recoverField();
-                continue;
-            }
-            if (!expectIdentifier(&field.name, QStringLiteral("field name"))) {
-                recoverField();
-                continue;
-            }
-            if (match(DslTokenKind::LeftBracket)) {
-                if (at(DslTokenKind::IntegerLiteral)) {
-                    const DslToken length = consume();
-                    field.arrayLength = length.integerValue;
-                    if (*field.arrayLength == 0) {
-                        result_.diagnostics.push_back(
-                            {DslDiagnosticCode::InvalidArrayLength,
-                             QStringLiteral("Fixed array length must be at least one"),
-                             length.range});
-                    }
-                } else {
-                    field.arrayLength = 0;
-                    error(DslDiagnosticCode::MissingToken,
-                          QStringLiteral("Expected fixed array length"));
-                }
-                expect(DslTokenKind::RightBracket,
-                       QStringLiteral("']' after fixed array length"));
-            }
-            const std::vector<DslAnnotation> trailingAnnotations = parseAnnotations();
-            field.annotations.insert(
-                field.annotations.end(), trailingAnnotations.begin(), trailingAnnotations.end());
-            expect(DslTokenKind::Semicolon, QStringLiteral("';' after field"));
-            field.width = width >= 1 && width <= 64 ? static_cast<quint8>(width) : 0;
-            field.range = {fieldStart, lexResult_.tokens.at(index_ - 1).range.end};
-            if (field.encoding == DslFieldEncoding::Bits && field.width == 0) {
-                result_.diagnostics.push_back(
-                    {DslDiagnosticCode::InvalidBitWidth,
-                     QStringLiteral("Bit field width must be in the range 1..64"),
-                     field.range});
-            }
-            if (field.encoding == DslFieldEncoding::Bits &&
-                field.endian == DslEndian::Little && field.width != 0 && field.width % 8 != 0) {
-                result_.diagnostics.push_back(
-                    {DslDiagnosticCode::InvalidEndian,
-                     QStringLiteral(
-                         "Little-endian fields must have a width that is a multiple of 8"),
-                     field.range});
-            }
-            structure.fields.push_back(std::move(field));
-        }
-
+        parseStructItems(structure.items);
         const bool closed = expect(DslTokenKind::RightBrace, QStringLiteral("'}' after fields"));
         match(DslTokenKind::Semicolon);
         structure.range = {start, lexResult_.tokens.at(index_ - 1).range.end};
-        if (structure.fields.empty() && closed) {
+        if (structure.items.empty() && closed) {
             result_.diagnostics.push_back({DslDiagnosticCode::EmptyStruct,
                                            QStringLiteral("A structure must contain at least one field"),
                                            structure.range});
@@ -788,18 +859,73 @@ private:
                     break;
                 }
             }
-            std::optional<quint64> fieldOffset = 0;
-            for (std::size_t fieldIndex = 0; fieldIndex < structure.fields.size(); ++fieldIndex) {
-                const DslBitField& field = structure.fields.at(fieldIndex);
-                validatePresentationAnnotations(field.annotations);
-                for (std::size_t previous = 0; previous < fieldIndex; ++previous) {
-                    if (field.name == structure.fields.at(previous).name) {
-                        result_.diagnostics.push_back({DslDiagnosticCode::DuplicateName,
-                                                       QStringLiteral("Duplicate field name"),
-                                                       field.range});
-                        break;
-                    }
+            struct ActiveCondition final {
+                const DslEqualityCondition* condition = nullptr;
+                bool negated = false;
+            };
+            struct DeclaredField final {
+                const DslBitField* field = nullptr;
+                std::vector<ActiveCondition> conditions;
+            };
+            std::vector<DeclaredField> declaredFields;
+            const auto sameCondition = [](const ActiveCondition& left,
+                                          const ActiveCondition& right) {
+                return left.condition->fieldName == right.condition->fieldName &&
+                       left.condition->expectedValue == right.condition->expectedValue &&
+                       left.negated == right.negated;
+            };
+            const auto validateCondition = [&](const DslEqualityCondition& condition,
+                                               const std::vector<ActiveCondition>& active) {
+                const auto found = std::find_if(
+                    declaredFields.rbegin(),
+                    declaredFields.rend(),
+                    [&condition](const DeclaredField& declared) {
+                        return declared.field->name == condition.fieldName;
+                    });
+                if (found == declaredFields.rend()) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::UnknownReference,
+                         QStringLiteral("Condition field must be declared before the if statement"),
+                         condition.range});
+                    return;
                 }
+                if (found->field->encoding != DslFieldEncoding::Bits ||
+                    found->field->arrayLength) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidType,
+                         QStringLiteral(
+                             "Conditions require a previous scalar bits or enum field"),
+                         condition.range});
+                    return;
+                }
+                const bool available = std::all_of(
+                    found->conditions.begin(),
+                    found->conditions.end(),
+                    [&active, &sameCondition](const ActiveCondition& required) {
+                        return std::any_of(active.begin(),
+                                           active.end(),
+                                           [&required, &sameCondition](
+                                               const ActiveCondition& candidate) {
+                                               return sameCondition(required, candidate);
+                                           });
+                    });
+                if (!available) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidCondition,
+                         QStringLiteral(
+                             "Condition field is not guaranteed on the current branch"),
+                         condition.range});
+                }
+                if (found->field->width != 0 && found->field->width < 64 &&
+                    condition.expectedValue >= (quint64{1} << found->field->width)) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::ConstraintOutOfRange,
+                         QStringLiteral("Condition value does not fit the controlling field"),
+                         condition.range});
+                }
+            };
+            const auto validateFieldAnnotations = [&](const DslBitField& field) {
+                validatePresentationAnnotations(field.annotations);
                 bool equalsSeen = false;
                 bool enumSeen = false;
                 for (const DslAnnotation& annotation : field.annotations) {
@@ -873,24 +999,66 @@ private:
                     }
                     if (annotation.arguments.size() != 1 ||
                         annotation.arguments.front().kind != DslAnnotationValueKind::Integer) {
-                        result_.diagnostics.push_back({DslDiagnosticCode::InvalidAnnotation,
-                                                       QStringLiteral("@equals requires one integer argument"),
-                                                       annotation.range});
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidAnnotation,
+                             QStringLiteral("@equals requires one integer argument"),
+                             annotation.range});
                     }
                 }
-                if (field.endian == DslEndian::Little &&
-                    (!fieldOffset || *fieldOffset % 8 != 0)) {
-                    result_.diagnostics.push_back(
-                        {DslDiagnosticCode::InvalidEndian,
-                         QStringLiteral(
-                             "Little-endian fields must begin at a byte boundary within the "
-                             "structure"),
-                         field.range});
-                }
-                if (field.encoding != DslFieldEncoding::Bits || field.width == 0 ||
-                    !fieldOffset || (field.arrayLength && *field.arrayLength == 0)) {
-                    fieldOffset = std::nullopt;
-                } else {
+            };
+            const auto validateItems = [&](const auto& self,
+                                           const std::vector<DslStructItem>& items,
+                                           const std::vector<ActiveCondition>& active,
+                                           std::optional<quint64> fieldOffset)
+                -> std::optional<quint64> {
+                for (const DslStructItem& item : items) {
+                    if (item.kind == DslStructItemKind::Conditional) {
+                        validateCondition(item.condition, active);
+                        std::vector<ActiveCondition> thenConditions = active;
+                        thenConditions.push_back({&item.condition, false});
+                        const auto thenOffset =
+                            self(self, item.thenItems, thenConditions, fieldOffset);
+                        std::vector<ActiveCondition> elseConditions = active;
+                        elseConditions.push_back({&item.condition, true});
+                        const auto elseOffset = item.elseItems.empty()
+                                                    ? fieldOffset
+                                                    : self(self,
+                                                           item.elseItems,
+                                                           elseConditions,
+                                                           fieldOffset);
+                        fieldOffset = thenOffset && elseOffset && *thenOffset == *elseOffset
+                                          ? thenOffset
+                                          : std::nullopt;
+                        continue;
+                    }
+
+                    const DslBitField& field = item.field;
+                    validateFieldAnnotations(field);
+                    if (std::any_of(declaredFields.begin(),
+                                    declaredFields.end(),
+                                    [&field](const DeclaredField& declared) {
+                                        return declared.field->name == field.name;
+                                    })) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::DuplicateName,
+                             QStringLiteral("Duplicate field name"),
+                             field.range});
+                    }
+                    declaredFields.push_back({&field, active});
+                    if (field.endian == DslEndian::Little &&
+                        (!fieldOffset || *fieldOffset % 8 != 0)) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidEndian,
+                             QStringLiteral(
+                                 "Little-endian fields must begin at a byte boundary within the "
+                                 "structure"),
+                             field.range});
+                    }
+                    if (field.encoding != DslFieldEncoding::Bits || field.width == 0 ||
+                        !fieldOffset || (field.arrayLength && *field.arrayLength == 0)) {
+                        fieldOffset = std::nullopt;
+                        continue;
+                    }
                     const quint64 elementCount = field.arrayLength.value_or(1);
                     if (elementCount >
                         std::numeric_limits<quint64>::max() / field.width) {
@@ -899,16 +1067,24 @@ private:
                              QStringLiteral("Fixed array bit width is too large"),
                              field.range});
                         fieldOffset = std::nullopt;
+                        continue;
+                    }
+                    const quint64 totalWidth = elementCount * field.width;
+                    if (*fieldOffset <=
+                        std::numeric_limits<quint64>::max() - totalWidth) {
+                        *fieldOffset += totalWidth;
                     } else {
-                        const quint64 totalWidth = elementCount * field.width;
-                        if (*fieldOffset <=
-                            std::numeric_limits<quint64>::max() - totalWidth) {
-                            *fieldOffset += totalWidth;
-                        } else {
-                            fieldOffset = std::nullopt;
-                        }
+                        fieldOffset = std::nullopt;
                     }
                 }
+                return fieldOffset;
+            };
+            (void)validateItems(validateItems, structure.items, {}, quint64(0));
+            if (!structure.items.empty() && declaredFields.empty()) {
+                result_.diagnostics.push_back(
+                    {DslDiagnosticCode::EmptyStruct,
+                     QStringLiteral("A structure must contain at least one field"),
+                     structure.range});
             }
         }
 

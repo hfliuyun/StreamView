@@ -36,6 +36,7 @@ enum class DslTokenKind : quint8 {
     Semicolon,
     Comma,
     Equals,
+    EqualEqual,
     EndOfFile,
     Invalid,
 };
@@ -69,6 +70,7 @@ enum class DslDiagnosticCode : quint8 {
     InvalidEndian,
     EnumValueOutOfRange,
     InvalidArrayLength,
+    InvalidCondition,
 };
 
 struct DslDiagnostic final {
@@ -141,10 +143,30 @@ struct DslBitField final {
     DslSourceRange range;
 };
 
+struct DslEqualityCondition final {
+    QString fieldName;
+    quint64 expectedValue = 0;
+    DslSourceRange range;
+};
+
+enum class DslStructItemKind : quint8 {
+    Field,
+    Conditional,
+};
+
+struct DslStructItem final {
+    DslStructItemKind kind = DslStructItemKind::Field;
+    DslBitField field;
+    DslEqualityCondition condition;
+    std::vector<DslStructItem> thenItems;
+    std::vector<DslStructItem> elseItems;
+    DslSourceRange range;
+};
+
 struct DslStruct final {
     QString name;
     std::vector<DslAnnotation> annotations;
-    std::vector<DslBitField> fields;
+    std::vector<DslStructItem> items;
     DslSourceRange range;
 };
 

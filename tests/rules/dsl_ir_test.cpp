@@ -199,6 +199,169 @@ private slots:
         }
     }
 
+    void lowersEqualityConditionalBlocksToDeterministicGuardedFields() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> kind; "
+            "if (kind == 1) { bits<3> then_value; bits<1> flags[2] @equals(0); } "
+            "else { bits<5> else_value; } bits<4> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto first = DslCompiler::compile(parsed.program);
+        const auto second = DslCompiler::compile(parsed.program);
+        QVERIFY2(first.succeeded(),
+                 first.diagnostics.empty()
+                     ? ""
+                     : qPrintable(first.diagnostics.front().message));
+        QVERIFY(second.succeeded());
+        const auto& fields = first.program->structs.front().fields;
+        QCOMPARE(fields.size(), std::size_t(6));
+        const std::vector<QString> names{
+            QStringLiteral("kind"),
+            QStringLiteral("then_value"),
+            QStringLiteral("flags[0]"),
+            QStringLiteral("flags[1]"),
+            QStringLiteral("else_value"),
+            QStringLiteral("tail"),
+        };
+        for (std::size_t index = 0; index < names.size(); ++index) {
+            QCOMPARE(fields.at(index).name, names.at(index));
+        }
+        for (std::size_t index = 1; index <= 3; ++index) {
+            QCOMPARE(fields.at(index).conditions.size(), std::size_t(1));
+            QCOMPARE(fields.at(index).conditions.front().fieldIndex, quint32(0));
+            QCOMPARE(fields.at(index).conditions.front().expectedValue, quint64(1));
+            QVERIFY(!fields.at(index).conditions.front().negated);
+        }
+        QCOMPARE(fields.at(4).conditions.size(), std::size_t(1));
+        QCOMPARE(fields.at(4).conditions.front().fieldIndex, quint32(0));
+        QCOMPARE(fields.at(4).conditions.front().expectedValue, quint64(1));
+        QVERIFY(fields.at(4).conditions.front().negated);
+        QVERIFY(fields.at(0).conditions.empty());
+        QVERIFY(fields.at(5).conditions.empty());
+
+        QCOMPARE(first.program->bytecode.size(), std::size_t(10));
+        QCOMPARE(first.program->bytecode.size(), second.program->bytecode.size());
+        for (std::size_t index = 0; index < first.program->bytecode.size(); ++index) {
+            QCOMPARE(first.program->bytecode.at(index).opcode,
+                     second.program->bytecode.at(index).opcode);
+            QCOMPARE(first.program->bytecode.at(index).operand,
+                     second.program->bytecode.at(index).operand);
+            QCOMPARE(first.program->bytecode.at(index).immediate,
+                     second.program->bytecode.at(index).immediate);
+        }
+    }
+
+    void stacksNestedConditionalGuardsAcrossArraysAndAlternatives() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "enum Kind { zero = 0; one = 1; } "
+            "struct Header { bits<1> outer @enum(Kind); "
+            "if (outer == 1) { bits<1> inner; "
+            "if (inner == 0) { bits<2> nested[2]; } else { ue other; } } "
+            "else { bits<4> alternative; } bits<1> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& fields = compiled.program->structs.front().fields;
+        QCOMPARE(fields.size(), std::size_t(7));
+        QCOMPARE(fields.at(0).name, QStringLiteral("outer"));
+        QCOMPARE(fields.at(1).name, QStringLiteral("inner"));
+        QCOMPARE(fields.at(2).name, QStringLiteral("nested[0]"));
+        QCOMPARE(fields.at(3).name, QStringLiteral("nested[1]"));
+        QCOMPARE(fields.at(4).name, QStringLiteral("other"));
+        QCOMPARE(fields.at(5).name, QStringLiteral("alternative"));
+        QCOMPARE(fields.at(6).name, QStringLiteral("tail"));
+
+        QCOMPARE(fields.at(1).conditions.size(), std::size_t(1));
+        QCOMPARE(fields.at(1).conditions.front().fieldIndex, quint32(0));
+        QVERIFY(!fields.at(1).conditions.front().negated);
+        for (std::size_t index = 2; index <= 3; ++index) {
+            QCOMPARE(fields.at(index).conditions.size(), std::size_t(2));
+            QCOMPARE(fields.at(index).conditions.at(0).fieldIndex, quint32(0));
+            QCOMPARE(fields.at(index).conditions.at(0).expectedValue, quint64(1));
+            QVERIFY(!fields.at(index).conditions.at(0).negated);
+            QCOMPARE(fields.at(index).conditions.at(1).fieldIndex, quint32(1));
+            QCOMPARE(fields.at(index).conditions.at(1).expectedValue, quint64(0));
+            QVERIFY(!fields.at(index).conditions.at(1).negated);
+        }
+        QCOMPARE(fields.at(4).conditions.size(), std::size_t(2));
+        QVERIFY(fields.at(4).conditions.at(1).negated);
+        QCOMPARE(fields.at(5).conditions.size(), std::size_t(1));
+        QVERIFY(fields.at(5).conditions.front().negated);
+        QVERIFY(fields.at(6).conditions.empty());
+    }
+
+    void rejectsInvalidConditionalControllersInCompiler() {
+        struct Case final {
+            QString source;
+            DslDiagnosticCode diagnostic;
+        };
+        const std::vector<Case> cases{
+            {QStringLiteral(
+                 "struct Header { if (kind == 1) { bits<1> value; } bits<1> kind; } "
+                 "entry Header;"),
+             DslDiagnosticCode::UnknownReference},
+            {QStringLiteral(
+                 "struct Header { bits<1> flags[2]; "
+                 "if (flags == 1) { bits<1> value; } } entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral(
+                 "struct Header { ue code; if (code == 1) { bits<1> value; } } "
+                 "entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral(
+                 "struct Header { bits<1> flag; "
+                 "if (flag == 2) { bits<1> value; } } entry Header;"),
+             DslDiagnosticCode::ConstraintOutOfRange},
+            {QStringLiteral(
+                 "struct Header { bits<1> flag; if (flag == 1) { bits<1> local; } "
+                 "if (local == 1) { bits<1> value; } } entry Header;"),
+             DslDiagnosticCode::InvalidCondition},
+        };
+
+        for (const Case& testCase : cases) {
+            const auto parsed = DslParser::parse(testCase.source);
+            QVERIFY(!parsed.succeeded());
+            const auto compiled = DslCompiler::compile(parsed.program);
+            QVERIFY(!compiled.succeeded());
+            QVERIFY(!compiled.program.has_value());
+            QVERIFY(hasDiagnostic(compiled, testCase.diagnostic));
+        }
+    }
+
+    void preservesStaticAlignmentOnlyAcrossEqualConditionalWidths() {
+        const auto aligned = DslParser::parse(QStringLiteral(
+            "struct Header { bits<8> kind; if (kind == 1) { bits<8> first; } "
+            "else { bits<8> second; } bits<16, little> tail; } entry Header;"));
+        const auto unaligned = DslParser::parse(QStringLiteral(
+            "struct Header { bits<8> kind; if (kind == 1) { bits<8> first; } "
+            "else { bits<16> second; } bits<16, little> tail; } entry Header;"));
+        QVERIFY(aligned.succeeded());
+        QVERIFY(!unaligned.succeeded());
+
+        const auto compiledAligned = DslCompiler::compile(aligned.program);
+        const auto compiledUnaligned = DslCompiler::compile(unaligned.program);
+        QVERIFY(compiledAligned.succeeded());
+        QVERIFY(!compiledUnaligned.succeeded());
+        QVERIFY(hasDiagnostic(compiledUnaligned, DslDiagnosticCode::InvalidEndian));
+    }
+
+    void countsAllConditionalBranchFieldsAgainstTheExpansionLimit() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> kind; "
+            "if (kind == 1) { bits<1> first[49999]; } "
+            "else { bits<1> second[50000]; } } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(!compiled.succeeded());
+        QVERIFY(!compiled.program.has_value());
+        QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidArrayLength));
+    }
+
     void rejectsEnumValuesThatDoNotFitAndUnalignedLittleEndianFields() {
         const auto tooWide = DslParser::parse(QStringLiteral(
             "enum Type { too_large = 8; } "

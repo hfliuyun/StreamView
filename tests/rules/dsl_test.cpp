@@ -11,6 +11,7 @@ using streamview::rules::DslEndian;
 using streamview::rules::DslFieldEncoding;
 using streamview::rules::DslLexer;
 using streamview::rules::DslParser;
+using streamview::rules::DslStructItemKind;
 using streamview::rules::DslTokenKind;
 
 namespace {
@@ -68,13 +69,13 @@ private slots:
         QCOMPARE(structure.annotations.front().arguments.size(), std::size_t(2));
         QCOMPARE(structure.annotations.front().arguments.front().kind,
                  DslAnnotationValueKind::String);
-        QCOMPARE(structure.fields.size(), std::size_t(3));
-        QCOMPARE(structure.fields.at(0).width, quint8(1));
-        QCOMPARE(structure.fields.at(1).width, quint8(2));
-        QCOMPARE(structure.fields.at(2).width, quint8(5));
-        QCOMPARE(structure.fields.front().annotations.front().name,
+        QCOMPARE(structure.items.size(), std::size_t(3));
+        QCOMPARE(structure.items.at(0).field.width, quint8(1));
+        QCOMPARE(structure.items.at(1).field.width, quint8(2));
+        QCOMPARE(structure.items.at(2).field.width, quint8(5));
+        QCOMPARE(structure.items.front().field.annotations.front().name,
                  QStringLiteral("equals"));
-        QCOMPARE(structure.fields.front().annotations.front().arguments.front().integerValue,
+        QCOMPARE(structure.items.front().field.annotations.front().arguments.front().integerValue,
                  quint64(0));
 
         QCOMPARE(result.program.scans.size(), std::size_t(1));
@@ -108,9 +109,9 @@ private slots:
         QCOMPARE(result.program.enums.front().values.size(), std::size_t(2));
         QCOMPARE(result.program.enums.front().values.at(1).name, QStringLiteral("idr"));
         QCOMPARE(result.program.enums.front().values.at(1).value, quint64(5));
-        QCOMPARE(result.program.structs.front().fields.at(0).endian, DslEndian::Little);
-        QCOMPARE(result.program.structs.front().fields.at(1).endian, DslEndian::Big);
-        QCOMPARE(result.program.structs.front().fields.at(1).annotations.back().name,
+        QCOMPARE(result.program.structs.front().items.at(0).field.endian, DslEndian::Little);
+        QCOMPARE(result.program.structs.front().items.at(1).field.endian, DslEndian::Big);
+        QCOMPARE(result.program.structs.front().items.at(1).field.annotations.back().name,
                  QStringLiteral("enum"));
     }
 
@@ -123,14 +124,14 @@ private slots:
                  result.diagnostics.empty()
                      ? ""
                      : qPrintable(result.diagnostics.front().message));
-        QCOMPARE(result.program.structs.front().fields.size(), std::size_t(2));
-        QCOMPARE(result.program.structs.front().fields.at(0).name,
+        QCOMPARE(result.program.structs.front().items.size(), std::size_t(2));
+        QCOMPARE(result.program.structs.front().items.at(0).field.name,
                  QStringLiteral("first_mb_in_slice"));
-        QCOMPARE(result.program.structs.front().fields.at(0).encoding,
+        QCOMPARE(result.program.structs.front().items.at(0).field.encoding,
                  DslFieldEncoding::UnsignedExpGolomb);
-        QCOMPARE(result.program.structs.front().fields.at(1).name,
+        QCOMPARE(result.program.structs.front().items.at(1).field.name,
                  QStringLiteral("slice_qp_delta"));
-        QCOMPARE(result.program.structs.front().fields.at(1).encoding,
+        QCOMPARE(result.program.structs.front().items.at(1).field.encoding,
                  DslFieldEncoding::SignedExpGolomb);
     }
 
@@ -154,14 +155,14 @@ private slots:
                  result.diagnostics.empty()
                      ? ""
                      : qPrintable(result.diagnostics.front().message));
-        QCOMPARE(result.program.structs.front().fields.size(), std::size_t(3));
-        const auto& flags = result.program.structs.front().fields.at(0);
+        QCOMPARE(result.program.structs.front().items.size(), std::size_t(3));
+        const auto& flags = result.program.structs.front().items.at(0).field;
         QCOMPARE(flags.name, QStringLiteral("flags"));
         QCOMPARE(flags.arrayLength, std::optional<quint64>(3));
         QCOMPARE(flags.annotations.back().name, QStringLiteral("description"));
-        QCOMPARE(result.program.structs.front().fields.at(1).arrayLength,
+        QCOMPARE(result.program.structs.front().items.at(1).field.arrayLength,
                  std::optional<quint64>(2));
-        QCOMPARE(result.program.structs.front().fields.at(2).arrayLength,
+        QCOMPARE(result.program.structs.front().items.at(2).field.arrayLength,
                  std::optional<quint64>(2));
     }
 
@@ -192,6 +193,61 @@ private slots:
                      ? ""
                      : qPrintable(aligned.diagnostics.front().message));
         QVERIFY(hasDiagnostic(unaligned, DslDiagnosticCode::InvalidEndian));
+    }
+
+    void parsesNestedEqualityConditionalBlocksInDeclarationOrder() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> kind; "
+            "if (kind == 1) { bits<3> payload; "
+            "if (kind == 1) { ue code; } } "
+            "else { bits<3> reserved; } bits<2> tail; } entry Header;"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& items = result.program.structs.front().items;
+        QCOMPARE(items.size(), std::size_t(3));
+        QCOMPARE(items.at(0).kind, DslStructItemKind::Field);
+        QCOMPARE(items.at(0).field.name, QStringLiteral("kind"));
+        QCOMPARE(items.at(1).kind, DslStructItemKind::Conditional);
+        QCOMPARE(items.at(1).condition.fieldName, QStringLiteral("kind"));
+        QCOMPARE(items.at(1).condition.expectedValue, quint64(1));
+        QCOMPARE(items.at(1).thenItems.size(), std::size_t(2));
+        QCOMPARE(items.at(1).thenItems.at(0).field.name, QStringLiteral("payload"));
+        QCOMPARE(items.at(1).thenItems.at(1).kind, DslStructItemKind::Conditional);
+        QCOMPARE(items.at(1).thenItems.at(1).thenItems.front().field.name,
+                 QStringLiteral("code"));
+        QCOMPARE(items.at(1).elseItems.size(), std::size_t(1));
+        QCOMPARE(items.at(1).elseItems.front().field.name, QStringLiteral("reserved"));
+        QCOMPARE(items.at(2).field.name, QStringLiteral("tail"));
+        QVERIFY(items.at(1).range.end.offset > items.at(1).range.start.offset);
+    }
+
+    void rejectsInvalidOrUnavailableConditionalControlFields() {
+        const auto unknown = DslParser::parse(QStringLiteral(
+            "struct Header { if (missing == 1) { bits<1> value; } } entry Header;"));
+        const auto future = DslParser::parse(QStringLiteral(
+            "struct Header { if (kind == 1) { bits<1> value; } bits<1> kind; } "
+            "entry Header;"));
+        const auto array = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> flags[2]; if (flags == 1) { bits<1> value; } } "
+            "entry Header;"));
+        const auto variable = DslParser::parse(QStringLiteral(
+            "struct Header { ue code; if (code == 1) { bits<1> value; } } entry Header;"));
+        const auto outOfRange = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> flag; if (flag == 2) { bits<1> value; } } "
+            "entry Header;"));
+        const auto unavailable = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> flag; if (flag == 1) { bits<1> local; } "
+            "if (local == 1) { bits<1> value; } } entry Header;"));
+
+        QVERIFY(hasDiagnostic(unknown, DslDiagnosticCode::UnknownReference));
+        QVERIFY(hasDiagnostic(future, DslDiagnosticCode::UnknownReference));
+        QVERIFY(hasDiagnostic(array, DslDiagnosticCode::InvalidType));
+        QVERIFY(hasDiagnostic(variable, DslDiagnosticCode::InvalidType));
+        QVERIFY(hasDiagnostic(outOfRange, DslDiagnosticCode::ConstraintOutOfRange));
+        QVERIFY(hasDiagnostic(unavailable, DslDiagnosticCode::InvalidCondition));
     }
 
     void rejectsInvalidEndianAndUnknownEnumReferences() {

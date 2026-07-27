@@ -37,10 +37,17 @@ struct DslTypedEnum final {
     DslSourceRange range;
 };
 
+struct DslTypedFieldCondition final {
+    quint32 fieldIndex = 0;
+    quint64 expectedValue = 0;
+    bool negated = false;
+};
+
 struct DslTypedField final {
     QString name;
     DslValueType type;
     std::optional<quint64> equalsConstraint;
+    std::vector<DslTypedFieldCondition> conditions;
     core::AnalysisNodeMetadata metadata;
     DslSourceRange range;
 };
