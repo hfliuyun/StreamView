@@ -44,7 +44,13 @@ struct NalUnitHeader {
 }
 ```
 
-The eventual reference must define primitive types, signedness, byte order, bit order, overflow behavior, arrays, enums, structures, conditionals, switches, bounded loops, pure helpers, scope, name resolution, and specification annotations. The accepted minimum subset remains intentionally bounded: expressions are accepted only in pure-function return values and computed fields, and control flow remains limited to the conditional, switch, and bounded-repeat forms described below.
+The eventual reference must define primitive types, signedness, byte order, bit
+order, overflow behavior, arrays, enums, structures, conditionals, switches,
+bounded loops, pure helpers, scope, name resolution, and specification
+annotations. The accepted minimum subset remains intentionally bounded:
+expressions are accepted only in pure-function return values, computed fields,
+and lazy byte counts, and control flow remains limited to the conditional,
+switch, and bounded-repeat forms described below.
 
 The accepted M3 type slice adds declaration-order enums and an explicit byte
 order on `bits` fields. Enum declarations name unsigned integer values; a field
@@ -85,6 +91,12 @@ fields. Pure calls are statically inlined into a bounded typed expression;
 computed fields consume no source bits and never receive a source location.
 This adds no runtime call stack, mutable state, or host access.
 
+The accepted lazy-boundary slice adds `@lazy(byte_count) bytes name;` regions.
+The runtime validates their mapped logical range, creates a lazy analysis node,
+and advances the logical cursor without reading or copying the payload. This
+registers a safe uninterpreted boundary; typed on-demand expansion and
+progressive indexes remain later slices.
+
 ## Minimum DSL 0.1 Subset
 
 The first executable subset uses the following grammar. Whitespace and `//` or
@@ -103,12 +115,16 @@ parameter     := scalar_type identifier
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { struct_item } "}" [ ";" ]
-struct_item   := field | computed | conditional | switch | repeat
+struct_item   := field | computed | lazy_region | conditional | switch | repeat
 field         := { annotation } field_type identifier [ "[" integer "]" ]
                  { annotation } ";"
 field_type    := "bits" "<" integer [ "," identifier ] ">" | "ue" | "se"
 computed      := { annotation } "computed" "<" scalar_type ">" identifier
                  "=" expression { annotation } ";"
+lazy_region   := "@" "lazy" "(" expression ")" "bytes" identifier
+                 { presentation_annotation } ";"
+presentation_annotation := "@" "description" "(" string ")"
+                         | "@" "spec" "(" string "," string ")"
 scalar_type   := "bool" | "u64"
 conditional   := "if" "(" ( identifier "==" integer | identifier ) ")"
                  "{" { struct_item } "}"
@@ -142,9 +158,9 @@ The static rules for this subset are:
 - A program has exactly one `entry`; its target names a declared structure or
   sequence.
 - Structure, sequence, enum, and pure-function names share one top-level
-  declaration namespace. Field names are unique within a structure across
-  syntax and computed declarations, and a structure contains at least one
-  syntax or computed field.
+  declaration namespace. Names are unique within a structure across syntax
+  fields, computed fields, and lazy byte regions, and a structure contains at
+  least one of those items.
 - Enum member names are unique within their enum. Distinct members may name the
   same integer value; aliases accept the same decoded numeric value.
 - A pure function declares a `bool` or `u64` return type, at most 16 uniquely
@@ -217,8 +233,9 @@ The static rules for this subset are:
   fixed-width source controller; a computed controller accepts the complete
   `u64` range.
   Count expressions, sentinel or EOF termination, and `break` are not accepted.
-  A repeat body must contain at least one syntax or computed field and may
-  contain either field form, conditionals, switches, and nested repeats.
+  A repeat body must contain at least one syntax field, computed field, or lazy
+  byte region and may contain those item forms, conditionals, switches, and
+  nested repeats.
 - The compiler validates and projects a repeat body exactly `maximum` times.
   Source declaration names remain unique across the complete structure. A body
   declaration is visible to later items in the same iteration, but repeat-local
@@ -241,6 +258,26 @@ The static rules for this subset are:
   projection limit, and is visible to later declarations under the same scope
   rules as a syntax field. Repeat projection appends the same indexes to its
   materialized name.
+- A lazy byte region has the dedicated form
+  `@lazy(byte_count_expression) bytes name;`. Its expression must produce
+  `u64` and follows the computed-field rules for earlier scalar unsigned
+  dependencies, path availability, pure-call expansion, and expression
+  limits. The region is not a scalar value and cannot be referenced by a later
+  expression or controller. Its name remains unique across the structure.
+- In leading struct-item position, `@lazy(` is a reserved introducer parsed
+  before the generic annotation list. Its argument uses the full expression
+  grammar rather than the integer/string/identifier argument grammar of a
+  normal annotation. Generic annotations cannot precede it.
+- `bytes` is accepted only in that dedicated lazy form. A lazy region has no
+  array suffix and accepts only trailing `@description` and `@spec`
+  annotations. It inherits enclosing conditional, switch, and repeat guards;
+  repeat projection appends the same indexes to its materialized name. Every
+  projected region counts toward the 99,999-item structure limit.
+- A lazy region must begin at a statically known byte boundary relative to its
+  structure. Its runtime-sized byte count makes the following exact static
+  offset unknown, so a later little-endian field or lazy byte region is
+  rejected under the existing conservative alignment rule. The byte count is
+  measured in logical bytes of the current view.
 - Expressions accept unsigned integer and Boolean literals, identifiers, calls
   to declared pure functions, parentheses, unary `!`, checked `*`, `/`, `%`, `+`,
   and `-`, same-type `==` and `!=`, unsigned ordering, and short-circuit Boolean
@@ -249,11 +286,11 @@ The static rules for this subset are:
   `bool`, equality operands have the same type, and function arguments exactly
   match their parameters. Unsigned overflow or underflow, division by zero, and
   remainder by zero are runtime `invalid-syntax` failures at the computed field
-  path. Enum fields contribute their decoded `u64`; enum member names are not
-  expression values.
-- Every written pure-function body or computed-field expression, and every fully
-  inlined computed expression, has depth at most 64 and at most 256 nodes.
-  Expanding one body or computed expression may
+  or lazy region path. Enum fields contribute their decoded `u64`; enum member
+  names are not expression values.
+- Every written pure-function body, computed-field expression, or lazy
+  byte-count expression, and every corresponding fully inlined expression, has
+  depth at most 64 and at most 256 nodes. Expanding one body or expression may
   perform at most 4,096 shared work steps across calls, arguments, and parameter
   substitutions, including arguments for parameters the callee does not use.
   Pure calls are expanded statically and introduce no runtime call, recursion,
@@ -274,15 +311,16 @@ The static rules for this subset are:
   array declaration applies its resolved type, annotations, metadata, and
   constraints independently to every expanded element. A computed field accepts
   `@description` and `@spec`, before the declaration or after its expression,
-  but rejects `@equals`, `@enum`, and an array suffix.
+  but rejects `@equals`, `@enum`, and an array suffix. A lazy byte region accepts
+  those two presentation annotations only after its name.
 - A source with lexical or static diagnostics produces no executable rule. The
   parser still returns its partial IR and all diagnostics with line/column
   ranges so an editor can report more than the first error.
 
 `enum`, `big`, `little`, `ue`, `se`, `pure`, `return`, `bool`, `u64`,
-`computed`, `true`, `false`, `if`, `else`, `switch`, `case`, `default`, and
-`repeat` are contextual words in the positions shown by the grammar and remain
-ordinary identifiers elsewhere.
+`computed`, `lazy`, `bytes`, `true`, `false`, `if`, `else`, `switch`, `case`,
+`default`, and `repeat` are contextual words in the positions shown by the
+grammar and remain ordinary identifiers elsewhere.
 Existing scalar declarations are unchanged, and `bits<N>` remains exactly
 equivalent to `bits<N, big>`; this slice deprecates no accepted 0.1 syntax.
 
@@ -291,8 +329,9 @@ static compiler resolves pure functions, enums, structures, sequences, and entry
 references into a typed program, preserves declaration order, and emits
 deterministic bytecode using `begin-structure`, `read-unsigned-bits`,
 `read-unsigned-exp-golomb`, `read-signed-exp-golomb`, `evaluate-computed`,
-`assert-equals`, `assert-repeat-count`, and `end-structure` operations. Each read
-opcode must match the resolved field type.
+`register-lazy-bytes`, `assert-equals`, `assert-repeat-count`, and
+`end-structure` operations. Each field opcode must match the resolved field
+type.
 The fixed-width read carries the resolved enum and byte-order information; the
 Exp-Golomb types have zero static bit width, default bit order, no enum
 reference, and no equality constraint. A fixed array is expanded in source
@@ -331,6 +370,13 @@ offset, and receives the same repeat-indexed materialized name and repeat-local
 scope as a syntax field. Written expressions and expanded computed expressions
 are rejected before executable typed IR is produced when they exceed their fixed
 node, depth, or 4,096-step expansion-work bounds.
+
+A lazy declaration joins the same typed-field stream with kind `LazyBytes`, a
+required inlined `u64` byte-count expression, resolved presentation metadata,
+and the same outer guards and repeat indexes. It emits one
+`register-lazy-bytes` instruction. The declaration is not added to the scalar
+value namespace, and its dynamic width makes the following exact static offset
+unknown.
 
 The minimum VM executes a structure by reading each field through the bounded
 bit reader. Before executing bytecode, it verifies that the reader's complete
@@ -390,9 +436,11 @@ paths such as `Header.value[1][0]`. Invalid repeat metadata, controller guards,
 or assertion placement is an invalid typed definition rather than guessed
 execution.
 
-Before executing any bytecode, the VM validates every computed typed expression,
-including its node and depth bounds, result and operand types, previous-field
-indexes, dependency availability, and controller guards. At an
+Before executing any bytecode, the VM validates every computed or lazy typed
+expression's metadata, including its node and depth bounds, result and operand
+types, previous-field indexes, dependency availability, and controller guards.
+Runtime range, mapping, and node-budget checks remain at the selected field
+instruction. At an
 `evaluate-computed` instruction, a false presence guard skips expression
 evaluation and node creation. The instruction still consumes instruction budget
 and remains a cancellation point. A successful evaluation consumes no source
@@ -403,6 +451,25 @@ invalid, and reports `invalid-syntax` at the computed field path without a sourc
 location. Malformed expression or controller metadata is an invalid typed
 definition. Subexpression work is part of the one instruction and introduces no
 additional cancellation point.
+
+A selected `register-lazy-bytes` instruction evaluates its typed `u64` byte
+count, rejects checked-arithmetic or byte-to-bit overflow, and verifies that the
+complete logical range fits the enclosing reader before it creates a node. It
+resolves the range through the execution mapping. When a region crosses
+excluded source bytes, it retains only its disjoint forwarded source spans. A
+positive range becomes a `Region` in `lazy` state; a zero range becomes an empty
+materialized `Region`.
+Only after the location and node budget have been checked does the VM seek past
+the range. It performs no payload read. A false guard skips expression
+evaluation, node creation, and cursor movement.
+
+An expression or byte-to-bit overflow is `invalid-syntax`; a declared range
+larger than the reader's remaining enclosing range is `truncated-source` and
+retains the available mapped prefix in its diagnostic. Misaligned execution,
+missing or wrongly typed expression metadata, invalid references, mapping
+failure, or opcode/type mismatch is an invalid typed definition. Cancellation
+and resource-limit failures occur before node creation or cursor movement and
+retain earlier completed fields.
 
 For an Exp-Golomb codeword, let `leadingZeroBits` be the number of zero bits
 before the marker bit and let `suffix` be the following unsigned value of the
@@ -743,22 +810,47 @@ Rules cannot manufacture logical bits and expose them as source-backed fields. V
 
 ## Lazy Regions And Progressive Indexes
 
-Rules explicitly declare safe boundaries for content that can be materialized later. A progressive index publishes structures in batches during a cancellable, resumable scan.
+Rules explicitly declare safe boundaries for content that can be materialized
+later. The accepted lazy-byte slice registers an uninterpreted logical-byte
+range without reading it:
 
 ```cpp
-struct Mp4Box {
-    be_u32 size;
-    fourcc type;
+struct Packet {
+    bits<16> payload_size;
 
-    @lazy(size - 8)
-    bytes payload;
+    @lazy(payload_size)
+    bytes payload @description("Deferred packet payload");
 }
+entry Packet;
+```
 
+The expression is evaluated only when the declaration's guards are selected.
+The VM checks byte-to-bit conversion, logical alignment, the enclosing reader
+limit, mapping resolution, and the node budget before it appends the region or
+moves the cursor. It never reads the registered payload. A positive range is
+`lazy`; an empty range is immediately `materialized`. The location contains the
+exact mapped logical range and may contain multiple source spans.
+
+Examples rejected statically include a Boolean byte count, a future or
+branch-unavailable dependency, a lazy region after a variable-width field whose
+alignment is unknown, `bytes payload;` without `@lazy`, and `@equals` or an array
+suffix on a lazy region. Runtime arithmetic overflow is `invalid-syntax`; a
+range beyond the enclosing reader is `truncated-source`, with no lazy node or
+cursor movement.
+
+The current slice registers only the checked boundary. Nested typed content,
+decode recipes, and user-triggered subtree expansion are not yet accepted. A
+progressive index remains a separate feature that publishes structures in
+batches during a cancellable, resumable scan. The only current progressive form
+is the existing H.264 start-code sequence:
+
+```cpp
 @index(progressive)
 sequence<NalUnit> nal_units = scan(h264_start_code);
 ```
 
-A lazy boundary is registered only after its size and enclosing limit have been checked. The analysis model distinguishes lazy, indexing, cancelled, unsupported, invalid, and completely materialized states.
+The analysis model distinguishes lazy, indexing, cancelled, unsupported,
+invalid, and completely materialized states.
 
 ## Sandbox And Resource Limits
 
@@ -817,6 +909,14 @@ the compiler inlines them. All subexpression work is charged within the one
 instruction, with no extra cancellation point, and is bounded by the 256-node
 and depth-64 expanded-expression limits. Computed fields also count toward the
 static 99,999-field projection limit.
+
+Each projected lazy byte region adds one `register-lazy-bytes` instruction.
+The instruction counts toward the instruction budget and remains a cancellation
+point even when a false guard skips it. A selected declaration evaluates its
+already bounded expression within that instruction and consumes one node slot
+only after its complete mapped boundary has been checked. Seeking over the
+region performs no source read. Lazy regions count toward the static
+99,999-item projection limit.
 
 All limits must be greater than zero. The host may lower them for a particular
 execution but a rule cannot raise or inspect them. The accepted minimum subset

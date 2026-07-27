@@ -45,8 +45,8 @@ struct NalUnitHeader {
 
 最终参考文档必须分别定义基本类型、有无符号、字节序、bit 顺序、溢出行为、数组、枚举、
 结构、条件、分支、有界循环、纯函数、作用域、名称解析和规范注解。当前接受的最小子集
-仍有明确边界：表达式只能出现在纯函数的返回值和计算字段中，控制流只包含下述条件、
-switch 和有界 repeat 形式。
+仍有明确边界：表达式只能出现在纯函数返回值、计算字段和 lazy byte count 中，控制流只
+包含下述条件、switch 和有界 repeat 形式。
 
 当前接受的 M3 类型切片新增了按声明顺序保存的 enum，以及 `bits` 字段的显式字节序。
 enum 声明为无符号整数命名；字段通过 `@enum(Type)` 把这些名称关联到解码值。
@@ -79,6 +79,11 @@ guard。
 typed expression；计算字段不消耗 source bit，也永远没有 source location。该切片不引入
 runtime call stack、可变状态或 host 访问。
 
+当前接受的 lazy-boundary 切片新增 `@lazy(byte_count) bytes name;` region。runtime 会验证
+其 mapped logical range，创建 lazy analysis node，并在不读取或复制 payload 的情况下推进
+logical cursor。本切片只注册安全的未解释 boundary；typed on-demand expansion 与
+progressive index 留给后续切片。
+
 ## DSL 0.1 最小子集
 
 首个可执行子集使用以下语法。token 之间可以有空白，以及 `//` 或 `/* ... */`
@@ -95,12 +100,16 @@ parameter     := scalar_type identifier
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { struct_item } "}" [ ";" ]
-struct_item   := field | computed | conditional | switch | repeat
+struct_item   := field | computed | lazy_region | conditional | switch | repeat
 field         := { annotation } field_type identifier [ "[" integer "]" ]
                  { annotation } ";"
 field_type    := "bits" "<" integer [ "," identifier ] ">" | "ue" | "se"
 computed      := { annotation } "computed" "<" scalar_type ">" identifier
                  "=" expression { annotation } ";"
+lazy_region   := "@" "lazy" "(" expression ")" "bytes" identifier
+                 { presentation_annotation } ";"
+presentation_annotation := "@" "description" "(" string ")"
+                         | "@" "spec" "(" string "," string ")"
 scalar_type   := "bool" | "u64"
 conditional   := "if" "(" ( identifier "==" integer | identifier ) ")"
                  "{" { struct_item } "}"
@@ -132,8 +141,8 @@ primary       := integer | "true" | "false" | identifier
 该子集的静态规则如下：
 
 - 程序必须且只能有一个 `entry`；target 必须是已声明的结构或 sequence。
-- 结构、sequence、enum 和纯函数名共用顶层声明命名空间。语法字段与计算字段名在结构内
-  统一保持唯一；结构至少包含一个语法字段或计算字段。
+- 结构、sequence、enum 和纯函数名共用顶层声明命名空间。语法字段、计算字段与 lazy byte
+  region 的名称在结构内统一保持唯一；结构至少包含其中一个 item。
 - enum member 名在所属 enum 内不能重复。不同 member 可以使用相同整数值；这些别名接受
   同一个解码数值。
 - 纯函数声明 `bool` 或 `u64` 返回类型、最多 16 个名称互异的 `bool` 或 `u64` 参数，以及
@@ -180,8 +189,8 @@ primary       := integer | "true" | "false" | identifier
   或未来字段，以及离开所属保证分支后使用的 branch-local 字段都会被拒绝。`maximum`
   必须是正的无符号整数字面量；使用定宽 source controller 时，它必须能被该字段表示，
   computed controller 则接受完整 `u64` 范围。不接受计数表达式、sentinel/EOF 终止或
-  `break`。repeat body 必须至少包含一个语法字段或计算字段，并可包含两种字段、条件、
-  switch 和嵌套 repeat。
+  `break`。repeat body 必须至少包含一个语法字段、计算字段或 lazy byte region，并可包含
+  这些 item、条件、switch 和嵌套 repeat。
 - compiler 会验证 repeat body，并将它精确投影 `maximum` 次。source 声明名在整个结构
   内仍必须唯一。body 声明可供同一次迭代内的后续 item 使用，但 repeat-local 声明在其他
   迭代或 repeat 之后不可用。物化名称按从外到内的顺序追加各层 repeat index，再追加可选
@@ -195,14 +204,30 @@ primary       := integer | "true" | "false" | identifier
   数组、`se`、未知或未来字段，以及路径上不可用的 branch-local 值都会被拒绝。计算字段
   消耗零 bit，不改变静态对齐，继承外层 guard，计入 99,999 字段投影上限，并按与语法字段
   相同的 scope 规则供后续声明使用。repeat 投影会给它的物化名称追加同样的 index。
+- lazy byte region 使用专用形式 `@lazy(byte_count_expression) bytes name;`。expression
+  必须产生 `u64`，并沿用 computed field 对此前 scalar unsigned dependency、路径可用性、
+  pure-call expansion 和 expression limit 的规则。region 不是 scalar value，不能被后续
+  expression 或 controller 引用；其名称仍在整个结构中保持唯一。
+- 在 struct item 的开头位置，`@lazy(` 是保留 introducer，会先于普通 annotation list 解析。
+  它的参数使用完整 expression grammar，而不是普通 annotation 的 integer/string/identifier
+  argument grammar；它之前不能再写普通 annotation。
+- `bytes` 只接受上述专用 lazy 形式。lazy region 没有数组后缀，只接受写在 name 之后的
+  `@description` 与 `@spec`。它继承外层 conditional、switch 和 repeat guard；repeat
+  projection 会给物化名称追加相同 index。每个投影后的 region 都计入 99,999-item
+  structure limit。
+- lazy region 的 structure-relative 起点必须在静态上已知为 byte boundary。runtime-sized
+  byte count 会使后续精确静态 offset 变为未知，因此既有保守 alignment rule 会拒绝之后的
+  little-endian field 或 lazy byte region。byte count 使用当前 view 的 logical byte 计量。
 - 表达式接受无符号整数和 Boolean 字面量、identifier、对已声明纯函数的 call、括号、一元
   `!`、checked `*`、`/`、`%`、`+`、`-`、同类型 `==` 和 `!=`、无符号大小比较，以及
   short-circuit Boolean `&&` 和 `||`，优先级如 grammar 所示。不存在隐式转换：算术和大小
   比较要求 `u64`，逻辑运算要求 `bool`，等值运算两侧类型相同，函数实参必须与形参逐一
-  匹配。无符号 overflow/underflow、除零和模零会在计算字段路径上产生 runtime
-  `invalid-syntax`。enum 字段提供解码后的 `u64`；enum member 名不是本切片的表达式值。
-- 每个写出的纯函数体或计算字段表达式，以及完全内联后的每个计算表达式，深度最多 64，
-  节点最多 256。展开一个函数体或计算表达式时，call、argument 与参数替换共享最多 4,096
+  匹配。无符号 overflow/underflow、除零和模零会在计算字段或 lazy region path 上产生
+  runtime `invalid-syntax`。enum 字段提供解码后的 `u64`；enum member 名不是本切片的
+  expression value。
+- 每个写出的纯函数体、计算字段 expression 或 lazy byte-count expression，以及对应的完全
+  内联 expression，深度最多 64，节点最多 256。展开一个函数体或 expression 时，call、
+  argument 与参数替换共享最多 4,096
   个 work step；即使 callee
   没有使用某个参数，该参数仍计入上限。pure call 在编译期展开，不引入 runtime call、递归、
   source/host 访问、时间、随机数或可变状态。
@@ -217,20 +242,22 @@ primary       := integer | "true" | "false" | identifier
   展示说明，`@spec("standard", "clause")` 提供规范引用。字段默认继承所属结构的规范
   引用，也可以用自己的注解覆盖。数组声明解析出的类型、注解、metadata 和约束会分别
   应用到每个展开元素。计算字段可在声明前或表达式后使用 `@description` 和 `@spec`，但
-  拒绝 `@equals`、`@enum` 和数组后缀。
+  拒绝 `@equals`、`@enum` 和数组后缀。lazy byte region 只在 name 之后接受这两个展示
+  annotation。
 - 出现词法或静态诊断时，source 不会生成可执行规则；parser 仍返回部分 IR 以及带行列范围的全部诊断，便于编辑器一次报告多个错误。
 
 `enum`、`big`、`little`、`ue`、`se`、`pure`、`return`、`bool`、`u64`、
-`computed`、`true`、`false`、`if`、`else`、`switch`、`case`、`default` 和 `repeat`
-只在上述语法位置作为上下文关键字，其他位置仍可作为普通 identifier。既有 scalar 声明
-保持不变，`bits<N>` 仍与
+`computed`、`lazy`、`bytes`、`true`、`false`、`if`、`else`、`switch`、`case`、
+`default` 和 `repeat` 只在上述语法位置作为上下文关键字，其他位置仍可作为普通
+identifier。既有 scalar 声明保持不变，`bits<N>` 仍与
 `bits<N, big>` 完全等价；本切片不弃用任何已接受的 0.1 语法。
 
 parser 生成面向 source、用于诊断的声明模型。静态 compiler 把纯函数、enum、结构、
 sequence 和 entry 引用解析成 typed program，保留声明顺序，并确定性生成
 `begin-structure`、`read-unsigned-bits`、`read-unsigned-exp-golomb`、
-`read-signed-exp-golomb`、`evaluate-computed`、`assert-equals`、
-`assert-repeat-count` 和 `end-structure` bytecode。每个 read opcode 必须与字段类型匹配；
+`read-signed-exp-golomb`、`evaluate-computed`、`register-lazy-bytes`、
+`assert-equals`、`assert-repeat-count` 和 `end-structure` bytecode。每个 field opcode 必须与
+字段类型匹配；
 Exp-Golomb typed field 的静态 bit width 为零、使用默认 bit order，且没有 enum reference 或
 equality constraint。固定数组按 source 顺序展开成名为 `name[0]` 到
 `name[count - 1]` 的 typed field；每个元素各自产生 read instruction，并在存在 `@equals`
@@ -258,6 +285,11 @@ compiler 会独立 type-check 每个纯函数，再把每个 pure call 展开到
 并与语法字段一样获得 repeat index 物化名和 repeat-local scope。任何写出的表达式或展开后
 的计算字段表达式超过固定节点、深度或 4,096-step expansion-work 上限时，都不会生成可执行
 typed IR。
+
+lazy declaration 以 `LazyBytes` kind 加入同一 typed-field stream，携带必需且已经内联的
+`u64` byte-count expression、解析后的 presentation metadata，以及相同的外层 guard 与
+repeat index。它生成一条 `register-lazy-bytes` instruction；不会加入 scalar value namespace，
+其 dynamic width 会使后续精确静态 offset 变为未知。
 
 最小 VM 通过 bounded bit reader 按顺序执行结构。执行 bytecode 前，它会验证 reader 的完整
 normalized backing 是否精确等于从给定 logical start 开始的 execution mapping slice。backing
@@ -297,8 +329,10 @@ location，也不执行 enum member 或 `@equals` 数值检查。选中字段沿
 repeat metadata、controller guard 或 assertion 位置属于 invalid typed definition，运行时
 不会猜测执行。
 
-执行任何 bytecode 前，VM 会验证所有 computed typed expression，包括节点/深度上限、结果
-与 operand 类型、previous-field index、dependency availability 和 controller guard。
+执行任何 bytecode 前，VM 会验证所有 computed 或 lazy typed expression 的 metadata，
+包括节点/深度上限、结果与 operand 类型、previous-field index、dependency availability
+和 controller guard。runtime range、mapping 与 node-budget check 仍在选中的 field
+instruction 处执行。
 `evaluate-computed` instruction 的 presence guard 为 false 时，VM 跳过表达式求值和节点
 创建；该 instruction 仍计入 instruction budget，并保留取消检查点。求值成功不消耗 source
 bit，只创建一个带 `bool` 或无符号 64 位值、metadata 且没有 `FieldLocation` 的
@@ -306,6 +340,20 @@ bit，只创建一个带 `bool` 或无符号 64 位值、metadata 且没有 `Fie
 结构标记为 invalid，并在计算字段 path 上报告不带 source location 的 `invalid-syntax`。
 malformed expression 或 controller metadata 属于 invalid typed definition。子表达式工作都
 计入这一条 instruction，不新增取消检查点。
+
+选中的 `register-lazy-bytes` instruction 会计算 typed `u64` byte count，拒绝 checked
+arithmetic 或 byte-to-bit overflow，并在创建 node 前验证完整 logical range 位于 enclosing
+reader 内。该 range 通过 execution mapping 解析；跨 excluded source byte 时，它只保留
+互相分离的 forwarded source span。正长度 range 创建 state 为 `lazy` 的 `Region`；零长度
+range 创建空的 materialized `Region`。只有 location 与 node budget 都通过检查后，VM 才会 seek
+越过该 range；整个过程不读取 payload。guard 为 false 时跳过 expression 求值、node 创建和
+cursor 移动。
+
+expression 或 byte-to-bit overflow 报告 `invalid-syntax`；声明范围大于 reader 剩余
+enclosing range 时报告 `truncated-source`，并在 diagnostic 中保留可用 mapped prefix。
+execution 未对齐、expression metadata 缺失或类型错误、非法 reference、mapping failure，
+或 opcode/type 不匹配都属于 invalid typed definition。cancellation 与 resource-limit failure
+发生在 node 创建或 cursor 移动之前，并保留此前完成的 field。
 
 对 Exp-Golomb 码字，令 `leadingZeroBits` 为 marker bit 前的连续零 bit 数，`suffix` 为
 随后同宽度的无符号值。`ue` 返回无符号 64 位值
@@ -600,22 +648,42 @@ view rbsp from ebsp {
 
 ## 惰性区域与渐进索引
 
-规则必须显式声明可以延后物化内容的安全边界。渐进索引在可取消、可恢复的扫描过程中分批发布已发现结构。
+规则必须显式声明可以延后物化内容的安全边界。当前接受的 lazy-byte 切片会在不读取
+内容的情况下注册一段未解释的 logical-byte range：
 
 ```cpp
-struct Mp4Box {
-    be_u32 size;
-    fourcc type;
+struct Packet {
+    bits<16> payload_size;
 
-    @lazy(size - 8)
-    bytes payload;
+    @lazy(payload_size)
+    bytes payload @description("Deferred packet payload");
 }
+entry Packet;
+```
 
+只有 declaration 的全部 guard 都被选中时才会计算 expression。VM 在追加 region 或移动
+cursor 前检查 byte-to-bit conversion、logical alignment、enclosing reader limit、
+mapping resolution 和 node budget；它不会读取注册的 payload。正长度 range 状态为
+`lazy`，空 range 会立即 `materialized`。location 包含精确 mapped logical range，也可以
+包含多个 source span。
+
+静态拒绝的例子包括：Boolean byte count、future 或 branch-unavailable dependency、在
+alignment 未知的 variable-width field 后声明 lazy region、脱离 `@lazy` 的
+`bytes payload;`，以及 lazy region 上的 `@equals` 或数组后缀。runtime arithmetic
+overflow 报告 `invalid-syntax`；range 超过 enclosing reader 时报告 `truncated-source`，
+且不会创建 lazy node 或移动 cursor。
+
+当前切片只注册经过检查的 boundary，尚不接受 nested typed content、decode recipe 或用户
+触发的 subtree expansion。progressive index 是独立功能，会在可取消、可恢复的扫描中
+分批发布 structure；当前唯一 progressive form 仍是 H.264 start-code sequence：
+
+```cpp
 @index(progressive)
 sequence<NalUnit> nal_units = scan(h264_start_code);
 ```
 
-惰性边界只有在其长度和外层限制都通过检查后才能注册。分析模型必须区分尚未物化、正在索引、已取消、不支持、非法和完全物化等状态。
+analysis model 区分 lazy、indexing、cancelled、unsupported、invalid 和完全 materialized
+等状态。
 
 ## 沙箱与资源限制
 
@@ -657,6 +725,12 @@ instruction 仍计入 instruction budget，并保留取消检查点。成功求�
 内联，因此不增加 runtime instruction。全部子表达式工作计入这一条 instruction，不新增
 取消检查点，并受展开后 256-node 与 depth-64 上限约束。计算字段也计入静态 99,999 字段
 投影上限。
+
+每个投影后的 lazy byte region 增加一条 `register-lazy-bytes` instruction。即使 false guard
+跳过它，该 instruction 仍计入 instruction budget 并保留取消检查点。选中的 declaration 在
+这一条 instruction 内计算已经受限的 expression；只有完整 mapped boundary 通过检查后才
+消耗一个 node 名额。seek 越过 region 不执行 source read。lazy region 计入静态 99,999-item
+projection limit。
 
 所有限制都必须大于零。host 可以为一次执行降低限制，但规则本身不能提高或读取限制。
 当前最小子集没有 runtime call 或 view：pure call 会被静态内联；未来加入 runtime call 或
