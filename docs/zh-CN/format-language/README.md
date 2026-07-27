@@ -81,8 +81,12 @@ runtime call stack、可变状态或 host 访问。
 
 当前接受的 lazy-boundary 切片新增 `@lazy(byte_count) bytes name;` region。runtime 会验证
 其 mapped logical range，创建 lazy analysis node，并在不读取或复制 payload 的情况下推进
-logical cursor。本切片只注册安全的未解释 boundary；typed on-demand expansion 与
-progressive index 留给后续切片。
+logical cursor。本切片只注册安全的未解释 boundary；typed on-demand expansion 留给后续
+切片。
+
+当前接受的 progressive-index recovery 切片保持既有 `@index(progressive)` H.264 sequence
+语法，并让 cancelled index 可以在同一个 analyzer 内恢复。它保留已发布 node、scanner 与
+queue state 和单调 identifier，但不定义持久 checkpoint。
 
 ## DSL 0.1 最小子集
 
@@ -382,6 +386,10 @@ start code 或 source 结尾之前最长的一段 `trailing_zero_8bits`；scanne
 `cancelled`。空 unit 虽然没有可选 payload 区间，其 NAL offset 和零 length 仍然有效。
 如果 source 字节大小无法用 64 位源 bit 坐标模型表示，scanner 会在读取前拒绝该 source。
 
+cancelled batch 之后，scanner owner 可以替换 cancellation token。该操作不会重置 cursor、
+pending start code、trailing-zero run、inspected count 或 read window，因此后续 batch 会继续
+同一次 scan，不会重放 record 或重新扫描已经完成的前缀。
+
 内置 H.264 Annex B 候选探测器最多检查 source 已加载前缀的前 64 KiB，不使用文件名或
 扩展名猜测格式。每个完整的三字节或四字节 start code 都会形成带 source 位置的证据；
 如果后续字节可用，证据还会记录 NAL unit header 的 source 区间、
@@ -426,6 +434,15 @@ mapper 把带 source 位置的 conformance issue 与 RBSP transformation 分开�
 `@equals(0)` 不匹配时保留 `forbidden_zero_bit`，把 header 和所属 NAL 标记为 invalid，
 但不阻止整体扫描完成。header 读取失败时保留已发布节点，把 root 标记为 invalid，并返回
 `source-error`；取消时保留已完成的 NAL region，并把 root 标记为 cancelled。
+
+cancelled Annex B analyzer 可以用空 token 或尚未 requested 的新 cancellation token 原地恢复。
+只有 cancelled terminal state 接受恢复。恢复会删除 root 的 cancellation diagnostic，把 root
+转回 `indexing`，并保留 scanner cursor、queued record、tree、node ID 和下一个 NAL/view
+identifier。若 cancellation 由 scanner 报告，扫描从其 pending boundary 继续；若在 NAL decode
+或 mapping 中已经提交 cancellation，该 NAL 与 mapped prefix 保持 cancelled partial result，
+不会重试，index 从后续 record 继续。到达 source 末尾后，即使 cancelled descendant 让 tree
+保持 partial，root 仍会进入 `materialized`。Complete、source-error、resource-limit 与 invalid-rule
+结果不能恢复；持久恢复需要后续 source fingerprint、精确 rule identity 与 durable cache storage。
 
 最小合法示例：
 
@@ -673,9 +690,10 @@ alignment 未知的 variable-width field 后声明 lazy region、脱离 `@lazy` 
 overflow 报告 `invalid-syntax`；range 超过 enclosing reader 时报告 `truncated-source`，
 且不会创建 lazy node 或移动 cursor。
 
-当前切片只注册经过检查的 boundary，尚不接受 nested typed content、decode recipe 或用户
-触发的 subtree expansion。progressive index 是独立功能，会在可取消、可恢复的扫描中
-分批发布 structure；当前唯一 progressive form 仍是 H.264 start-code sequence：
+lazy 切片只注册经过检查的 boundary，尚不接受 nested typed content、decode recipe 或用户
+触发的 subtree expansion。当前接受的 progressive index 会在有界 batch 中发布 structure，
+并能在同一个 analyzer 内恢复 cancelled scan；唯一 progressive form 是 H.264 start-code
+sequence：
 
 ```cpp
 @index(progressive)
@@ -684,6 +702,11 @@ sequence<NalUnit> nal_units = scan(h264_start_code);
 
 analysis model 区分 lazy、indexing、cancelled、unsupported、invalid 和完全 materialized
 等状态。
+
+index recovery 保持 append-only tree，不会在后续 batch 重放已经发布的 node。它只删除承载
+entry sequence 的 analysis root 上已经过时的 cancellation diagnostic。已经作为 cancelled
+partial result 提交的 NAL 仍保持 cancelled，因此后来进入 `materialized` 的 root 仍可能属于
+含 partial result 的 tree。这种内存恢复不是 serialized 或 cross-process checkpoint 契约。
 
 ## 沙箱与资源限制
 
@@ -731,6 +754,10 @@ instruction 仍计入 instruction budget，并保留取消检查点。成功求�
 这一条 instruction 内计算已经受限的 expression；只有完整 mapped boundary 通过检查后才
 消耗一个 node 名额。seek 越过 region 不执行 source read。lazy region 计入静态 99,999-item
 projection limit。
+
+恢复 cancelled progressive index 本身不消耗 source work、node 或 batch budget。后续每轮
+batch 继续使用普通 batch 相同的正 record-count、inspected-position、mapped-byte limit 和
+cancellation interval。
 
 所有限制都必须大于零。host 可以为一次执行降低限制，但规则本身不能提高或读取限制。
 当前最小子集没有 runtime call 或 view：pure call 会被静态内联；未来加入 runtime call 或

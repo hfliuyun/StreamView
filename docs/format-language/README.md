@@ -94,8 +94,13 @@ This adds no runtime call stack, mutable state, or host access.
 The accepted lazy-boundary slice adds `@lazy(byte_count) bytes name;` regions.
 The runtime validates their mapped logical range, creates a lazy analysis node,
 and advances the logical cursor without reading or copying the payload. This
-registers a safe uninterpreted boundary; typed on-demand expansion and
-progressive indexes remain later slices.
+registers a safe uninterpreted boundary; typed on-demand expansion remains a
+later slice.
+
+The accepted progressive-index recovery slice keeps the existing
+`@index(progressive)` H.264 sequence syntax and makes a cancelled index
+resumable in the same analyzer. It preserves published nodes, scanner and queue
+state, and monotonic identifiers without defining persistent checkpoints.
 
 ## Minimum DSL 0.1 Subset
 
@@ -511,6 +516,11 @@ an empty unit even though its optional payload span is absent. A source whose
 byte size cannot be represented by the 64-bit source-bit coordinate model is
 rejected before the scanner reads it.
 
+The scanner owner may replace its cancellation token after a cancelled batch.
+This does not reset the cursor, pending start code, trailing-zero run, inspected
+count, or read window. A later batch therefore continues the same scan rather
+than replaying records or rescanning the completed prefix.
+
 The built-in H.264 Annex B candidate detector inspects at most the first 64 KiB
 of an already loaded source prefix. It does not use the file name or extension.
 Each detected three- or four-byte start code contributes source-located
@@ -573,6 +583,19 @@ containing NAL invalid, and does not prevent the overall scan from completing.
 Header read failures retain published nodes, mark the root invalid, and report
 `source-error`. Cancellation retains completed NAL regions and marks the root
 cancelled.
+
+A cancelled Annex B analyzer may be resumed in place with an absent or fresh,
+not-yet-requested cancellation token. Recovery is accepted only from the
+cancelled terminal state. It removes the root's cancellation diagnostic,
+returns the root to `indexing`, and retains the scanner cursor, queued records,
+tree, node IDs, and next NAL/view identifiers. If the scanner reported the
+cancellation, scanning continues from its pending boundary. If cancellation
+was committed while decoding or mapping a NAL, that NAL and any mapped prefix
+remain a cancelled partial result and are not retried; indexing continues with
+the following record. Reaching end of source materializes the root even when a
+cancelled descendant keeps the tree partial. Complete, source-error,
+resource-limit, and invalid-rule results cannot be resumed. Persistent recovery
+awaits source fingerprints, exact rule identity, and durable cache storage.
 
 Valid minimum example:
 
@@ -838,11 +861,11 @@ suffix on a lazy region. Runtime arithmetic overflow is `invalid-syntax`; a
 range beyond the enclosing reader is `truncated-source`, with no lazy node or
 cursor movement.
 
-The current slice registers only the checked boundary. Nested typed content,
-decode recipes, and user-triggered subtree expansion are not yet accepted. A
-progressive index remains a separate feature that publishes structures in
-batches during a cancellable, resumable scan. The only current progressive form
-is the existing H.264 start-code sequence:
+The lazy slice registers only the checked boundary. Nested typed content,
+decode recipes, and user-triggered subtree expansion are not yet accepted. The
+accepted progressive index publishes structures in bounded batches and can
+resume a cancelled scan in the same analyzer. The only current progressive form
+is the H.264 start-code sequence:
 
 ```cpp
 @index(progressive)
@@ -851,6 +874,13 @@ sequence<NalUnit> nal_units = scan(h264_start_code);
 
 The analysis model distinguishes lazy, indexing, cancelled, unsupported,
 invalid, and completely materialized states.
+
+Index recovery preserves the append-only tree and never replays an already
+published node in a later batch. It removes only stale cancellation diagnostics
+from the analysis root representing the entry sequence. A NAL committed as a
+cancelled partial result remains cancelled, so a root that later reaches
+`materialized` may still belong to a tree with partial results. This in-memory
+recovery is not a serialized or cross-process checkpoint contract.
 
 ## Sandbox And Resource Limits
 
@@ -917,6 +947,11 @@ already bounded expression within that instruction and consumes one node slot
 only after its complete mapped boundary has been checked. Seeking over the
 region performs no source read. Lazy regions count toward the static
 99,999-item projection limit.
+
+Resuming a cancelled progressive index consumes no source work, node, or batch
+budget by itself. Every later batch uses the same positive record-count,
+inspected-position, and mapped-byte limits and cancellation intervals as an
+ordinary batch.
 
 All limits must be greater than zero. The host may lower them for a particular
 execution but a rule cannot raise or inspect them. The accepted minimum subset

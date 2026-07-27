@@ -47,6 +47,11 @@ span 总覆盖长度更小的节点；覆盖长度仍相同时，选择稳定节
 `unsupported`、`invalid` 和 `materialized` 是终态；`cancelled` 可以恢复到
 `indexing`。活动状态可以进入终态、取消态或等待态。终态父节点不能再追加子节点。
 
+恢复 cancelled node 必须是显式操作。tree 会把该 node transition 为 `indexing`，并删除
+直接挂在它上面且 code 为 `Cancelled` 的全部 diagnostic；不会修改 descendant 或非
+cancellation diagnostic。因此只恢复 parent 时，cancelled child 仍然是清晰可见的 partial
+result。
+
 ## 诊断与部分结果
 
 Parse diagnostic 包含稳定 code、severity、消息、字段路径和可选的精确字段位置。
@@ -66,5 +71,7 @@ Parse diagnostic 包含稳定 code、severity、消息、字段路径和可选�
 Cancellation source 创建由共享状态支持的可复制 token；任意 source 或 token 仍在
 引用时，该状态都会保持有效。请求取消是线程安全、无异常且幂等的。消费者只在文档
 规定的取消点轮询 token；token 本身不会抛异常、强制终止工作或修改分析树。观察到
-请求的 worker 负责发布已完成工作，并使用诊断把未完成节点标记为 cancelled。底层
-存储机制属于实现细节，参见 [ADR-0018](adr/0018-portable-cancellation-state.md)。
+请求的 worker 负责发布已完成工作，并使用诊断把未完成节点标记为 cancelled。后续 owner
+可以用新的 cancellation state 显式恢复该 node；本次暂停留下的过时 diagnostic 会被删除，
+而 descendant partial result 全部保留。底层存储机制属于实现细节，参见
+[ADR-0018](adr/0018-portable-cancellation-state.md)。

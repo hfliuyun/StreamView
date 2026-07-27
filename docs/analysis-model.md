@@ -59,6 +59,12 @@ The core distinguishes:
 transition back to `indexing`. Active states may become terminal, cancelled, or
 waiting. A terminal parent accepts no new children.
 
+Resuming a cancelled node is explicit. The tree transitions that node to
+`indexing` and removes every diagnostic with code `Cancelled` attached directly
+to it. The operation does not alter descendants or non-cancellation
+diagnostics, so a cancelled child remains a visible partial result when only
+its parent resumes.
+
 ## Diagnostics And Partial Results
 
 A parse diagnostic has a stable code, severity, message, field path, and
@@ -84,5 +90,8 @@ Requesting cancellation is thread-safe, non-throwing, and idempotent. Consumers
 poll the token at documented cancellation points; the token does not throw,
 terminate work, or mutate the analysis tree by itself. The worker that observes
 the request publishes its completed work and marks the unresolved node
-cancelled with a diagnostic. The storage mechanism is an implementation detail;
-see [ADR-0018](adr/0018-portable-cancellation-state.md).
+cancelled with a diagnostic. A later owner may explicitly resume that node with
+new cancellation state; the stale diagnostic for that pause is removed while
+all descendant partial results remain. The storage mechanism is an
+implementation detail; see
+[ADR-0018](adr/0018-portable-cancellation-state.md).
