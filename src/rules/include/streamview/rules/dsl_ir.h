@@ -18,6 +18,7 @@ enum class DslValueTypeKind : quint8 {
     SignedExpGolomb,
     ComputedBool,
     ComputedUnsigned,
+    LazyBytes,
 };
 
 struct DslValueType final {
@@ -75,6 +76,7 @@ struct DslTypedField final {
     DslValueType type;
     std::optional<quint64> equalsConstraint;
     std::optional<DslTypedExpression> computedExpression;
+    std::optional<DslTypedExpression> lazyByteCountExpression;
     std::vector<DslTypedFieldCondition> conditions;
     core::AnalysisNodeMetadata metadata;
     DslSourceRange range;
@@ -125,6 +127,7 @@ enum class DslOpcode : quint8 {
     ReadUnsignedExpGolomb,
     ReadSignedExpGolomb,
     EvaluateComputed,
+    RegisterLazyBytes,
     AssertEquals,
     AssertRepeatCount,
     EndStructure,

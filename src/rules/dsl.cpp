@@ -472,6 +472,16 @@ private:
         return at(DslTokenKind::Identifier) && current().lexeme == value;
     }
 
+    [[nodiscard]] bool isLazyRegionIntroducer() const {
+        if (!at(DslTokenKind::At) || index_ + 2 >= lexResult_.tokens.size()) {
+            return false;
+        }
+        const DslToken& name = lexResult_.tokens.at(index_ + 1);
+        const DslToken& leftParen = lexResult_.tokens.at(index_ + 2);
+        return name.kind == DslTokenKind::Identifier && name.lexeme == QStringLiteral("lazy") &&
+               leftParen.kind == DslTokenKind::LeftParen;
+    }
+
     const DslToken& consume() {
         const DslToken& token = current();
         if (!at(DslTokenKind::EndOfFile)) {
@@ -741,9 +751,10 @@ private:
         return expression;
     }
 
-    std::vector<DslAnnotation> parseAnnotations() {
+    std::vector<DslAnnotation> parseAnnotations(bool stopBeforeLazyRegion = false) {
         std::vector<DslAnnotation> annotations;
-        while (match(DslTokenKind::At)) {
+        while (at(DslTokenKind::At) && !(stopBeforeLazyRegion && isLazyRegionIntroducer())) {
+            consume();
             const DslSourcePosition start = lexResult_.tokens.at(index_ - 1).range.start;
             DslAnnotation annotation;
             if (!expectIdentifier(&annotation.name, QStringLiteral("annotation name"))) {
@@ -1043,6 +1054,45 @@ private:
         items.push_back(std::move(item));
     }
 
+    void parseLazyRegion(std::vector<DslStructItem>& items) {
+        const DslSourcePosition start = consume().range.start;
+        consume();
+        expect(DslTokenKind::LeftParen, QStringLiteral("'(' after @lazy"));
+
+        DslLazyRegion region;
+        region.byteCountExpression = parseExpression();
+        expect(DslTokenKind::RightParen, QStringLiteral("')' after lazy byte count expression"));
+        if (!matchIdentifier(QStringLiteral("bytes"))) {
+            error(DslDiagnosticCode::UnexpectedToken,
+                  QStringLiteral("Expected bytes after @lazy(...)"));
+            recoverField();
+            return;
+        }
+        if (!expectIdentifier(&region.name, QStringLiteral("lazy byte region name"))) {
+            recoverField();
+            return;
+        }
+        if (match(DslTokenKind::LeftBracket)) {
+            result_.diagnostics.push_back({DslDiagnosticCode::InvalidArrayLength,
+                                           QStringLiteral("Lazy byte regions cannot be arrays"),
+                                           lexResult_.tokens.at(index_ - 1).range});
+            while (!at(DslTokenKind::EndOfFile) && !at(DslTokenKind::RightBracket) &&
+                   !at(DslTokenKind::Semicolon) && !at(DslTokenKind::RightBrace)) {
+                consume();
+            }
+            match(DslTokenKind::RightBracket);
+        }
+        region.annotations = parseAnnotations();
+        expect(DslTokenKind::Semicolon, QStringLiteral("';' after lazy byte region"));
+        region.range = {start, lexResult_.tokens.at(index_ - 1).range.end};
+
+        DslStructItem item;
+        item.kind = DslStructItemKind::LazyRegion;
+        item.lazyRegion = std::move(region);
+        item.range = item.lazyRegion.range;
+        items.push_back(std::move(item));
+    }
+
     void parseConditional(std::vector<DslStructItem>& items) {
         const DslSourcePosition start = consume().range.start;
         DslStructItem item;
@@ -1190,8 +1240,16 @@ private:
 
     void parseStructItems(std::vector<DslStructItem>& items) {
         while (!at(DslTokenKind::RightBrace) && !at(DslTokenKind::EndOfFile)) {
-            const std::vector<DslAnnotation> annotations = parseAnnotations();
-            if (isIdentifier(QStringLiteral("if"))) {
+            const std::vector<DslAnnotation> annotations = parseAnnotations(true);
+            if (isLazyRegionIntroducer()) {
+                if (!annotations.empty()) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidAnnotation,
+                         QStringLiteral("Annotations are not allowed before @lazy"),
+                         annotations.front().range});
+                }
+                parseLazyRegion(items);
+            } else if (isIdentifier(QStringLiteral("if"))) {
                 if (!annotations.empty()) {
                     result_.diagnostics.push_back(
                         {DslDiagnosticCode::InvalidAnnotation,
@@ -1217,6 +1275,10 @@ private:
                 parseRepeat(items);
             } else if (isIdentifier(QStringLiteral("computed"))) {
                 parseComputedField(items, annotations);
+            } else if (isIdentifier(QStringLiteral("bytes"))) {
+                error(DslDiagnosticCode::UnexpectedToken,
+                      QStringLiteral("bytes fields require immediately preceding @lazy(...)"));
+                recoverField();
             } else {
                 parseField(items, annotations);
             }
@@ -1873,11 +1935,24 @@ private:
                         }
                     }
                 };
+            const auto validateLazyAnnotations = [&](const DslLazyRegion& region) {
+                validatePresentationAnnotations(region.annotations);
+                for (const DslAnnotation& annotation : region.annotations) {
+                    if (annotation.name != QStringLiteral("description") &&
+                        annotation.name != QStringLiteral("spec")) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidAnnotation,
+                             QStringLiteral("Lazy byte regions accept only @description and @spec"),
+                             annotation.range});
+                    }
+                }
+            };
             const auto containsField = [](const auto& self,
                                           const std::vector<DslStructItem>& items) -> bool {
                 for (const DslStructItem& item : items) {
                     if (item.kind == DslStructItemKind::Field ||
-                        item.kind == DslStructItemKind::Computed) {
+                        item.kind == DslStructItemKind::Computed ||
+                        item.kind == DslStructItemKind::LazyRegion) {
                         return true;
                     }
                     if (item.kind == DslStructItemKind::Conditional &&
@@ -2060,6 +2135,98 @@ private:
                         const std::size_t scopeStart = declaredFields.size();
                         (void)self(self, item.repeatItems, active, fieldOffset);
                         declaredFields.resize(scopeStart);
+                        fieldOffset = std::nullopt;
+                        continue;
+                    }
+
+                    if (item.kind == DslStructItemKind::LazyRegion) {
+                        const DslLazyRegion& region = item.lazyRegion;
+                        validateLazyAnnotations(region);
+                        if (std::find(declaredFieldNames.begin(),
+                                      declaredFieldNames.end(),
+                                      region.name) != declaredFieldNames.end()) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::DuplicateName,
+                                 QStringLiteral("Duplicate field name"),
+                                 region.range});
+                        }
+                        const auto resolveLazyIdentifier =
+                            [&](const QString& name,
+                                const DslSourceRange& range)
+                            -> std::optional<DslScalarType> {
+                            const auto found = std::find_if(
+                                declaredFields.rbegin(),
+                                declaredFields.rend(),
+                                [&name](const DeclaredField& declared) {
+                                    return declared.name == name;
+                                });
+                            if (found == declaredFields.rend()) {
+                                result_.diagnostics.push_back(
+                                    {DslDiagnosticCode::UnknownReference,
+                                     QStringLiteral(
+                                         "Lazy byte-count dependency must be declared earlier"),
+                                     range});
+                                return std::nullopt;
+                            }
+                            const bool available = std::all_of(
+                                found->conditions.begin(),
+                                found->conditions.end(),
+                                [&active, &sameCondition](const ActiveCondition& required) {
+                                    return std::any_of(
+                                        active.begin(),
+                                        active.end(),
+                                        [&required, &sameCondition](
+                                            const ActiveCondition& candidate) {
+                                            return sameCondition(required, candidate);
+                                        });
+                                });
+                            if (!available) {
+                                result_.diagnostics.push_back(
+                                    {DslDiagnosticCode::InvalidCondition,
+                                     QStringLiteral(
+                                         "Lazy byte-count dependency is not guaranteed on the "
+                                         "current branch"),
+                                     range});
+                                return std::nullopt;
+                            }
+                            if (found->computed != nullptr) {
+                                return found->type;
+                            }
+                            if (found->syntax == nullptr || found->syntax->arrayLength ||
+                                found->syntax->encoding ==
+                                    DslFieldEncoding::SignedExpGolomb) {
+                                result_.diagnostics.push_back(
+                                    {DslDiagnosticCode::InvalidType,
+                                     QStringLiteral(
+                                         "Lazy byte counts require scalar unsigned fields"),
+                                     range});
+                                return std::nullopt;
+                            }
+                            return DslScalarType::U64;
+                        };
+                        std::size_t nodeCount = 0;
+                        const auto expressionType = validateExpression(
+                            validateExpression,
+                            region.byteCountExpression,
+                            resolveLazyIdentifier,
+                            result_.program.pureFunctions.size(),
+                            1,
+                            nodeCount);
+                        if (expressionType && *expressionType != DslScalarType::U64) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidType,
+                                 QStringLiteral("Lazy byte-count expression must be u64"),
+                                 region.byteCountExpression.range});
+                        }
+                        if (!fieldOffset || *fieldOffset % 8 != 0) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidEndian,
+                                 QStringLiteral(
+                                     "Lazy byte regions must begin at a byte boundary within the "
+                                     "structure"),
+                                 region.range});
+                        }
+                        declaredFieldNames.push_back(region.name);
                         fieldOffset = std::nullopt;
                         continue;
                     }

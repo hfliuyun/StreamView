@@ -549,6 +549,124 @@ private slots:
         QVERIFY(conditional.elseItems.empty());
     }
 
+    void parsesCheckedLazyByteRegions() {
+        const auto result = DslParser::parse(QStringLiteral(R"(
+            struct Packet {
+                bits<8> payload_size;
+                @lazy(payload_size + 1)
+                bytes payload @description("Deferred payload") @spec("Example", "1");
+            }
+            struct ConditionalPacket {
+                bits<8> selector;
+                if (selector == 1) { @lazy(1) bytes selected; }
+            }
+            struct RepeatedPacket {
+                bits<8> count;
+                repeat (count, 1) { @lazy(1) bytes chunk; }
+            }
+            entry Packet;
+        )"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty() ? "" : qPrintable(result.diagnostics.front().message));
+        QCOMPARE(result.program.structs.size(), std::size_t(3));
+        const auto& items = result.program.structs.front().items;
+        QCOMPARE(items.size(), std::size_t(2));
+        QCOMPARE(items.back().kind, DslStructItemKind::LazyRegion);
+        QCOMPARE(items.back().lazyRegion.name, QStringLiteral("payload"));
+        QCOMPARE(items.back().lazyRegion.byteCountExpression.kind, DslExpressionKind::Binary);
+        QCOMPARE(items.back().lazyRegion.byteCountExpression.binaryOperator,
+                 DslBinaryOperator::Add);
+        QCOMPARE(items.back().lazyRegion.annotations.size(), std::size_t(2));
+        QCOMPARE(items.back().lazyRegion.annotations.at(0).name, QStringLiteral("description"));
+        QCOMPARE(items.back().lazyRegion.annotations.at(1).name, QStringLiteral("spec"));
+
+        const auto& conditional = result.program.structs.at(1).items.at(1);
+        QCOMPARE(conditional.thenItems.front().kind, DslStructItemKind::LazyRegion);
+        const auto& repeated = result.program.structs.at(2).items.at(1);
+        QCOMPARE(repeated.repeatItems.front().kind, DslStructItemKind::LazyRegion);
+    }
+
+    void rejectsInvalidLazyByteRegionDeclarations() {
+        struct Case final {
+            QString source;
+            DslDiagnosticCode diagnostic;
+        };
+        const std::vector<Case> cases{
+            {QStringLiteral("struct Header { bytes payload; } entry Header;"),
+             DslDiagnosticCode::UnexpectedToken},
+            {QStringLiteral("struct Header { @description(\"bad\") @lazy(1) bytes payload; } "
+                            "entry Header;"),
+             DslDiagnosticCode::InvalidAnnotation},
+            {QStringLiteral("struct Header { @lazy(1) bytes payload[2]; } entry Header;"),
+             DslDiagnosticCode::InvalidArrayLength},
+            {QStringLiteral("struct Header { @lazy(1) bytes payload @equals(0); } entry Header;"),
+             DslDiagnosticCode::InvalidAnnotation},
+            {QStringLiteral("enum Type { value = 0; } struct Header { "
+                            "@lazy(1) bytes payload @enum(Type); } entry Header;"),
+             DslDiagnosticCode::InvalidAnnotation},
+            {QStringLiteral("struct Header { @lazy(true) bytes payload; } entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral(
+                 "struct Header { @lazy(size) bytes payload; bits<8> size; } entry Header;"),
+             DslDiagnosticCode::UnknownReference},
+            {QStringLiteral(
+                 "struct Header { se delta; @lazy(delta) bytes payload; } entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral("struct Header { bits<8> sizes[2]; @lazy(sizes) bytes payload; } "
+                            "entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral("struct Header { bits<8> selector; if (selector == 1) { "
+                            "computed<u64> local = 1; } @lazy(local) bytes payload; } "
+                            "entry Header;"),
+             DslDiagnosticCode::InvalidCondition},
+            {QStringLiteral(
+                 "struct Header { bits<1> prefix; @lazy(1) bytes payload; } entry Header;"),
+             DslDiagnosticCode::InvalidEndian},
+            {QStringLiteral("struct Header { bits<8> selector; if (selector == 1) { bits<1> odd; } "
+                            "@lazy(1) bytes payload; } entry Header;"),
+             DslDiagnosticCode::InvalidEndian},
+            {QStringLiteral("struct Header { @lazy(1) bytes first; @lazy(1) bytes second; } "
+                            "entry Header;"),
+             DslDiagnosticCode::InvalidEndian},
+            {QStringLiteral(
+                 "struct Header { @lazy(1) bytes payload; bits<1> payload; } entry Header;"),
+             DslDiagnosticCode::DuplicateName},
+            {QStringLiteral("struct Header { @lazy(1) bytes payload; "
+                            "computed<u64> size = payload; } entry Header;"),
+             DslDiagnosticCode::UnknownReference},
+            {QStringLiteral("struct Header { @lazy(0) bytes payload; "
+                            "repeat (payload, 1) { bits<1> value; } } entry Header;"),
+             DslDiagnosticCode::UnknownReference},
+        };
+
+        for (const Case& testCase : cases) {
+            const auto result = DslParser::parse(testCase.source);
+            QVERIFY(!result.succeeded());
+            QVERIFY(hasDiagnostic(result, testCase.diagnostic));
+        }
+    }
+
+    void recoversAfterMalformedLazyByteRegions() {
+        const auto missingBytes = DslParser::parse(
+            QStringLiteral("struct Header { @lazy(1) payload; bits<1> tail; } entry Header;"));
+        QVERIFY(!missingBytes.succeeded());
+        QVERIFY(hasDiagnostic(missingBytes, DslDiagnosticCode::UnexpectedToken));
+        QCOMPARE(missingBytes.program.structs.front().items.size(), std::size_t(1));
+        QCOMPARE(missingBytes.program.structs.front().items.front().field.name,
+                 QStringLiteral("tail"));
+
+        const auto malformedExpression = DslParser::parse(
+            QStringLiteral("pure u64 add(u64 left, u64 right) { return left + right; } "
+                           "struct Header { @lazy(add(1, )) bytes payload; bits<1> tail; } "
+                           "entry Header;"));
+        QVERIFY(!malformedExpression.succeeded());
+        QVERIFY(hasDiagnostic(malformedExpression, DslDiagnosticCode::UnexpectedToken));
+        QCOMPARE(malformedExpression.program.structs.front().items.size(), std::size_t(2));
+        QCOMPARE(malformedExpression.program.structs.front().items.back().field.name,
+                 QStringLiteral("tail"));
+    }
+
     void rejectsInvalidPureAndComputedDeclarations() {
         struct Case final {
             QString source;

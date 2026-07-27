@@ -139,6 +139,7 @@ namespace {
     case DslValueTypeKind::ComputedBool:
         return DslScalarType::Bool;
     case DslValueTypeKind::SignedExpGolomb:
+    case DslValueTypeKind::LazyBytes:
         return std::nullopt;
     }
     return std::nullopt;

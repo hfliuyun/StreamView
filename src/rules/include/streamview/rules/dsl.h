@@ -223,6 +223,13 @@ struct DslComputedField final {
     DslSourceRange range;
 };
 
+struct DslLazyRegion final {
+    QString name;
+    DslExpression byteCountExpression;
+    std::vector<DslAnnotation> annotations;
+    DslSourceRange range;
+};
+
 struct DslEqualityCondition final {
     QString fieldName;
     quint64 expectedValue = 0;
@@ -233,6 +240,7 @@ struct DslEqualityCondition final {
 enum class DslStructItemKind : quint8 {
     Field,
     Computed,
+    LazyRegion,
     Conditional,
     Switch,
     Repeat,
@@ -255,6 +263,7 @@ struct DslStructItem final {
     DslStructItemKind kind = DslStructItemKind::Field;
     DslBitField field;
     DslComputedField computed;
+    DslLazyRegion lazyRegion;
     DslEqualityCondition condition;
     std::vector<DslStructItem> thenItems;
     std::vector<DslStructItem> elseItems;

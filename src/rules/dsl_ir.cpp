@@ -28,7 +28,8 @@ void collectFields(const std::vector<DslStructItem>& items,
                    std::vector<const DslStructItem*>& fields) {
     for (const DslStructItem& item : items) {
         if (item.kind == DslStructItemKind::Field ||
-            item.kind == DslStructItemKind::Computed) {
+            item.kind == DslStructItemKind::Computed ||
+            item.kind == DslStructItemKind::LazyRegion) {
             fields.push_back(&item);
         } else if (item.kind == DslStructItemKind::Conditional) {
             collectFields(item.thenItems, fields);
@@ -56,7 +57,8 @@ void collectFields(const std::vector<DslStructItem>& items,
         quint64 itemProjection = 0;
         if (item.kind == DslStructItemKind::Field) {
             itemProjection = item.field.arrayLength.value_or(1);
-        } else if (item.kind == DslStructItemKind::Computed) {
+        } else if (item.kind == DslStructItemKind::Computed ||
+                   item.kind == DslStructItemKind::LazyRegion) {
             itemProjection = 1;
         } else if (item.kind == DslStructItemKind::Conditional) {
             itemProjection = add(expandedFieldProjection(item.thenItems),
@@ -713,10 +715,14 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         for (const DslStructItem* item : fieldDeclarations) {
             const QString& name = item->kind == DslStructItemKind::Field
                                       ? item->field.name
-                                      : item->computed.name;
+                                      : item->kind == DslStructItemKind::Computed
+                                      ? item->computed.name
+                                      : item->lazyRegion.name;
             const DslSourceRange& range = item->kind == DslStructItemKind::Field
                                               ? item->field.range
-                                              : item->computed.range;
+                                              : item->kind == DslStructItemKind::Computed
+                                              ? item->computed.range
+                                              : item->lazyRegion.range;
             if (std::find(declaredFieldNames.begin(),
                           declaredFieldNames.end(),
                           name) != declaredFieldNames.end()) {
@@ -1069,32 +1075,10 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             }
             return *fieldOffset + totalWidth;
         };
-        const auto compileComputed =
-            [&](const DslComputedField& field,
-                const std::vector<DslTypedFieldCondition>& conditions,
-                std::optional<quint64> fieldOffset) -> std::optional<quint64> {
-            if (typedStruct.fields.size() >= maximumExpandedFieldsPerStructure) {
-                addDiagnostic(
-                    result.diagnostics,
-                    DslDiagnosticCode::InvalidArrayLength,
-                    QStringLiteral(
-                        "Computed field expansion exceeds the structure materialization limit"),
-                    field.range);
-                declaredFields.push_back({field.name,
-                                          nullptr,
-                                          &field,
-                                          field.type,
-                                          std::nullopt,
-                                          conditions});
-                return fieldOffset;
-            }
-            if (!validScalarType(field.type)) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::InvalidType,
-                              QStringLiteral("Computed field type is invalid"),
-                              field.range);
-            }
-            for (const DslAnnotation& annotation : field.annotations) {
+        const auto validatePresentationOnlyAnnotations =
+            [&result](const std::vector<DslAnnotation>& annotations,
+                      const QString& subject) {
+            for (const DslAnnotation& annotation : annotations) {
                 const bool descriptionValid =
                     annotation.name == QStringLiteral("description") &&
                     annotation.arguments.size() == 1 &&
@@ -1111,69 +1095,91 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     addDiagnostic(result.diagnostics,
                                   DslDiagnosticCode::InvalidAnnotation,
                                   QStringLiteral(
-                                      "Computed fields accept only valid @description and @spec "
-                                      "annotations"),
+                                      "%1 accept only valid @description and @spec annotations")
+                                      .arg(subject),
                                   annotation.range);
                 }
             }
+        };
+        const auto resolveExpressionDependency =
+            [&](const QString& name,
+                const DslSourceRange& range,
+                const std::vector<DslTypedFieldCondition>& conditions,
+                const QString& subject,
+                const QString& invalidTypeMessage) -> std::optional<DslTypedExpression> {
+            const auto found = std::find_if(
+                declaredFields.rbegin(),
+                declaredFields.rend(),
+                [&name](const DeclaredField& declared) { return declared.name == name; });
+            if (found == declaredFields.rend()) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::UnknownReference,
+                              subject + QStringLiteral(" dependency must be declared earlier"),
+                              range);
+                return std::nullopt;
+            }
+            const bool available = std::all_of(
+                found->conditions.begin(),
+                found->conditions.end(),
+                [&conditions, &sameCondition](const DslTypedFieldCondition& required) {
+                    return std::any_of(
+                        conditions.begin(),
+                        conditions.end(),
+                        [&required, &sameCondition](const DslTypedFieldCondition& candidate) {
+                            return sameCondition(required, candidate);
+                        });
+                });
+            if (!available) {
+                addDiagnostic(
+                    result.diagnostics,
+                    DslDiagnosticCode::InvalidCondition,
+                    subject + QStringLiteral(
+                                  " dependency is not guaranteed on the current branch"),
+                    range);
+                return std::nullopt;
+            }
+            if (!found->typedIndex ||
+                (found->source != nullptr &&
+                 (found->source->arrayLength ||
+                  found->source->encoding == DslFieldEncoding::SignedExpGolomb))) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              invalidTypeMessage,
+                              range);
+                return std::nullopt;
+            }
+            DslTypedExpression reference;
+            reference.kind = DslTypedExpressionKind::FieldReference;
+            reference.type = found->computed != nullptr ? found->scalarType : DslScalarType::U64;
+            reference.fieldIndex = *found->typedIndex;
+            return reference;
+        };
+        const auto compileComputed =
+            [&](const DslComputedField& field,
+                const std::vector<DslTypedFieldCondition>& conditions,
+                std::optional<quint64> fieldOffset) -> std::optional<quint64> {
+            if (typedStruct.fields.size() >= maximumExpandedFieldsPerStructure) {
+                addDiagnostic(
+                    result.diagnostics, DslDiagnosticCode::InvalidArrayLength,
+                    QStringLiteral(
+                        "Computed field expansion exceeds the structure materialization limit"),
+                    field.range);
+                declaredFields.push_back(
+                    {field.name, nullptr, &field, field.type, std::nullopt, conditions});
+                return fieldOffset;
+            }
+            if (!validScalarType(field.type)) {
+                addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidType,
+                              QStringLiteral("Computed field type is invalid"), field.range);
+            }
+            validatePresentationOnlyAnnotations(
+                field.annotations, QStringLiteral("Computed fields"));
             const ExpressionResolver resolveField =
                 [&](const QString& name,
-                    const DslSourceRange& range)
-                -> std::optional<DslTypedExpression> {
-                const auto found = std::find_if(
-                    declaredFields.rbegin(),
-                    declaredFields.rend(),
-                    [&name](const DeclaredField& declared) {
-                        return declared.name == name;
-                    });
-                if (found == declaredFields.rend()) {
-                    addDiagnostic(result.diagnostics,
-                                  DslDiagnosticCode::UnknownReference,
-                                  QStringLiteral(
-                                      "Computed field dependency must be declared earlier"),
-                                  range);
-                    return std::nullopt;
-                }
-                const bool available = std::all_of(
-                    found->conditions.begin(),
-                    found->conditions.end(),
-                    [&conditions, &sameCondition](
-                        const DslTypedFieldCondition& required) {
-                        return std::any_of(
-                            conditions.begin(),
-                            conditions.end(),
-                            [&required, &sameCondition](
-                                const DslTypedFieldCondition& candidate) {
-                                return sameCondition(required, candidate);
-                            });
-                    });
-                if (!available) {
-                    addDiagnostic(result.diagnostics,
-                                  DslDiagnosticCode::InvalidCondition,
-                                  QStringLiteral(
-                                      "Computed field dependency is not guaranteed on the "
-                                      "current branch"),
-                                  range);
-                    return std::nullopt;
-                }
-                if (!found->typedIndex ||
-                    (found->source != nullptr &&
-                     (found->source->arrayLength ||
-                      found->source->encoding == DslFieldEncoding::SignedExpGolomb))) {
-                    addDiagnostic(result.diagnostics,
-                                  DslDiagnosticCode::InvalidType,
-                                  QStringLiteral(
-                                      "Computed expressions require scalar unsigned fields"),
-                                  range);
-                    return std::nullopt;
-                }
-                DslTypedExpression reference;
-                reference.kind = DslTypedExpressionKind::FieldReference;
-                reference.type = found->computed != nullptr
-                                     ? found->scalarType
-                                     : DslScalarType::U64;
-                reference.fieldIndex = *found->typedIndex;
-                return reference;
+                    const DslSourceRange& range) -> std::optional<DslTypedExpression> {
+                return resolveExpressionDependency(
+                    name, range, conditions, QStringLiteral("Computed field"),
+                    QStringLiteral("Computed expressions require scalar unsigned fields"));
             };
             ExpressionBuildState state;
             const auto expression = compileExpression(field.expression,
@@ -1211,11 +1217,66 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 {field.name, nullptr, &field, field.type, typedIndex, conditions});
             return fieldOffset;
         };
-        const auto compileItems = [&](const auto& self,
-                                      const std::vector<DslStructItem>& items,
-                                      const std::vector<DslTypedFieldCondition>& conditions,
-                                      std::optional<quint64> fieldOffset)
-            -> std::optional<quint64> {
+        const auto compileLazyRegion =
+            [&](const DslLazyRegion& region,
+                const std::vector<DslTypedFieldCondition>& conditions,
+                std::optional<quint64> fieldOffset) -> std::optional<quint64> {
+            if (typedStruct.fields.size() >= maximumExpandedFieldsPerStructure) {
+                addDiagnostic(
+                    result.diagnostics, DslDiagnosticCode::InvalidArrayLength,
+                    QStringLiteral(
+                        "Lazy byte region expansion exceeds the structure materialization limit"),
+                    region.range);
+                return std::nullopt;
+            }
+            validatePresentationOnlyAnnotations(
+                region.annotations, QStringLiteral("Lazy byte regions"));
+            if (!fieldOffset || *fieldOffset % 8 != 0) {
+                addDiagnostic(
+                    result.diagnostics, DslDiagnosticCode::InvalidEndian,
+                    QStringLiteral(
+                        "Lazy byte regions must begin at a byte boundary within the structure"),
+                    region.range);
+            }
+            const ExpressionResolver resolveField =
+                [&](const QString& name,
+                    const DslSourceRange& range) -> std::optional<DslTypedExpression> {
+                return resolveExpressionDependency(
+                    name, range, conditions, QStringLiteral("Lazy byte-count expression"),
+                    QStringLiteral("Lazy byte counts require scalar unsigned fields"));
+            };
+            ExpressionBuildState state;
+            const auto expression = compileExpression(region.byteCountExpression,
+                                                      resolveField,
+                                                      program.pureFunctions.size(),
+                                                      1,
+                                                      state);
+            if (expression && expression->type != DslScalarType::U64) {
+                addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidType,
+                              QStringLiteral("Lazy byte-count expression must be u64"),
+                              region.byteCountExpression.range);
+            }
+
+            DslTypedField typedField;
+            typedField.name = region.name;
+            for (const quint64 repeatIndex : repeatIndices) {
+                typedField.name += QStringLiteral("[%1]").arg(repeatIndex);
+            }
+            typedField.type = {DslValueTypeKind::LazyBytes, quint8(0), DslEndian::Big,
+                               std::nullopt};
+            typedField.lazyByteCountExpression = expression;
+            typedField.conditions = conditions;
+            typedField.metadata =
+                metadataForAnnotations(region.annotations, typedStruct.metadata.specification);
+            typedField.metadata.typeName = QStringLiteral("bytes");
+            typedField.range = region.range;
+            typedStruct.fields.push_back(std::move(typedField));
+            return std::nullopt;
+        };
+        const auto compileItems =
+            [&](const auto& self, const std::vector<DslStructItem>& items,
+                const std::vector<DslTypedFieldCondition>& conditions,
+                std::optional<quint64> fieldOffset) -> std::optional<quint64> {
             for (const DslStructItem& item : items) {
                 if (item.kind == DslStructItemKind::Field) {
                     fieldOffset = compileField(item.field, conditions, fieldOffset);
@@ -1223,6 +1284,10 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 }
                 if (item.kind == DslStructItemKind::Computed) {
                     fieldOffset = compileComputed(item.computed, conditions, fieldOffset);
+                    continue;
+                }
+                if (item.kind == DslStructItemKind::LazyRegion) {
+                    fieldOffset = compileLazyRegion(item.lazyRegion, conditions, fieldOffset);
                     continue;
                 }
                 if (item.kind == DslStructItemKind::Conditional) {
@@ -1615,6 +1680,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 case DslValueTypeKind::ComputedBool:
                 case DslValueTypeKind::ComputedUnsigned:
                     return DslOpcode::EvaluateComputed;
+                case DslValueTypeKind::LazyBytes:
+                    return DslOpcode::RegisterLazyBytes;
                 }
                 return DslOpcode::ReadUnsignedBits;
             }();

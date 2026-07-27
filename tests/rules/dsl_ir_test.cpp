@@ -265,6 +265,204 @@ private slots:
         QCOMPARE((assertBound + 1)->opcode, DslOpcode::EvaluateComputed);
     }
 
+    void compilesCheckedLazyByteRegions() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            pure u64 plus_one(u64 value) { return value + 1; }
+            struct Packet {
+                bits<8> payload_size;
+                computed<u64> adjusted = payload_size;
+                @lazy(plus_one(adjusted))
+                bytes payload @description("Payload.") @spec("Example", "1");
+            }
+            struct ConditionalPacket {
+                bits<8> selector;
+                if (selector == 1) { @lazy(1) bytes selected; }
+                else { @lazy(0) bytes fallback; }
+            }
+            struct SwitchPacket {
+                bits<8> selector;
+                switch (selector) {
+                case 1: { @lazy(1) bytes selected; }
+                case 2: { @lazy(2) bytes alternate; }
+                default: { @lazy(0) bytes fallback; }
+                }
+            }
+            struct RepeatedPacket {
+                bits<8> count;
+                repeat (count, 1) { @lazy(1) bytes chunk; }
+            }
+            struct EmptyPayload { @lazy(0) bytes payload; }
+            struct TrailingField {
+                @lazy(1) bytes payload;
+                bits<16> tail;
+            }
+            entry Packet;
+        )"));
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty() ? "" : qPrintable(parsed.diagnostics.front().message));
+
+        const auto first = DslCompiler::compile(parsed.program);
+        const auto second = DslCompiler::compile(parsed.program);
+
+        QVERIFY2(first.succeeded(),
+                 first.diagnostics.empty() ? "" : qPrintable(first.diagnostics.front().message));
+        QVERIFY(second.succeeded());
+        QCOMPARE(first.program->structs.size(), std::size_t(6));
+
+        const auto& packet = first.program->structs.at(0);
+        QCOMPARE(packet.fields.size(), std::size_t(3));
+        const auto& payload = packet.fields.at(2);
+        QCOMPARE(payload.name, QStringLiteral("payload"));
+        QCOMPARE(payload.type.kind, DslValueTypeKind::LazyBytes);
+        QCOMPARE(payload.type.bitWidth, quint8(0));
+        QVERIFY(!payload.computedExpression.has_value());
+        QVERIFY(payload.lazyByteCountExpression.has_value());
+        QCOMPARE(payload.metadata.typeName, QStringLiteral("bytes"));
+        QCOMPARE(payload.metadata.description, QStringLiteral("Payload."));
+        QVERIFY(payload.metadata.specification.has_value());
+        QCOMPARE(payload.metadata.specification->standard, QStringLiteral("Example"));
+        const auto& countExpression = *payload.lazyByteCountExpression;
+        QCOMPARE(countExpression.kind, DslTypedExpressionKind::Binary);
+        QCOMPARE(countExpression.binaryOperator, streamview::rules::DslBinaryOperator::Add);
+        QCOMPARE(countExpression.type, streamview::rules::DslScalarType::U64);
+        QCOMPARE(countExpression.operands.at(0).kind, DslTypedExpressionKind::FieldReference);
+        QCOMPARE(countExpression.operands.at(0).fieldIndex, quint32(1));
+        QCOMPARE(countExpression.operands.at(1).unsignedValue, quint64(1));
+
+        const auto& conditional = first.program->structs.at(1).fields;
+        QCOMPARE(conditional.size(), std::size_t(3));
+        QCOMPARE(conditional.at(1).conditions.size(), std::size_t(1));
+        QCOMPARE(conditional.at(1).conditions.front().fieldIndex, quint32(0));
+        QCOMPARE(conditional.at(1).conditions.front().expectedValue, quint64(1));
+        QVERIFY(!conditional.at(1).conditions.front().negated);
+        QVERIFY(conditional.at(2).conditions.front().negated);
+
+        const auto& switched = first.program->structs.at(2).fields;
+        QCOMPARE(switched.size(), std::size_t(4));
+        QVERIFY(!switched.at(1).conditions.front().negated);
+        QVERIFY(!switched.at(2).conditions.front().negated);
+        QCOMPARE(switched.at(3).conditions.size(), std::size_t(2));
+        QCOMPARE(switched.at(3).conditions.at(0).expectedValue, quint64(1));
+        QCOMPARE(switched.at(3).conditions.at(1).expectedValue, quint64(2));
+        QVERIFY(switched.at(3).conditions.at(0).negated);
+        QVERIFY(switched.at(3).conditions.at(1).negated);
+
+        const auto& repeated = first.program->structs.at(3);
+        QCOMPARE(repeated.fields.size(), std::size_t(2));
+        QCOMPARE(repeated.fields.at(1).name, QStringLiteral("chunk[0]"));
+        QCOMPARE(repeated.fields.at(1).conditions.front().fieldIndex, quint32(0));
+        QCOMPARE(repeated.fields.at(1).conditions.front().op, DslConditionOperator::GreaterThan);
+        QCOMPARE(repeated.fields.at(1).conditions.front().expectedValue, quint64(0));
+        QCOMPARE(repeated.repeatBounds.size(), std::size_t(1));
+        QCOMPARE(repeated.repeatBounds.front().firstFieldIndex, quint32(1));
+
+        const auto& lazyOnly = first.program->structs.at(4);
+        QCOMPARE(lazyOnly.fields.size(), std::size_t(1));
+        QCOMPARE(lazyOnly.fields.front().type.kind, DslValueTypeKind::LazyBytes);
+
+        const auto& trailingField = first.program->structs.at(5);
+        QCOMPARE(trailingField.fields.size(), std::size_t(2));
+        QCOMPARE(trailingField.fields.at(0).type.kind, DslValueTypeKind::LazyBytes);
+        QCOMPARE(trailingField.fields.at(1).type.kind, DslValueTypeKind::UnsignedBits);
+
+        const std::vector<std::vector<DslOpcode>> expectedOpcodes{
+            {DslOpcode::BeginStructure, DslOpcode::ReadUnsignedBits, DslOpcode::EvaluateComputed,
+             DslOpcode::RegisterLazyBytes, DslOpcode::EndStructure},
+            {DslOpcode::BeginStructure, DslOpcode::ReadUnsignedBits, DslOpcode::RegisterLazyBytes,
+             DslOpcode::RegisterLazyBytes, DslOpcode::EndStructure},
+            {DslOpcode::BeginStructure, DslOpcode::ReadUnsignedBits, DslOpcode::RegisterLazyBytes,
+             DslOpcode::RegisterLazyBytes, DslOpcode::RegisterLazyBytes,
+             DslOpcode::EndStructure},
+            {DslOpcode::BeginStructure, DslOpcode::ReadUnsignedBits, DslOpcode::AssertRepeatCount,
+             DslOpcode::RegisterLazyBytes, DslOpcode::EndStructure},
+            {DslOpcode::BeginStructure, DslOpcode::RegisterLazyBytes, DslOpcode::EndStructure},
+            {DslOpcode::BeginStructure, DslOpcode::RegisterLazyBytes,
+             DslOpcode::ReadUnsignedBits, DslOpcode::EndStructure},
+        };
+        for (std::size_t structIndex = 0; structIndex < expectedOpcodes.size(); ++structIndex) {
+            const auto& structure = first.program->structs.at(structIndex);
+            QCOMPARE(structure.bytecodeLength,
+                     static_cast<quint32>(expectedOpcodes.at(structIndex).size()));
+            for (std::size_t instructionIndex = 0;
+                 instructionIndex < expectedOpcodes.at(structIndex).size(); ++instructionIndex) {
+                QCOMPARE(
+                    first.program->bytecode.at(structure.bytecodeOffset + instructionIndex).opcode,
+                    expectedOpcodes.at(structIndex).at(instructionIndex));
+            }
+        }
+        QCOMPARE(first.program->bytecode.size(), second.program->bytecode.size());
+        for (std::size_t index = 0; index < first.program->bytecode.size(); ++index) {
+            QCOMPARE(first.program->bytecode.at(index).opcode,
+                     second.program->bytecode.at(index).opcode);
+            QCOMPARE(first.program->bytecode.at(index).operand,
+                     second.program->bytecode.at(index).operand);
+            QCOMPARE(first.program->bytecode.at(index).immediate,
+                     second.program->bytecode.at(index).immediate);
+        }
+    }
+
+    void rejectsInvalidLazyByteRegionsDuringCompilation() {
+        struct Case final {
+            QString source;
+            DslDiagnosticCode diagnostic;
+        };
+        const std::vector<Case> cases{
+            {QStringLiteral("struct Header { @lazy(true) bytes payload; } entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral(
+                 "struct Header { se delta; @lazy(delta) bytes payload; } entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral("struct Header { bits<8> sizes[2]; @lazy(sizes) bytes payload; } "
+                            "entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral("struct Header { bits<8> selector; if (selector == 1) { "
+                            "computed<u64> local = 1; } @lazy(local) bytes payload; } "
+                            "entry Header;"),
+             DslDiagnosticCode::InvalidCondition},
+            {QStringLiteral(
+                 "struct Header { bits<1> prefix; @lazy(1) bytes payload; } entry Header;"),
+             DslDiagnosticCode::InvalidEndian},
+            {QStringLiteral("struct Header { bits<8> selector; if (selector == 1) { bits<1> odd; } "
+                            "@lazy(1) bytes payload; } entry Header;"),
+             DslDiagnosticCode::InvalidEndian},
+            {QStringLiteral("struct Header { @lazy(1) bytes first; @lazy(1) bytes second; } "
+                            "entry Header;"),
+             DslDiagnosticCode::InvalidEndian},
+            {QStringLiteral("struct Header { @lazy(1) bytes payload; bits<16, little> tail; } "
+                            "entry Header;"),
+             DslDiagnosticCode::InvalidEndian},
+            {QStringLiteral(
+                 "struct Header { @lazy(1) bytes payload; bits<1> payload; } entry Header;"),
+             DslDiagnosticCode::DuplicateName},
+            {QStringLiteral("struct Header { @lazy(1) bytes payload; "
+                            "computed<u64> size = payload; } entry Header;"),
+             DslDiagnosticCode::UnknownReference},
+            {QStringLiteral("struct Header { bits<24> count; repeat (count, 99999) { "
+                            "@lazy(0) bytes payload; } } entry Header;"),
+             DslDiagnosticCode::InvalidArrayLength},
+            {QStringLiteral("struct Header { bits<8> count; repeat (count, 2) { "
+                            "@lazy(0) bytes payload; } } entry Header;"),
+             DslDiagnosticCode::InvalidEndian},
+        };
+
+        for (const Case& testCase : cases) {
+            const auto parsed = DslParser::parse(testCase.source);
+            const auto compiled = DslCompiler::compile(parsed.program);
+            QVERIFY(!compiled.succeeded());
+            QVERIFY(!compiled.program.has_value());
+            QVERIFY(hasDiagnostic(compiled, testCase.diagnostic));
+        }
+
+        auto malformed = DslParser::parse(
+            QStringLiteral("struct Header { @lazy(1) bytes payload; } entry Header;"));
+        QVERIFY(malformed.succeeded());
+        malformed.program.structs.front().items.front().lazyRegion.byteCountExpression.kind =
+            static_cast<streamview::rules::DslExpressionKind>(255);
+        const auto malformedResult = DslCompiler::compile(malformed.program);
+        QVERIFY(!malformedResult.succeeded());
+        QVERIFY(hasDiagnostic(malformedResult, DslDiagnosticCode::InvalidExpression));
+    }
+
     void rejectsExpandedPureExpressionsAndComputedProjectionOverflow() {
         const auto balanced = [](const auto& self, int leaves) -> QString {
             if (leaves == 1) {
@@ -280,7 +478,14 @@ private slots:
                            "computed<u64> result = large(value) + large(value); } "
                            "entry Header;")
                 .arg(balanced(balanced, 128));
+        const QString oversizedLazySource =
+            QStringLiteral("pure u64 large(u64 value) { return %1; } "
+                           "struct Header { bits<8> value; "
+                           "@lazy(large(value) + large(value)) bytes payload; } "
+                           "entry Header;")
+                .arg(balanced(balanced, 128));
         const auto oversized = DslParser::parse(oversizedSource);
+        const auto oversizedLazy = DslParser::parse(oversizedLazySource);
         const auto projection = DslParser::parse(QStringLiteral(
             "struct Header { bits<17> count; repeat (count, 99999) { "
             "computed<u64> value = count; } } entry Header;"));
@@ -288,12 +493,16 @@ private slots:
                  oversized.diagnostics.empty()
                      ? ""
                      : qPrintable(oversized.diagnostics.front().message));
+        QVERIFY(oversizedLazy.succeeded());
         QVERIFY(projection.succeeded());
 
         const auto compiledOversized = DslCompiler::compile(oversized.program);
+        const auto compiledOversizedLazy = DslCompiler::compile(oversizedLazy.program);
         const auto compiledProjection = DslCompiler::compile(projection.program);
         QVERIFY(!compiledOversized.succeeded());
         QVERIFY(hasDiagnostic(compiledOversized, DslDiagnosticCode::InvalidExpression));
+        QVERIFY(!compiledOversizedLazy.succeeded());
+        QVERIFY(hasDiagnostic(compiledOversizedLazy, DslDiagnosticCode::InvalidExpression));
         QVERIFY(!compiledProjection.succeeded());
         QVERIFY(hasDiagnostic(compiledProjection, DslDiagnosticCode::InvalidArrayLength));
     }
