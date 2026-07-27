@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 2
-Last Completed Step: M3 bounded repeats, including nested grammar, static projection and scope, guarded count assertions, selected-iteration execution, partial results, malformed-IR validation, and budgets
-Next Action: Define and implement the next documented M3 slice: pure functions and computed fields
-Last Verification: Local dev/ci/sanitize reconfigure, full build, and CTest each passed 22/22; hosted runs 30281017826 and 30282525878 passed on Windows, macOS, and Ubuntu
+Last Completed Step: M3 pure functions and computed fields, including typed expressions, static inlining, declaration-order lowering, deterministic evaluation, controller integration, no-location diagnostics, malformed-IR validation, and budgets
+Next Action: Start M4 mapping-preserving EBSP→RBSP, excluded spans, lazy boundaries, and recoverable progressive indexing
+Last Verification: Local dev/ci/sanitize reconfigure, full build, and CTest each passed 22/22; hosted runs 30288820605 and 30290768155 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -23,8 +23,8 @@ Blockers: None
 - 模块划分为 C++20/Qt Core 分析核心、DSL/规则运行时、Qt Widgets 应用和内部工具 `svtool`；正式格式只能通过 DSL 实现。
 - 核心类型包括源 bit 地址、源区间、逻辑范围、字段位置、分析节点、诊断和物化状态。字段可映射多个源区间；状态区分 lazy、indexing、waiting-dependency、cancelled、unsupported、invalid、materialized。
 - SPS/PPS、AudioSpecificConfig 和 sample description 使用带源位置的版本目录；解析时选择当前位置之前最近的有效定义。
-- DSL 当前使用手写 lexer、递归下降声明/受限条件解析器、静态类型 IR 和受限 bytecode VM；
-  Pratt 表达式解析器留待一般表达式切片。
+- DSL 当前使用手写 lexer、递归下降声明/控制流/受限表达式解析器、静态类型 IR 和受限
+  bytecode VM；Pratt 或更通用的表达式解析器留待一般表达式切片。
 - 文件接口固定为 `.svfmt`、`.svrule`、`rule.toml` 和 `.svsession`；应用、DSL、官方规则初始版本分别为 `0.1.0`、`0.1`、`0.1.0`。
 - SQLite WAL 保存大型索引和物化结果；内存只保留 64 KiB 源页面及节点 LRU，默认预算 128 MiB。
 - 单窗口单会话；Qt UI 采用左右 dock、中央自绘原始数据视图、分页分析树和全局诊断面板。
@@ -67,7 +67,7 @@ Blockers: None
 依赖：M1/M2 暴露出的稳定 rule-runner 接口；先定义类型/IR/预算边界，再逐项扩展语法。
 
 - [x] 建立静态类型 IR 与受限 bytecode/VM 边界，统一错误、资源预算和确定性。（parser 输出 source-oriented model；compiler 生成 declaration-order typed IR 和确定性 bytecode；VM 拒绝 malformed IR，兼容入口保留。）
-- [ ] 逐项加入 enum、显式 endian、`ue/se`、数组、条件、switch、有界循环、纯函数和 computed fields；每项先补英文规范、中文说明、正反例和 TDD。
+- [x] 逐项加入 enum、显式 endian、`ue/se`、数组、条件、switch、有界循环、纯函数和 computed fields；每项先补英文规范、中文说明、正反例和 TDD。
   - [x] enum、显式 endian、`ue/se`。
   - [x] 固定长度数组：一维正整数长度，编译期扁平展开，逐元素 metadata/constraint、坐标、诊断和预算。
   - [x] 条件语句：可嵌套的前置 scalar `bits`/enum 等值判断、可选 `else`、branch-aware
@@ -78,8 +78,10 @@ Blockers: None
   - [x] 有界循环：前置无符号 `bits`/enum/`ue` controller、正整数字面量 maximum、嵌套
     body、静态投影与局部作用域、`count > index` guard、边界断言、selected-only VM 语义，
     以及超限、部分结果、预算、取消和 malformed IR 回归。
-  - [ ] 纯函数与 computed fields。
-- [x] 固化调用/视图深度 64、节点深度 256、单次物化 100,000 节点和每 1,024 指令取消检查。（另固化单次结构 1,000,000 指令预算；当前最小子集尚无嵌套调用或 view，预算已由 VM/API 保留。）
+  - [x] 纯函数与 computed fields：`bool`/`u64` typed expression、声明顺序纯函数内联、
+    计算字段投影与 controller、checked arithmetic、short-circuit、无 source location 节点、
+    部分结果、预算和 malformed IR 回归。
+- [x] 固化调用/视图深度 64、节点深度 256、单次物化 100,000 节点和每 1,024 指令取消检查。（另固化单次结构 1,000,000 指令预算；当前最小子集没有 runtime call 或 view，预算已由 VM/API 保留。）
 
 验收：稳定子集按声明顺序生成相同 typed IR/bytecode 和结果；超限与取消保留部分树并附可定位诊断，Annex B runner 在创建时编译一次规则，`svtool rule check` 同时执行 parser/compiler。
 
@@ -140,9 +142,9 @@ Blockers: None
 
 ## 阶段 2：DSL v0.1、沙箱与大型文件基础设施
 
-- [ ] 完成枚举、显式大小端、`ue/se`、数组、条件、switch、有界循环、纯函数和计算字段。（枚举、显式大小端、`ue/se`、固定长度数组、条件语句、switch 与有界循环已完成；下一项为纯函数和计算字段。）
+- [x] 完成枚举、显式大小端、`ue/se`、数组、条件、switch、有界循环、纯函数和计算字段。（枚举、显式大小端、`ue/se`、固定长度数组、条件语句、switch、有界循环、纯函数和计算字段已完成。）
 - [ ] 完成 mapped transformation、lazy 区域、渐进索引和位置感知上下文目录。
-- [ ] 完成 bytecode 预算和取消：调用/视图深度 64、节点深度 256、单次物化 100,000 节点，每 1,024 指令检查取消。
+- [x] 完成 bytecode 预算和取消：调用/视图深度 64、节点深度 256、单次物化 100,000 节点，每 1,024 指令检查取消。（当前子集没有 runtime call 或 view；对应深度预算已经保留。）
 - [ ] 完成 SQLite 分页缓存、后台批次提交、schema 版本和崩溃恢复。
 - [ ] 完成 TOML 清单、本地规则目录导入、`.svrule` 打包安装、哈希和版本并存。
 - [ ] 防御路径穿越、zip bomb、符号链接和 Unicode 非规范路径。
@@ -255,3 +257,4 @@ Blockers: None
 - 2026-07-27：完成 M3 等值条件切片：parser/AST 接受可嵌套的 `if (previous_field == integer) { ... } else { ... }`，`else` 可省略；parser/compiler 拒绝未知、未来、数组、`ue/se`、超宽或当前路径不可用的 controller，按分支合并静态 offset，并把所有可能字段降低为 declaration-order guarded typed fields。VM 在 read 前验证并短路 guard，未选字段不读取 source、不创建节点、不执行 enum/`@equals` 数值检查，但其 read/assert instruction 仍计预算和取消点；malformed guard 与藏在未选分支中的非法 field definition 均被拒绝。实现拆分为 `158c674`（parser/compiler 与静态回归）和 `e023e1a`（VM 与真假分支、嵌套数组、enum、little-endian、`ue/se`、截断、约束、预算及 malformed IR 回归）；英文规范、中文伴随说明、ADR-0020 和正反例同步。本机 `dev`、`ci`、`sanitize` 完整配置、构建与 CTest 均为 22/22；hosted run `30269316726` 与 `30270854648` 均在 Windows、macOS、Ubuntu 成功。下一步实现 switch。
 - 2026-07-27：完成 M3 等值 switch 切片：parser/AST 接受可嵌套的 `switch (previous_field)`、一个或多个互异整数 `case` 和可选的末尾 `default`，每个 arm 使用显式花括号 body；parser/compiler 拒绝未知、未来、数组、`ue/se`、超宽或路径不可用 controller，以及重复 case、缺少 case、重复或非末尾 default，并从同一入口 offset 验证所有路径。compiler 把 case 降低为正向等值 guard，把 default 降低为全部 case guard 的否定合取；无 default 时静态合并包含未匹配空路径，不新增 opcode。executor 回归覆盖 case/default/无匹配、嵌套条件、enum、小端、数组、`ue/se`、截断、`@equals`、预算、malformed guard 和未选 arm 中的非法字段。实现拆分为 `7d37025`（parser/compiler 与静态回归）和 `0cc6c5d`（executor 回归）；英文规范、中文伴随说明和 ADR-0021 同步。本机 `dev`、`ci`、`sanitize` 完整配置、构建与 CTest 均为 22/22；hosted run `30274571076` 与 `30275735715` 均在 Windows、macOS、Ubuntu 成功。下一步实现有界循环。
 - 2026-07-27：完成 M3 有界 repeat 切片：parser/AST 接受可嵌套的 `repeat (count_field, maximum) { ... }`，controller 为此前且当前路径保证存在的无符号 scalar `bits`、enum 或 `ue`，maximum 为正整数字面量；compiler 按 maximum 静态投影 body，使用 `count > index` guard、repeat-local scope、索引化名称和 statement-position bound assertion，保持线性 bytecode 并把全部投影计入 99,999 字段上限。VM 在消费 body 前拒绝超过 maximum 的计数，缺席迭代不读取 source 或创建节点，但其 read/assert 指令仍计预算和取消点；回归覆盖嵌套 `ue` controller、小端、数组、metadata、`ue/se`、enum、截断、`@equals`、预算、执行中取消和 malformed IR。实现拆分为 `c00ba9b`（ADR-0022 与切片决策）、`4800f41`（parser/compiler/VM）和 `4875f42`（executor 深度回归）；英文规范、中文伴随说明和正反例同步。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 22/22；hosted run `30281017826` 与 `30282525878` 均在 Windows、macOS、Ubuntu 成功。下一步定义并实现纯函数与 computed fields。
+- 2026-07-28：完成 M3 纯函数与计算字段切片：parser/AST 接受顶层 expression-bodied `pure bool/u64` 函数、最多 16 个 typed parameter、结构内 `computed<bool/u64>`、完整受限表达式优先级和 `if (computed_bool)`；compiler 按声明顺序 type-check 并静态内联 pure call，把 bounded typed expression、guard、repeat scope、零 bit 对齐和计算 controller 降低到 `evaluate-computed`。VM 预验证表达式和 controller，执行 checked arithmetic、short-circuit 与 bool/u64 物化；false guard 不求值但 instruction 仍计预算，成功节点为无 `FieldLocation` 的 `ComputedField`，运行时算术或 computed repeat bound 失败保留部分结果并报告无 location 诊断。决策与实现拆分为 `2c0fee4`（ADR-0023）、`39187e3`（parser/compiler）和 `100d98d`（VM/executor）；英文规范、中文伴随说明及正反例同步。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 22/22；hosted run `30288820605` 与 `30290768155` 均在 Windows、macOS、Ubuntu 成功。M3 语言切片闭合，下一步进入 M4 mapping-preserving EBSP→RBSP、excluded spans、lazy boundary 和 recoverable progressive index。

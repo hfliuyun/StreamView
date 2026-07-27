@@ -45,12 +45,13 @@ struct NalUnitHeader {
 
 最终参考文档必须分别定义基本类型、有无符号、字节序、bit 顺序、溢出行为、数组、枚举、
 结构、条件、分支、有界循环、纯函数、作用域、名称解析和规范注解。当前接受的最小子集
-有意更小，暂不包含一般表达式，也不包含下述等值条件、switch 和有界 repeat 之外的
-控制流。
+仍有明确边界：表达式只能出现在纯函数的返回值和计算字段中，控制流只包含下述条件、
+switch 和有界 repeat 形式。
 
 当前接受的 M3 类型切片新增了按声明顺序保存的 enum，以及 `bits` 字段的显式字节序。
 enum 声明为无符号整数命名；字段通过 `@enum(Type)` 把这些名称关联到解码值。
 字节序只改变数值解释，source bit 地址仍是 MSB-first，字段 source location 仍对应实际消耗的 bit。
+
 当前接受的变长 primitive 切片新增了 H.264 风格的无符号和有符号 Exp-Golomb
 字段，类型关键字为 `ue` 和 `se`。这两种类型没有显式宽度或 endian 参数；其 source
 location 覆盖完整编码码字，而不是固定 bit 数。
@@ -73,6 +74,11 @@ guard。
 `maximum` 次投影迭代；正整数字面量 `maximum` 同时约束编译后的字段投影与运行时可接受
 计数。这不是通用 loop 或计数表达式。
 
+当前接受的计算值切片新增了顶层、表达式体的 scalar `pure` 函数，以及结构内的
+`computed<bool>` 或 `computed<u64>` 计算字段。pure call 会在编译期内联成有固定边界的
+typed expression；计算字段不消耗 source bit，也永远没有 source location。该切片不引入
+runtime call stack、可变状态或 host 访问。
+
 ## DSL 0.1 最小子集
 
 首个可执行子集使用以下语法。token 之间可以有空白，以及 `//` 或 `/* ... */`
@@ -81,15 +87,22 @@ guard。
 
 ```text
 program       := { declaration }
-declaration   := { annotation } ( enum | struct | sequence | entry )
+declaration   := pure_function | { annotation } ( enum | struct | sequence | entry )
+pure_function := "pure" scalar_type identifier "("
+                 [ parameter { "," parameter } ] ")"
+                 "{" "return" expression ";" "}"
+parameter     := scalar_type identifier
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { struct_item } "}" [ ";" ]
-struct_item   := field | conditional | switch | repeat
+struct_item   := field | computed | conditional | switch | repeat
 field         := { annotation } field_type identifier [ "[" integer "]" ]
                  { annotation } ";"
 field_type    := "bits" "<" integer [ "," identifier ] ">" | "ue" | "se"
-conditional   := "if" "(" identifier "==" integer ")"
+computed      := { annotation } "computed" "<" scalar_type ">" identifier
+                 "=" expression { annotation } ";"
+scalar_type   := "bool" | "u64"
+conditional   := "if" "(" ( identifier "==" integer | identifier ) ")"
                  "{" { struct_item } "}"
                  [ "else" "{" { struct_item } "}" ]
 switch        := "switch" "(" identifier ")" "{"
@@ -103,14 +116,30 @@ sequence      := "sequence" "<" identifier ">" identifier "="
 entry         := "entry" identifier ";"
 annotation    := "@" identifier [ "(" [ value { "," value } ] ")" ]
 value         := integer | string | identifier
+expression    := logical_or
+logical_or    := logical_and { "||" logical_and }
+logical_and   := equality { "&&" equality }
+equality      := relational { ( "==" | "!=" ) relational }
+relational    := additive { ( "<" | "<=" | ">" | ">=" ) additive }
+additive      := multiplicative { ( "+" | "-" ) multiplicative }
+multiplicative := unary { ( "*" | "/" | "%" ) unary }
+unary         := "!" unary | primary
+primary       := integer | "true" | "false" | identifier
+                 | identifier "(" [ expression { "," expression } ] ")"
+                 | "(" expression ")"
 ```
 
 该子集的静态规则如下：
 
 - 程序必须且只能有一个 `entry`；target 必须是已声明的结构或 sequence。
-- 结构名和 sequence 名在整个程序中不能重复；字段名在结构内不能重复；结构至少包含一个字段。
-- enum 名与结构、sequence 共用声明命名空间；enum member 名在所属 enum 内不能重复。
-  不同 member 可以使用相同整数值；这些别名接受同一个解码数值。
+- 结构、sequence、enum 和纯函数名共用顶层声明命名空间。语法字段与计算字段名在结构内
+  统一保持唯一；结构至少包含一个语法字段或计算字段。
+- enum member 名在所属 enum 内不能重复。不同 member 可以使用相同整数值；这些别名接受
+  同一个解码数值。
+- 纯函数声明 `bool` 或 `u64` 返回类型、最多 16 个名称互异的 `bool` 或 `u64` 参数，以及
+  唯一一条 `return` 表达式。函数只能引用自己的参数和此前声明的纯函数。函数 overload、
+  forward call、直接或间接递归，以及纯函数上的 annotation 都会被拒绝。每个函数体即使
+  没有被使用，也会独立完成类型检查和表达式边界检查。
 - `bits<N>` 的宽度必须是 `1..64` 的整数。字段按声明顺序以 MSB-first 消耗输入。
   省略第二个类型参数或写成 `big` 时，得到大端无符号值。`little` 只允许宽度为 8 的倍数、
   字段在结构内从字节边界开始，并且执行时 source span 也从字节边界开始；它只反转完整字节
@@ -125,29 +154,33 @@ value         := integer | string | identifier
 - 固定宽度数组按 `width * count` bit 参与静态对齐。小端数组的每个元素宽度必须是 8 的
   倍数，并且首元素必须从结构内的字节边界开始。`ue` 或 `se` 数组的总宽度未知，因此其
   后续小端字段与单个 Exp-Golomb 字段之后的小端字段一样会被拒绝。
-- 条件 controller 必须是此前声明的 scalar `bits` 或 enum 字段，并且在到达该条件的每条
-  路径上都保证已经物化。数组、`ue`、`se`、未来字段、未知字段，以及离开所属保证分支后
-  使用的 branch-local 字段都会被拒绝。整数字面量必须能由 controller 的无符号宽度表示。
+- 等值条件 controller 必须是此前声明、且在到达该条件的每条路径上都保证已经物化的
+  scalar `bits`、enum 或 `computed<u64>` 字段。数组、`ue`、`se`、`computed<bool>`、
+  未来或未知字段，以及离开所属保证分支后使用的 branch-local 字段都会被拒绝。整数字面量
+  必须能由 source field 的无符号宽度表示；`computed<u64>` 接受完整 `u64` 字面量范围。
+  简写 `if (flag)` 只接受此前且路径上保证存在的 `computed<bool>`，含义是与 `true` 相等。
   条件可以嵌套，两个分支都会执行静态检查，即使运行时只执行一个。当前切片不接受一般
-  表达式、布尔组合、`else if` 或非等值运算符。
+  条件表达式、布尔组合、`else if` 或其他比较形式。
 - 字段名在结构的全部分支中仍必须唯一，所有可能的 branch field 都计入 99,999 字段投影
   上限。静态对齐沿两个分支分别跟踪；只有两条路径都在相同的已知 offset 结束时，条件出口
   才保留已知 offset，省略的 `else` 按空路径处理。
-- switch controller 遵守与条件 controller 相同的声明顺序、scalar 类型、宽度和路径可用性
-  规则。switch 至少包含一个 `case`；每个 case 只接受一个互不重复、能由 controller 宽度
-  表示的无符号整数字面量。`default` 可以省略，最多出现一次，并且必须是最后一个 arm。
-  当前切片不接受 fallthrough、`break`、同一 body 的多个 label、范围、enum member 名或
-  一般表达式。switch 与条件可以按任意顺序嵌套。
+- switch controller 遵守等值条件的声明顺序与路径可用性规则，接受 scalar `bits`、enum
+  或 `computed<u64>`，但不接受 `computed<bool>`。switch 至少包含一个 `case`；每个 case
+  只接受一个互不重复、能由 source controller 宽度表示的无符号整数字面量；
+  `computed<u64>` 接受完整 `u64` 范围。`default` 可以省略，最多出现一次，并且必须是最后
+  一个 arm。当前切片不接受 fallthrough、`break`、同一 body 的多个 label、范围、enum
+  member 名或一般表达式。switch 与条件可以按任意顺序嵌套。
 - 每个 switch arm 都执行静态检查，字段名在全部 arm 和外层分支中仍必须唯一。所有 arm
   field 都计入 99,999 字段投影上限。每个 arm 从相同的入口静态 offset 开始；只有所有路径
   都在相同的已知 offset 结束时，switch 出口才保留已知 offset。省略 `default` 时，未匹配
   的空路径也参与合并。
-- repeat controller 必须是此前声明的无符号标量 `bits`、enum 或 `ue` 字段，并且在到达
-  该语句的每条路径上都保证已经物化。数组、`se`、未知或未来字段，以及离开所属保证
-  分支后使用的 branch-local 字段都会被拒绝。`maximum` 必须是正的无符号整数字面量；
-  使用定宽 controller 时，它必须能被该字段表示。不接受计数表达式、sentinel/EOF 终止
-  或 `break`。repeat body 必须至少包含一个字段，并可包含字段、条件、switch 和嵌套
-  repeat。
+- repeat controller 必须是此前声明、且在到达该语句的每条路径上都保证已经物化的无符号
+  scalar `bits`、enum、`ue` 或 `computed<u64>` 字段。数组、`se`、`computed<bool>`、未知
+  或未来字段，以及离开所属保证分支后使用的 branch-local 字段都会被拒绝。`maximum`
+  必须是正的无符号整数字面量；使用定宽 source controller 时，它必须能被该字段表示，
+  computed controller 则接受完整 `u64` 范围。不接受计数表达式、sentinel/EOF 终止或
+  `break`。repeat body 必须至少包含一个语法字段或计算字段，并可包含两种字段、条件、
+  switch 和嵌套 repeat。
 - compiler 会验证 repeat body，并将它精确投影 `maximum` 次。source 声明名在整个结构
   内仍必须唯一。body 声明可供同一次迭代内的后续 item 使用，但 repeat-local 声明在其他
   迭代或 repeat 之后不可用。物化名称按从外到内的顺序追加各层 repeat index，再追加可选
@@ -156,6 +189,22 @@ value         := integer | string | identifier
 - 静态对齐会沿每个投影迭代分别检查，因此 repeat body 内的固定对齐错误会被拒绝。运行时
   可以选择零到 `maximum` 次迭代，所以 repeat 之后的结构内 offset 被视为未知；即使未来
   的表达式分析可能证明对齐，当前切片仍拒绝 repeat 之后的小端字段。
+- 计算字段声明 `computed<bool>` 或 `computed<u64>` 和一条表达式。它可以引用此前声明、
+  且在到达当前声明的每条路径上都保证存在的 scalar 无符号 `bits`、enum、`ue` 或计算字段。
+  数组、`se`、未知或未来字段，以及路径上不可用的 branch-local 值都会被拒绝。计算字段
+  消耗零 bit，不改变静态对齐，继承外层 guard，计入 99,999 字段投影上限，并按与语法字段
+  相同的 scope 规则供后续声明使用。repeat 投影会给它的物化名称追加同样的 index。
+- 表达式接受无符号整数和 Boolean 字面量、identifier、对已声明纯函数的 call、括号、一元
+  `!`、checked `*`、`/`、`%`、`+`、`-`、同类型 `==` 和 `!=`、无符号大小比较，以及
+  short-circuit Boolean `&&` 和 `||`，优先级如 grammar 所示。不存在隐式转换：算术和大小
+  比较要求 `u64`，逻辑运算要求 `bool`，等值运算两侧类型相同，函数实参必须与形参逐一
+  匹配。无符号 overflow/underflow、除零和模零会在计算字段路径上产生 runtime
+  `invalid-syntax`。enum 字段提供解码后的 `u64`；enum member 名不是本切片的表达式值。
+- 每个写出的纯函数体或计算字段表达式，以及完全内联后的每个计算表达式，深度最多 64，
+  节点最多 256。展开一个函数体或计算表达式时，call、argument 与参数替换共享最多 4,096
+  个 work step；即使 callee
+  没有使用某个参数，该参数仍计入上限。pure call 在编译期展开，不引入 runtime call、递归、
+  source/host 访问、时间、随机数或可变状态。
 - 唯一接受的渐进 sequence 形式是
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`。
   `Element` 必须是已声明结构。
@@ -166,18 +215,21 @@ value         := integer | string | identifier
   拒绝这两个注解。`@description("text")` 提供项目编写的
   展示说明，`@spec("standard", "clause")` 提供规范引用。字段默认继承所属结构的规范
   引用，也可以用自己的注解覆盖。数组声明解析出的类型、注解、metadata 和约束会分别
-  应用到每个展开元素。
+  应用到每个展开元素。计算字段可在声明前或表达式后使用 `@description` 和 `@spec`，但
+  拒绝 `@equals`、`@enum` 和数组后缀。
 - 出现词法或静态诊断时，source 不会生成可执行规则；parser 仍返回部分 IR 以及带行列范围的全部诊断，便于编辑器一次报告多个错误。
 
-`enum`、`big`、`little`、`ue`、`se`、`if`、`else`、`switch`、`case`、`default` 和
-`repeat` 只在上述语法位置作为上下文关键字，其他位置仍可作为普通 identifier。既有 scalar 声明
+`enum`、`big`、`little`、`ue`、`se`、`pure`、`return`、`bool`、`u64`、
+`computed`、`true`、`false`、`if`、`else`、`switch`、`case`、`default` 和 `repeat`
+只在上述语法位置作为上下文关键字，其他位置仍可作为普通 identifier。既有 scalar 声明
 保持不变，`bits<N>` 仍与
 `bits<N, big>` 完全等价；本切片不弃用任何已接受的 0.1 语法。
 
-parser 生成面向 source、用于诊断的声明模型。静态 compiler 把 enum、结构、sequence 和
-entry 引用解析成 typed program，保留声明顺序，并确定性生成 `begin-structure`、
-`read-unsigned-bits`、`read-unsigned-exp-golomb`、`read-signed-exp-golomb`、
-`assert-equals`、`assert-repeat-count` 和 `end-structure` bytecode。每个 read opcode 必须与字段类型匹配；
+parser 生成面向 source、用于诊断的声明模型。静态 compiler 把纯函数、enum、结构、
+sequence 和 entry 引用解析成 typed program，保留声明顺序，并确定性生成
+`begin-structure`、`read-unsigned-bits`、`read-unsigned-exp-golomb`、
+`read-signed-exp-golomb`、`evaluate-computed`、`assert-equals`、
+`assert-repeat-count` 和 `end-structure` bytecode。每个 read opcode 必须与字段类型匹配；
 Exp-Golomb typed field 的静态 bit width 为零、使用默认 bit order，且没有 enum reference 或
 equality constraint。固定数组按 source 顺序展开成名为 `name[0]` 到
 `name[count - 1]` 的 typed field；每个元素各自产生 read instruction，并在存在 `@equals`
@@ -197,6 +249,14 @@ jump、回边、可变 index 或替代 source-coordinate 操作。无符号 Exp-
 compiler 出现任何诊断时都不生成可执行 typed IR。`svtool rule check` 会运行这两个阶段；
 内置 Annex B runner 也只在 analyzer 创建时编译一次规则，之后按已解析的结构索引执行每条
 记录。
+
+compiler 会独立 type-check 每个纯函数，再把每个 pure call 展开到使用它的计算字段中。
+得到的 typed expression 只包含字面量、此前 typed-field index，以及一元或二元 operator；
+不存在 call opcode。计算字段加入同一条 typed-field 流，保留声明类型和 metadata，并继承
+已解析的外层 guard。它生成一条 `evaluate-computed` instruction，不推进静态 source offset，
+并与语法字段一样获得 repeat index 物化名和 repeat-local scope。任何写出的表达式或展开后
+的计算字段表达式超过固定节点、深度或 4,096-step expansion-work 上限时，都不会生成可执行
+typed IR。
 
 最小 VM 通过 bounded bit reader 按顺序执行结构。成功字段会成为带解码值和源位置的
 syntax-field 节点。小端字段在读取完成后反转完整 source byte 的数值权重，
@@ -222,12 +282,24 @@ typed IR 不能藏在 false guard 后面。
 
 当 repeat 语句的外层 guard 为 true 时，边界断言会在消费任何 body 输入之前检查已保存的
 controller 值。计数超过 `maximum` 时绝不截断：保留计数字段，把结构标记为 invalid，并在
-该字段位置报告 `invalid-syntax`。外层 guard 为 false 时，边界断言和全部 body 字段都会
-跳过，也不要求 controller 值存在。第 `i` 次投影迭代仅在 `count > i` 时存在。只有存在的
-迭代才消耗 source bit 或物化节点名额；缺席迭代不创建节点或 source location，也不执行
-enum member 或 `@equals` 数值检查。选中字段沿用既有数值、metadata、部分结果和 source
-坐标行为，诊断路径包括 `Header.value[1][0]` 这样的投影名称。非法 repeat metadata、
-controller guard 或 assertion 位置属于 invalid typed definition，运行时不会猜测执行。
+该字段位置报告 `invalid-syntax`。source-backed controller 保留精确 source location；
+computed controller 只报告 field path，不带 location。外层 guard 为 false 时，边界断言和
+全部 body 字段都会跳过，也不要求 controller 值存在。第 `i` 次投影迭代仅在 `count > i`
+时存在。只有存在的迭代才消耗 source bit 或物化节点名额；缺席迭代不创建节点或 source
+location，也不执行 enum member 或 `@equals` 数值检查。选中字段沿用既有数值、metadata、
+部分结果和 source 坐标行为，诊断路径包括 `Header.value[1][0]` 这样的投影名称。非法
+repeat metadata、controller guard 或 assertion 位置属于 invalid typed definition，运行时
+不会猜测执行。
+
+执行任何 bytecode 前，VM 会验证所有 computed typed expression，包括节点/深度上限、结果
+与 operand 类型、previous-field index、dependency availability 和 controller guard。
+`evaluate-computed` instruction 的 presence guard 为 false 时，VM 跳过表达式求值和节点
+创建；该 instruction 仍计入 instruction budget，并保留取消检查点。求值成功不消耗 source
+bit，只创建一个带 `bool` 或无符号 64 位值、metadata 且没有 `FieldLocation` 的
+`AnalysisNodeKind::ComputedField`。runtime 算术失败不会创建计算节点，会保留此前节点、把
+结构标记为 invalid，并在计算字段 path 上报告不带 source location 的 `invalid-syntax`。
+malformed expression 或 controller metadata 属于 invalid typed definition。子表达式工作都
+计入这一条 instruction，不新增取消检查点。
 
 对 Exp-Golomb 码字，令 `leadingZeroBits` 为 marker bit 前的连续零 bit 数，`suffix` 为
 随后同宽度的无符号值。`ue` 返回无符号 64 位值
@@ -402,6 +474,32 @@ struct SampleTable {
 entry SampleTable;
 ```
 
+纯函数与计算字段合法示例：
+
+```cpp
+pure bool between(u64 value, u64 low, u64 high) {
+    return value >= low && value <= high;
+}
+
+struct NalUnitHeader {
+    bits<5> nal_unit_type;
+    computed<bool> is_vcl = between(nal_unit_type, 1, 5)
+        @description("视频编码层 NAL unit。");
+    computed<u64> next_type = nal_unit_type + 1;
+
+    if (is_vcl) {
+        bits<1> first_slice_flag;
+    }
+    switch (next_type) {
+    case 6: {
+        bits<1> follows_vcl_range;
+    }
+    }
+}
+
+entry NalUnitHeader;
+```
+
 最小非法示例包括 `bits<0> flag;`、`bits<65> flag;`、`bits<12, little> value;`、
 位于未对齐字段之后的小端字段、`ue value @equals(0);`、`se value @enum(Type);`、
 变长字段之后的小端字段、`bits<1> flags[0];`、`bits<1> flags[];`、数组长度表达式或第二
@@ -416,11 +514,29 @@ case 值、没有 case 的 switch、重复或不位于最后的 default、缺少
 `repeat (count, 0)`、不能由定宽 controller 表示的 maximum、计数或 maximum 表达式、空
 repeat body、repeat 前的 annotation、投影后超过 99,999 字段、在其他迭代或 repeat 之后
 使用 repeat-local controller、repeat 之后的小端字段、`scan(other_scanner)`、重复声明同名，
-以及没有 `entry` 的程序。malformed repeat header 会产生带 source range 的 missing-token
-诊断；缺少 body 左花括号时，parser 在下一个字段分号或外层右花括号处恢复，其他 header
-token 缺失时则尽可能继续解析仍可识别的花括号 body。enum 和字段解析在下一个
-member/field 分号或右花括号处恢复；遇到未知 switch label 或缺少 arm 左花括号时，在下一个
-`case`、`default` 或 switch 右花括号处恢复。所有恢复都会保留 source range 和诊断。
+以及没有 `entry` 的程序。
+
+纯函数与计算字段的非法示例包括：带 annotation 的纯函数、超过 16 个参数、重复参数名或
+函数名、overload 或顶层名称冲突、纯函数体调用后声明的函数或发生递归、在纯函数体内引用
+非参数值、返回
+类型或 call argument 不匹配，以及 malformed 或缺少 return expression。还包括 computed
+数组、`computed<se>`、计算字段上的 `@equals` 或 `@enum`、引用数组、`se`、未来、未知或
+路径上不可用的 branch-local 字段、混合类型 operator、不支持的 operator 或转换、超过
+256 nodes、depth 64 或 4,096 个共享 expansion work step 的计算表达式或展开 pure call、
+在等值条件中使用 `computed<bool>` 或把它用作 switch/repeat controller、在 Boolean
+`if (flag)` 简写中使用 `computed<u64>`，以及直接在数组长度、case label、repeat maximum
+或 repeat controller 中使用
+一般表达式。执行路径抵达的无符号 overflow/underflow、除零或模零属于 runtime
+`invalid-syntax`；被 short-circuit 的失败 operand 不会求值。
+
+malformed repeat header 会产生带 source range 的 missing-token 诊断；缺少 body 左花括号时，
+parser 在下一个字段分号或外层右花括号处恢复，其他 header token 缺失时则尽可能继续解析
+仍可识别的花括号 body。enum 和字段解析在下一个 member/field 分号或右花括号处恢复；遇到
+未知 switch label 或缺少 arm 左花括号时，在下一个 `case`、`default` 或 switch 右花括号处
+恢复。malformed pure、parameter、return、call、expression 或 `computed<...>` 语法同样
+产生带 source range 的诊断。statement recovery 在下一个可用分号或外层右花括号处停止；
+expression recovery 还会把当前 call 的逗号或右括号视为边界。所有恢复都会保留 source
+range 和诊断。
 
 ## 源坐标与逻辑坐标
 
@@ -433,6 +549,8 @@ source spans、selection 或诊断位置；这些坐标与默认大端读取完�
 最具体节点，并保留它在分析树中的完整父级路径。解析顺序按
 [分析模型](../analysis-model.md#source-bit-定位)定义的树深度、source 覆盖长度和稳定
 节点 ID 确定。
+计算字段没有 `FieldLocation`，不参与 source-bit resolution，只能通过其 analysis-tree 节点
+选择。
 
 ## 保持映射的转换
 
@@ -505,9 +623,17 @@ switch arm 的字段都计入静态 99,999 字段投影上限。
 因此保守的 maximum 即使面对较小的解码计数，也会增大 typed program 和可能执行的指令量。
 执行路径抵达的计数超过 maximum 时报告 `invalid-syntax`，不是 `resource-limit`。
 
+每个计算字段增加一条 `evaluate-computed` instruction。即使 false guard 跳过求值，该
+instruction 仍计入 instruction budget，并保留取消检查点。成功求值消耗一个物化节点名额，
+但不消耗 source bit；失败求值不消耗节点名额，并保留此前节点。pure call 由 compiler
+内联，因此不增加 runtime instruction。全部子表达式工作计入这一条 instruction，不新增
+取消检查点，并受展开后 256-node 与 depth-64 上限约束。计算字段也计入静态 99,999 字段
+投影上限。
+
 所有限制都必须大于零。host 可以为一次执行降低限制，但规则本身不能提高或读取限制。
-当前最小子集尚无嵌套调用或 view；加入这些操作时必须消耗已经保留的深度预算。超过指令、
-节点数量或节点深度限制时报告 `resource-limit`，保留超限前已完成的节点，并把当前结构标记
+当前最小子集没有 runtime call 或 view：pure call 会被静态内联；未来加入 runtime call 或
+view 时必须消耗已经保留的深度预算。超过指令、节点数量或节点深度限制时报告
+`resource-limit`，保留超限前已完成的节点，并把当前结构标记
 为 invalid。取消时报告 `cancelled`，保留已完成节点，并把当前结构标记为 cancelled；如果
 取消发生在 `begin-structure` 之前，则标记其 parent。非法或损坏的 typed bytecode 会作为
 invalid definition 被拒绝，运行时不会猜测执行。

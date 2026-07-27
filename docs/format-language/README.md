@@ -44,7 +44,7 @@ struct NalUnitHeader {
 }
 ```
 
-The eventual reference must define primitive types, signedness, byte order, bit order, overflow behavior, arrays, enums, structures, conditionals, switches, bounded loops, pure helpers, scope, name resolution, and specification annotations. The accepted minimum subset is intentionally smaller and does not yet include general expressions or control flow beyond the equality conditionals, switches, and bounded repeats described below.
+The eventual reference must define primitive types, signedness, byte order, bit order, overflow behavior, arrays, enums, structures, conditionals, switches, bounded loops, pure helpers, scope, name resolution, and specification annotations. The accepted minimum subset remains intentionally bounded: expressions are accepted only in pure-function return values and computed fields, and control flow remains limited to the conditional, switch, and bounded-repeat forms described below.
 
 The accepted M3 type slice adds declaration-order enums and an explicit byte
 order on `bits` fields. Enum declarations name unsigned integer values; a field
@@ -79,6 +79,12 @@ selects zero through `maximum` projected iterations. The positive literal
 `maximum` bounds both the compiled field projection and the accepted runtime
 count; this is not a general loop or count expression.
 
+The accepted computed-value slice adds top-level expression-bodied `pure`
+scalar functions and structure-local `computed<bool>` or `computed<u64>`
+fields. Pure calls are statically inlined into a bounded typed expression;
+computed fields consume no source bits and never receive a source location.
+This adds no runtime call stack, mutable state, or host access.
+
 ## Minimum DSL 0.1 Subset
 
 The first executable subset uses the following grammar. Whitespace and `//` or
@@ -89,15 +95,22 @@ unsigned decimal or `0x` hexadecimal values. String literals use `"`, `\\`,
 
 ```text
 program       := { declaration }
-declaration   := { annotation } ( enum | struct | sequence | entry )
+declaration   := pure_function | { annotation } ( enum | struct | sequence | entry )
+pure_function := "pure" scalar_type identifier "("
+                 [ parameter { "," parameter } ] ")"
+                 "{" "return" expression ";" "}"
+parameter     := scalar_type identifier
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { struct_item } "}" [ ";" ]
-struct_item   := field | conditional | switch | repeat
+struct_item   := field | computed | conditional | switch | repeat
 field         := { annotation } field_type identifier [ "[" integer "]" ]
                  { annotation } ";"
 field_type    := "bits" "<" integer [ "," identifier ] ">" | "ue" | "se"
-conditional   := "if" "(" identifier "==" integer ")"
+computed      := { annotation } "computed" "<" scalar_type ">" identifier
+                 "=" expression { annotation } ";"
+scalar_type   := "bool" | "u64"
+conditional   := "if" "(" ( identifier "==" integer | identifier ) ")"
                  "{" { struct_item } "}"
                  [ "else" "{" { struct_item } "}" ]
 switch        := "switch" "(" identifier ")" "{"
@@ -111,17 +124,35 @@ sequence      := "sequence" "<" identifier ">" identifier "="
 entry         := "entry" identifier ";"
 annotation    := "@" identifier [ "(" [ value { "," value } ] ")" ]
 value         := integer | string | identifier
+expression    := logical_or
+logical_or    := logical_and { "||" logical_and }
+logical_and   := equality { "&&" equality }
+equality      := relational { ( "==" | "!=" ) relational }
+relational    := additive { ( "<" | "<=" | ">" | ">=" ) additive }
+additive      := multiplicative { ( "+" | "-" ) multiplicative }
+multiplicative := unary { ( "*" | "/" | "%" ) unary }
+unary         := "!" unary | primary
+primary       := integer | "true" | "false" | identifier
+                 | identifier "(" [ expression { "," expression } ] ")"
+                 | "(" expression ")"
 ```
 
 The static rules for this subset are:
 
 - A program has exactly one `entry`; its target names a declared structure or
   sequence.
-- Structure and sequence names are unique across the program. Field names are
-  unique within a structure, and a structure contains at least one field.
-- Enum names share the declaration namespace with structures and sequences.
-  Enum member names are unique within their enum. Distinct members may name the
+- Structure, sequence, enum, and pure-function names share one top-level
+  declaration namespace. Field names are unique within a structure across
+  syntax and computed declarations, and a structure contains at least one
+  syntax or computed field.
+- Enum member names are unique within their enum. Distinct members may name the
   same integer value; aliases accept the same decoded numeric value.
+- A pure function declares a `bool` or `u64` return type, at most 16 uniquely
+  named `bool` or `u64` parameters, and exactly one `return` expression. It may
+  reference only its parameters and pure functions declared earlier. Function
+  overloads, forward calls, direct or indirect recursion, and annotations on a
+  pure function are rejected. Every body is type-checked and checked against
+  the expression limits even when the function is unused.
 - A `bits<N>` width is an integer in `1..64`. Fields consume input in
   declaration order, most-significant bit first. With no second type argument,
   or with `big`, the resulting unsigned value is big-endian. `little` is
@@ -147,40 +178,46 @@ The static rules for this subset are:
   An array of `ue` or `se` fields has unknown total width, so a later
   little-endian field is rejected under the same rule as a scalar Exp-Golomb
   field.
-- A conditional controller must name an earlier scalar `bits` or enum field
-  that is guaranteed to have been materialized on every path reaching that
-  condition. Arrays, `ue`, `se`, future fields, unknown fields, and a
-  branch-local field used outside its guaranteeing branch are rejected. The
-  integer must fit the controller's unsigned bit width. Conditions may nest,
-  and both branches are statically checked even though only one executes.
-  General expressions, Boolean combinations, `else if`, and non-equality
-  operators are not accepted in this slice.
+- An equality-conditional controller must name an earlier scalar `bits`, enum,
+  or `computed<u64>` field guaranteed to have been materialized on every path
+  reaching that condition. Arrays, `ue`, `se`, `computed<bool>`, future or
+  unknown fields, and a branch-local field used outside its guaranteeing branch
+  are rejected. The integer must fit a source field's unsigned bit width;
+  `computed<u64>` accepts the complete `u64` literal range. The shorthand
+  `if (flag)` accepts only an earlier guaranteed `computed<bool>` and means
+  equality with `true`. Conditions may nest, and both branches are statically
+  checked even though only one executes. General condition expressions,
+  Boolean combinations, `else if`, and other comparison forms are not accepted.
 - Field names remain unique across all branches of a structure. Every possible
   branch field counts toward the 99,999-field projection limit. Static
   alignment is tracked independently through both branches; the conditional
   exit retains a known offset only when both paths end at the same known
   offset, with an omitted `else` treated as an empty path.
-- A switch controller follows the same declaration, scalar-type, width, and
-  path-availability rules as a conditional controller. A switch contains at
-  least one `case`. Each case accepts exactly one distinct unsigned integer
-  literal that fits the controller width. `default` is optional, may appear at
-  most once, and must be the final arm. Fallthrough, `break`, multiple labels
-  for one body, ranges, enum member names, and general expressions are not
-  accepted in this slice. Switches and conditionals may nest in either order.
+- A switch controller follows the equality conditional's declaration-order and
+  path-availability rules and accepts scalar `bits`, enum, or `computed<u64>`,
+  but not `computed<bool>`. A switch contains at least one `case`. Each case
+  accepts exactly one distinct unsigned integer literal that fits a source
+  controller's width; `computed<u64>` accepts the complete `u64` range.
+  `default` is optional, may appear at most once, and must be the final arm.
+  Fallthrough, `break`, multiple labels for one body, ranges, enum member names,
+  and general expressions are not accepted. Switches and conditionals may nest
+  in either order.
 - Every switch arm is statically checked, and field names remain unique across
   every arm and surrounding branch. All arm fields count toward the 99,999-
   field projection limit. Each arm starts with the same incoming static
   offset; the switch exit retains a known offset only when all paths end at the
   same known offset. When `default` is omitted, an unmatched empty path also
   participates in that merge.
-- A repeat controller must name an earlier scalar unsigned `bits`, enum, or
-  `ue` field that is guaranteed to have been materialized on every path reaching
-  the statement. Arrays, `se`, unknown or future fields, and branch-local fields
-  used outside their guaranteeing branch are rejected. The `maximum` is a
-  positive unsigned integer literal and must fit a fixed-width controller.
+- A repeat controller must name an earlier scalar unsigned `bits`, enum, `ue`,
+  or `computed<u64>` field guaranteed to have been materialized on every path
+  reaching the statement. Arrays, `se`, `computed<bool>`, unknown or future
+  fields, and branch-local fields used outside their guaranteeing branch are
+  rejected. The `maximum` is a positive unsigned integer literal and must fit a
+  fixed-width source controller; a computed controller accepts the complete
+  `u64` range.
   Count expressions, sentinel or EOF termination, and `break` are not accepted.
-  A repeat body must contain at least one field and may contain fields,
-  conditionals, switches, and nested repeats.
+  A repeat body must contain at least one syntax or computed field and may
+  contain either field form, conditionals, switches, and nested repeats.
 - The compiler validates and projects a repeat body exactly `maximum` times.
   Source declaration names remain unique across the complete structure. A body
   declaration is visible to later items in the same iteration, but repeat-local
@@ -194,6 +231,32 @@ The static rules for this subset are:
   select any count from zero through `maximum`, the structure-relative offset
   after a repeat is considered unknown. A later little-endian field is rejected
   even when a future expression analysis might be able to prove it aligned.
+- A computed field declares `computed<bool>` or `computed<u64>` and one
+  expression. It may reference earlier scalar unsigned `bits`, enum, `ue`, or
+  computed fields guaranteed on every path reaching the declaration. Arrays,
+  `se`, unknown or future fields, and unavailable branch-local values are
+  rejected. A computed field consumes zero bits, leaves static alignment
+  unchanged, inherits enclosing guards, counts toward the 99,999-field
+  projection limit, and is visible to later declarations under the same scope
+  rules as a syntax field. Repeat projection appends the same indexes to its
+  materialized name.
+- Expressions accept unsigned integer and Boolean literals, identifiers, calls
+  to declared pure functions, parentheses, unary `!`, checked `*`, `/`, `%`, `+`,
+  and `-`, same-type `==` and `!=`, unsigned ordering, and short-circuit Boolean
+  `&&` and `||`, with the precedence shown by the grammar. There are no implicit
+  conversions: arithmetic and ordering require `u64`, logical operators require
+  `bool`, equality operands have the same type, and function arguments exactly
+  match their parameters. Unsigned overflow or underflow, division by zero, and
+  remainder by zero are runtime `invalid-syntax` failures at the computed field
+  path. Enum fields contribute their decoded `u64`; enum member names are not
+  expression values.
+- Every written pure-function body or computed-field expression, and every fully
+  inlined computed expression, has depth at most 64 and at most 256 nodes.
+  Expanding one body or computed expression may
+  perform at most 4,096 shared work steps across calls, arguments, and parameter
+  substitutions, including arguments for parameters the callee does not use.
+  Pure calls are expanded statically and introduce no runtime call, recursion,
+  source access, host access, time, randomness, or mutable state.
 - The only accepted progressive sequence form is
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`.
   `Element` must name a declared structure.
@@ -208,23 +271,27 @@ The static rules for this subset are:
   `@spec("standard", "clause")` supplies a specification reference. Fields
   inherit their structure's specification unless they provide their own. An
   array declaration applies its resolved type, annotations, metadata, and
-  constraints independently to every expanded element.
+  constraints independently to every expanded element. A computed field accepts
+  `@description` and `@spec`, before the declaration or after its expression,
+  but rejects `@equals`, `@enum`, and an array suffix.
 - A source with lexical or static diagnostics produces no executable rule. The
   parser still returns its partial IR and all diagnostics with line/column
   ranges so an editor can report more than the first error.
 
-`enum`, `big`, `little`, `ue`, `se`, `if`, `else`, `switch`, `case`, `default`,
-and `repeat` are contextual words in the positions shown by the grammar and
-remain ordinary identifiers elsewhere.
+`enum`, `big`, `little`, `ue`, `se`, `pure`, `return`, `bool`, `u64`,
+`computed`, `true`, `false`, `if`, `else`, `switch`, `case`, `default`, and
+`repeat` are contextual words in the positions shown by the grammar and remain
+ordinary identifiers elsewhere.
 Existing scalar declarations are unchanged, and `bits<N>` remains exactly
 equivalent to `bits<N, big>`; this slice deprecates no accepted 0.1 syntax.
 
 The parser produces a source-oriented declaration model for diagnostics. The
-static compiler resolves enum, structure, sequence, and entry references into a
-typed program, preserves declaration order, and emits deterministic bytecode
-using `begin-structure`, `read-unsigned-bits`, `read-unsigned-exp-golomb`,
-`read-signed-exp-golomb`, `assert-equals`, `assert-repeat-count`, and
-`end-structure` operations. Each read opcode must match the resolved field type.
+static compiler resolves pure functions, enums, structures, sequences, and entry
+references into a typed program, preserves declaration order, and emits
+deterministic bytecode using `begin-structure`, `read-unsigned-bits`,
+`read-unsigned-exp-golomb`, `read-signed-exp-golomb`, `evaluate-computed`,
+`assert-equals`, `assert-repeat-count`, and `end-structure` operations. Each read
+opcode must match the resolved field type.
 The fixed-width read carries the resolved enum and byte-order information; the
 Exp-Golomb types have zero static bit width, default bit order, no enum
 reference, and no equality constraint. A fixed array is expanded in source
@@ -252,6 +319,17 @@ compiler diagnostic has no executable typed IR.
 `svtool rule check` runs both stages. The bundled Annex B runner also compiles its rule
 once when the analyzer is created and executes the resolved structure index
 for every record.
+
+The compiler type-checks every pure function independently, then expands each
+pure call into the computed field that uses it. The resulting typed expression
+contains literals, previous typed-field indexes, and unary or binary operators;
+there is no call opcode. A computed declaration joins the same typed-field
+stream, retains its declared type and metadata, and inherits resolved outer
+guards. It emits one `evaluate-computed` instruction, advances no static source
+offset, and receives the same repeat-indexed materialized name and repeat-local
+scope as a syntax field. Written expressions and expanded computed expressions
+are rejected before executable typed IR is produced when they exceed their fixed
+node, depth, or 4,096-step expansion-work bounds.
 
 The minimum VM executes a structure by reading each field through the bounded
 bit reader. A successful field becomes a syntax-field node with its decoded
@@ -291,9 +369,11 @@ or default consumes no arm input.
 At a repeat statement whose enclosing guards are true, the bound assertion
 checks the saved controller value before any body input is consumed. A count
 above `maximum` is never clamped: it retains the count field, marks the structure
-invalid, and reports `invalid-syntax` at that field. If an enclosing guard is
-false, the assertion and all body fields are skipped without requiring the
-controller value. A projected iteration is present exactly when `count > i`.
+invalid, and reports `invalid-syntax` at that field. A source-backed controller
+retains its exact source location; a computed controller reports its field path
+without a location. If an enclosing guard is false, the assertion and all body
+fields are skipped without requiring the controller value. A projected
+iteration is present exactly when `count > i`.
 Only present iterations consume source bits or materialized-node slots; absent
 iterations create no nodes or source locations and perform no enum or
 `@equals` value check. A selected field otherwise keeps the existing value,
@@ -301,6 +381,20 @@ metadata, partial-result, and source-coordinate behavior, including diagnostic
 paths such as `Header.value[1][0]`. Invalid repeat metadata, controller guards,
 or assertion placement is an invalid typed definition rather than guessed
 execution.
+
+Before executing any bytecode, the VM validates every computed typed expression,
+including its node and depth bounds, result and operand types, previous-field
+indexes, dependency availability, and controller guards. At an
+`evaluate-computed` instruction, a false presence guard skips expression
+evaluation and node creation. The instruction still consumes instruction budget
+and remains a cancellation point. A successful evaluation consumes no source
+bits and creates one `AnalysisNodeKind::ComputedField` with its `bool` or
+unsigned 64-bit value, metadata, and no `FieldLocation`. A runtime arithmetic
+failure creates no computed node, retains earlier nodes, marks the structure
+invalid, and reports `invalid-syntax` at the computed field path without a source
+location. Malformed expression or controller metadata is an invalid typed
+definition. Subexpression work is part of the one instruction and introduces no
+additional cancellation point.
 
 For an Exp-Golomb codeword, let `leadingZeroBits` be the number of zero bits
 before the marker bit and let `suffix` be the following unsigned value of the
@@ -497,6 +591,32 @@ struct SampleTable {
 entry SampleTable;
 ```
 
+Valid pure-function and computed-field example:
+
+```cpp
+pure bool between(u64 value, u64 low, u64 high) {
+    return value >= low && value <= high;
+}
+
+struct NalUnitHeader {
+    bits<5> nal_unit_type;
+    computed<bool> is_vcl = between(nal_unit_type, 1, 5)
+        @description("Video coding layer NAL unit.");
+    computed<u64> next_type = nal_unit_type + 1;
+
+    if (is_vcl) {
+        bits<1> first_slice_flag;
+    }
+    switch (next_type) {
+    case 6: {
+        bits<1> follows_vcl_range;
+    }
+    }
+}
+
+entry NalUnitHeader;
+```
+
 Invalid minimum examples include `bits<0> flag;`, `bits<65> flag;`,
 `bits<12, little> value;`, a little-endian field after an unaligned field,
 `ue value @equals(0);`, `se value @enum(Type);`, a little-endian field after a
@@ -517,14 +637,36 @@ not fit its fixed-width controller, a count or maximum expression, an empty
 repeat body, an annotation before `repeat`, a repeat projection above 99,999
 fields, a repeat-local controller used by another iteration or after the
 repeat, a little-endian field after a repeat, `scan(other_scanner)`, two
-declarations with the same name, or a program with no `entry`. A malformed
-repeat header produces source-ranged missing-token diagnostics. If its body
-opener is missing, parsing recovers at the next field semicolon or enclosing
-closing brace; missing header tokens otherwise continue into a recognizable
-braced body when possible. Enum and field parsing recovers at the next
-member/field semicolon or closing brace. An unknown switch label or a label
+declarations with the same name, or a program with no `entry`.
+
+Invalid pure-function and computed-field examples include an annotated pure
+function, more than 16 parameters, duplicate parameter or function names, an
+overload or top-level name collision, a pure body that calls a later function or
+recurses, a nonparameter
+value reference in a pure body, a return-type or call-argument mismatch, and a
+malformed or missing return expression. They also include a computed array,
+`computed<se>`, `@equals` or `@enum` on a computed field, a reference to an array,
+`se`, future, unknown, or unavailable branch-local field, a mixed-type operator,
+an unsupported operator or conversion, a computed expression or expanded pure
+call above 256 nodes, depth 64, or 4,096 shared expansion steps,
+`computed<bool>` in an equality condition or as a switch/repeat controller,
+`computed<u64>` in the Boolean `if (flag)` shorthand, and a general expression
+directly in an array length, case label,
+repeat maximum, or repeat controller. Reached unsigned overflow or underflow,
+division by zero, and remainder by zero are runtime `invalid-syntax` failures;
+short-circuited failing operands are not evaluated.
+
+A malformed repeat header produces source-ranged missing-token diagnostics. If
+its body opener is missing, parsing recovers at the next field semicolon or
+enclosing closing brace; missing header tokens otherwise continue into a
+recognizable braced body when possible. Enum and field parsing recovers at the
+next member/field semicolon or closing brace. An unknown switch label or a label
 whose arm opener is missing recovers at the next `case`, `default`, or switch
-closing brace. All recovery preserves source ranges and diagnostics.
+closing brace. Malformed pure, parameter, return, call, expression, and
+`computed<...>` syntax likewise produces source-ranged diagnostics. Statement
+recovery stops at the next useful semicolon or enclosing closing brace;
+expression recovery also treats the current call's comma or right parenthesis
+as a boundary. All recovery preserves source ranges and diagnostics.
 
 ## Source And Logical Coordinates
 
@@ -539,6 +681,8 @@ source bit resolves to the most specific materialized node while preserving its
 analysis-tree ancestry. Resolution uses the deterministic depth, source
 coverage, and stable-node-ID ordering defined by the
 [analysis model](../analysis-model.md#source-bit-resolution).
+Computed fields have no `FieldLocation`, do not participate in source-bit
+resolution, and are selected only through their analysis-tree nodes.
 
 ## Mapped Transformations
 
@@ -625,11 +769,22 @@ program size and possible instruction work even when the decoded count is
 small. A reached count above the declared maximum is `invalid-syntax`, not a
 resource-limit condition.
 
+Each computed field adds one `evaluate-computed` instruction. That instruction
+counts toward the instruction budget and remains a cancellation point even when
+a false guard skips evaluation. A successful evaluation consumes one
+materialized-node slot and no source bits; a failed evaluation consumes no node
+slot and retains earlier nodes. Pure calls add no runtime instructions because
+the compiler inlines them. All subexpression work is charged within the one
+instruction, with no extra cancellation point, and is bounded by the 256-node
+and depth-64 expanded-expression limits. Computed fields also count toward the
+static 99,999-field projection limit.
+
 All limits must be greater than zero. The host may lower them for a particular
 execution but a rule cannot raise or inspect them. The accepted minimum subset
-does not yet contain nested calls or views; those operations must consume the
-already reserved depth budgets when introduced. An instruction, node-count, or
-node-depth breach reports `resource-limit`, retains nodes completed before the
+contains no runtime calls or views: pure calls are statically inlined, and any
+future runtime call or view operation must consume the already reserved depth
+budgets. An instruction, node-count, or node-depth breach reports
+`resource-limit`, retains nodes completed before the
 breach, and marks the active structure invalid. Cancellation reports
 `cancelled`, retains completed nodes, and marks the active structure (or its
 parent when cancellation precedes `begin-structure`) cancelled. Invalid or
