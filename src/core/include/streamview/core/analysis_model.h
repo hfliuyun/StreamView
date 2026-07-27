@@ -158,6 +158,7 @@ public:
     [[nodiscard]] bool markPartial(AnalysisNodeId id,
                                    MaterializationState terminalState,
                                    ParseDiagnostic diagnostic);
+    [[nodiscard]] bool resumeCancelled(AnalysisNodeId id) noexcept;
 
     [[nodiscard]] bool hasPartialResults() const noexcept;
     [[nodiscard]] bool isFullyMaterialized() const noexcept;

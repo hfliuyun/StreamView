@@ -166,15 +166,67 @@ private slots:
         const auto regionId = tree->appendChild(tree->rootId(), region);
         QVERIFY(regionId.has_value());
 
+        AnalysisNodeSpec child;
+        child.kind = AnalysisNodeKind::Region;
+        child.name = QStringLiteral("committed partial child");
+        child.state = MaterializationState::Indexing;
+        const auto childId = tree->appendChild(*regionId, child);
+        QVERIFY(childId.has_value());
+
         ParseDiagnostic cancelled;
         cancelled.code = DiagnosticCode::Cancelled;
         cancelled.severity = DiagnosticSeverity::Info;
         cancelled.message = QStringLiteral("Indexing cancelled by user");
+
+        ParseDiagnostic truncated;
+        truncated.code = DiagnosticCode::TruncatedSource;
+        truncated.severity = DiagnosticSeverity::Error;
+        truncated.message = QStringLiteral("A prior diagnostic remains relevant");
+        QVERIFY(tree->addDiagnostic(*regionId, truncated));
         QVERIFY(tree->markPartial(*regionId, MaterializationState::Cancelled, cancelled));
-        QVERIFY(tree->transition(*regionId, MaterializationState::Indexing));
+        cancelled.message = QStringLiteral("A second cancellation diagnostic");
+        QVERIFY(tree->addDiagnostic(*regionId, cancelled));
+        QVERIFY(tree->markPartial(*childId, MaterializationState::Cancelled, cancelled));
+
+        AnalysisNodeSpec materialized;
+        materialized.kind = AnalysisNodeKind::Region;
+        materialized.name = QStringLiteral("completed region");
+        materialized.state = MaterializationState::Materialized;
+        const auto materializedId = tree->appendChild(tree->rootId(), materialized);
+        QVERIFY(materializedId.has_value());
+        QVERIFY(tree->addDiagnostic(*materializedId, cancelled));
+
+        const auto nodeCount = tree->nodeCount();
+        QVERIFY(!tree->resumeCancelled(AnalysisNodeId(999)));
+        QVERIFY(!tree->resumeCancelled(*materializedId));
+        QCOMPARE(tree->nodeCount(), nodeCount);
+        const auto unchanged = tree->node(*materializedId);
+        QVERIFY(unchanged.has_value());
+        QCOMPARE(unchanged->state(), MaterializationState::Materialized);
+        QCOMPARE(unchanged->diagnostics().size(), std::size_t{1});
+        QCOMPARE(unchanged->diagnostics().front().code, DiagnosticCode::Cancelled);
+
+        QVERIFY(tree->resumeCancelled(*regionId));
+        const auto resumed = tree->node(*regionId);
+        QVERIFY(resumed.has_value());
+        QCOMPARE(resumed->state(), MaterializationState::Indexing);
+        QCOMPARE(resumed->diagnostics().size(), std::size_t{1});
+        QCOMPARE(resumed->diagnostics().front().code, DiagnosticCode::TruncatedSource);
+
+        const auto unchangedChild = tree->node(*childId);
+        QVERIFY(unchangedChild.has_value());
+        QCOMPARE(unchangedChild->state(), MaterializationState::Cancelled);
+        QCOMPARE(unchangedChild->diagnostics().size(), std::size_t{1});
+        QCOMPARE(unchangedChild->diagnostics().front().code, DiagnosticCode::Cancelled);
+        QVERIFY(tree->hasPartialResults());
+
+        QVERIFY(!tree->resumeCancelled(*regionId));
+        QCOMPARE(tree->node(*regionId)->diagnostics().size(), std::size_t{1});
         QVERIFY(tree->transition(*regionId, MaterializationState::WaitingDependency));
         QVERIFY(tree->transition(*regionId, MaterializationState::Materialized));
         QVERIFY(!tree->transition(*regionId, MaterializationState::Invalid));
+        QVERIFY(tree->resumeCancelled(*childId));
+        QVERIFY(tree->transition(*childId, MaterializationState::Materialized));
         QVERIFY(!tree->addDiagnostic(AnalysisNodeId(999), cancelled));
         QVERIFY(tree->transition(tree->rootId(), MaterializationState::Materialized));
         QVERIFY(tree->isFullyMaterialized());

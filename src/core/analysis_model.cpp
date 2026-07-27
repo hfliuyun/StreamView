@@ -1,5 +1,6 @@
 #include <streamview/core/analysis_model.h>
 
+#include <algorithm>
 #include <limits>
 #include <utility>
 
@@ -122,6 +123,19 @@ bool AnalysisTree::markPartial(AnalysisNodeId id,
         return false;
     }
     return addDiagnostic(id, std::move(diagnostic));
+}
+
+bool AnalysisTree::resumeCancelled(AnalysisNodeId id) noexcept {
+    AnalysisNode* node = nodeForMutation(id);
+    if (node == nullptr || node->state_ != MaterializationState::Cancelled) {
+        return false;
+    }
+
+    std::erase_if(node->diagnostics_, [](const ParseDiagnostic& diagnostic) {
+        return diagnostic.code == DiagnosticCode::Cancelled;
+    });
+    node->state_ = MaterializationState::Indexing;
+    return true;
 }
 
 bool AnalysisTree::hasPartialResults() const noexcept {
