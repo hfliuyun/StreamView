@@ -33,6 +33,7 @@ using streamview::rules::DslExecutor;
 using streamview::rules::DslCompiler;
 using streamview::rules::DslOpcode;
 using streamview::rules::DslParser;
+using streamview::rules::DslTypedProgram;
 using streamview::rules::DslValueTypeKind;
 
 namespace {
@@ -612,8 +613,8 @@ private slots:
         const auto parsed = DslParser::parse(QStringLiteral(
             "enum Type { one = 1; two = 2; } "
             "struct Header { bits<2> values[2] @enum(Type); } entry Header;"));
-        const auto compiled = DslCompiler::compile(parsed.program);
         QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
         QVERIFY(compiled.succeeded());
         const auto mapping = mappingForBytes(1);
         const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
@@ -670,6 +671,516 @@ private slots:
         QCOMPARE(invalidStructure->diagnostics().front().location->sourceSpans().front().bitLength(),
                  quint64(2));
         QVERIFY(invalidTree->hasPartialResults());
+    }
+
+    void materializesOnlyTheSelectedConditionalBranchAndTail() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> kind; "
+            "if (kind == 1) { bits<3> then_value; } "
+            "else { bits<5> else_value; } bits<3> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource trueSource(bytes({0x6e}));
+        const auto trueMapping = mappingForBytes(1);
+        const auto trueRange = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(trueMapping.has_value());
+        QVERIFY(trueRange.has_value());
+        BitReader trueReader(trueSource, *trueRange);
+        auto trueTree = AnalysisTree::create(QStringLiteral("conditional-true"));
+        QVERIFY(trueTree.has_value());
+        const auto trueResult = DslExecutor::decodeStruct(*compiled.program,
+                                                         quint32(0),
+                                                         trueReader,
+                                                         *trueMapping,
+                                                         0,
+                                                         *trueTree,
+                                                         trueTree->rootId());
+        QCOMPARE(trueResult.status, DslExecutionStatus::Materialized);
+        QCOMPARE(trueResult.bitsConsumed, quint64(8));
+        QCOMPARE(trueResult.instructionsExecuted, quint64(6));
+        QCOMPARE(trueResult.nodesCreated, quint64(4));
+        const auto trueStructure = trueTree->node(*trueResult.structureNode);
+        QVERIFY(trueStructure.has_value());
+        QCOMPARE(trueStructure->children().size(), std::size_t(3));
+        const std::vector<QString> trueNames{QStringLiteral("kind"),
+                                             QStringLiteral("then_value"),
+                                             QStringLiteral("tail")};
+        const std::vector<quint64> trueValues{1, 5, 6};
+        const std::vector<quint64> trueStarts{0, 2, 5};
+        for (std::size_t index = 0; index < trueNames.size(); ++index) {
+            const auto field = trueTree->node(trueStructure->children().at(index));
+            QVERIFY(field.has_value());
+            QCOMPARE(field->name(), trueNames.at(index));
+            QCOMPARE(field->value().toULongLong(), trueValues.at(index));
+            QCOMPARE(field->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     trueStarts.at(index));
+        }
+
+        MemorySource falseSource(bytes({0xaa, 0xc0}));
+        const auto falseMapping = mappingForBytes(2);
+        const auto falseRange = SourceSpan::create(streamview::core::SourceBitAddress(0), 10);
+        QVERIFY(falseMapping.has_value());
+        QVERIFY(falseRange.has_value());
+        BitReader falseReader(falseSource, *falseRange);
+        auto falseTree = AnalysisTree::create(QStringLiteral("conditional-false"));
+        QVERIFY(falseTree.has_value());
+        const auto falseResult = DslExecutor::decodeStruct(*compiled.program,
+                                                          quint32(0),
+                                                          falseReader,
+                                                          *falseMapping,
+                                                          0,
+                                                          *falseTree,
+                                                          falseTree->rootId());
+        QCOMPARE(falseResult.status, DslExecutionStatus::Materialized);
+        QCOMPARE(falseResult.bitsConsumed, quint64(10));
+        QCOMPARE(falseResult.instructionsExecuted, quint64(6));
+        QCOMPARE(falseResult.nodesCreated, quint64(4));
+        const auto falseStructure = falseTree->node(*falseResult.structureNode);
+        QVERIFY(falseStructure.has_value());
+        QCOMPARE(falseStructure->children().size(), std::size_t(3));
+        const std::vector<QString> falseNames{QStringLiteral("kind"),
+                                              QStringLiteral("else_value"),
+                                              QStringLiteral("tail")};
+        const std::vector<quint64> falseValues{2, 21, 3};
+        const std::vector<quint64> falseStarts{0, 2, 7};
+        for (std::size_t index = 0; index < falseNames.size(); ++index) {
+            const auto field = falseTree->node(falseStructure->children().at(index));
+            QVERIFY(field.has_value());
+            QCOMPARE(field->name(), falseNames.at(index));
+            QCOMPARE(field->value().toULongLong(), falseValues.at(index));
+            QCOMPARE(field->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     falseStarts.at(index));
+        }
+    }
+
+    void materializesNestedConditionalArraysAndExpGolombFields() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> outer; if (outer == 1) { bits<1> inner; "
+            "if (inner == 0) { bits<2> values[2] @equals(1); } "
+            "else { ue code; se delta; } } else { bits<3> alternative; } "
+            "bits<1> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 7);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+
+        MemorySource arraySource(bytes({0x96}));
+        BitReader arrayReader(arraySource, *range);
+        auto arrayTree = AnalysisTree::create(QStringLiteral("conditional-array"));
+        QVERIFY(arrayTree.has_value());
+        const auto arrayResult = DslExecutor::decodeStruct(*compiled.program,
+                                                          quint32(0),
+                                                          arrayReader,
+                                                          *mapping,
+                                                          0,
+                                                          *arrayTree,
+                                                          arrayTree->rootId());
+        QCOMPARE(arrayResult.status, DslExecutionStatus::Materialized);
+        QCOMPARE(arrayResult.bitsConsumed, quint64(7));
+        QCOMPARE(arrayResult.instructionsExecuted, quint64(12));
+        QCOMPARE(arrayResult.nodesCreated, quint64(6));
+        const auto arrayStructure = arrayTree->node(*arrayResult.structureNode);
+        QVERIFY(arrayStructure.has_value());
+        QCOMPARE(arrayStructure->children().size(), std::size_t(5));
+        const std::vector<QString> arrayNames{QStringLiteral("outer"),
+                                              QStringLiteral("inner"),
+                                              QStringLiteral("values[0]"),
+                                              QStringLiteral("values[1]"),
+                                              QStringLiteral("tail")};
+        const std::vector<quint64> arrayValues{1, 0, 1, 1, 1};
+        const std::vector<quint64> arrayStarts{0, 1, 2, 4, 6};
+        const std::vector<quint64> arrayLengths{1, 1, 2, 2, 1};
+        for (std::size_t index = 0; index < arrayNames.size(); ++index) {
+            const auto field = arrayTree->node(arrayStructure->children().at(index));
+            QVERIFY(field.has_value());
+            QCOMPARE(field->name(), arrayNames.at(index));
+            QCOMPARE(field->value().toULongLong(), arrayValues.at(index));
+            QCOMPARE(field->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     arrayStarts.at(index));
+            QCOMPARE(field->location()->sourceSpans().front().bitLength(),
+                     arrayLengths.at(index));
+        }
+
+        MemorySource expSource(bytes({0xea}));
+        BitReader expReader(expSource, *range);
+        auto expTree = AnalysisTree::create(QStringLiteral("conditional-exp-golomb"));
+        QVERIFY(expTree.has_value());
+        const auto expResult = DslExecutor::decodeStruct(*compiled.program,
+                                                        quint32(0),
+                                                        expReader,
+                                                        *mapping,
+                                                        0,
+                                                        *expTree,
+                                                        expTree->rootId());
+        QCOMPARE(expResult.status, DslExecutionStatus::Materialized);
+        QCOMPARE(expResult.bitsConsumed, quint64(7));
+        QCOMPARE(expResult.instructionsExecuted, quint64(12));
+        QCOMPARE(expResult.nodesCreated, quint64(6));
+        const auto expStructure = expTree->node(*expResult.structureNode);
+        QVERIFY(expStructure.has_value());
+        QCOMPARE(expStructure->children().size(), std::size_t(5));
+        QCOMPARE(expTree->node(expStructure->children().at(2))->name(),
+                 QStringLiteral("code"));
+        QCOMPARE(expTree->node(expStructure->children().at(2))->value().toULongLong(),
+                 quint64(0));
+        QCOMPARE(expTree->node(expStructure->children().at(3))->name(),
+                 QStringLiteral("delta"));
+        QCOMPARE(expTree->node(expStructure->children().at(3))->value().toLongLong(),
+                 qlonglong(1));
+        QCOMPARE(expTree->node(expStructure->children().at(2))->location()->sourceSpans().front()
+                     .start().absoluteBitOffset(),
+                 quint64(2));
+        QCOMPARE(expTree->node(expStructure->children().at(2))->location()->sourceSpans().front()
+                     .bitLength(),
+                 quint64(1));
+        QCOMPARE(expTree->node(expStructure->children().at(3))->location()->sourceSpans().front()
+                     .start().absoluteBitOffset(),
+                 quint64(3));
+        QCOMPARE(expTree->node(expStructure->children().at(3))->location()->sourceSpans().front()
+                     .bitLength(),
+                 quint64(3));
+        QCOMPARE(expTree->node(expStructure->children().at(4))->location()->sourceSpans().front()
+                     .start().absoluteBitOffset(),
+                 quint64(6));
+    }
+
+    void usesEnumControllersAndGuardsLittleEndianFields() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "enum Kind { first = 1; second = 2; } "
+            "struct Header { bits<8> kind @enum(Kind); "
+            "if (kind == 1) { bits<16, little> value; } "
+            "else { bits<16> alternative; } bits<8> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const auto mapping = mappingForBytes(4);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 32);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+
+        MemorySource trueSource(bytes({1, 0x34, 0x12, 0xab}));
+        BitReader trueReader(trueSource, *range);
+        auto trueTree = AnalysisTree::create(QStringLiteral("conditional-enum-little"));
+        QVERIFY(trueTree.has_value());
+        const auto trueResult = DslExecutor::decodeStruct(*compiled.program,
+                                                         quint32(0),
+                                                         trueReader,
+                                                         *mapping,
+                                                         0,
+                                                         *trueTree,
+                                                         trueTree->rootId());
+        QCOMPARE(trueResult.status, DslExecutionStatus::Materialized);
+        QCOMPARE(trueResult.bitsConsumed, quint64(32));
+        QCOMPARE(trueResult.instructionsExecuted, quint64(6));
+        QCOMPARE(trueResult.nodesCreated, quint64(4));
+        const auto trueStructure = trueTree->node(*trueResult.structureNode);
+        QVERIFY(trueStructure.has_value());
+        QCOMPARE(trueStructure->children().size(), std::size_t(3));
+        QCOMPARE(trueTree->node(trueStructure->children().at(1))->name(),
+                 QStringLiteral("value"));
+        QCOMPARE(trueTree->node(trueStructure->children().at(1))->value().toULongLong(),
+                 quint64(0x1234));
+
+        MemorySource falseSource(bytes({2, 0x12, 0x34, 0xcd}));
+        BitReader falseReader(falseSource, *range);
+        auto falseTree = AnalysisTree::create(QStringLiteral("conditional-enum-alternative"));
+        QVERIFY(falseTree.has_value());
+        const auto falseResult = DslExecutor::decodeStruct(*compiled.program,
+                                                          quint32(0),
+                                                          falseReader,
+                                                          *mapping,
+                                                          0,
+                                                          *falseTree,
+                                                          falseTree->rootId());
+        QCOMPARE(falseResult.status, DslExecutionStatus::Materialized);
+        QCOMPARE(falseResult.bitsConsumed, quint64(32));
+        QCOMPARE(falseResult.instructionsExecuted, quint64(6));
+        QCOMPARE(falseResult.nodesCreated, quint64(4));
+        const auto falseStructure = falseTree->node(*falseResult.structureNode);
+        QVERIFY(falseStructure.has_value());
+        QCOMPARE(falseStructure->children().size(), std::size_t(3));
+        QCOMPARE(falseTree->node(falseStructure->children().at(1))->name(),
+                 QStringLiteral("alternative"));
+        QCOMPARE(falseTree->node(falseStructure->children().at(1))->value().toULongLong(),
+                 quint64(0x1234));
+    }
+
+    void reportsTruncationOnlyForSelectedConditionalFields() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> flag; if (flag == 1) { bits<7> payload; } "
+            "bits<7> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const auto mapping = mappingForBytes(1);
+        QVERIFY(mapping.has_value());
+
+        MemorySource selectedSource(bytes({0xf0}));
+        const auto shortRange = SourceSpan::create(streamview::core::SourceBitAddress(0), 4);
+        QVERIFY(shortRange.has_value());
+        BitReader selectedReader(selectedSource, *shortRange);
+        auto selectedTree = AnalysisTree::create(QStringLiteral("conditional-truncated"));
+        QVERIFY(selectedTree.has_value());
+        const auto selected = DslExecutor::decodeStruct(*compiled.program,
+                                                        quint32(0),
+                                                        selectedReader,
+                                                        *mapping,
+                                                        0,
+                                                        *selectedTree,
+                                                        selectedTree->rootId());
+        QCOMPARE(selected.status, DslExecutionStatus::TruncatedSource);
+        QCOMPARE(selected.bitsConsumed, quint64(1));
+        const auto selectedStructure = selectedTree->node(*selected.structureNode);
+        QVERIFY(selectedStructure.has_value());
+        QCOMPARE(selectedStructure->state(), MaterializationState::Invalid);
+        QCOMPARE(selectedStructure->children().size(), std::size_t(1));
+        QCOMPARE(selectedStructure->diagnostics().front().code,
+                 DiagnosticCode::TruncatedSource);
+        QCOMPARE(selectedStructure->diagnostics().front().fieldPath,
+                 QStringLiteral("Header.payload"));
+        QCOMPARE(selectedStructure->diagnostics().front().location->sourceSpans().front().start()
+                     .absoluteBitOffset(),
+                 quint64(1));
+        QCOMPARE(selectedStructure->diagnostics().front().location->sourceSpans().front()
+                     .bitLength(),
+                 quint64(3));
+
+        MemorySource skippedSource(bytes({0x55}));
+        const auto fullRange = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(fullRange.has_value());
+        BitReader skippedReader(skippedSource, *fullRange);
+        auto skippedTree = AnalysisTree::create(QStringLiteral("conditional-skipped-source"));
+        QVERIFY(skippedTree.has_value());
+        const auto skipped = DslExecutor::decodeStruct(*compiled.program,
+                                                       quint32(0),
+                                                       skippedReader,
+                                                       *mapping,
+                                                       0,
+                                                       *skippedTree,
+                                                       skippedTree->rootId());
+        QCOMPARE(skipped.status, DslExecutionStatus::Materialized);
+        QCOMPARE(skipped.bitsConsumed, quint64(8));
+        const auto skippedStructure = skippedTree->node(*skipped.structureNode);
+        QVERIFY(skippedStructure.has_value());
+        QCOMPARE(skippedStructure->children().size(), std::size_t(2));
+        QCOMPARE(skippedTree->node(skippedStructure->children().at(1))->name(),
+                 QStringLiteral("tail"));
+    }
+
+    void appliesEqualsOnlyToSelectedConditionalFields() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> flag; "
+            "if (flag == 1) { bits<1> reserved @equals(0); } "
+            "else { bits<1> value; } bits<6> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+
+        MemorySource selectedSource(bytes({0xc0}));
+        BitReader selectedReader(selectedSource, *range);
+        auto selectedTree = AnalysisTree::create(QStringLiteral("conditional-equals-selected"));
+        QVERIFY(selectedTree.has_value());
+        const auto selected = DslExecutor::decodeStruct(*compiled.program,
+                                                        quint32(0),
+                                                        selectedReader,
+                                                        *mapping,
+                                                        0,
+                                                        *selectedTree,
+                                                        selectedTree->rootId());
+        QCOMPARE(selected.status, DslExecutionStatus::InvalidSyntax);
+        QCOMPARE(selected.bitsConsumed, quint64(2));
+        QCOMPARE(selected.nodesCreated, quint64(3));
+        const auto selectedStructure = selectedTree->node(*selected.structureNode);
+        QVERIFY(selectedStructure.has_value());
+        QCOMPARE(selectedStructure->children().size(), std::size_t(2));
+        QCOMPARE(selectedStructure->diagnostics().front().code,
+                 DiagnosticCode::InvalidSyntax);
+        QCOMPARE(selectedStructure->diagnostics().front().fieldPath,
+                 QStringLiteral("Header.reserved"));
+
+        MemorySource skippedSource(bytes({0x40}));
+        BitReader skippedReader(skippedSource, *range);
+        auto skippedTree = AnalysisTree::create(QStringLiteral("conditional-equals-skipped"));
+        QVERIFY(skippedTree.has_value());
+        const auto skipped = DslExecutor::decodeStruct(*compiled.program,
+                                                       quint32(0),
+                                                       skippedReader,
+                                                       *mapping,
+                                                       0,
+                                                       *skippedTree,
+                                                       skippedTree->rootId());
+        QCOMPARE(skipped.status, DslExecutionStatus::Materialized);
+        QCOMPARE(skipped.bitsConsumed, quint64(8));
+        QCOMPARE(skipped.instructionsExecuted, quint64(7));
+        QCOMPARE(skipped.nodesCreated, quint64(4));
+        const auto skippedStructure = skippedTree->node(*skipped.structureNode);
+        QVERIFY(skippedStructure.has_value());
+        QCOMPARE(skippedStructure->children().size(), std::size_t(3));
+        QCOMPARE(skippedTree->node(skippedStructure->children().at(1))->name(),
+                 QStringLiteral("value"));
+    }
+
+    void countsSkippedConditionalInstructionsButNotNodes() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> flag; "
+            "if (flag == 1) { bits<1> reserved @equals(0); } "
+            "else { bits<1> value; } bits<6> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+
+        MemorySource instructionSource(bytes({0x40}));
+        BitReader instructionReader(instructionSource, *range);
+        auto instructionTree = AnalysisTree::create(QStringLiteral("conditional-instructions"));
+        QVERIFY(instructionTree.has_value());
+        DslExecutionOptions instructionOptions;
+        instructionOptions.limits.maximumInstructions = 4;
+        const auto instructionResult = DslExecutor::decodeStruct(*compiled.program,
+                                                                quint32(0),
+                                                                instructionReader,
+                                                                *mapping,
+                                                                0,
+                                                                *instructionTree,
+                                                                instructionTree->rootId(),
+                                                                instructionOptions);
+        QCOMPARE(instructionResult.status, DslExecutionStatus::ResourceLimit);
+        QCOMPARE(instructionResult.instructionsExecuted, quint64(4));
+        QCOMPARE(instructionResult.bitsConsumed, quint64(1));
+        QCOMPARE(instructionResult.nodesCreated, quint64(2));
+
+        MemorySource nodeSource(bytes({0x40}));
+        BitReader nodeReader(nodeSource, *range);
+        auto nodeTree = AnalysisTree::create(QStringLiteral("conditional-nodes"));
+        QVERIFY(nodeTree.has_value());
+        DslExecutionOptions nodeOptions;
+        nodeOptions.limits.maximumMaterializedNodes = 4;
+        const auto nodeResult = DslExecutor::decodeStruct(*compiled.program,
+                                                         quint32(0),
+                                                         nodeReader,
+                                                         *mapping,
+                                                         0,
+                                                         *nodeTree,
+                                                         nodeTree->rootId(),
+                                                         nodeOptions);
+        QCOMPARE(nodeResult.status, DslExecutionStatus::Materialized);
+        QCOMPARE(nodeResult.nodesCreated, quint64(4));
+        QCOMPARE(nodeResult.bitsConsumed, quint64(8));
+    }
+
+    void rejectsMalformedConditionalGuardsBeforeExecutingBytecode() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> outer; if (outer == 1) { bits<1> local; "
+            "if (local == 1) { bits<1> value; } } } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        QCOMPARE(compiled.program->structs.front().fields.size(), std::size_t(3));
+
+        std::vector<DslTypedProgram> malformed;
+        auto outOfRange = *compiled.program;
+        outOfRange.structs.front().fields.at(2).conditions.back().fieldIndex = 99;
+        malformed.push_back(std::move(outOfRange));
+        auto future = *compiled.program;
+        future.structs.front().fields.at(2).conditions.back().fieldIndex = 2;
+        malformed.push_back(std::move(future));
+        auto expectedTooWide = *compiled.program;
+        expectedTooWide.structs.front().fields.at(2).conditions.front().expectedValue = 2;
+        malformed.push_back(std::move(expectedTooWide));
+        auto unavailable = *compiled.program;
+        unavailable.structs.front().fields.at(2).conditions.erase(
+            unavailable.structs.front().fields.at(2).conditions.begin());
+        malformed.push_back(std::move(unavailable));
+        auto invalidController = *compiled.program;
+        invalidController.structs.front().fields.front().type.kind =
+            DslValueTypeKind::UnsignedExpGolomb;
+        invalidController.structs.front().fields.front().type.bitWidth = 0;
+        malformed.push_back(std::move(invalidController));
+
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        for (std::size_t index = 0; index < malformed.size(); ++index) {
+            MemorySource source(bytes({0xe0}));
+            BitReader reader(source, *range);
+            auto tree = AnalysisTree::create(
+                QStringLiteral("malformed-conditional-%1").arg(index));
+            QVERIFY(tree.has_value());
+            const auto result = DslExecutor::decodeStruct(malformed.at(index),
+                                                          quint32(0),
+                                                          reader,
+                                                          *mapping,
+                                                          0,
+                                                          *tree,
+                                                          tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+            QCOMPARE(result.instructionsExecuted, quint64(0));
+            QCOMPARE(result.bitsConsumed, quint64(0));
+            QCOMPARE(result.nodesCreated, quint64(0));
+            QVERIFY(!result.structureNode.has_value());
+        }
+    }
+
+    void rejectsMalformedFieldsEvenWhenTheirConditionalBranchIsSkipped() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> flag; if (flag == 1) { bits<1> fixed; } "
+            "else { ue code; } } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+
+        auto malformedFixed = *compiled.program;
+        malformedFixed.structs.front().fields.at(1).type.bitWidth = 0;
+        MemorySource fixedSource(bytes({0x00}));
+        BitReader fixedReader(fixedSource, *range);
+        auto fixedTree = AnalysisTree::create(QStringLiteral("malformed-skipped-fixed"));
+        QVERIFY(fixedTree.has_value());
+        const auto fixedResult = DslExecutor::decodeStruct(malformedFixed,
+                                                           quint32(0),
+                                                           fixedReader,
+                                                           *mapping,
+                                                           0,
+                                                           *fixedTree,
+                                                           fixedTree->rootId());
+        QCOMPARE(fixedResult.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(fixedResult.instructionsExecuted, quint64(3));
+        QCOMPARE(fixedResult.bitsConsumed, quint64(1));
+        QCOMPARE(fixedResult.nodesCreated, quint64(2));
+
+        auto malformedExpGolomb = *compiled.program;
+        malformedExpGolomb.structs.front().fields.at(2).equalsConstraint = 0;
+        MemorySource expSource(bytes({0x80}));
+        BitReader expReader(expSource, *range);
+        auto expTree = AnalysisTree::create(QStringLiteral("malformed-skipped-exp-golomb"));
+        QVERIFY(expTree.has_value());
+        const auto expResult = DslExecutor::decodeStruct(malformedExpGolomb,
+                                                         quint32(0),
+                                                         expReader,
+                                                         *mapping,
+                                                         0,
+                                                         *expTree,
+                                                         expTree->rootId());
+        QCOMPARE(expResult.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(expResult.instructionsExecuted, quint64(4));
+        QCOMPARE(expResult.bitsConsumed, quint64(2));
+        QCOMPARE(expResult.nodesCreated, quint64(3));
     }
 
     void decodesExplicitLittleEndianWithoutChangingSourceLocation() {

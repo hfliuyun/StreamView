@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <limits>
+#include <vector>
 
 namespace streamview::rules {
 
@@ -281,6 +282,67 @@ DslExecutionResult DslVirtualMachine::execute(
         return result;
     }
 
+    const auto sameCondition = [](const DslTypedFieldCondition& left,
+                                  const DslTypedFieldCondition& right) {
+        return left.fieldIndex == right.fieldIndex &&
+               left.expectedValue == right.expectedValue && left.negated == right.negated;
+    };
+    for (std::size_t fieldIndex = 0; fieldIndex < structure.fields.size(); ++fieldIndex) {
+        const DslTypedField& field = structure.fields.at(fieldIndex);
+        for (std::size_t conditionIndex = 0; conditionIndex < field.conditions.size();
+             ++conditionIndex) {
+            const DslTypedFieldCondition& condition = field.conditions.at(conditionIndex);
+            if (condition.fieldIndex >= fieldIndex ||
+                condition.fieldIndex >= structure.fields.size()) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR field condition is invalid"),
+                            &field);
+                return result;
+            }
+            const DslTypedField& controller = structure.fields.at(condition.fieldIndex);
+            const bool validUnsignedController =
+                controller.type.kind == DslValueTypeKind::UnsignedBits &&
+                !controller.type.enumIndex;
+            const bool validEnumController =
+                controller.type.kind == DslValueTypeKind::Enum &&
+                controller.type.enumIndex && *controller.type.enumIndex < program.enums.size();
+            const bool validEndian = controller.type.endian == DslEndian::Big ||
+                                     controller.type.endian == DslEndian::Little;
+            if ((!validUnsignedController && !validEnumController) ||
+                controller.type.bitWidth == 0 || controller.type.bitWidth > 64 ||
+                !validEndian ||
+                (controller.type.endian == DslEndian::Little &&
+                 controller.type.bitWidth % 8 != 0) ||
+                !fitsUnsignedBits(condition.expectedValue, controller.type.bitWidth)) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR field condition has an invalid controller"),
+                            &field);
+                return result;
+            }
+            const auto availableEnd =
+                field.conditions.begin() + static_cast<std::ptrdiff_t>(conditionIndex);
+            const bool controllerAvailable = std::all_of(
+                controller.conditions.begin(),
+                controller.conditions.end(),
+                [&field, availableEnd, &sameCondition](
+                    const DslTypedFieldCondition& required) {
+                    return std::any_of(field.conditions.begin(),
+                                       availableEnd,
+                                       [&required, &sameCondition](
+                                           const DslTypedFieldCondition& candidate) {
+                                           return sameCondition(required, candidate);
+                                       });
+                });
+            if (!controllerAvailable) {
+                markFailure(
+                    DslExecutionStatus::InvalidDefinition,
+                    QStringLiteral("Typed IR field condition controller is not guaranteed"),
+                    &field);
+                return result;
+            }
+        }
+    }
+
     const auto consumeInstruction = [&]() -> bool {
         if (result.instructionsExecuted >= options.limits.maximumInstructions) {
             markFailure(DslExecutionStatus::ResourceLimit,
@@ -301,8 +363,10 @@ DslExecutionResult DslVirtualMachine::execute(
 
     const std::size_t begin = structure.bytecodeOffset;
     const std::size_t end = begin + structure.bytecodeLength;
+    std::vector<std::optional<quint64>> fieldValues(structure.fields.size());
     std::optional<quint32> lastField;
     std::optional<quint64> lastValue;
+    bool lastFieldSkipped = false;
     quint32 nextFieldIndex = 0;
     bool ended = false;
 
@@ -350,21 +414,15 @@ DslExecutionResult DslVirtualMachine::execute(
                 return result;
             }
             const DslTypedField& field = structure.fields.at(instruction.operand);
-            const quint64 fieldStart = reader.position();
-            const quint64 readerStart = reader.range().start().absoluteBitOffset();
             const bool readsFixedBits = instruction.opcode == DslOpcode::ReadUnsignedBits;
             const bool readsUnsignedExpGolomb =
                 instruction.opcode == DslOpcode::ReadUnsignedExpGolomb;
             const DslTypedEnum* enumeration = nullptr;
             if (readsFixedBits) {
-                const bool littleEndianMisaligned =
-                    field.type.endian == DslEndian::Little &&
-                    (field.type.bitWidth % 8 != 0 || addWouldOverflow(readerStart, fieldStart) ||
-                     (readerStart + fieldStart) % 8 != 0);
                 if (field.type.bitWidth == 0 || field.type.bitWidth > 64 ||
                     (field.type.endian != DslEndian::Big &&
                      field.type.endian != DslEndian::Little) ||
-                    littleEndianMisaligned) {
+                    (field.type.endian == DslEndian::Little && field.type.bitWidth % 8 != 0)) {
                     markFailure(DslExecutionStatus::InvalidDefinition,
                                 QStringLiteral("Typed IR field type is invalid"),
                                 &field);
@@ -421,6 +479,40 @@ DslExecutionResult DslVirtualMachine::execute(
                                 &field);
                     return result;
                 }
+            }
+            bool fieldPresent = true;
+            for (const DslTypedFieldCondition& condition : field.conditions) {
+                const std::optional<quint64>& controllerValue =
+                    fieldValues.at(condition.fieldIndex);
+                if (!controllerValue) {
+                    markFailure(
+                        DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed IR field condition controller is unavailable"),
+                        &field);
+                    return result;
+                }
+                const bool equal = *controllerValue == condition.expectedValue;
+                if (condition.negated ? equal : !equal) {
+                    fieldPresent = false;
+                    break;
+                }
+            }
+            if (!fieldPresent) {
+                lastField = instruction.operand;
+                lastValue.reset();
+                lastFieldSkipped = true;
+                ++nextFieldIndex;
+                break;
+            }
+            const quint64 fieldStart = reader.position();
+            const quint64 readerStart = reader.range().start().absoluteBitOffset();
+            if (readsFixedBits && field.type.endian == DslEndian::Little &&
+                (addWouldOverflow(readerStart, fieldStart) ||
+                 (readerStart + fieldStart) % 8 != 0)) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR field type is invalid"),
+                            &field);
+                return result;
             }
             const quint32 structureDepth = parentDepth + 1U;
             if (structureDepth >= options.limits.maximumNodeDepth) {
@@ -506,8 +598,11 @@ DslExecutionResult DslVirtualMachine::execute(
                 return result;
             }
             ++result.nodesCreated;
+            fieldValues.at(instruction.operand) =
+                readsFixedBits ? std::optional<quint64>(unsignedValue) : std::nullopt;
             lastField = instruction.operand;
             lastValue = readsFixedBits ? std::optional<quint64>(unsignedValue) : std::nullopt;
+            lastFieldSkipped = false;
             ++nextFieldIndex;
             if (enumeration != nullptr && !enumContains(*enumeration, unsignedValue)) {
                 result.status = DslExecutionStatus::InvalidSyntax;
@@ -534,13 +629,17 @@ DslExecutionResult DslVirtualMachine::execute(
             const DslTypedField* field = instruction.operand < structure.fields.size()
                                              ? &structure.fields.at(instruction.operand)
                                              : nullptr;
-            if (!result.structureNode || !lastField || !lastValue ||
-                *lastField != instruction.operand || field == nullptr ||
-                !field->equalsConstraint || *field->equalsConstraint != instruction.immediate) {
+            if (!result.structureNode || !lastField || *lastField != instruction.operand ||
+                field == nullptr || !field->equalsConstraint ||
+                *field->equalsConstraint != instruction.immediate ||
+                (lastFieldSkipped ? lastValue.has_value() : !lastValue.has_value())) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Typed IR equality instruction is invalid"),
                             nullptr);
                 return result;
+            }
+            if (lastFieldSkipped) {
+                break;
             }
             if (*lastValue == instruction.immediate) {
                 break;
