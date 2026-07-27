@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 2
-Last Completed Step: M4 checked lazy byte regions
-Next Action: Define and implement recoverable progressive index
-Last Verification: Local dev/ci/sanitize reconfigure, full build, and CTest each passed 23/23; hosted run 30308878377 passed on Windows, macOS, and Ubuntu
+Last Completed Step: M4 recoverable progressive index
+Next Action: Define and implement position-aware context directories
+Last Verification: Local dev/ci/sanitize reconfigure, full build, and CTest each passed 23/23; hosted runs 30311449960 and 30312007044 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -89,12 +89,12 @@ Blockers: None
 
 依赖：M3 的运行时边界。
 
-- [ ] 实现 mapping-preserving EBSP→RBSP、excluded span、lazy boundary 和可恢复 progressive index。
+- [x] 实现 mapping-preserving EBSP→RBSP、excluded span、lazy boundary 和可恢复 progressive index。
   - [x] 完成 source-mapped logical read 基座：mapped reader、执行前 backing/mapping 校验、
     multi-span 字段/诊断、mapped Exp-Golomb 与 logical-byte little-endian。
   - [x] 实现 bounded H.264 EBSP→RBSP mapping 与 excluded-span tree presentation。
   - [x] 实现 lazy boundary。
-  - [ ] 实现可恢复 progressive index。
+  - [x] 实现可恢复 progressive index。
 - [ ] 实现位置感知上下文目录，支持按源位置选择最近有效 SPS/PPS/ASC/sample description。
 - [ ] 以稀疏/虚拟 100 GB 源验证初始打开、已知 offset 读取、批次发布、取消和恢复；再接 SQLite WAL 分页缓存。
 
@@ -148,7 +148,8 @@ Blockers: None
 ## 阶段 2：DSL v0.1、沙箱与大型文件基础设施
 
 - [x] 完成枚举、显式大小端、`ue/se`、数组、条件、switch、有界循环、纯函数和计算字段。（枚举、显式大小端、`ue/se`、固定长度数组、条件语句、switch、有界循环、纯函数和计算字段已完成。）
-- [ ] 完成 mapped transformation、lazy 区域、渐进索引和位置感知上下文目录。
+- [ ] 完成 mapped transformation、lazy 区域、渐进索引和位置感知上下文目录。（mapped
+  transformation、lazy 区域和可恢复渐进索引已完成；位置感知上下文目录待实现。）
 - [x] 完成 bytecode 预算和取消：调用/视图深度 64、节点深度 256、单次物化 100,000 节点，每 1,024 指令检查取消。（当前子集没有 runtime call 或 view；对应深度预算已经保留。）
 - [ ] 完成 SQLite 分页缓存、后台批次提交、schema 版本和崩溃恢复。
 - [ ] 完成 TOML 清单、本地规则目录导入、`.svrule` 打包安装、哈希和版本并存。
@@ -266,3 +267,12 @@ Blockers: None
 - 2026-07-28：完成 M4 source-mapped logical read 基座：`BitReader` 支持完整 mapping 与 logical slice backing，跨 source gap 以 MSB-first 读取 `1..64` bit，后段 source failure 保持事务性，并公开 logical length 与 normalized spans；VM 在执行 bytecode、创建节点或读取 source 前精确验证 reader backing 与 mapping slice，字段和诊断可保留多个 forwarded source spans，Exp-Golomb 与 logical-byte little-endian 可跨 gap 执行，后续非对齐 segment 不影响小端值。决策与实现拆分为 `7e4c794`（ADR-0024）、`ac172cb`（core mapped reader）和 `8ef6973`（VM/executor）；本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 22/22，hosted run `30294797317` 与 `30296371878` 均在 Windows、macOS、Ubuntu 成功。下一步定义并实现 bounded H.264 EBSP→RBSP mapping 与 excluded-span tree presentation。
 - 2026-07-28：完成 M4 bounded H.264 EBSP→RBSP mapping 与 Annex B excluded-span tree presentation：`fec671c` 以 ADR-0025 固化 clause 7.3.1 transformation、clause 7.4.1 conformance、有限输出和失败前缀语义；`9d78124` 新增有界、可恢复且不复制 payload 的 mapper；`ef3a432` 让 scanner 在既有单向扫描中把最大 `trailing_zero_8bits` run 从 NAL payload 拆出；`87f6849` 在 analyzer 中按独立 mapped-byte budget 渐进映射，并按 `start_code`、`NalUnitHeader`、`rbsp_payload`、excluded bytes、trailing zeros 的顺序发布完整终态子树。extension-header NAL type `14`、`20`、`21` 暂不映射；conformance issue 保留完整 mapping、只使当前 NAL invalid 并继续后续 NAL；取消、source error 和 resource limit 保留已提交 RBSP 前缀。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 23/23；hosted run `30300358918`、`30301298871`、`30303087560` 均在 Windows、macOS、Ubuntu 成功。下一步定义并实现 lazy boundaries。
 - 2026-07-28：完成 M4 checked lazy byte regions：`80fb548` 以 ADR-0026 固化专用 `@lazy(byte_count) bytes name` 语法、checked logical-byte boundary、mapped location、零长度和失败事务语义；`40ff649` 完成 parser/AST、typed IR、bytecode、compiler 与静态校验；`bb25db4` 在 VM 执行前验证 lazy definition，按 guard 求值 checked `u64` byte count，检查 byte-to-bit overflow、absolute logical byte alignment、enclosing range、mapping 和预算，再创建 `Region` 并只 seek、不读取 payload。正长度节点为 `lazy`，零长度节点直接 `materialized`；跨 source gap 的 location 与截断 available prefix 保留全部 mapped spans，logical byte-aligned region 允许映射到非对齐 source span。针对性 executor 套件为 85/85；本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 23/23，hosted run `30308878377` 在 Windows、macOS、Ubuntu 成功。下一步定义并实现 recoverable progressive index。
+- 2026-07-28：完成 M4 recoverable progressive index：`589a9f5` 以 ADR-0027 固化同一
+  analyzer 内恢复、事务式拒绝、append-only node 和非持久 checkpoint 边界；`4ea0964`
+  新增只恢复 cancelled node、清理其直接 cancellation diagnostics 的 core 操作；`03f73db`
+  允许 scanner 原状态替换 token，并让 Annex B analyzer 保留 cursor、queue、deferred
+  result、partial descendants 和单调 identifiers 后继续。回归覆盖 scanner pending/trailing
+  state、空 token、requested token 拒绝、连续 mapper 取消、非 cancellation terminal 拒绝及
+  已发布 node 不重放。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 23/23；
+  hosted runs `30311449960` 与 `30312007044` 均在 Windows、macOS、Ubuntu 成功。下一步
+  定义并实现 position-aware context directories。
