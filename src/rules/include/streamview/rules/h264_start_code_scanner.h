@@ -25,10 +25,13 @@ enum class StartCodeScanStatus : quint8 {
 struct H264StartCodeRecord final {
     std::optional<core::SourceSpan> startCode;
     std::optional<core::SourceSpan> nalUnit;
+    std::optional<core::SourceSpan> trailingZero8Bits;
     quint64 startCodeOffset = 0;
     quint8 startCodeLength = 0;
     quint64 nalUnitOffset = 0;
     quint64 nalUnitLength = 0;
+    quint64 trailingZero8BitsOffset = 0;
+    quint64 trailingZero8BitsLength = 0;
 };
 
 struct StartCodeScanBatch final {
@@ -75,7 +78,10 @@ private:
                                           QString* errorMessage);
     [[nodiscard]] quint8 prefixLengthAt(quint64 offset, QString* errorMessage);
     [[nodiscard]] std::optional<H264StartCodeRecord>
-    makeRecord(PendingStartCode start, quint64 endOffset, QString* errorMessage) const;
+    makeRecord(PendingStartCode start,
+               quint64 endOffset,
+               quint64 trailingZero8BitsLength,
+               QString* errorMessage) const;
 
     const core::RandomAccessSource* source_ = nullptr;
     std::optional<core::CancellationToken> cancellation_;
@@ -84,6 +90,7 @@ private:
     quint64 bufferEnd_ = 0;
     quint64 cursor_ = 0;
     quint64 inspectedBytes_ = 0;
+    quint64 pendingTrailingZero8BitsLength_ = 0;
     std::optional<PendingStartCode> pending_;
     bool finished_ = false;
     bool failed_ = false;

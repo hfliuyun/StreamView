@@ -84,6 +84,7 @@ quint8 H264StartCodeScanner::prefixLengthAt(quint64 offset, QString* errorMessag
 std::optional<H264StartCodeRecord>
 H264StartCodeScanner::makeRecord(PendingStartCode start,
                                  quint64 endOffset,
+                                 quint64 trailingZero8BitsLength,
                                  QString* errorMessage) const {
     if (start.offset > std::numeric_limits<quint64>::max() - start.length ||
         endOffset < start.offset + start.length) {
@@ -91,17 +92,30 @@ H264StartCodeScanner::makeRecord(PendingStartCode start,
         return std::nullopt;
     }
     const quint64 nalOffset = start.offset + start.length;
-    const quint64 nalLength = endOffset - nalOffset;
+    const quint64 bytesAfterStartCode = endOffset - nalOffset;
+    if (trailingZero8BitsLength > bytesAfterStartCode) {
+        *errorMessage = QStringLiteral("Trailing-zero length exceeds the NAL-unit extent");
+        return std::nullopt;
+    }
+    const quint64 nalLength = bytesAfterStartCode - trailingZero8BitsLength;
+    const quint64 trailingZero8BitsOffset = nalOffset + nalLength;
     H264StartCodeRecord record;
     record.startCodeOffset = start.offset;
     record.startCodeLength = start.length;
     record.nalUnitOffset = nalOffset;
     record.nalUnitLength = nalLength;
+    record.trailingZero8BitsOffset = trailingZero8BitsOffset;
+    record.trailingZero8BitsLength = trailingZero8BitsLength;
     record.startCode = makeByteSpan(start.offset, start.length);
     if (nalLength != 0) {
         record.nalUnit = makeByteSpan(nalOffset, nalLength);
     }
-    if (!record.startCode || (nalLength != 0 && !record.nalUnit)) {
+    if (trailingZero8BitsLength != 0) {
+        record.trailingZero8Bits =
+            makeByteSpan(trailingZero8BitsOffset, trailingZero8BitsLength);
+    }
+    if (!record.startCode || (nalLength != 0 && !record.nalUnit) ||
+        (trailingZero8BitsLength != 0 && !record.trailingZero8Bits)) {
         *errorMessage = QStringLiteral("Start-code span exceeds bit coordinate limits");
         return std::nullopt;
     }
@@ -146,7 +160,10 @@ StartCodeScanBatch H264StartCodeScanner::scanBatch(std::size_t maximumRecords,
         if (cursor_ >= source_->sizeBytes()) {
             finished_ = true;
             if (pending_) {
-                const auto record = makeRecord(*pending_, source_->sizeBytes(), &errorMessage);
+                const auto record = makeRecord(*pending_,
+                                               source_->sizeBytes(),
+                                               pendingTrailingZero8BitsLength_,
+                                               &errorMessage);
                 if (!record) {
                     failed_ = true;
                     result.status = StartCodeScanStatus::SourceError;
@@ -155,6 +172,7 @@ StartCodeScanBatch H264StartCodeScanner::scanBatch(std::size_t maximumRecords,
                 }
                 result.records.push_back(*record);
                 pending_.reset();
+                pendingTrailingZero8BitsLength_ = 0;
             }
             break;
         }
@@ -169,13 +187,29 @@ StartCodeScanBatch H264StartCodeScanner::scanBatch(std::size_t maximumRecords,
         ++inspectedBytes_;
         ++inspectedPositions;
         if (prefixLength == 0) {
+            if (pending_) {
+                quint8 value = 0;
+                if (readByte(cursor_, &value, &errorMessage) != ReadByteStatus::Available) {
+                    failed_ = true;
+                    result.status = StartCodeScanStatus::SourceError;
+                    result.errorMessage = errorMessage.isEmpty()
+                                              ? QStringLiteral("Unable to classify NAL-unit byte")
+                                              : errorMessage;
+                    return result;
+                }
+                pendingTrailingZero8BitsLength_ =
+                    value == 0U ? pendingTrailingZero8BitsLength_ + 1U : 0U;
+            }
             ++cursor_;
             continue;
         }
 
         const PendingStartCode current{cursor_, prefixLength};
         if (pending_) {
-            const auto record = makeRecord(*pending_, current.offset, &errorMessage);
+            const auto record = makeRecord(*pending_,
+                                           current.offset,
+                                           pendingTrailingZero8BitsLength_,
+                                           &errorMessage);
             if (!record) {
                 failed_ = true;
                 result.status = StartCodeScanStatus::SourceError;
@@ -185,6 +219,7 @@ StartCodeScanBatch H264StartCodeScanner::scanBatch(std::size_t maximumRecords,
             result.records.push_back(*record);
         }
         pending_ = current;
+        pendingTrailingZero8BitsLength_ = 0;
         cursor_ += prefixLength;
     }
 

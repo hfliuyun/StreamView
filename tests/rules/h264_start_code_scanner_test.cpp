@@ -113,6 +113,58 @@ private slots:
         QVERIFY(finished.records.empty());
     }
 
+    void separatesTrailingZerosBeforeTheNextStartCode() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x65, 0xAA, 0x00,
+                                   0x00, 0x00, 0x00, 0x01, 0x41}));
+        H264StartCodeScanner scanner(source);
+
+        const auto result = scanner.scanBatch();
+
+        QCOMPARE(result.status, StartCodeScanStatus::Complete);
+        QCOMPARE(result.records.size(), std::size_t(2));
+        const auto& first = result.records.front();
+        QCOMPARE(first.nalUnitOffset, quint64(3));
+        QCOMPARE(first.nalUnitLength, quint64(2));
+        QVERIFY(first.nalUnit.has_value());
+        QCOMPARE(first.trailingZero8BitsOffset, quint64(5));
+        QCOMPARE(first.trailingZero8BitsLength, quint64(1));
+        QVERIFY(first.trailingZero8Bits.has_value());
+        QCOMPARE(first.trailingZero8Bits->start().absoluteBitOffset(), quint64(40));
+        QCOMPARE(first.trailingZero8Bits->bitLength(), quint64(8));
+
+        const auto& second = result.records.back();
+        QCOMPARE(second.startCodeOffset, quint64(6));
+        QCOMPARE(second.startCodeLength, quint8(4));
+        QCOMPARE(second.nalUnitOffset, quint64(10));
+        QCOMPARE(second.nalUnitLength, quint64(1));
+        QVERIFY(!second.trailingZero8Bits.has_value());
+        QCOMPARE(second.trailingZero8BitsLength, quint64(0));
+    }
+
+    void separatesTrailingZerosAtEndOfSourceAcrossBatches() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x65, 0xAA, 0x00, 0x00}));
+        H264StartCodeScanner scanner(source);
+
+        StartCodeScanStatus status = StartCodeScanStatus::InProgress;
+        std::vector<streamview::rules::H264StartCodeRecord> records;
+        while (status == StartCodeScanStatus::InProgress) {
+            auto batch = scanner.scanBatch(1, 1);
+            status = batch.status;
+            records.insert(records.end(), batch.records.begin(), batch.records.end());
+        }
+
+        QCOMPARE(status, StartCodeScanStatus::Complete);
+        QCOMPARE(records.size(), std::size_t(1));
+        const auto& record = records.front();
+        QCOMPARE(record.nalUnitOffset, quint64(3));
+        QCOMPARE(record.nalUnitLength, quint64(2));
+        QCOMPARE(record.trailingZero8BitsOffset, quint64(5));
+        QCOMPARE(record.trailingZero8BitsLength, quint64(2));
+        QVERIFY(record.trailingZero8Bits.has_value());
+        QCOMPARE(record.trailingZero8Bits->start().absoluteBitOffset(), quint64(40));
+        QCOMPARE(record.trailingZero8Bits->bitLength(), quint64(16));
+    }
+
     void detectsPrefixAcrossReadWindowBoundary() {
         std::vector<std::byte> data(65534, std::byte{0});
         data.back() = static_cast<std::byte>(0xFF);
