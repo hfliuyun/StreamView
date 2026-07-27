@@ -102,6 +102,311 @@ namespace {
                        });
 }
 
+[[nodiscard]] bool validScalarType(DslScalarType type) noexcept {
+    return type == DslScalarType::Bool || type == DslScalarType::U64;
+}
+
+[[nodiscard]] std::optional<DslScalarType> scalarTypeForField(
+    const DslTypedField& field) noexcept {
+    switch (field.type.kind) {
+    case DslValueTypeKind::UnsignedBits:
+    case DslValueTypeKind::Enum:
+    case DslValueTypeKind::UnsignedExpGolomb:
+    case DslValueTypeKind::ComputedUnsigned:
+        return DslScalarType::U64;
+    case DslValueTypeKind::ComputedBool:
+        return DslScalarType::Bool;
+    case DslValueTypeKind::SignedExpGolomb:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] bool sameCondition(const DslTypedFieldCondition& left,
+                                 const DslTypedFieldCondition& right) noexcept {
+    return left.fieldIndex == right.fieldIndex &&
+           left.expectedValue == right.expectedValue && left.negated == right.negated &&
+           left.op == right.op;
+}
+
+struct TypedExpressionValidationState final {
+    std::size_t nodeCount = 0;
+    QString errorMessage;
+};
+
+[[nodiscard]] bool validateTypedExpression(
+    const DslTypedExpression& expression,
+    const DslTypedStruct& structure,
+    std::size_t subjectFieldIndex,
+    const std::vector<DslTypedFieldCondition>& subjectConditions,
+    std::size_t depth,
+    TypedExpressionValidationState& state) {
+    const auto fail = [&state](const QString& message) {
+        if (state.errorMessage.isEmpty()) {
+            state.errorMessage = message;
+        }
+        return false;
+    };
+    if (depth > 64) {
+        return fail(QStringLiteral("Typed computed expression exceeds the depth limit"));
+    }
+    ++state.nodeCount;
+    if (state.nodeCount > 256) {
+        return fail(QStringLiteral("Typed computed expression exceeds the node limit"));
+    }
+    if (!validScalarType(expression.type)) {
+        return fail(QStringLiteral("Typed computed expression has an invalid scalar type"));
+    }
+
+    switch (expression.kind) {
+    case DslTypedExpressionKind::UnsignedLiteral:
+        return expression.type == DslScalarType::U64 && expression.operands.empty()
+                   ? true
+                   : fail(QStringLiteral("Typed unsigned literal expression is invalid"));
+    case DslTypedExpressionKind::BooleanLiteral:
+        return expression.type == DslScalarType::Bool && expression.operands.empty()
+                   ? true
+                   : fail(QStringLiteral("Typed Boolean literal expression is invalid"));
+    case DslTypedExpressionKind::FieldReference: {
+        if (!expression.operands.empty() || expression.fieldIndex >= subjectFieldIndex ||
+            expression.fieldIndex >= structure.fields.size()) {
+            return fail(QStringLiteral("Typed computed field reference is invalid"));
+        }
+        const DslTypedField& dependency = structure.fields.at(expression.fieldIndex);
+        const std::optional<DslScalarType> dependencyType = scalarTypeForField(dependency);
+        if (!dependencyType || *dependencyType != expression.type) {
+            return fail(QStringLiteral("Typed computed field reference type is invalid"));
+        }
+        const bool dependencyAvailable = std::all_of(
+            dependency.conditions.begin(),
+            dependency.conditions.end(),
+            [&subjectConditions](const DslTypedFieldCondition& required) {
+                return std::any_of(
+                    subjectConditions.begin(),
+                    subjectConditions.end(),
+                    [&required](const DslTypedFieldCondition& candidate) {
+                        return sameCondition(required, candidate);
+                    });
+            });
+        return dependencyAvailable
+                   ? true
+                   : fail(QStringLiteral(
+                         "Typed computed field dependency is not guaranteed"));
+    }
+    case DslTypedExpressionKind::Unary:
+        if (expression.unaryOperator != DslUnaryOperator::LogicalNot ||
+            expression.type != DslScalarType::Bool || expression.operands.size() != 1) {
+            return fail(QStringLiteral("Typed unary computed expression is invalid"));
+        }
+        if (!validateTypedExpression(expression.operands.front(),
+                                     structure,
+                                     subjectFieldIndex,
+                                     subjectConditions,
+                                     depth + 1,
+                                     state)) {
+            return false;
+        }
+        return expression.operands.front().type == DslScalarType::Bool
+                   ? true
+                   : fail(QStringLiteral("Typed logical negation operand is invalid"));
+    case DslTypedExpressionKind::Binary:
+        break;
+    default:
+        return fail(QStringLiteral("Typed computed expression kind is invalid"));
+    }
+
+    if (expression.operands.size() != 2) {
+        return fail(QStringLiteral("Typed binary computed expression is invalid"));
+    }
+    const DslTypedExpression& left = expression.operands.at(0);
+    const DslTypedExpression& right = expression.operands.at(1);
+    if (!validateTypedExpression(left,
+                                 structure,
+                                 subjectFieldIndex,
+                                 subjectConditions,
+                                 depth + 1,
+                                 state) ||
+        !validateTypedExpression(right,
+                                 structure,
+                                 subjectFieldIndex,
+                                 subjectConditions,
+                                 depth + 1,
+                                 state)) {
+        return false;
+    }
+
+    bool typesValid = false;
+    switch (expression.binaryOperator) {
+    case DslBinaryOperator::Multiply:
+    case DslBinaryOperator::Divide:
+    case DslBinaryOperator::Remainder:
+    case DslBinaryOperator::Add:
+    case DslBinaryOperator::Subtract:
+        typesValid = expression.type == DslScalarType::U64 &&
+                     left.type == DslScalarType::U64 && right.type == DslScalarType::U64;
+        break;
+    case DslBinaryOperator::Equal:
+    case DslBinaryOperator::NotEqual:
+        typesValid = expression.type == DslScalarType::Bool && left.type == right.type;
+        break;
+    case DslBinaryOperator::Less:
+    case DslBinaryOperator::LessEqual:
+    case DslBinaryOperator::Greater:
+    case DslBinaryOperator::GreaterEqual:
+        typesValid = expression.type == DslScalarType::Bool &&
+                     left.type == DslScalarType::U64 && right.type == DslScalarType::U64;
+        break;
+    case DslBinaryOperator::LogicalAnd:
+    case DslBinaryOperator::LogicalOr:
+        typesValid = expression.type == DslScalarType::Bool &&
+                     left.type == DslScalarType::Bool && right.type == DslScalarType::Bool;
+        break;
+    default:
+        return fail(QStringLiteral("Typed computed binary operator is invalid"));
+    }
+    return typesValid
+               ? true
+               : fail(QStringLiteral("Typed computed binary operand types are invalid"));
+}
+
+struct ComputedScalarValue final {
+    DslScalarType type = DslScalarType::U64;
+    quint64 unsignedValue = 0;
+    bool booleanValue = false;
+};
+
+struct ComputedEvaluationResult final {
+    DslExecutionStatus status = DslExecutionStatus::InvalidDefinition;
+    ComputedScalarValue value;
+    QString errorMessage;
+
+    [[nodiscard]] bool complete() const noexcept {
+        return status == DslExecutionStatus::Materialized;
+    }
+};
+
+[[nodiscard]] ComputedEvaluationResult evaluateTypedExpression(
+    const DslTypedExpression& expression,
+    const std::vector<std::optional<quint64>>& fieldValues) {
+    const auto invalidDefinition = [](const QString& message) {
+        return ComputedEvaluationResult{
+            DslExecutionStatus::InvalidDefinition, {}, message};
+    };
+    const auto invalidSyntax = [](const QString& message) {
+        return ComputedEvaluationResult{DslExecutionStatus::InvalidSyntax, {}, message};
+    };
+    const auto unsignedResult = [](quint64 value) {
+        return ComputedEvaluationResult{DslExecutionStatus::Materialized,
+                                        {DslScalarType::U64, value, false},
+                                        {}};
+    };
+    const auto booleanResult = [](bool value) {
+        return ComputedEvaluationResult{DslExecutionStatus::Materialized,
+                                        {DslScalarType::Bool, 0, value},
+                                        {}};
+    };
+
+    switch (expression.kind) {
+    case DslTypedExpressionKind::UnsignedLiteral:
+        return unsignedResult(expression.unsignedValue);
+    case DslTypedExpressionKind::BooleanLiteral:
+        return booleanResult(expression.booleanValue);
+    case DslTypedExpressionKind::FieldReference: {
+        if (expression.fieldIndex >= fieldValues.size() ||
+            !fieldValues.at(expression.fieldIndex)) {
+            return invalidDefinition(
+                QStringLiteral("Computed expression dependency is unavailable"));
+        }
+        const quint64 value = *fieldValues.at(expression.fieldIndex);
+        if (expression.type == DslScalarType::Bool) {
+            if (value > 1) {
+                return invalidDefinition(
+                    QStringLiteral("Computed Boolean dependency value is invalid"));
+            }
+            return booleanResult(value != 0);
+        }
+        return unsignedResult(value);
+    }
+    case DslTypedExpressionKind::Unary: {
+        const ComputedEvaluationResult operand =
+            evaluateTypedExpression(expression.operands.front(), fieldValues);
+        return operand.complete() ? booleanResult(!operand.value.booleanValue) : operand;
+    }
+    case DslTypedExpressionKind::Binary:
+        break;
+    default:
+        return invalidDefinition(QStringLiteral("Computed expression kind is invalid"));
+    }
+
+    const ComputedEvaluationResult left =
+        evaluateTypedExpression(expression.operands.at(0), fieldValues);
+    if (!left.complete()) {
+        return left;
+    }
+    if (expression.binaryOperator == DslBinaryOperator::LogicalAnd &&
+        !left.value.booleanValue) {
+        return booleanResult(false);
+    }
+    if (expression.binaryOperator == DslBinaryOperator::LogicalOr &&
+        left.value.booleanValue) {
+        return booleanResult(true);
+    }
+    const ComputedEvaluationResult right =
+        evaluateTypedExpression(expression.operands.at(1), fieldValues);
+    if (!right.complete()) {
+        return right;
+    }
+
+    const quint64 leftUnsigned = left.value.unsignedValue;
+    const quint64 rightUnsigned = right.value.unsignedValue;
+    switch (expression.binaryOperator) {
+    case DslBinaryOperator::Multiply:
+        if (leftUnsigned != 0 &&
+            rightUnsigned > std::numeric_limits<quint64>::max() / leftUnsigned) {
+            return invalidSyntax(QStringLiteral("Computed expression multiplication overflow"));
+        }
+        return unsignedResult(leftUnsigned * rightUnsigned);
+    case DslBinaryOperator::Divide:
+        return rightUnsigned == 0
+                   ? invalidSyntax(QStringLiteral("Computed expression division by zero"))
+                   : unsignedResult(leftUnsigned / rightUnsigned);
+    case DslBinaryOperator::Remainder:
+        return rightUnsigned == 0
+                   ? invalidSyntax(QStringLiteral("Computed expression remainder by zero"))
+                   : unsignedResult(leftUnsigned % rightUnsigned);
+    case DslBinaryOperator::Add:
+        return addWouldOverflow(leftUnsigned, rightUnsigned)
+                   ? invalidSyntax(QStringLiteral("Computed expression addition overflow"))
+                   : unsignedResult(leftUnsigned + rightUnsigned);
+    case DslBinaryOperator::Subtract:
+        return leftUnsigned < rightUnsigned
+                   ? invalidSyntax(QStringLiteral("Computed expression subtraction underflow"))
+                   : unsignedResult(leftUnsigned - rightUnsigned);
+    case DslBinaryOperator::Equal:
+    case DslBinaryOperator::NotEqual: {
+        const bool equal = left.value.type == DslScalarType::Bool
+                               ? left.value.booleanValue == right.value.booleanValue
+                               : leftUnsigned == rightUnsigned;
+        return booleanResult(expression.binaryOperator == DslBinaryOperator::Equal
+                                 ? equal
+                                 : !equal);
+    }
+    case DslBinaryOperator::Less:
+        return booleanResult(leftUnsigned < rightUnsigned);
+    case DslBinaryOperator::LessEqual:
+        return booleanResult(leftUnsigned <= rightUnsigned);
+    case DslBinaryOperator::Greater:
+        return booleanResult(leftUnsigned > rightUnsigned);
+    case DslBinaryOperator::GreaterEqual:
+        return booleanResult(leftUnsigned >= rightUnsigned);
+    case DslBinaryOperator::LogicalAnd:
+        return booleanResult(left.value.booleanValue && right.value.booleanValue);
+    case DslBinaryOperator::LogicalOr:
+        return booleanResult(left.value.booleanValue || right.value.booleanValue);
+    }
+    return invalidDefinition(QStringLiteral("Computed expression operator is invalid"));
+}
+
 struct ExpGolombReadResult final {
     DslExecutionStatus status = DslExecutionStatus::InvalidDefinition;
     quint64 unsignedValue = 0;
@@ -213,7 +518,8 @@ DslExecutionResult DslVirtualMachine::execute(
                                  const QString& message,
                                  const DslTypedField* field,
                                  std::optional<quint64> diagnosticPosition = std::nullopt,
-                                 std::optional<quint64> diagnosticBits = std::nullopt) {
+                                 std::optional<quint64> diagnosticBits = std::nullopt,
+                                 bool includeLocation = true) {
         result.status = status;
         result.errorMessage = message;
         core::ParseDiagnostic diagnostic;
@@ -226,15 +532,17 @@ DslExecutionResult DslVirtualMachine::execute(
             diagnostic.fieldPath += QLatin1Char('.') + field->name;
             requestedBits = field->type.bitWidth;
         }
-        const quint64 position = diagnosticPosition.value_or(reader.position());
-        const quint64 availableBits = position <= reader.range().bitLength()
-                                           ? reader.range().bitLength() - position
-                                           : 0;
-        diagnostic.location = locationAt(mapping,
-                                          logicalStart,
-                                          position,
-                                          availableBits,
-                                          diagnosticBits.value_or(requestedBits));
+        if (includeLocation) {
+            const quint64 position = diagnosticPosition.value_or(reader.position());
+            const quint64 availableBits = position <= reader.range().bitLength()
+                                               ? reader.range().bitLength() - position
+                                               : 0;
+            diagnostic.location = locationAt(mapping,
+                                              logicalStart,
+                                              position,
+                                              availableBits,
+                                              diagnosticBits.value_or(requestedBits));
+        }
         const auto state = status == DslExecutionStatus::Cancelled
                                ? core::MaterializationState::Cancelled
                                : core::MaterializationState::Invalid;
@@ -282,12 +590,6 @@ DslExecutionResult DslVirtualMachine::execute(
         return result;
     }
 
-    const auto sameCondition = [](const DslTypedFieldCondition& left,
-                                  const DslTypedFieldCondition& right) {
-        return left.fieldIndex == right.fieldIndex &&
-               left.expectedValue == right.expectedValue && left.negated == right.negated &&
-               left.op == right.op;
-    };
     const auto validFixedController = [&program](const DslTypedField& controller) {
         const bool validUnsignedController =
             controller.type.kind == DslValueTypeKind::UnsignedBits &&
@@ -306,6 +608,12 @@ DslExecutionResult DslVirtualMachine::execute(
         return controller.type.kind == DslValueTypeKind::UnsignedExpGolomb &&
                controller.type.bitWidth == 0 && controller.type.endian == DslEndian::Big &&
                !controller.type.enumIndex && !controller.equalsConstraint;
+    };
+    const auto validComputedController = [](const DslTypedField& controller,
+                                            DslValueTypeKind expectedKind) {
+        return controller.type.kind == expectedKind && controller.type.bitWidth == 0 &&
+               controller.type.endian == DslEndian::Big && !controller.type.enumIndex &&
+               !controller.equalsConstraint && controller.computedExpression.has_value();
     };
     const auto validateConditions = [&](const std::vector<DslTypedFieldCondition>& conditions,
                                         std::size_t subjectFieldIndex,
@@ -327,10 +635,16 @@ DslExecutionResult DslVirtualMachine::execute(
             const bool fixedController = validFixedController(controller);
             const bool unsignedExpGolombController =
                 validUnsignedExpGolombController(controller);
+            const bool computedUnsignedController =
+                validComputedController(controller, DslValueTypeKind::ComputedUnsigned);
+            const bool computedBooleanController =
+                validComputedController(controller, DslValueTypeKind::ComputedBool);
             const bool validController =
                 condition.op == DslConditionOperator::Equal
-                    ? fixedController
-                    : fixedController || unsignedExpGolombController;
+                    ? fixedController || computedUnsignedController ||
+                          (computedBooleanController && condition.expectedValue == 1)
+                    : fixedController || unsignedExpGolombController ||
+                          computedUnsignedController;
             if (!validOperator || !validController ||
                 (fixedController &&
                  !fitsUnsignedBits(condition.expectedValue, controller.type.bitWidth))) {
@@ -345,11 +659,11 @@ DslExecutionResult DslVirtualMachine::execute(
             const bool controllerAvailable = std::all_of(
                 controller.conditions.begin(),
                 controller.conditions.end(),
-                [&conditions, availableEnd, &sameCondition](
+                [&conditions, availableEnd](
                     const DslTypedFieldCondition& required) {
                     return std::any_of(conditions.begin(),
                                        availableEnd,
-                                       [&required, &sameCondition](
+                                       [&required](
                                            const DslTypedFieldCondition& candidate) {
                                            return sameCondition(required, candidate);
                                        });
@@ -365,6 +679,57 @@ DslExecutionResult DslVirtualMachine::execute(
         }
         return true;
     };
+    for (std::size_t fieldIndex = 0; fieldIndex < structure.fields.size(); ++fieldIndex) {
+        const DslTypedField& field = structure.fields.at(fieldIndex);
+        const bool computedBoolean =
+            field.type.kind == DslValueTypeKind::ComputedBool;
+        const bool computedUnsigned =
+            field.type.kind == DslValueTypeKind::ComputedUnsigned;
+        if (!computedBoolean && !computedUnsigned) {
+            if (field.computedExpression) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Source-backed typed field has a computed expression"),
+                            &field);
+                return result;
+            }
+            continue;
+        }
+        if (!validComputedController(field, field.type.kind)) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed computed field definition is invalid"),
+                        &field,
+                        std::nullopt,
+                        std::nullopt,
+                        false);
+            return result;
+        }
+        TypedExpressionValidationState validation;
+        if (!validateTypedExpression(*field.computedExpression,
+                                     structure,
+                                     fieldIndex,
+                                     field.conditions,
+                                     1,
+                                     validation)) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        validation.errorMessage,
+                        &field,
+                        std::nullopt,
+                        std::nullopt,
+                        false);
+            return result;
+        }
+        const DslScalarType expectedType = computedBoolean ? DslScalarType::Bool
+                                                           : DslScalarType::U64;
+        if (field.computedExpression->type != expectedType) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed computed expression result type is invalid"),
+                        &field,
+                        std::nullopt,
+                        std::nullopt,
+                        false);
+            return result;
+        }
+    }
     for (std::size_t fieldIndex = 0; fieldIndex < structure.fields.size(); ++fieldIndex) {
         const DslTypedField& field = structure.fields.at(fieldIndex);
         if (!validateConditions(
@@ -390,7 +755,10 @@ DslExecutionResult DslVirtualMachine::execute(
         const DslTypedField& controller =
             structure.fields.at(repeat.controllerFieldIndex);
         const bool fixedController = validFixedController(controller);
-        if ((!fixedController && !validUnsignedExpGolombController(controller)) ||
+        const bool computedUnsignedController =
+            validComputedController(controller, DslValueTypeKind::ComputedUnsigned);
+        if ((!fixedController && !validUnsignedExpGolombController(controller) &&
+             !computedUnsignedController) ||
             (fixedController &&
              !fitsUnsignedBits(repeat.maximumCount, controller.type.bitWidth))) {
             markFailure(DslExecutionStatus::InvalidDefinition,
@@ -407,10 +775,10 @@ DslExecutionResult DslVirtualMachine::execute(
         const bool controllerAvailable = std::all_of(
             controller.conditions.begin(),
             controller.conditions.end(),
-            [&repeat, &sameCondition](const DslTypedFieldCondition& required) {
+            [&repeat](const DslTypedFieldCondition& required) {
                 return std::any_of(repeat.conditions.begin(),
                                    repeat.conditions.end(),
-                                   [&required, &sameCondition](
+                                   [&required](
                                        const DslTypedFieldCondition& candidate) {
                                        return sameCondition(required, candidate);
                                    });
@@ -577,6 +945,11 @@ DslExecutionResult DslVirtualMachine::execute(
                                 QStringLiteral("Typed IR opcode does not match the field type"),
                                 &field);
                     return result;
+                default:
+                    markFailure(DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Typed IR field type kind is invalid"),
+                                &field);
+                    return result;
                 }
             } else {
                 const DslValueTypeKind expectedKind =
@@ -728,11 +1101,99 @@ DslExecutionResult DslVirtualMachine::execute(
             }
             break;
         }
-        case DslOpcode::EvaluateComputed:
-            markFailure(DslExecutionStatus::InvalidDefinition,
-                        QStringLiteral("Computed expression execution is not implemented"),
-                        nullptr);
-            return result;
+        case DslOpcode::EvaluateComputed: {
+            if (!result.structureNode || instruction.operand != nextFieldIndex ||
+                instruction.operand >= structure.fields.size()) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR computed instruction is invalid"),
+                            nullptr);
+                return result;
+            }
+            const DslTypedField& field = structure.fields.at(instruction.operand);
+            const bool computedBoolean =
+                field.type.kind == DslValueTypeKind::ComputedBool;
+            const bool computedUnsigned =
+                field.type.kind == DslValueTypeKind::ComputedUnsigned;
+            if ((!computedBoolean && !computedUnsigned) || !field.computedExpression) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR computed field definition is invalid"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            const std::optional<bool> fieldPresent =
+                conditionsPresent(field.conditions, &field, QStringLiteral("computed field"));
+            if (!fieldPresent) {
+                return result;
+            }
+            if (!*fieldPresent) {
+                lastField = instruction.operand;
+                lastValue.reset();
+                lastFieldSkipped = true;
+                ++nextFieldIndex;
+                break;
+            }
+            const quint32 structureDepth = parentDepth + 1U;
+            if (structureDepth >= options.limits.maximumNodeDepth) {
+                markFailure(DslExecutionStatus::ResourceLimit,
+                            QStringLiteral("DSL analysis node depth limit exceeded"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            if (result.nodesCreated >= options.limits.maximumMaterializedNodes) {
+                markFailure(DslExecutionStatus::ResourceLimit,
+                            QStringLiteral("DSL materialized-node budget exceeded"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            const ComputedEvaluationResult evaluated =
+                evaluateTypedExpression(*field.computedExpression, fieldValues);
+            if (!evaluated.complete()) {
+                markFailure(evaluated.status,
+                            evaluated.errorMessage,
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            core::AnalysisNodeSpec fieldSpec;
+            fieldSpec.kind = core::AnalysisNodeKind::ComputedField;
+            fieldSpec.name = field.name;
+            fieldSpec.state = core::MaterializationState::Materialized;
+            fieldSpec.value = computedBoolean
+                                  ? QVariant::fromValue<bool>(evaluated.value.booleanValue)
+                                  : QVariant::fromValue<qulonglong>(
+                                        evaluated.value.unsignedValue);
+            fieldSpec.metadata = field.metadata;
+            if (!tree.appendChild(*result.structureNode, std::move(fieldSpec))) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Unable to append computed field node"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            ++result.nodesCreated;
+            fieldValues.at(instruction.operand) =
+                computedBoolean ? static_cast<quint64>(evaluated.value.booleanValue)
+                                : evaluated.value.unsignedValue;
+            fieldRanges.at(instruction.operand).reset();
+            lastField = instruction.operand;
+            lastValue.reset();
+            lastFieldSkipped = false;
+            ++nextFieldIndex;
+            break;
+        }
         case DslOpcode::AssertEquals: {
             const DslTypedField* field = instruction.operand < structure.fields.size()
                                              ? &structure.fields.at(instruction.operand)
@@ -814,7 +1275,8 @@ DslExecutionResult DslVirtualMachine::execute(
                             : std::nullopt,
                         controllerRange
                             ? std::optional<quint64>(controllerRange->bitCount)
-                            : std::nullopt);
+                            : std::nullopt,
+                        controllerRange.has_value());
             return result;
         }
         case DslOpcode::EndStructure:
@@ -830,6 +1292,11 @@ DslExecutionResult DslVirtualMachine::execute(
             result.status = DslExecutionStatus::Materialized;
             ended = true;
             break;
+        default:
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed IR opcode is invalid"),
+                        nullptr);
+            return result;
         }
         if (ended) {
             break;
