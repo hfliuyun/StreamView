@@ -423,7 +423,7 @@ struct ExpGolombReadResult final {
 [[nodiscard]] ExpGolombReadResult readExpGolomb(core::BitReader& reader,
                                                  bool signedValue) {
     const quint64 start = reader.position();
-    const quint64 rangeLength = reader.range().bitLength();
+    const quint64 rangeLength = reader.logicalBitLength();
     const quint64 availableAtStart = rangeLength >= start ? rangeLength - start : 0;
     const auto fail = [&](DslExecutionStatus status,
                           const QString& message,
@@ -534,8 +534,8 @@ DslExecutionResult DslVirtualMachine::execute(
         }
         if (includeLocation) {
             const quint64 position = diagnosticPosition.value_or(reader.position());
-            const quint64 availableBits = position <= reader.range().bitLength()
-                                               ? reader.range().bitLength() - position
+            const quint64 availableBits = position <= reader.logicalBitLength()
+                                               ? reader.logicalBitLength() - position
                                                : 0;
             diagnostic.location = locationAt(mapping,
                                               logicalStart,
@@ -977,9 +977,14 @@ DslExecutionResult DslVirtualMachine::execute(
                 break;
             }
             const quint64 fieldStart = reader.position();
-            const quint64 readerStart = reader.range().start().absoluteBitOffset();
+            const bool directReader = reader.backingSpans().size() == 1;
+            const quint64 readerStart = directReader
+                                            ? reader.backingSpans().front()
+                                                  .start()
+                                                  .absoluteBitOffset()
+                                            : 0;
             if (readsFixedBits && field.type.endian == DslEndian::Little &&
-                (addWouldOverflow(readerStart, fieldStart) ||
+                (!directReader || addWouldOverflow(readerStart, fieldStart) ||
                  (readerStart + fieldStart) % 8 != 0)) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Typed IR field type is invalid"),
@@ -1043,7 +1048,7 @@ DslExecutionResult DslVirtualMachine::execute(
                                              fieldStart,
                                              consumedBits,
                                              consumedBits);
-            if (addWouldOverflow(readerStart, fieldStart) || !location ||
+            if (!directReader || addWouldOverflow(readerStart, fieldStart) || !location ||
                 location->sourceSpans().size() != 1 ||
                 location->sourceSpans().front().start().absoluteBitOffset() !=
                     readerStart + fieldStart ||
