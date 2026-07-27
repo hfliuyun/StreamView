@@ -257,7 +257,7 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
         return false;
     }
 
-    core::BitReader reader(*source_, *headerSpan);
+    core::BitReader reader(*source_, *mapping);
     DslExecutionOptions executionOptions;
     if (allowExecutionCancellation) {
         executionOptions.cancellation = cancellation_;

@@ -14,6 +14,7 @@
 #include <initializer_list>
 #include <limits>
 #include <span>
+#include <utility>
 #include <vector>
 
 using streamview::core::AnalysisNodeKind;
@@ -67,6 +68,7 @@ public:
         if (destination.empty()) {
             return {SourceReadStatus::Complete, 0, {}};
         }
+        ++readCount_;
         if (byteOffset >= data_.size()) {
             return {SourceReadStatus::EndOfSource, 0, {}};
         }
@@ -81,8 +83,11 @@ public:
                 {}};
     }
 
+    [[nodiscard]] quint64 readCount() const noexcept { return readCount_; }
+
 private:
     std::vector<std::byte> data_;
+    mutable quint64 readCount_ = 0;
 };
 
 class CancellingMemorySource final : public RandomAccessSource {
@@ -168,12 +173,115 @@ mappingForBytes(quint64 byteCount) {
         streamview::core::LogicalViewId(1), {*span});
 }
 
+[[nodiscard]] std::optional<streamview::core::SourceMapping> mappingForSpans(
+    std::initializer_list<std::pair<quint64, quint64>> ranges) {
+    std::vector<SourceSpan> spans;
+    spans.reserve(ranges.size());
+    for (const auto& [start, bitLength] : ranges) {
+        const auto span =
+            SourceSpan::create(streamview::core::SourceBitAddress(start), bitLength);
+        if (!span) {
+            return std::nullopt;
+        }
+        spans.push_back(*span);
+    }
+    return streamview::core::SourceMapping::create(
+        streamview::core::LogicalViewId(1), std::move(spans));
+}
+
 } // namespace
 
 class DslExecutorTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void rejectsMismatchedReaderBackingBeforeExecution() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { bits<8> value; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0xff, 0x00}));
+        const auto readerSpan =
+            SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        const auto mappingSpan =
+            SourceSpan::create(streamview::core::SourceBitAddress(8), 8);
+        QVERIFY(readerSpan.has_value());
+        QVERIFY(mappingSpan.has_value());
+        const auto mapping = streamview::core::SourceMapping::create(
+            streamview::core::LogicalViewId(1), {*mappingSpan});
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *readerSpan);
+        auto tree = AnalysisTree::create(QStringLiteral("mismatched-reader-backing"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(result.errorMessage,
+                 QStringLiteral("DSL reader backing does not match the supplied source mapping"));
+        QCOMPARE(result.instructionsExecuted, quint64{0});
+        QCOMPARE(result.bitsConsumed, quint64{0});
+        QCOMPARE(result.nodesCreated, quint64{0});
+        QVERIFY(!result.structureNode.has_value());
+        QCOMPARE(reader.position(), quint64{0});
+        QCOMPARE(source.readCount(), quint64{0});
+        const auto root = tree->node(tree->rootId());
+        QVERIFY(root.has_value());
+        QVERIFY(root->children().empty());
+    }
+
+    void rejectsDifferentMappedSpanTopologyBeforeExecution() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { bits<16> value; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0xab, 0xcd, 0xef}));
+        const auto readerMapping = mappingForSpans({{0, 8}, {16, 8}});
+        const auto publishedMapping = mappingForSpans({{0, 16}});
+        QVERIFY(readerMapping.has_value());
+        QVERIFY(publishedMapping.has_value());
+        BitReader reader(source, *readerMapping);
+        auto tree = AnalysisTree::create(QStringLiteral("mismatched-span-topology"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(parsed.program,
+                                                       QStringLiteral("Header"),
+                                                       reader,
+                                                       *publishedMapping,
+                                                       0,
+                                                       *tree,
+                                                       tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(result.instructionsExecuted, quint64{0});
+        QCOMPARE(result.nodesCreated, quint64{0});
+        QVERIFY(!result.structureNode.has_value());
+        QCOMPARE(reader.position(), quint64{0});
+        QCOMPARE(source.readCount(), quint64{0});
+    }
+
+    void acceptsAnEmptyMappedReaderAndReportsFieldTruncation() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { bits<1> value; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({}));
+        const auto mapping = streamview::core::SourceMapping::create(
+            streamview::core::LogicalViewId(1), {});
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *mapping);
+        auto tree = AnalysisTree::create(QStringLiteral("empty-mapped-reader"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::TruncatedSource);
+        QCOMPARE(result.bitsConsumed, quint64{0});
+        QCOMPARE(result.nodesCreated, quint64{1});
+        QVERIFY(result.structureNode.has_value());
+        QCOMPARE(reader.position(), quint64{0});
+        QCOMPARE(source.readCount(), quint64{0});
+    }
+
     void materializesFieldsWithValuesAndLocations() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "struct Header { bits<3> first; bits<5> second; } entry Header;"));
@@ -2958,6 +3066,245 @@ private slots:
         QCOMPARE(value->location()->logicalRange().bitLength(), quint64(16));
         QCOMPARE(value->location()->sourceSpans().front().start().absoluteBitOffset(), quint64(0));
         QCOMPARE(value->location()->sourceSpans().front().bitLength(), quint64(16));
+    }
+
+    void materializesMappedFieldAcrossASourceGap() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { bits<16> value; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0xab, 0xff, 0xcd}));
+        const auto mapping = mappingForSpans({{0, 8}, {16, 8}});
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *mapping);
+        auto tree = AnalysisTree::create(QStringLiteral("mapped-fixed-field"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64{16});
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t{1});
+        const auto value = tree->node(structure->children().front());
+        QVERIFY(value.has_value());
+        QCOMPARE(value->value().toULongLong(), quint64{0xabcd});
+        QVERIFY(value->location().has_value());
+        QCOMPARE(value->location()->logicalRange().bitLength(), quint64{16});
+        QCOMPARE(value->location()->sourceSpans().size(), std::size_t{2});
+        QCOMPARE(value->location()->sourceSpans().at(0).start().absoluteBitOffset(), quint64{0});
+        QCOMPARE(value->location()->sourceSpans().at(0).bitLength(), quint64{8});
+        QCOMPARE(value->location()->sourceSpans().at(1).start().absoluteBitOffset(), quint64{16});
+        QCOMPARE(value->location()->sourceSpans().at(1).bitLength(), quint64{8});
+    }
+
+    void executesAMappedReaderSliceAtANonzeroLogicalStart() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { bits<16> value; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0xaa, 0xff, 0xbc, 0xff, 0xde}));
+        const auto mapping = mappingForSpans({{0, 8}, {16, 8}, {32, 8}});
+        QVERIFY(mapping.has_value());
+        auto reader = BitReader::fromMappingSlice(source, *mapping, 8, 16);
+        QVERIFY(reader.has_value());
+        auto tree = AnalysisTree::create(QStringLiteral("mapped-reader-slice"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(parsed.program,
+                                                       QStringLiteral("Header"),
+                                                       *reader,
+                                                       *mapping,
+                                                       8,
+                                                       *tree,
+                                                       tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64{16});
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        const auto value = tree->node(structure->children().front());
+        QVERIFY(value.has_value());
+        QCOMPARE(value->value().toULongLong(), quint64{0xbcde});
+        QCOMPARE(value->location()->logicalRange().start().bitOffset(), quint64{8});
+        QCOMPARE(value->location()->sourceSpans().size(), std::size_t{2});
+        QCOMPARE(value->location()->sourceSpans().at(0).start().absoluteBitOffset(), quint64{16});
+        QCOMPARE(value->location()->sourceSpans().at(1).start().absoluteBitOffset(), quint64{32});
+    }
+
+    void locatesMappedTruncationAcrossAvailableSourceSpans() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { bits<16> value; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0xab, 0xff, 0xc0}));
+        const auto mapping = mappingForSpans({{0, 8}, {16, 4}});
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *mapping);
+        auto tree = AnalysisTree::create(QStringLiteral("mapped-truncation"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::TruncatedSource);
+        QCOMPARE(result.bitsConsumed, quint64{0});
+        QCOMPARE(reader.position(), quint64{0});
+        QCOMPARE(source.readCount(), quint64{0});
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QVERIFY(structure->children().empty());
+        QCOMPARE(structure->diagnostics().size(), std::size_t{1});
+        const auto& diagnostic = structure->diagnostics().front();
+        QVERIFY(diagnostic.location.has_value());
+        QCOMPARE(diagnostic.location->logicalRange().bitLength(), quint64{12});
+        QCOMPARE(diagnostic.location->sourceSpans().size(), std::size_t{2});
+        QCOMPARE(diagnostic.location->sourceSpans().at(0).start().absoluteBitOffset(), quint64{0});
+        QCOMPARE(diagnostic.location->sourceSpans().at(0).bitLength(), quint64{8});
+        QCOMPARE(diagnostic.location->sourceSpans().at(1).start().absoluteBitOffset(), quint64{16});
+        QCOMPARE(diagnostic.location->sourceSpans().at(1).bitLength(), quint64{4});
+    }
+
+    void decodesMappedExpGolombFieldAcrossASourceGap() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { ue value; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0x00, 0xa0}));
+        const auto mapping = mappingForSpans({{0, 2}, {8, 3}});
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *mapping);
+        auto tree = AnalysisTree::create(QStringLiteral("mapped-exp-golomb"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64{5});
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        const auto value = tree->node(structure->children().front());
+        QVERIFY(value.has_value());
+        QCOMPARE(value->value().toULongLong(), quint64{4});
+        QVERIFY(value->location().has_value());
+        QCOMPARE(value->location()->logicalRange().bitLength(), quint64{5});
+        QCOMPARE(value->location()->sourceSpans().size(), std::size_t{2});
+        QCOMPARE(value->location()->sourceSpans().at(0).start().absoluteBitOffset(), quint64{0});
+        QCOMPARE(value->location()->sourceSpans().at(0).bitLength(), quint64{2});
+        QCOMPARE(value->location()->sourceSpans().at(1).start().absoluteBitOffset(), quint64{8});
+        QCOMPARE(value->location()->sourceSpans().at(1).bitLength(), quint64{3});
+    }
+
+    void keepsMappedFieldTransactionalWhenALaterSourceSpanFails() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { bits<16> value; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        FailingAfterFirstReadSource source(bytes({0xab, 0xff, 0xcd}));
+        const auto mapping = mappingForSpans({{0, 8}, {16, 8}});
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *mapping);
+        auto tree = AnalysisTree::create(QStringLiteral("mapped-source-error"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::SourceError);
+        QCOMPARE(result.bitsConsumed, quint64{0});
+        QCOMPARE(reader.position(), quint64{0});
+        QCOMPARE(result.nodesCreated, quint64{1});
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QVERIFY(structure->children().empty());
+        QCOMPARE(structure->diagnostics().size(), std::size_t{1});
+        const auto& diagnostic = structure->diagnostics().front();
+        QVERIFY(diagnostic.location.has_value());
+        QCOMPARE(diagnostic.location->sourceSpans().size(), std::size_t{2});
+        QCOMPARE(diagnostic.location->sourceSpans().at(0).start().absoluteBitOffset(), quint64{0});
+        QCOMPARE(diagnostic.location->sourceSpans().at(1).start().absoluteBitOffset(), quint64{16});
+    }
+
+    void decodesMappedLittleEndianFieldAcrossASourceGap() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<16, little> value; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0x34, 0xff, 0x12}));
+        const auto mapping = mappingForSpans({{0, 8}, {16, 8}});
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *mapping);
+        auto tree = AnalysisTree::create(QStringLiteral("mapped-little-endian"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64{16});
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        const auto value = tree->node(structure->children().front());
+        QVERIFY(value.has_value());
+        QCOMPARE(value->value().toULongLong(), quint64{0x1234});
+        QVERIFY(value->location().has_value());
+        QCOMPARE(value->location()->sourceSpans().size(), std::size_t{2});
+        QCOMPARE(value->location()->sourceSpans().at(0).start().absoluteBitOffset(), quint64{0});
+        QCOMPARE(value->location()->sourceSpans().at(0).bitLength(), quint64{8});
+        QCOMPARE(value->location()->sourceSpans().at(1).start().absoluteBitOffset(), quint64{16});
+        QCOMPARE(value->location()->sourceSpans().at(1).bitLength(), quint64{8});
+    }
+
+    void allowsUnalignedLaterSpansInMappedLittleEndianFields() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<16, little> value; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0x34, 0x10, 0x02}));
+        const auto mapping = mappingForSpans({{0, 12}, {20, 4}});
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *mapping);
+        auto tree = AnalysisTree::create(QStringLiteral("mapped-unaligned-later-span"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        const auto value = tree->node(structure->children().front());
+        QVERIFY(value.has_value());
+        QCOMPARE(value->value().toULongLong(), quint64{0x1234});
+        QVERIFY(value->location().has_value());
+        QCOMPARE(value->location()->sourceSpans().size(), std::size_t{2});
+        QCOMPARE(value->location()->sourceSpans().at(0).bitLength(), quint64{12});
+        QCOMPARE(value->location()->sourceSpans().at(1).start().absoluteBitOffset(), quint64{20});
+        QCOMPARE(value->location()->sourceSpans().at(1).bitLength(), quint64{4});
+    }
+
+    void rejectsMappedLittleEndianAtAnUnalignedLogicalStart() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<16, little> value; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0x03, 0x41, 0x20}));
+        const auto mapping = mappingForSpans({{4, 20}});
+        QVERIFY(mapping.has_value());
+        auto reader = BitReader::fromMappingSlice(source, *mapping, 4, 16);
+        QVERIFY(reader.has_value());
+        QCOMPARE(reader->backingSpans().front().start().absoluteBitOffset(), quint64{8});
+        auto tree = AnalysisTree::create(QStringLiteral("unaligned-logical-little-endian"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(parsed.program,
+                                                       QStringLiteral("Header"),
+                                                       *reader,
+                                                       *mapping,
+                                                       4,
+                                                       *tree,
+                                                       tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(result.bitsConsumed, quint64{0});
+        QCOMPARE(result.nodesCreated, quint64{1});
+        QCOMPARE(reader->position(), quint64{0});
+        QCOMPARE(source.readCount(), quint64{0});
     }
 
     void decodesAFullWidthLittleEndianValue() {

@@ -61,6 +61,28 @@ namespace {
     return range ? mapping.locate(*range) : std::nullopt;
 }
 
+[[nodiscard]] bool sameSourceSpans(const std::vector<core::SourceSpan>& left,
+                                   const std::vector<core::SourceSpan>& right) noexcept {
+    return left.size() == right.size() &&
+           std::equal(left.begin(),
+                      left.end(),
+                      right.begin(),
+                      [](const core::SourceSpan& leftSpan,
+                         const core::SourceSpan& rightSpan) {
+                          return leftSpan.start() == rightSpan.start() &&
+                                 leftSpan.bitLength() == rightSpan.bitLength();
+                      });
+}
+
+[[nodiscard]] bool readerBackingMatchesMapping(const core::BitReader& reader,
+                                               const core::SourceMapping& mapping,
+                                               quint64 logicalStart) {
+    const auto range = core::LogicalRange::create(
+        core::LogicalBitAddress(mapping.viewId(), logicalStart), reader.logicalBitLength());
+    const auto location = range ? mapping.locate(*range) : std::nullopt;
+    return location && sameSourceSpans(reader.backingSpans(), location->sourceSpans());
+}
+
 [[nodiscard]] quint32 nodeDepth(const core::AnalysisTree& tree,
                                 core::AnalysisNodeId id) noexcept {
     quint32 depth = 0;
@@ -510,6 +532,11 @@ DslExecutionResult DslVirtualMachine::execute(
     DslExecutionResult result;
     if (structureIndex >= program.structs.size()) {
         result.errorMessage = QStringLiteral("Typed IR structure index is out of range");
+        return result;
+    }
+    if (!readerBackingMatchesMapping(reader, mapping, logicalStart)) {
+        result.errorMessage =
+            QStringLiteral("DSL reader backing does not match the supplied source mapping");
         return result;
     }
 
@@ -977,19 +1004,32 @@ DslExecutionResult DslVirtualMachine::execute(
                 break;
             }
             const quint64 fieldStart = reader.position();
-            const bool directReader = reader.backingSpans().size() == 1;
-            const quint64 readerStart = directReader
-                                            ? reader.backingSpans().front()
-                                                  .start()
-                                                  .absoluteBitOffset()
-                                            : 0;
-            if (readsFixedBits && field.type.endian == DslEndian::Little &&
-                (!directReader || addWouldOverflow(readerStart, fieldStart) ||
-                 (readerStart + fieldStart) % 8 != 0)) {
-                markFailure(DslExecutionStatus::InvalidDefinition,
-                            QStringLiteral("Typed IR field type is invalid"),
-                            &field);
-                return result;
+            if (readsFixedBits && field.type.endian == DslEndian::Little) {
+                const bool hasReadableBit = reader.remainingBits() != 0;
+                const auto firstBitLocation = hasReadableBit
+                                                  ? locationAt(mapping,
+                                                               logicalStart,
+                                                               fieldStart,
+                                                               1,
+                                                               1)
+                                                  : std::nullopt;
+                const bool sourceStartMisaligned =
+                    hasReadableBit &&
+                    (!firstBitLocation || firstBitLocation->sourceSpans().empty() ||
+                     firstBitLocation->sourceSpans()
+                                 .front()
+                                 .start()
+                                 .absoluteBitOffset() %
+                             8 !=
+                         0);
+                if (addWouldOverflow(logicalStart, fieldStart) ||
+                    (logicalStart + fieldStart) % 8 != 0 ||
+                    sourceStartMisaligned) {
+                    markFailure(DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Typed IR field type is invalid"),
+                                &field);
+                    return result;
+                }
             }
             const quint32 structureDepth = parentDepth + 1U;
             if (structureDepth >= options.limits.maximumNodeDepth) {
@@ -1048,14 +1088,9 @@ DslExecutionResult DslVirtualMachine::execute(
                                              fieldStart,
                                              consumedBits,
                                              consumedBits);
-            if (!directReader || addWouldOverflow(readerStart, fieldStart) || !location ||
-                location->sourceSpans().size() != 1 ||
-                location->sourceSpans().front().start().absoluteBitOffset() !=
-                    readerStart + fieldStart ||
-                location->sourceSpans().front().bitLength() != consumedBits) {
+            if (!location) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
-                            QStringLiteral(
-                                "Minimum DSL executor requires a contiguous direct source mapping"),
+                            QStringLiteral("Unable to map DSL field location"),
                             &field);
                 return result;
             }
