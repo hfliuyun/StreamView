@@ -157,9 +157,10 @@ The static rules for this subset are:
   declaration order, most-significant bit first. With no second type argument,
   or with `big`, the resulting unsigned value is big-endian. `little` is
   accepted only for a width that is a multiple of eight, a field that begins at
-  a byte boundary within its structure, and an execution whose source span
-  begins at a byte boundary. It reverses byte significance without changing
-  the consumed bit sequence.
+  a byte boundary within its structure, and an execution whose absolute logical
+  field start and first resolved source bit both begin at byte boundaries.
+  Later mapping-segment boundaries need not be source-byte-aligned. `little`
+  reverses logical-byte significance without changing the consumed bit sequence.
 - `ue` and `se` are variable-length Exp-Golomb fields. They take no width or
   endian argument and always consume the encoded codeword most-significant bit
   first. Because their width is not statically known, a later little-endian
@@ -332,12 +333,19 @@ are rejected before executable typed IR is produced when they exceed their fixed
 node, depth, or 4,096-step expansion-work bounds.
 
 The minimum VM executes a structure by reading each field through the bounded
-bit reader. A successful field becomes a syntax-field node with its decoded
-value and source location. For a little-endian field, the VM reverses
-the significance of complete source bytes after reading them; it never changes
-the bit reader position or the source mapping. Reaching a little-endian field
-at a non-byte-aligned source address is an invalid typed execution and does not
-consume that field. An enum field retains its numeric value and type metadata.
+bit reader. Before executing bytecode, it verifies that the reader's complete
+normalized backing exactly matches the execution mapping slice beginning at the
+supplied logical start. A mismatched, reordered, missing, additional, or
+out-of-range backing span is an invalid typed execution rejected before a
+structure node is created or source data is read. A successful field becomes a
+syntax-field node with its decoded value and logical range. Its source location
+contains every forwarded source span resolved by the execution mapping and may
+therefore cross source gaps without including them. For a little-endian field,
+the VM reverses the significance of complete logical bytes after reading them;
+it never changes the bit reader position or source mapping. A non-byte-aligned
+absolute logical field start or first resolved source bit is an invalid typed
+execution and does not consume that field. Later source-span boundaries need
+not be byte-aligned. An enum field retains its numeric value and type metadata.
 A value not declared by that enum retains the
 field node, marks the structure invalid, and reports an `invalid-syntax`
 diagnostic at that field. A truncated or failed read retains earlier fields and
@@ -346,10 +354,10 @@ retains the field, then marks the structure invalid with an invalid-syntax
 diagnostic. Each expanded array element becomes a separate syntax-field node
 whose source location covers only that element. A failure keeps all earlier
 complete elements, creates no node for an incomplete element, and uses the
-expanded path such as `Header.values[2]` in its diagnostic. The minimum
-executor requires the logical range to map to one contiguous direct source
-span; mapped multi-span transformations are reserved
-for the later mapped-transformation runtime. The executor retains the field
+expanded path such as `Header.values[2]` in its diagnostic. A failure in a later
+mapped backing span leaves the reader at the field start and creates no partial
+field node. Diagnostics resolve the available logical range through the same
+mapping and include only forwarded source spans. The executor retains the field
 type, description, and specification reference on the analysis-node snapshot;
 presentation derives field width from that node's logical range.
 

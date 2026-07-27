@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 2
-Last Completed Step: M3 pure functions and computed fields, including typed expressions, static inlining, declaration-order lowering, deterministic evaluation, controller integration, no-location diagnostics, malformed-IR validation, and budgets
-Next Action: Start M4 mapping-preserving EBSP→RBSP, excluded spans, lazy boundaries, and recoverable progressive indexing
-Last Verification: Local dev/ci/sanitize reconfigure, full build, and CTest each passed 22/22; hosted runs 30288820605 and 30290768155 passed on Windows, macOS, and Ubuntu
+Last Completed Step: M4 source-mapped logical reads, including mapped BitReader backing, transactional cross-span reads, execution-boundary validation, multi-span field locations and diagnostics, mapped Exp-Golomb, and logical-byte little-endian execution
+Next Action: Define and implement bounded H.264 EBSP→RBSP mapping and excluded-span presentation
+Last Verification: Local dev/ci/sanitize reconfigure, full build, and CTest each passed 22/22; hosted runs 30294797317 and 30296371878 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -90,6 +90,11 @@ Blockers: None
 依赖：M3 的运行时边界。
 
 - [ ] 实现 mapping-preserving EBSP→RBSP、excluded span、lazy boundary 和可恢复 progressive index。
+  - [x] 完成 source-mapped logical read 基座：mapped reader、执行前 backing/mapping 校验、
+    multi-span 字段/诊断、mapped Exp-Golomb 与 logical-byte little-endian。
+  - [ ] 实现 bounded H.264 EBSP→RBSP mapping 与 excluded-span tree presentation。
+  - [ ] 实现 lazy boundary。
+  - [ ] 实现可恢复 progressive index。
 - [ ] 实现位置感知上下文目录，支持按源位置选择最近有效 SPS/PPS/ASC/sample description。
 - [ ] 以稀疏/虚拟 100 GB 源验证初始打开、已知 offset 读取、批次发布、取消和恢复；再接 SQLite WAL 分页缓存。
 
@@ -258,3 +263,4 @@ Blockers: None
 - 2026-07-27：完成 M3 等值 switch 切片：parser/AST 接受可嵌套的 `switch (previous_field)`、一个或多个互异整数 `case` 和可选的末尾 `default`，每个 arm 使用显式花括号 body；parser/compiler 拒绝未知、未来、数组、`ue/se`、超宽或路径不可用 controller，以及重复 case、缺少 case、重复或非末尾 default，并从同一入口 offset 验证所有路径。compiler 把 case 降低为正向等值 guard，把 default 降低为全部 case guard 的否定合取；无 default 时静态合并包含未匹配空路径，不新增 opcode。executor 回归覆盖 case/default/无匹配、嵌套条件、enum、小端、数组、`ue/se`、截断、`@equals`、预算、malformed guard 和未选 arm 中的非法字段。实现拆分为 `7d37025`（parser/compiler 与静态回归）和 `0cc6c5d`（executor 回归）；英文规范、中文伴随说明和 ADR-0021 同步。本机 `dev`、`ci`、`sanitize` 完整配置、构建与 CTest 均为 22/22；hosted run `30274571076` 与 `30275735715` 均在 Windows、macOS、Ubuntu 成功。下一步实现有界循环。
 - 2026-07-27：完成 M3 有界 repeat 切片：parser/AST 接受可嵌套的 `repeat (count_field, maximum) { ... }`，controller 为此前且当前路径保证存在的无符号 scalar `bits`、enum 或 `ue`，maximum 为正整数字面量；compiler 按 maximum 静态投影 body，使用 `count > index` guard、repeat-local scope、索引化名称和 statement-position bound assertion，保持线性 bytecode 并把全部投影计入 99,999 字段上限。VM 在消费 body 前拒绝超过 maximum 的计数，缺席迭代不读取 source 或创建节点，但其 read/assert 指令仍计预算和取消点；回归覆盖嵌套 `ue` controller、小端、数组、metadata、`ue/se`、enum、截断、`@equals`、预算、执行中取消和 malformed IR。实现拆分为 `c00ba9b`（ADR-0022 与切片决策）、`4800f41`（parser/compiler/VM）和 `4875f42`（executor 深度回归）；英文规范、中文伴随说明和正反例同步。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 22/22；hosted run `30281017826` 与 `30282525878` 均在 Windows、macOS、Ubuntu 成功。下一步定义并实现纯函数与 computed fields。
 - 2026-07-28：完成 M3 纯函数与计算字段切片：parser/AST 接受顶层 expression-bodied `pure bool/u64` 函数、最多 16 个 typed parameter、结构内 `computed<bool/u64>`、完整受限表达式优先级和 `if (computed_bool)`；compiler 按声明顺序 type-check 并静态内联 pure call，把 bounded typed expression、guard、repeat scope、零 bit 对齐和计算 controller 降低到 `evaluate-computed`。VM 预验证表达式和 controller，执行 checked arithmetic、short-circuit 与 bool/u64 物化；false guard 不求值但 instruction 仍计预算，成功节点为无 `FieldLocation` 的 `ComputedField`，运行时算术或 computed repeat bound 失败保留部分结果并报告无 location 诊断。决策与实现拆分为 `2c0fee4`（ADR-0023）、`39187e3`（parser/compiler）和 `100d98d`（VM/executor）；英文规范、中文伴随说明及正反例同步。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 22/22；hosted run `30288820605` 与 `30290768155` 均在 Windows、macOS、Ubuntu 成功。M3 语言切片闭合，下一步进入 M4 mapping-preserving EBSP→RBSP、excluded spans、lazy boundary 和 recoverable progressive index。
+- 2026-07-28：完成 M4 source-mapped logical read 基座：`BitReader` 支持完整 mapping 与 logical slice backing，跨 source gap 以 MSB-first 读取 `1..64` bit，后段 source failure 保持事务性，并公开 logical length 与 normalized spans；VM 在执行 bytecode、创建节点或读取 source 前精确验证 reader backing 与 mapping slice，字段和诊断可保留多个 forwarded source spans，Exp-Golomb 与 logical-byte little-endian 可跨 gap 执行，后续非对齐 segment 不影响小端值。决策与实现拆分为 `7e4c794`（ADR-0024）、`ac172cb`（core mapped reader）和 `8ef6973`（VM/executor）；本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 22/22，hosted run `30294797317` 与 `30296371878` 均在 Windows、macOS、Ubuntu 成功。下一步定义并实现 bounded H.264 EBSP→RBSP mapping 与 excluded-span tree presentation。

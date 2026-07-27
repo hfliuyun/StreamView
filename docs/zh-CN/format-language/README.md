@@ -142,8 +142,9 @@ primary       := integer | "true" | "false" | identifier
   没有被使用，也会独立完成类型检查和表达式边界检查。
 - `bits<N>` 的宽度必须是 `1..64` 的整数。字段按声明顺序以 MSB-first 消耗输入。
   省略第二个类型参数或写成 `big` 时，得到大端无符号值。`little` 只允许宽度为 8 的倍数、
-  字段在结构内从字节边界开始，并且执行时 source span 也从字节边界开始；它只反转完整字节
-  的数值权重，不改变实际消耗的 bit 顺序。
+  字段在结构内从字节边界开始，并且执行时字段的绝对逻辑起点与首个解析出的 source bit 都
+  从字节边界开始；后续 mapping segment 的 source 边界不要求按字节对齐。它只反转完整逻辑
+  字节的数值权重，不改变实际消耗的 bit 顺序。
 - `ue` 和 `se` 是变长 Exp-Golomb 字段，不接受宽度或 endian 参数，并始终按
   MSB-first 消耗编码码字。由于宽度不能静态确定，变长字段之后的小端字段会被拒绝，除非
   后续语言功能能够证明其对齐。
@@ -258,18 +259,23 @@ compiler 会独立 type-check 每个纯函数，再把每个 pure call 展开到
 的计算字段表达式超过固定节点、深度或 4,096-step expansion-work 上限时，都不会生成可执行
 typed IR。
 
-最小 VM 通过 bounded bit reader 按顺序执行结构。成功字段会成为带解码值和源位置的
-syntax-field 节点。小端字段在读取完成后反转完整 source byte 的数值权重，
-不会改变 bit reader position 或 source mapping；若执行到该字段时绝对 source 地址没有
-按字节对齐，则 typed execution 非法，并且不消耗该字段。enum 字段保留数值和类型 metadata；
+最小 VM 通过 bounded bit reader 按顺序执行结构。执行 bytecode 前，它会验证 reader 的完整
+normalized backing 是否精确等于从给定 logical start 开始的 execution mapping slice。backing
+span 不匹配、乱序、缺失、多出或越界时，typed execution 非法，并且在创建 structure node 或
+读取 source data 前被拒绝。成功字段会成为带解码值和逻辑范围的 syntax-field 节点；source
+location 包含 execution mapping 解析出的全部 forwarded source spans，因此可以跨 source gap，
+但不会包含 gap 本身。小端字段在读取完成后反转完整逻辑字节的数值权重，不会改变 bit reader
+position 或 source mapping；字段的绝对逻辑起点或首个解析出的 source bit 未按字节对齐时，
+typed execution 非法，并且不消耗该字段。后续 source-span 边界不要求按字节对齐。enum 字段
+保留数值和类型 metadata；
 若数值不属于已声明 member，则保留字段节点，把结构标记为 invalid，并在字段位置报告
 `invalid-syntax`。读取截断或失败时保留之前的字段，并把结构标记为 invalid 并附 source
-诊断。`@equals` 不匹配时保留该字段，再用 invalid-syntax 诊断标记结构。最小执行器要求
-逻辑范围映射到一个连续的 direct source 区间。每个展开的数组元素都是独立 syntax-field 节点，
-source location 只覆盖该元素；失败时保留之前完成的元素，不为未完成元素创建节点，并把
-`Header.values[2]` 这样的展开路径写入诊断。跨多个 source 区间的 mapped transformation
-留到后续转换运行时实现。执行器把字段类型、说明和规范引用保留在 analysis-node snapshot
-上；展示宽度由节点的逻辑范围推导。
+诊断。`@equals` 不匹配时保留该字段，再用 invalid-syntax 诊断标记结构。每个展开的数组元素
+都是独立 syntax-field 节点，source location 只覆盖该元素；失败时保留之前完成的元素，不为
+未完成元素创建节点，并把 `Header.values[2]` 这样的展开路径写入诊断。mapped backing 的后续
+span 读取失败时，reader 保持在字段起点，也不创建半成品字段节点；诊断通过同一 mapping
+解析已有逻辑范围，只包含 forwarded source spans。执行器把字段类型、说明和规范引用保留在
+analysis-node snapshot 上；展示宽度由节点的逻辑范围推导。
 
 VM 在每次字段读取前按外层到内层的顺序验证并计算 presence guard。guard 为 false 时跳过
 该字段，不消耗 source bit、不创建 analysis node，也不执行 enum member 或 `@equals` 数值
