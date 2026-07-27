@@ -45,7 +45,7 @@ struct NalUnitHeader {
 
 最终参考文档必须分别定义基本类型、有无符号、字节序、bit 顺序、溢出行为、数组、枚举、
 结构、条件、分支、有界循环、纯函数、作用域、名称解析和规范注解。当前接受的最小子集
-有意更小，暂不包含一般表达式，也不包含下述等值条件之外的控制流。
+有意更小，暂不包含一般表达式，也不包含下述等值条件和 switch 之外的控制流。
 
 当前接受的 M3 类型切片新增了按声明顺序保存的 enum，以及 `bits` 字段的显式字节序。
 enum 声明为无符号整数命名；字段通过 `@enum(Type)` 把这些名称关联到解码值。
@@ -62,6 +62,11 @@ location 覆盖完整编码码字，而不是固定 bit 数。
 `if (previous_field == integer) { ... } else { ... }` block，`else` 可以省略。
 这个比较只是基于此前 scalar 定宽值的受限 presence 判断，不是一般表达式。
 
+当前接受的 switch 切片新增了可嵌套的
+`switch (previous_field) { case integer: { ... } default: { ... } }` block。
+每个 arm 都有自己的花括号 body，`default` 可以省略，选择逻辑复用条件切片的受限等值
+guard。
+
 ## DSL 0.1 最小子集
 
 首个可执行子集使用以下语法。token 之间可以有空白，以及 `//` 或 `/* ... */`
@@ -74,13 +79,17 @@ declaration   := { annotation } ( enum | struct | sequence | entry )
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { struct_item } "}" [ ";" ]
-struct_item   := field | conditional
+struct_item   := field | conditional | switch
 field         := { annotation } field_type identifier [ "[" integer "]" ]
                  { annotation } ";"
 field_type    := "bits" "<" integer [ "," identifier ] ">" | "ue" | "se"
 conditional   := "if" "(" identifier "==" integer ")"
                  "{" { struct_item } "}"
                  [ "else" "{" { struct_item } "}" ]
+switch        := "switch" "(" identifier ")" "{"
+                 switch_case { switch_case } [ switch_default ] "}"
+switch_case   := "case" integer ":" "{" { struct_item } "}"
+switch_default := "default" ":" "{" { struct_item } "}"
 sequence      := "sequence" "<" identifier ">" identifier "="
                  "scan" "(" identifier ")" ";"
 entry         := "entry" identifier ";"
@@ -116,6 +125,15 @@ value         := integer | string | identifier
 - 字段名在结构的全部分支中仍必须唯一，所有可能的 branch field 都计入 99,999 字段投影
   上限。静态对齐沿两个分支分别跟踪；只有两条路径都在相同的已知 offset 结束时，条件出口
   才保留已知 offset，省略的 `else` 按空路径处理。
+- switch controller 遵守与条件 controller 相同的声明顺序、scalar 类型、宽度和路径可用性
+  规则。switch 至少包含一个 `case`；每个 case 只接受一个互不重复、能由 controller 宽度
+  表示的无符号整数字面量。`default` 可以省略，最多出现一次，并且必须是最后一个 arm。
+  当前切片不接受 fallthrough、`break`、同一 body 的多个 label、范围、enum member 名或
+  一般表达式。switch 与条件可以按任意顺序嵌套。
+- 每个 switch arm 都执行静态检查，字段名在全部 arm 和外层分支中仍必须唯一。所有 arm
+  field 都计入 99,999 字段投影上限。每个 arm 从相同的入口静态 offset 开始；只有所有路径
+  都在相同的已知 offset 结束时，switch 出口才保留已知 offset。省略 `default` 时，未匹配
+  的空路径也参与合并。
 - 唯一接受的渐进 sequence 形式是
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`。
   `Element` 必须是已声明结构。
@@ -129,8 +147,9 @@ value         := integer | string | identifier
   应用到每个展开元素。
 - 出现词法或静态诊断时，source 不会生成可执行规则；parser 仍返回部分 IR 以及带行列范围的全部诊断，便于编辑器一次报告多个错误。
 
-`enum`、`big`、`little`、`ue`、`se`、`if` 和 `else` 只在上述语法位置作为上下文关键字，
-其他位置仍可作为普通 identifier。既有 scalar 声明保持不变，`bits<N>` 仍与
+`enum`、`big`、`little`、`ue`、`se`、`if`、`else`、`switch`、`case` 和 `default`
+只在上述语法位置作为上下文关键字，其他位置仍可作为普通 identifier。既有 scalar 声明
+保持不变，`bits<N>` 仍与
 `bits<N, big>` 完全等价；本切片不弃用任何已接受的 0.1 语法。
 
 parser 生成面向 source、用于诊断的声明模型。静态 compiler 把 enum、结构、sequence 和
@@ -141,10 +160,12 @@ entry 引用解析成 typed program，保留声明顺序，并确定性生成 `b
 固定数组按 source 顺序展开成名为 `name[0]` 到 `name[count - 1]` 的 typed field；每个元素
 各自产生 read instruction，并在存在 `@equals` 时各自产生 assertion instruction。条件 block
 被降低到同一条按声明顺序排列的字段流，每个可能字段携带引用此前 typed-field index 的已解析
-presence guard；不会新增 jump opcode、一般控制流 bytecode 或替代 source-coordinate 操作。
-parser 或 compiler 出现任何诊断时都不生成可执行 typed IR。`svtool rule check` 会运行这两个
-阶段；内置 Annex B runner 也只在 analyzer 创建时编译一次规则，之后按已解析的结构索引执行
-每条记录。
+presence guard；不会新增 jump opcode 或一般控制流 bytecode。switch case 字段携带一个正向
+等值 guard；default 字段携带全部 case guard 的否定合取，省略 default 时不会为未匹配路径
+生成字段。嵌套 switch 与条件的 guard 按外层到内层追加。不会新增替代 source-coordinate
+操作。parser 或 compiler 出现任何诊断时都不生成可执行 typed IR。`svtool rule check` 会运行
+这两个阶段；内置 Annex B runner 也只在 analyzer 创建时编译一次规则，之后按已解析的结构
+索引执行每条记录。
 
 最小 VM 通过 bounded bit reader 按顺序执行结构。成功字段会成为带解码值和源位置的
 syntax-field 节点。小端字段在读取完成后反转完整 source byte 的数值权重，
@@ -165,6 +186,8 @@ VM 在每次字段读取前按外层到内层的顺序验证并计算 presence g
 选中字段结束处开始。guard metadata 引用未知、当前、未来、类型错误或当前路径不能保证存在
 的 controller 时，typed definition 非法。字段定义即使位于未选分支也仍会验证，malformed
 typed IR 不能藏在 false guard 后面。
+因此 switch 只物化唯一匹配的 case；没有 case 匹配时，如果存在 default 则物化 default，
+否则不消耗任何 arm 输入。
 
 对 Exp-Golomb 码字，令 `leadingZeroBits` 为 marker bit 前的连续零 bit 数，`suffix` 为
 随后同宽度的无符号值。`ue` 返回无符号 64 位值
@@ -298,6 +321,33 @@ struct Packet {
 entry Packet;
 ```
 
+等值 switch 合法示例：
+
+```cpp
+enum PacketKind {
+    compact = 1;
+    extended = 2;
+}
+
+struct Packet {
+    bits<2> kind @enum(PacketKind);
+    switch (kind) {
+    case 1: {
+        bits<3> compact_value;
+    }
+    case 2: {
+        bits<5> extended_value;
+    }
+    default: {
+        bits<4> unknown_value;
+    }
+    }
+    bits<2> tail;
+}
+
+entry Packet;
+```
+
 最小非法示例包括 `bits<0> flag;`、`bits<65> flag;`、`bits<12, little> value;`、
 位于未对齐字段之后的小端字段、`ue value @equals(0);`、`se value @enum(Type);`、
 变长字段之后的小端字段、`bits<1> flags[0];`、`bits<1> flags[];`、数组长度表达式或第二
@@ -305,8 +355,12 @@ entry Packet;
 无法放入字段宽度的 enum member 值、重复 enum member 名、缺少 `@index(progressive)` 的
 sequence、在 `future` 声明前使用 `if (future == 1)`、以数组或 `ue`/`se` 作为条件
 controller、条件整数超出 controller 宽度、离开分支后使用 branch-local controller、
-`if (flag = 1)`、`scan(other_scanner)`、重复声明同名，以及没有 `entry` 的程序。enum 和字段
-解析在下一个 member/field 分号或右花括号处恢复，并保留全部 source range 和诊断。
+`if (flag = 1)`、使用未来字段、数组或 `ue`/`se` controller 的 switch、超出宽度或重复的
+case 值、没有 case 的 switch、重复或不位于最后的 default、缺少冒号或花括号 body 的 case、
+`break`、fallthrough、同一 arm 的多个 label、case 范围或 enum member label、
+`scan(other_scanner)`、重复声明同名，以及没有 `entry` 的程序。enum 和字段解析在下一个
+member/field 分号或右花括号处恢复；遇到未知 switch label 或缺少 arm 左花括号时，在下一个
+`case`、`default` 或 switch 右花括号处恢复。所有恢复都会保留 source range 和诊断。
 
 ## 源坐标与逻辑坐标
 
@@ -379,10 +433,10 @@ enum 成员检查和字节序转换都属于现有的字段读取操作，不增
 都可能发生在元素之间，同时保留失败前已经完成的元素。静态的 99,999 字段投影上限确保
 一次默认结构物化不会需要超过文档规定的 100,000 个节点。
 
-条件语法也不另占 opcode 或节点预算。每个可能字段仍生成 read instruction，`@equals` 仍
-生成 assertion instruction；即使字段被跳过，这些指令仍计入 instruction budget，并保留取消
-检查点。只有选中字段消耗 source bit 和一个物化节点名额；两个分支的全部字段都计入静态
-99,999 字段投影上限。
+条件和 switch 语法都不另占 opcode 或节点预算。每个可能字段仍生成 read instruction，
+`@equals` 仍生成 assertion instruction；即使字段被跳过，这些指令仍计入 instruction
+budget，并保留取消检查点。只有选中字段消耗 source bit 和一个物化节点名额；全部分支和
+switch arm 的字段都计入静态 99,999 字段投影上限。
 
 所有限制都必须大于零。host 可以为一次执行降低限制，但规则本身不能提高或读取限制。
 当前最小子集尚无嵌套调用或 view；加入这些操作时必须消耗已经保留的深度预算。超过指令、

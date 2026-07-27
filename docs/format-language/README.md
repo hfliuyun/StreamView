@@ -44,7 +44,7 @@ struct NalUnitHeader {
 }
 ```
 
-The eventual reference must define primitive types, signedness, byte order, bit order, overflow behavior, arrays, enums, structures, conditionals, switches, bounded loops, pure helpers, scope, name resolution, and specification annotations. The accepted minimum subset is intentionally smaller and does not yet include general expressions or control flow beyond the equality conditional described below.
+The eventual reference must define primitive types, signedness, byte order, bit order, overflow behavior, arrays, enums, structures, conditionals, switches, bounded loops, pure helpers, scope, name resolution, and specification annotations. The accepted minimum subset is intentionally smaller and does not yet include general expressions or control flow beyond the equality conditionals and switches described below.
 
 The accepted M3 type slice adds declaration-order enums and an explicit byte
 order on `bits` fields. Enum declarations name unsigned integer values; a field
@@ -68,6 +68,11 @@ The accepted conditional slice adds nested
 optional. The comparison is a restricted presence decision over a previous
 scalar fixed-width value, not a general expression.
 
+The accepted switch slice adds nested
+`switch (previous_field) { case integer: { ... } default: { ... } }` blocks.
+Each arm has its own braced body, `default` is optional, and selection uses the
+same restricted equality guards as the conditional slice.
+
 ## Minimum DSL 0.1 Subset
 
 The first executable subset uses the following grammar. Whitespace and `//` or
@@ -82,13 +87,17 @@ declaration   := { annotation } ( enum | struct | sequence | entry )
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { struct_item } "}" [ ";" ]
-struct_item   := field | conditional
+struct_item   := field | conditional | switch
 field         := { annotation } field_type identifier [ "[" integer "]" ]
                  { annotation } ";"
 field_type    := "bits" "<" integer [ "," identifier ] ">" | "ue" | "se"
 conditional   := "if" "(" identifier "==" integer ")"
                  "{" { struct_item } "}"
                  [ "else" "{" { struct_item } "}" ]
+switch        := "switch" "(" identifier ")" "{"
+                 switch_case { switch_case } [ switch_default ] "}"
+switch_case   := "case" integer ":" "{" { struct_item } "}"
+switch_default := "default" ":" "{" { struct_item } "}"
 sequence      := "sequence" "<" identifier ">" identifier "="
                  "scan" "(" identifier ")" ";"
 entry         := "entry" identifier ";"
@@ -143,6 +152,19 @@ The static rules for this subset are:
   alignment is tracked independently through both branches; the conditional
   exit retains a known offset only when both paths end at the same known
   offset, with an omitted `else` treated as an empty path.
+- A switch controller follows the same declaration, scalar-type, width, and
+  path-availability rules as a conditional controller. A switch contains at
+  least one `case`. Each case accepts exactly one distinct unsigned integer
+  literal that fits the controller width. `default` is optional, may appear at
+  most once, and must be the final arm. Fallthrough, `break`, multiple labels
+  for one body, ranges, enum member names, and general expressions are not
+  accepted in this slice. Switches and conditionals may nest in either order.
+- Every switch arm is statically checked, and field names remain unique across
+  every arm and surrounding branch. All arm fields count toward the 99,999-
+  field projection limit. Each arm starts with the same incoming static
+  offset; the switch exit retains a known offset only when all paths end at the
+  same known offset. When `default` is omitted, an unmatched empty path also
+  participates in that merge.
 - The only accepted progressive sequence form is
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`.
   `Element` must name a declared structure.
@@ -162,8 +184,9 @@ The static rules for this subset are:
   parser still returns its partial IR and all diagnostics with line/column
   ranges so an editor can report more than the first error.
 
-`enum`, `big`, `little`, `ue`, `se`, `if`, and `else` are contextual words in
-the positions shown by the grammar and remain ordinary identifiers elsewhere.
+`enum`, `big`, `little`, `ue`, `se`, `if`, `else`, `switch`, `case`, and
+`default` are contextual words in the positions shown by the grammar and
+remain ordinary identifiers elsewhere.
 Existing scalar declarations are unchanged, and `bits<N>` remains exactly
 equivalent to `bits<N, big>`; this slice deprecates no accepted 0.1 syntax.
 
@@ -180,9 +203,12 @@ constraint. A fixed array is expanded in source order into typed fields named
 present, equality-check instruction. Conditional blocks are lowered into the
 same declaration-order field stream. Each possible field carries resolved
 presence guards that reference earlier typed-field indexes; no jump opcode or
-general control-flow bytecode is introduced. No alternate source-coordinate
-operation is introduced. A program with any parser or compiler diagnostic has
-no executable typed IR.
+general control-flow bytecode is introduced. Switch case fields receive one
+positive equality guard. Default fields receive the conjunction of every case
+guard negated; an omitted default emits no field for the unmatched path.
+Nested switch and conditional guards are appended outer-to-inner. No alternate
+source-coordinate operation is introduced. A program with any parser or
+compiler diagnostic has no executable typed IR.
 `svtool rule check` runs both stages. The bundled Annex B runner also compiles its rule
 once when the analyzer is created and executes the resolved structure index
 for every record.
@@ -218,6 +244,9 @@ where the previous selected field ended. Guard metadata that references an
 unknown, current, future, incorrectly typed, or unavailable controller is an
 invalid typed definition. Field definitions are still validated when their
 branch is absent, so malformed typed IR cannot hide behind a false guard.
+Consequently, exactly one matching switch case is materialized, otherwise the
+default arm is materialized when present, and a switch without a matching case
+or default consumes no arm input.
 
 For an Exp-Golomb codeword, let `leadingZeroBits` be the number of zero bits
 before the marker bit and let `suffix` be the following unsigned value of the
@@ -373,6 +402,33 @@ struct Packet {
 entry Packet;
 ```
 
+Valid equality-switch example:
+
+```cpp
+enum PacketKind {
+    compact = 1;
+    extended = 2;
+}
+
+struct Packet {
+    bits<2> kind @enum(PacketKind);
+    switch (kind) {
+    case 1: {
+        bits<3> compact_value;
+    }
+    case 2: {
+        bits<5> extended_value;
+    }
+    default: {
+        bits<4> unknown_value;
+    }
+    }
+    bits<2> tail;
+}
+
+entry Packet;
+```
+
 Invalid minimum examples include `bits<0> flag;`, `bits<65> flag;`,
 `bits<12, little> value;`, a little-endian field after an unaligned field,
 `ue value @equals(0);`, `se value @enum(Type);`, a little-endian field after a
@@ -383,10 +439,15 @@ zero bits, `@enum(Missing)`, an enum member value that does not fit its field,
 duplicate enum member names, a sequence without `@index(progressive)`,
 `if (future == 1)` before `future` is declared, an array or `ue`/`se` condition
 controller, a condition integer outside the controller width, a branch-local
-controller used after its branch, `if (flag = 1)`, `scan(other_scanner)`, two
-declarations with the same name, or a program with no `entry`. Enum and field
-parsing recovers at the next member/field semicolon or closing brace and
-preserves all source ranges and diagnostics.
+controller used after its branch, `if (flag = 1)`, a switch over a future,
+array, or `ue`/`se` controller, an out-of-range or duplicate case value, a
+switch with no case, a repeated or non-final default, a missing case colon or
+braced arm body, `break`, fallthrough, multiple labels for one arm, a case
+range or enum member label, `scan(other_scanner)`, two declarations with the
+same name, or a program with no `entry`. Enum and field parsing recovers at the
+next member/field semicolon or closing brace. An unknown switch label or a
+label whose arm opener is missing recovers at the next `case`, `default`, or
+switch closing brace. All recovery preserves source ranges and diagnostics.
 
 ## Source And Logical Coordinates
 
@@ -468,12 +529,13 @@ while preserving the elements completed before the failure. The static
 99,999-field projection limit ensures one default structure materialization
 cannot require more than the documented 100,000 nodes.
 
-Conditional syntax also reserves no separate opcode or node budget. Every
+Conditional and switch syntax reserve no separate opcode or node budget. Every
 possible field still emits its read instruction, and `@equals` still emits its
 assertion instruction. Those instructions count toward the instruction budget
 and remain cancellation points when the field is skipped. Only a selected
-field consumes source bits and one materialized-node slot. All fields from both
-branches count toward the static 99,999-field projection limit.
+field consumes source bits and one materialized-node slot. All fields from all
+branches and switch arms count toward the static 99,999-field projection
+limit.
 
 All limits must be greater than zero. The host may lower them for a particular
 execution but a rule cannot raise or inspect them. The accepted minimum subset
