@@ -7,6 +7,7 @@
 
 using streamview::rules::DslCompileResult;
 using streamview::rules::DslCompiler;
+using streamview::rules::DslConditionOperator;
 using streamview::rules::DslDiagnosticCode;
 using streamview::rules::DslEndian;
 using streamview::rules::DslEntryKind;
@@ -17,6 +18,12 @@ using streamview::rules::DslValueTypeKind;
 namespace {
 
 bool hasDiagnostic(const DslCompileResult& result, DslDiagnosticCode code) {
+    return std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
+                       [code](const auto& diagnostic) { return diagnostic.code == code; });
+}
+
+bool hasDiagnostic(const streamview::rules::DslParseResult& result,
+                   DslDiagnosticCode code) {
     return std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
                        [code](const auto& diagnostic) { return diagnostic.code == code; });
 }
@@ -197,6 +204,174 @@ private slots:
             QCOMPARE(field.type.enumIndex, std::optional<quint32>(0));
             QCOMPARE(field.metadata.typeName, QStringLiteral("Type"));
         }
+    }
+
+    void lowersBoundedRepeatsToDeterministicGuardedFieldProjections() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> count; repeat (count, 2) { "
+            "bits<1> selected; if (selected == 1) { ue code; } "
+            "bits<2> flags[2] @equals(0); } bits<1> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto first = DslCompiler::compile(parsed.program);
+        const auto second = DslCompiler::compile(parsed.program);
+        QVERIFY2(first.succeeded(),
+                 first.diagnostics.empty()
+                     ? ""
+                     : qPrintable(first.diagnostics.front().message));
+        QVERIFY(second.succeeded());
+        const auto& structure = first.program->structs.front();
+        const auto& fields = structure.fields;
+        const std::vector<QString> expectedNames{
+            QStringLiteral("count"),       QStringLiteral("selected[0]"),
+            QStringLiteral("code[0]"),     QStringLiteral("flags[0][0]"),
+            QStringLiteral("flags[0][1]"), QStringLiteral("selected[1]"),
+            QStringLiteral("code[1]"),     QStringLiteral("flags[1][0]"),
+            QStringLiteral("flags[1][1]"), QStringLiteral("tail"),
+        };
+        QCOMPARE(fields.size(), expectedNames.size());
+        for (std::size_t index = 0; index < expectedNames.size(); ++index) {
+            QCOMPARE(fields.at(index).name, expectedNames.at(index));
+        }
+
+        for (const std::size_t index : {std::size_t(1), std::size_t(3), std::size_t(4)}) {
+            QCOMPARE(fields.at(index).conditions.size(), std::size_t(1));
+            QCOMPARE(fields.at(index).conditions.front().fieldIndex, quint32(0));
+            QCOMPARE(fields.at(index).conditions.front().expectedValue, quint64(0));
+            QCOMPARE(fields.at(index).conditions.front().op,
+                     DslConditionOperator::GreaterThan);
+            QVERIFY(!fields.at(index).conditions.front().negated);
+        }
+        QCOMPARE(fields.at(2).conditions.size(), std::size_t(2));
+        QCOMPARE(fields.at(2).conditions.at(0).op, DslConditionOperator::GreaterThan);
+        QCOMPARE(fields.at(2).conditions.at(1).op, DslConditionOperator::Equal);
+        QCOMPARE(fields.at(2).conditions.at(1).fieldIndex, quint32(1));
+        QCOMPARE(fields.at(6).conditions.size(), std::size_t(2));
+        QCOMPARE(fields.at(6).conditions.at(0).expectedValue, quint64(1));
+        QCOMPARE(fields.at(6).conditions.at(1).fieldIndex, quint32(5));
+        QVERIFY(fields.at(0).conditions.empty());
+        QVERIFY(fields.at(9).conditions.empty());
+
+        QCOMPARE(structure.repeatBounds.size(), std::size_t(1));
+        QCOMPARE(structure.repeatBounds.front().controllerFieldIndex, quint32(0));
+        QCOMPARE(structure.repeatBounds.front().firstFieldIndex, quint32(1));
+        QCOMPARE(structure.repeatBounds.front().maximumCount, quint64(2));
+        QVERIFY(structure.repeatBounds.front().conditions.empty());
+
+        const std::vector<DslOpcode> expectedOpcodes{
+            DslOpcode::BeginStructure,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::AssertRepeatCount,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::AssertEquals,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::AssertEquals,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::AssertEquals,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::AssertEquals,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::EndStructure,
+        };
+        QCOMPARE(first.program->bytecode.size(), expectedOpcodes.size());
+        QCOMPARE(first.program->bytecode.size(), second.program->bytecode.size());
+        for (std::size_t index = 0; index < expectedOpcodes.size(); ++index) {
+            QCOMPARE(first.program->bytecode.at(index).opcode, expectedOpcodes.at(index));
+            QCOMPARE(first.program->bytecode.at(index).opcode,
+                     second.program->bytecode.at(index).opcode);
+            QCOMPARE(first.program->bytecode.at(index).operand,
+                     second.program->bytecode.at(index).operand);
+            QCOMPARE(first.program->bytecode.at(index).immediate,
+                     second.program->bytecode.at(index).immediate);
+        }
+    }
+
+    void resolvesUnsignedExpGolombCountsAcrossNestedRepeatScopes() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> outer_count; repeat (outer_count, 2) { "
+            "ue inner_count; repeat (inner_count, 2) { bits<1> value; } } } "
+            "entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& structure = compiled.program->structs.front();
+        const auto& fields = structure.fields;
+        const std::vector<QString> expectedNames{
+            QStringLiteral("outer_count"), QStringLiteral("inner_count[0]"),
+            QStringLiteral("value[0][0]"), QStringLiteral("value[0][1]"),
+            QStringLiteral("inner_count[1]"), QStringLiteral("value[1][0]"),
+            QStringLiteral("value[1][1]"),
+        };
+        QCOMPARE(fields.size(), expectedNames.size());
+        for (std::size_t index = 0; index < expectedNames.size(); ++index) {
+            QCOMPARE(fields.at(index).name, expectedNames.at(index));
+        }
+        QCOMPARE(structure.repeatBounds.size(), std::size_t(3));
+        QCOMPARE(structure.repeatBounds.at(0).controllerFieldIndex, quint32(0));
+        QCOMPARE(structure.repeatBounds.at(0).firstFieldIndex, quint32(1));
+        QCOMPARE(structure.repeatBounds.at(1).controllerFieldIndex, quint32(1));
+        QCOMPARE(structure.repeatBounds.at(1).firstFieldIndex, quint32(2));
+        QCOMPARE(structure.repeatBounds.at(2).controllerFieldIndex, quint32(4));
+        QCOMPARE(structure.repeatBounds.at(2).firstFieldIndex, quint32(5));
+        QCOMPARE(structure.repeatBounds.at(1).conditions.size(), std::size_t(1));
+        QCOMPARE(structure.repeatBounds.at(1).conditions.front().fieldIndex, quint32(0));
+        QCOMPARE(structure.repeatBounds.at(1).conditions.front().op,
+                 DslConditionOperator::GreaterThan);
+        QCOMPARE(structure.repeatBounds.at(2).conditions.front().expectedValue, quint64(1));
+        QCOMPARE(fields.at(2).conditions.at(1).fieldIndex, quint32(1));
+        QCOMPARE(fields.at(5).conditions.at(1).fieldIndex, quint32(4));
+    }
+
+    void countsBoundedRepeatProjectionsAgainstTheStructureLimit() {
+        const auto atLimit = DslParser::parse(QStringLiteral(
+            "struct Header { bits<16> count; repeat (count, 49999) { "
+            "bits<1> first; bits<1> second; } } entry Header;"));
+        const auto overLimit = DslParser::parse(QStringLiteral(
+            "struct Header { bits<16> count; repeat (count, 49999) { "
+            "bits<1> first; bits<1> second; } bits<1> tail; } entry Header;"));
+        QVERIFY(atLimit.succeeded());
+        QVERIFY(overLimit.succeeded());
+
+        const auto accepted = DslCompiler::compile(atLimit.program);
+        const auto rejected = DslCompiler::compile(overLimit.program);
+        QVERIFY2(accepted.succeeded(),
+                 accepted.diagnostics.empty()
+                     ? ""
+                     : qPrintable(accepted.diagnostics.front().message));
+        QCOMPARE(accepted.program->structs.front().fields.size(), std::size_t(99999));
+        QVERIFY(!rejected.succeeded());
+        QVERIFY(hasDiagnostic(rejected, DslDiagnosticCode::InvalidArrayLength));
+    }
+
+    void rejectsInvalidRepeatAlignmentAndMalformedCompilerInput() {
+        const auto repeatedUnaligned = DslParser::parse(QStringLiteral(
+            "struct Header { bits<8> count; repeat (count, 2) { "
+            "bits<8, little> value; bits<4> padding; } } entry Header;"));
+        const auto tailUnaligned = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> count; repeat (count, 2) { bits<8> value; } "
+            "bits<16, little> tail; } entry Header;"));
+        const auto valid = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> count; repeat (count, 2) { bits<1> value; } } "
+            "entry Header;"));
+        QVERIFY(repeatedUnaligned.succeeded());
+        QVERIFY(hasDiagnostic(tailUnaligned, DslDiagnosticCode::InvalidEndian));
+        QVERIFY(valid.succeeded());
+
+        const auto badAlignment = DslCompiler::compile(repeatedUnaligned.program);
+        QVERIFY(hasDiagnostic(badAlignment, DslDiagnosticCode::InvalidEndian));
+
+        auto malformed = valid.program;
+        malformed.structs.front().items.at(1).repeatMaximum = 0;
+        const auto malformedResult = DslCompiler::compile(malformed);
+        QVERIFY(hasDiagnostic(malformedResult, DslDiagnosticCode::InvalidArrayLength));
     }
 
     void lowersEqualityConditionalBlocksToDeterministicGuardedFields() {

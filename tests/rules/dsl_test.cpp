@@ -349,6 +349,109 @@ private slots:
         QVERIFY(hasDiagnostic(missingColon, DslDiagnosticCode::MissingToken));
     }
 
+    void parsesNestedBoundedRepeatsAndPreservesSourceRanges() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> count; repeat (count, 3) { "
+            "bits<2> inner_count; repeat (inner_count, 2) { bits<1> value; } "
+            "if (inner_count == 1) { ue code; } } bits<1> tail; } entry Header;"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& items = result.program.structs.front().items;
+        QCOMPARE(items.size(), std::size_t(3));
+        QCOMPARE(items.at(1).kind, DslStructItemKind::Repeat);
+        QCOMPARE(items.at(1).repeatCountFieldName, QStringLiteral("count"));
+        QCOMPARE(items.at(1).repeatMaximum, quint64(3));
+        QCOMPARE(items.at(1).repeatItems.size(), std::size_t(3));
+        QCOMPARE(items.at(1).repeatItems.at(1).kind, DslStructItemKind::Repeat);
+        QCOMPARE(items.at(1).repeatItems.at(1).repeatCountFieldName,
+                 QStringLiteral("inner_count"));
+        QCOMPARE(items.at(1).repeatItems.at(1).repeatMaximum, quint64(2));
+        QCOMPARE(items.at(1).repeatItems.at(1).repeatItems.front().field.name,
+                 QStringLiteral("value"));
+        QCOMPARE(items.at(1).repeatItems.at(2).kind, DslStructItemKind::Conditional);
+        QVERIFY(items.at(1).repeatCountFieldRange.end.offset >
+                items.at(1).repeatCountFieldRange.start.offset);
+        QVERIFY(items.at(1).repeatMaximumRange.end.offset >
+                items.at(1).repeatMaximumRange.start.offset);
+        QVERIFY(items.at(1).range.end.offset > items.at(1).range.start.offset);
+    }
+
+    void acceptsUnsignedExpGolombRepeatCountsAndScopesRepeatLocals() {
+        const auto valid = DslParser::parse(QStringLiteral(
+            "struct Header { ue count; repeat (count, 3) { bits<1> local; "
+            "if (local == 1) { bits<1> value; } } bits<1> tail; } entry Header;"));
+        const auto leaked = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> count; repeat (count, 2) { bits<1> local; } "
+            "if (local == 1) { bits<1> value; } } entry Header;"));
+        const auto duplicate = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> count; repeat (count, 2) { bits<1> local; } "
+            "bits<1> local; } entry Header;"));
+
+        QVERIFY2(valid.succeeded(),
+                 valid.diagnostics.empty()
+                     ? ""
+                     : qPrintable(valid.diagnostics.front().message));
+        QVERIFY(hasDiagnostic(leaked, DslDiagnosticCode::UnknownReference));
+        QVERIFY(hasDiagnostic(duplicate, DslDiagnosticCode::DuplicateName));
+    }
+
+    void rejectsInvalidBoundedRepeatControllersAndMaxima() {
+        struct Case final {
+            QString source;
+            DslDiagnosticCode diagnostic;
+        };
+        const std::vector<Case> cases{
+            {QStringLiteral(
+                 "struct Header { repeat (missing, 2) { bits<1> value; } } entry Header;"),
+             DslDiagnosticCode::UnknownReference},
+            {QStringLiteral(
+                 "struct Header { repeat (count, 2) { bits<1> value; } bits<2> count; } "
+                 "entry Header;"),
+             DslDiagnosticCode::UnknownReference},
+            {QStringLiteral(
+                 "struct Header { bits<2> counts[2]; repeat (counts, 2) { bits<1> value; } "
+                 "} entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral(
+                 "struct Header { se count; repeat (count, 2) { bits<1> value; } } "
+                 "entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral(
+                 "struct Header { bits<2> count; repeat (count, 0) { bits<1> value; } } "
+                 "entry Header;"),
+             DslDiagnosticCode::InvalidArrayLength},
+            {QStringLiteral(
+                 "struct Header { bits<2> count; repeat (count, 4) { bits<1> value; } } "
+                 "entry Header;"),
+             DslDiagnosticCode::ConstraintOutOfRange},
+            {QStringLiteral(
+                 "struct Header { bits<1> flag; if (flag == 1) { bits<2> count; } "
+                 "repeat (count, 2) { bits<1> value; } } entry Header;"),
+             DslDiagnosticCode::InvalidCondition},
+            {QStringLiteral(
+                 "struct Header { bits<2> count; repeat (count, 2) { } } entry Header;"),
+             DslDiagnosticCode::InvalidCondition},
+            {QStringLiteral(
+                 "struct Header { bits<2> count; @description(\"bad\") "
+                 "repeat (count, 2) { bits<1> value; } } entry Header;"),
+             DslDiagnosticCode::InvalidAnnotation},
+        };
+
+        for (const Case& testCase : cases) {
+            const auto result = DslParser::parse(testCase.source);
+            QVERIFY(!result.succeeded());
+            QVERIFY(hasDiagnostic(result, testCase.diagnostic));
+        }
+
+        const auto missingMaximum = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> count; repeat (count,) { bits<1> value; } } "
+            "entry Header;"));
+        QVERIFY(hasDiagnostic(missingMaximum, DslDiagnosticCode::MissingToken));
+    }
+
     void rejectsInvalidEndianAndUnknownEnumReferences() {
         const auto badWidth = DslParser::parse(
             QStringLiteral("struct Header { bits<5, little> value; } entry Header;"));

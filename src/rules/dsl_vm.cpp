@@ -285,48 +285,69 @@ DslExecutionResult DslVirtualMachine::execute(
     const auto sameCondition = [](const DslTypedFieldCondition& left,
                                   const DslTypedFieldCondition& right) {
         return left.fieldIndex == right.fieldIndex &&
-               left.expectedValue == right.expectedValue && left.negated == right.negated;
+               left.expectedValue == right.expectedValue && left.negated == right.negated &&
+               left.op == right.op;
     };
-    for (std::size_t fieldIndex = 0; fieldIndex < structure.fields.size(); ++fieldIndex) {
-        const DslTypedField& field = structure.fields.at(fieldIndex);
-        for (std::size_t conditionIndex = 0; conditionIndex < field.conditions.size();
+    const auto validFixedController = [&program](const DslTypedField& controller) {
+        const bool validUnsignedController =
+            controller.type.kind == DslValueTypeKind::UnsignedBits &&
+            !controller.type.enumIndex;
+        const bool validEnumController =
+            controller.type.kind == DslValueTypeKind::Enum && controller.type.enumIndex &&
+            *controller.type.enumIndex < program.enums.size();
+        const bool validEndian = controller.type.endian == DslEndian::Big ||
+                                 controller.type.endian == DslEndian::Little;
+        return (validUnsignedController || validEnumController) &&
+               controller.type.bitWidth != 0 && controller.type.bitWidth <= 64 && validEndian &&
+               (controller.type.endian != DslEndian::Little ||
+                controller.type.bitWidth % 8 == 0);
+    };
+    const auto validUnsignedExpGolombController = [](const DslTypedField& controller) {
+        return controller.type.kind == DslValueTypeKind::UnsignedExpGolomb &&
+               controller.type.bitWidth == 0 && controller.type.endian == DslEndian::Big &&
+               !controller.type.enumIndex && !controller.equalsConstraint;
+    };
+    const auto validateConditions = [&](const std::vector<DslTypedFieldCondition>& conditions,
+                                        std::size_t subjectFieldIndex,
+                                        const DslTypedField* subject,
+                                        const QString& subjectName) {
+        for (std::size_t conditionIndex = 0; conditionIndex < conditions.size();
              ++conditionIndex) {
-            const DslTypedFieldCondition& condition = field.conditions.at(conditionIndex);
-            if (condition.fieldIndex >= fieldIndex ||
+            const DslTypedFieldCondition& condition = conditions.at(conditionIndex);
+            if (condition.fieldIndex >= subjectFieldIndex ||
                 condition.fieldIndex >= structure.fields.size()) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
-                            QStringLiteral("Typed IR field condition is invalid"),
-                            &field);
-                return result;
+                            QStringLiteral("Typed IR %1 condition is invalid").arg(subjectName),
+                            subject);
+                return false;
             }
             const DslTypedField& controller = structure.fields.at(condition.fieldIndex);
-            const bool validUnsignedController =
-                controller.type.kind == DslValueTypeKind::UnsignedBits &&
-                !controller.type.enumIndex;
-            const bool validEnumController =
-                controller.type.kind == DslValueTypeKind::Enum &&
-                controller.type.enumIndex && *controller.type.enumIndex < program.enums.size();
-            const bool validEndian = controller.type.endian == DslEndian::Big ||
-                                     controller.type.endian == DslEndian::Little;
-            if ((!validUnsignedController && !validEnumController) ||
-                controller.type.bitWidth == 0 || controller.type.bitWidth > 64 ||
-                !validEndian ||
-                (controller.type.endian == DslEndian::Little &&
-                 controller.type.bitWidth % 8 != 0) ||
-                !fitsUnsignedBits(condition.expectedValue, controller.type.bitWidth)) {
+            const bool validOperator = condition.op == DslConditionOperator::Equal ||
+                                       condition.op == DslConditionOperator::GreaterThan;
+            const bool fixedController = validFixedController(controller);
+            const bool unsignedExpGolombController =
+                validUnsignedExpGolombController(controller);
+            const bool validController =
+                condition.op == DslConditionOperator::Equal
+                    ? fixedController
+                    : fixedController || unsignedExpGolombController;
+            if (!validOperator || !validController ||
+                (fixedController &&
+                 !fitsUnsignedBits(condition.expectedValue, controller.type.bitWidth))) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
-                            QStringLiteral("Typed IR field condition has an invalid controller"),
-                            &field);
-                return result;
+                            QStringLiteral("Typed IR %1 condition has an invalid controller")
+                                .arg(subjectName),
+                            subject);
+                return false;
             }
             const auto availableEnd =
-                field.conditions.begin() + static_cast<std::ptrdiff_t>(conditionIndex);
+                conditions.begin() + static_cast<std::ptrdiff_t>(conditionIndex);
             const bool controllerAvailable = std::all_of(
                 controller.conditions.begin(),
                 controller.conditions.end(),
-                [&field, availableEnd, &sameCondition](
+                [&conditions, availableEnd, &sameCondition](
                     const DslTypedFieldCondition& required) {
-                    return std::any_of(field.conditions.begin(),
+                    return std::any_of(conditions.begin(),
                                        availableEnd,
                                        [&required, &sameCondition](
                                            const DslTypedFieldCondition& candidate) {
@@ -336,11 +357,71 @@ DslExecutionResult DslVirtualMachine::execute(
             if (!controllerAvailable) {
                 markFailure(
                     DslExecutionStatus::InvalidDefinition,
-                    QStringLiteral("Typed IR field condition controller is not guaranteed"),
-                    &field);
-                return result;
+                    QStringLiteral("Typed IR %1 condition controller is not guaranteed")
+                        .arg(subjectName),
+                    subject);
+                return false;
             }
         }
+        return true;
+    };
+    for (std::size_t fieldIndex = 0; fieldIndex < structure.fields.size(); ++fieldIndex) {
+        const DslTypedField& field = structure.fields.at(fieldIndex);
+        if (!validateConditions(
+                field.conditions, fieldIndex, &field, QStringLiteral("field"))) {
+            return result;
+        }
+    }
+    quint32 previousRepeatPosition = 0;
+    for (std::size_t repeatIndex = 0; repeatIndex < structure.repeatBounds.size();
+         ++repeatIndex) {
+        const DslTypedRepeatBound& repeat = structure.repeatBounds.at(repeatIndex);
+        const bool ordered = repeatIndex == 0 ||
+                             repeat.firstFieldIndex >= previousRepeatPosition;
+        if (!ordered || repeat.maximumCount == 0 ||
+            repeat.firstFieldIndex >= structure.fields.size() ||
+            repeat.controllerFieldIndex >= repeat.firstFieldIndex ||
+            repeat.controllerFieldIndex >= structure.fields.size()) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed IR repeat bound is invalid"),
+                        nullptr);
+            return result;
+        }
+        const DslTypedField& controller =
+            structure.fields.at(repeat.controllerFieldIndex);
+        const bool fixedController = validFixedController(controller);
+        if ((!fixedController && !validUnsignedExpGolombController(controller)) ||
+            (fixedController &&
+             !fitsUnsignedBits(repeat.maximumCount, controller.type.bitWidth))) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed IR repeat bound has an invalid controller"),
+                        &controller);
+            return result;
+        }
+        if (!validateConditions(repeat.conditions,
+                                repeat.firstFieldIndex,
+                                &controller,
+                                QStringLiteral("repeat bound"))) {
+            return result;
+        }
+        const bool controllerAvailable = std::all_of(
+            controller.conditions.begin(),
+            controller.conditions.end(),
+            [&repeat, &sameCondition](const DslTypedFieldCondition& required) {
+                return std::any_of(repeat.conditions.begin(),
+                                   repeat.conditions.end(),
+                                   [&required, &sameCondition](
+                                       const DslTypedFieldCondition& candidate) {
+                                       return sameCondition(required, candidate);
+                                   });
+            });
+        if (!controllerAvailable) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed IR repeat bound controller is not guaranteed"),
+                        &controller);
+            return result;
+        }
+        previousRepeatPosition = repeat.firstFieldIndex;
     }
 
     const auto consumeInstruction = [&]() -> bool {
@@ -364,11 +445,39 @@ DslExecutionResult DslVirtualMachine::execute(
     const std::size_t begin = structure.bytecodeOffset;
     const std::size_t end = begin + structure.bytecodeLength;
     std::vector<std::optional<quint64>> fieldValues(structure.fields.size());
+    struct MaterializedFieldRange final {
+        quint64 start = 0;
+        quint64 bitCount = 0;
+    };
+    std::vector<std::optional<MaterializedFieldRange>> fieldRanges(
+        structure.fields.size());
     std::optional<quint32> lastField;
     std::optional<quint64> lastValue;
     bool lastFieldSkipped = false;
     quint32 nextFieldIndex = 0;
     bool ended = false;
+    const auto conditionsPresent = [&](const std::vector<DslTypedFieldCondition>& conditions,
+                                       const DslTypedField* subject,
+                                       const QString& subjectName) -> std::optional<bool> {
+        for (const DslTypedFieldCondition& condition : conditions) {
+            const std::optional<quint64>& controllerValue =
+                fieldValues.at(condition.fieldIndex);
+            if (!controllerValue) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR %1 condition controller is unavailable")
+                                .arg(subjectName),
+                            subject);
+                return std::nullopt;
+            }
+            const bool matches = condition.op == DslConditionOperator::Equal
+                                     ? *controllerValue == condition.expectedValue
+                                     : *controllerValue > condition.expectedValue;
+            if (condition.negated ? matches : !matches) {
+                return false;
+            }
+        }
+        return true;
+    };
 
     for (std::size_t programCounter = begin; programCounter < end; ++programCounter) {
         const DslInstruction& instruction = program.bytecode.at(programCounter);
@@ -480,24 +589,12 @@ DslExecutionResult DslVirtualMachine::execute(
                     return result;
                 }
             }
-            bool fieldPresent = true;
-            for (const DslTypedFieldCondition& condition : field.conditions) {
-                const std::optional<quint64>& controllerValue =
-                    fieldValues.at(condition.fieldIndex);
-                if (!controllerValue) {
-                    markFailure(
-                        DslExecutionStatus::InvalidDefinition,
-                        QStringLiteral("Typed IR field condition controller is unavailable"),
-                        &field);
-                    return result;
-                }
-                const bool equal = *controllerValue == condition.expectedValue;
-                if (condition.negated ? equal : !equal) {
-                    fieldPresent = false;
-                    break;
-                }
-            }
+            const std::optional<bool> fieldPresent =
+                conditionsPresent(field.conditions, &field, QStringLiteral("field"));
             if (!fieldPresent) {
+                return result;
+            }
+            if (!*fieldPresent) {
                 lastField = instruction.operand;
                 lastValue.reset();
                 lastFieldSkipped = true;
@@ -599,7 +696,11 @@ DslExecutionResult DslVirtualMachine::execute(
             }
             ++result.nodesCreated;
             fieldValues.at(instruction.operand) =
-                readsFixedBits ? std::optional<quint64>(unsignedValue) : std::nullopt;
+                readsFixedBits || readsUnsignedExpGolomb
+                    ? std::optional<quint64>(unsignedValue)
+                    : std::nullopt;
+            fieldRanges.at(instruction.operand) =
+                MaterializedFieldRange{fieldStart, consumedBits};
             lastField = instruction.operand;
             lastValue = readsFixedBits ? std::optional<quint64>(unsignedValue) : std::nullopt;
             lastFieldSkipped = false;
@@ -659,6 +760,54 @@ DslExecutionResult DslVirtualMachine::execute(
             (void)tree.markPartial(*result.structureNode,
                                    core::MaterializationState::Invalid,
                                    std::move(diagnostic));
+            return result;
+        }
+        case DslOpcode::AssertRepeatCount: {
+            const DslTypedRepeatBound* repeat =
+                instruction.operand < structure.repeatBounds.size()
+                    ? &structure.repeatBounds.at(instruction.operand)
+                    : nullptr;
+            if (!result.structureNode || repeat == nullptr ||
+                repeat->firstFieldIndex != nextFieldIndex ||
+                repeat->maximumCount != instruction.immediate) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR repeat assertion is invalid"),
+                            nullptr);
+                return result;
+            }
+            const DslTypedField& controller =
+                structure.fields.at(repeat->controllerFieldIndex);
+            const std::optional<bool> repeatPresent = conditionsPresent(
+                repeat->conditions, &controller, QStringLiteral("repeat bound"));
+            if (!repeatPresent) {
+                return result;
+            }
+            if (!*repeatPresent) {
+                break;
+            }
+            const std::optional<quint64>& count =
+                fieldValues.at(repeat->controllerFieldIndex);
+            if (!count) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral(
+                                "Typed IR repeat bound controller is unavailable"),
+                            &controller);
+                return result;
+            }
+            if (*count <= repeat->maximumCount) {
+                break;
+            }
+            const std::optional<MaterializedFieldRange>& controllerRange =
+                fieldRanges.at(repeat->controllerFieldIndex);
+            markFailure(DslExecutionStatus::InvalidSyntax,
+                        QStringLiteral("Repeat count exceeds its declared maximum"),
+                        &controller,
+                        controllerRange
+                            ? std::optional<quint64>(controllerRange->start)
+                            : std::nullopt,
+                        controllerRange
+                            ? std::optional<quint64>(controllerRange->bitCount)
+                            : std::nullopt);
             return result;
         }
         case DslOpcode::EndStructure:

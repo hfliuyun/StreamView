@@ -755,6 +755,252 @@ private slots:
         }
     }
 
+    void executesBoundedRepeatCountsWithoutClamping() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<3> count; repeat (count, 3) { bits<2> value; } "
+            "bits<1> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+
+        struct Case final {
+            QString name;
+            std::vector<std::byte> sourceBytes;
+            quint64 bitLength = 0;
+            std::vector<QString> fieldNames;
+            std::vector<quint64> fieldValues;
+            std::vector<quint64> fieldStarts;
+        };
+        const std::vector<Case> cases{
+            {QStringLiteral("repeat-zero"),
+             bytes({0x10}),
+             4,
+             {QStringLiteral("count"), QStringLiteral("tail")},
+             {0, 1},
+             {0, 3}},
+            {QStringLiteral("repeat-two"),
+             bytes({0x4d}),
+             8,
+             {QStringLiteral("count"),
+              QStringLiteral("value[0]"),
+              QStringLiteral("value[1]"),
+              QStringLiteral("tail")},
+             {2, 1, 2, 1},
+             {0, 3, 5, 7}},
+            {QStringLiteral("repeat-maximum"),
+             bytes({0x6d, 0x80}),
+             10,
+             {QStringLiteral("count"),
+              QStringLiteral("value[0]"),
+              QStringLiteral("value[1]"),
+              QStringLiteral("value[2]"),
+              QStringLiteral("tail")},
+             {3, 1, 2, 3, 0},
+             {0, 3, 5, 7, 9}},
+        };
+
+        for (const Case& testCase : cases) {
+            MemorySource source(testCase.sourceBytes);
+            const auto mapping = mappingForBytes(testCase.sourceBytes.size());
+            const auto range = SourceSpan::create(
+                streamview::core::SourceBitAddress(0), testCase.bitLength);
+            QVERIFY(mapping.has_value());
+            QVERIFY(range.has_value());
+            BitReader reader(source, *range);
+            auto tree = AnalysisTree::create(testCase.name);
+            QVERIFY(tree.has_value());
+
+            const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                          quint32(0),
+                                                          reader,
+                                                          *mapping,
+                                                          0,
+                                                          *tree,
+                                                          tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::Materialized);
+            QCOMPARE(result.bitsConsumed, testCase.bitLength);
+            QCOMPARE(result.instructionsExecuted, quint64(8));
+            QCOMPARE(result.nodesCreated, testCase.fieldNames.size() + std::size_t(1));
+            const auto structure = tree->node(*result.structureNode);
+            QVERIFY(structure.has_value());
+            QCOMPARE(structure->children().size(), testCase.fieldNames.size());
+            for (std::size_t index = 0; index < testCase.fieldNames.size(); ++index) {
+                const auto field = tree->node(structure->children().at(index));
+                QVERIFY(field.has_value());
+                QCOMPARE(field->name(), testCase.fieldNames.at(index));
+                QCOMPARE(field->value().toULongLong(), testCase.fieldValues.at(index));
+                QCOMPARE(field->location()->sourceSpans().front().start()
+                             .absoluteBitOffset(),
+                         testCase.fieldStarts.at(index));
+            }
+        }
+
+        MemorySource invalidSource(bytes({0x80}));
+        const auto invalidMapping = mappingForBytes(1);
+        const auto invalidRange =
+            SourceSpan::create(streamview::core::SourceBitAddress(0), 3);
+        QVERIFY(invalidMapping.has_value());
+        QVERIFY(invalidRange.has_value());
+        BitReader invalidReader(invalidSource, *invalidRange);
+        auto invalidTree = AnalysisTree::create(QStringLiteral("repeat-over-maximum"));
+        QVERIFY(invalidTree.has_value());
+        const auto invalid = DslExecutor::decodeStruct(*compiled.program,
+                                                       quint32(0),
+                                                       invalidReader,
+                                                       *invalidMapping,
+                                                       0,
+                                                       *invalidTree,
+                                                       invalidTree->rootId());
+        QCOMPARE(invalid.status, DslExecutionStatus::InvalidSyntax);
+        QCOMPARE(invalid.bitsConsumed, quint64(3));
+        QCOMPARE(invalid.instructionsExecuted, quint64(3));
+        QCOMPARE(invalid.nodesCreated, quint64(2));
+        const auto invalidStructure = invalidTree->node(*invalid.structureNode);
+        QVERIFY(invalidStructure.has_value());
+        QCOMPARE(invalidStructure->children().size(), std::size_t(1));
+        QCOMPARE(invalidStructure->diagnostics().size(), std::size_t(1));
+        QCOMPARE(invalidStructure->diagnostics().front().code,
+                 DiagnosticCode::InvalidSyntax);
+        QCOMPARE(invalidStructure->diagnostics().front().fieldPath,
+                 QStringLiteral("Header.count"));
+        QCOMPARE(invalidStructure->diagnostics().front().location->sourceSpans().front().start()
+                     .absoluteBitOffset(),
+                 quint64(0));
+        QCOMPARE(invalidStructure->diagnostics().front().location->sourceSpans().front()
+                     .bitLength(),
+                 quint64(3));
+    }
+
+    void skipsGuardedRepeatBoundsWhenTheirEnclosingBranchIsAbsent() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> flag; if (flag == 1) { bits<2> count; "
+            "repeat (count, 2) { bits<1> value; } } else { bits<1> fallback; } "
+            "bits<1> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0x60}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 3);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("guarded-repeat-absent"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                      quint32(0),
+                                                      reader,
+                                                      *mapping,
+                                                      0,
+                                                      *tree,
+                                                      tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(3));
+        QCOMPARE(result.instructionsExecuted, quint64(9));
+        QCOMPARE(result.nodesCreated, quint64(4));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(3));
+        QCOMPARE(tree->node(structure->children().at(0))->name(), QStringLiteral("flag"));
+        QCOMPARE(tree->node(structure->children().at(1))->name(),
+                 QStringLiteral("fallback"));
+        QCOMPARE(tree->node(structure->children().at(2))->name(), QStringLiteral("tail"));
+    }
+
+    void executesNestedRepeatsWithUnsignedExpGolombLocalCounts() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> outer_count; repeat (outer_count, 2) { "
+            "ue inner_count; repeat (inner_count, 2) { bits<2> value; } } "
+            "bits<1> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0xad, 0xa0}));
+        const auto mapping = mappingForBytes(2);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 11);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("nested-repeat"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                      quint32(0),
+                                                      reader,
+                                                      *mapping,
+                                                      0,
+                                                      *tree,
+                                                      tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(11));
+        QCOMPARE(result.instructionsExecuted, quint64(13));
+        QCOMPARE(result.nodesCreated, quint64(7));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        const std::vector<QString> names{
+            QStringLiteral("outer_count"),
+            QStringLiteral("inner_count[0]"),
+            QStringLiteral("inner_count[1]"),
+            QStringLiteral("value[1][0]"),
+            QStringLiteral("value[1][1]"),
+            QStringLiteral("tail"),
+        };
+        const std::vector<quint64> values{2, 0, 2, 1, 2, 1};
+        const std::vector<quint64> starts{0, 2, 3, 6, 8, 10};
+        const std::vector<quint64> lengths{2, 1, 3, 2, 2, 1};
+        QCOMPARE(structure->children().size(), names.size());
+        for (std::size_t index = 0; index < names.size(); ++index) {
+            const auto field = tree->node(structure->children().at(index));
+            QVERIFY(field.has_value());
+            QCOMPARE(field->name(), names.at(index));
+            QCOMPARE(field->value().toULongLong(), values.at(index));
+            QCOMPARE(field->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     starts.at(index));
+            QCOMPARE(field->location()->sourceSpans().front().bitLength(),
+                     lengths.at(index));
+        }
+    }
+
+    void rejectsEmptyRepeatBoundsBeforeExecutingBytecode() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> count; repeat (count, 2) { bits<1> value; } } "
+            "entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        DslTypedProgram malformed = *compiled.program;
+        malformed.structs.front().repeatBounds.front().firstFieldIndex =
+            static_cast<quint32>(malformed.structs.front().fields.size());
+        MemorySource source(bytes({0x00}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 2);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("malformed-repeat-bound"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(malformed,
+                                                      quint32(0),
+                                                      reader,
+                                                      *mapping,
+                                                      0,
+                                                      *tree,
+                                                      tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(result.instructionsExecuted, quint64(0));
+        QCOMPARE(result.bitsConsumed, quint64(0));
+        QCOMPARE(result.nodesCreated, quint64(0));
+        QVERIFY(!result.structureNode.has_value());
+    }
+
     void materializesNestedConditionalArraysAndExpGolombFields() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "struct Header { bits<1> outer; if (outer == 1) { bits<1> inner; "

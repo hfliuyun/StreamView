@@ -728,6 +728,38 @@ private:
         items.push_back(std::move(item));
     }
 
+    void parseRepeat(std::vector<DslStructItem>& items) {
+        const DslSourcePosition start = consume().range.start;
+        DslStructItem item;
+        item.kind = DslStructItemKind::Repeat;
+        expect(DslTokenKind::LeftParen, QStringLiteral("'(' after repeat"));
+        if (at(DslTokenKind::Identifier)) {
+            item.repeatCountFieldRange = current().range;
+            item.repeatCountFieldName = consume().lexeme;
+        } else {
+            error(DslDiagnosticCode::MissingToken,
+                  QStringLiteral("Expected repeat count field name"));
+        }
+        expect(DslTokenKind::Comma, QStringLiteral("',' after repeat count field name"));
+        if (at(DslTokenKind::IntegerLiteral)) {
+            const DslToken maximum = consume();
+            item.repeatMaximum = maximum.integerValue;
+            item.repeatMaximumRange = maximum.range;
+        } else {
+            error(DslDiagnosticCode::MissingToken,
+                  QStringLiteral("Expected repeat maximum count"));
+        }
+        expect(DslTokenKind::RightParen, QStringLiteral("')' after repeat maximum"));
+        if (expect(DslTokenKind::LeftBrace, QStringLiteral("'{' after repeat header"))) {
+            parseStructItems(item.repeatItems);
+            expect(DslTokenKind::RightBrace, QStringLiteral("'}' after repeat body"));
+        } else {
+            recoverField();
+        }
+        item.range = {start, lexResult_.tokens.at(index_ - 1).range.end};
+        items.push_back(std::move(item));
+    }
+
     void parseStructItems(std::vector<DslStructItem>& items) {
         while (!at(DslTokenKind::RightBrace) && !at(DslTokenKind::EndOfFile)) {
             const std::vector<DslAnnotation> annotations = parseAnnotations();
@@ -747,6 +779,14 @@ private:
                          annotations.front().range});
                 }
                 parseSwitch(items);
+            } else if (isIdentifier(QStringLiteral("repeat"))) {
+                if (!annotations.empty()) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidAnnotation,
+                         QStringLiteral("Annotations are not allowed before repeat statements"),
+                         annotations.front().range});
+                }
+                parseRepeat(items);
             } else {
                 parseField(items, annotations);
             }
@@ -946,6 +986,7 @@ private:
                 const DslBitField* field = nullptr;
                 std::vector<ActiveCondition> conditions;
             };
+            std::vector<QString> declaredFieldNames;
             std::vector<DeclaredField> declaredFields;
             const auto sameCondition = [](const ActiveCondition& left,
                                           const ActiveCondition& right) {
@@ -955,7 +996,8 @@ private:
             };
             const auto validateController = [&](const QString& fieldName,
                                                 const DslSourceRange& range,
-                                                const std::vector<ActiveCondition>& active)
+                                                const std::vector<ActiveCondition>& active,
+                                                bool allowUnsignedExpGolomb)
                 -> const DslBitField* {
                 const auto found = std::find_if(
                     declaredFields.rbegin(),
@@ -971,12 +1013,19 @@ private:
                          range});
                     return nullptr;
                 }
-                if (found->field->encoding != DslFieldEncoding::Bits ||
-                    found->field->arrayLength) {
+                const bool supportedEncoding =
+                    found->field->encoding == DslFieldEncoding::Bits ||
+                    (allowUnsignedExpGolomb &&
+                     found->field->encoding == DslFieldEncoding::UnsignedExpGolomb);
+                if (!supportedEncoding || found->field->arrayLength) {
                     result_.diagnostics.push_back(
                         {DslDiagnosticCode::InvalidType,
-                         QStringLiteral(
-                             "Controllers require a previous scalar bits or enum field"),
+                         allowUnsignedExpGolomb
+                             ? QStringLiteral(
+                                   "Repeat counts require a previous scalar bits, enum, or ue "
+                                   "field")
+                             : QStringLiteral(
+                                   "Controllers require a previous scalar bits or enum field"),
                          range});
                     return nullptr;
                 }
@@ -1016,7 +1065,7 @@ private:
             const auto validateCondition = [&](const DslEqualityCondition& condition,
                                                const std::vector<ActiveCondition>& active) {
                 const DslBitField* controller = validateController(
-                    condition.fieldName, condition.range, active);
+                    condition.fieldName, condition.range, active, false);
                 validateConditionValue(
                     controller, condition.expectedValue, condition.range);
             };
@@ -1102,6 +1151,30 @@ private:
                     }
                 }
             };
+            const auto containsField = [](const auto& self,
+                                          const std::vector<DslStructItem>& items) -> bool {
+                for (const DslStructItem& item : items) {
+                    if (item.kind == DslStructItemKind::Field) {
+                        return true;
+                    }
+                    if (item.kind == DslStructItemKind::Conditional &&
+                        (self(self, item.thenItems) || self(self, item.elseItems))) {
+                        return true;
+                    }
+                    if (item.kind == DslStructItemKind::Switch) {
+                        for (const DslStructItem::SwitchArm& arm : item.switchArms) {
+                            if (self(self, arm.items)) {
+                                return true;
+                            }
+                        }
+                    }
+                    if (item.kind == DslStructItemKind::Repeat &&
+                        self(self, item.repeatItems)) {
+                        return true;
+                    }
+                }
+                return false;
+            };
             const auto validateItems = [&](const auto& self,
                                            const std::vector<DslStructItem>& items,
                                            const std::vector<ActiveCondition>& active,
@@ -1133,7 +1206,7 @@ private:
                     }
                     if (item.kind == DslStructItemKind::Switch) {
                         const DslBitField* controller = validateController(
-                            item.switchFieldName, item.switchFieldRange, active);
+                            item.switchFieldName, item.switchFieldRange, active, false);
                         std::vector<const DslStructItem::SwitchArm*> caseArms;
                         std::vector<quint64> caseValues;
                         bool defaultSeen = false;
@@ -1226,19 +1299,54 @@ private:
                         }
                         continue;
                     }
+                    if (item.kind == DslStructItemKind::Repeat) {
+                        const DslBitField* controller = validateController(
+                            item.repeatCountFieldName,
+                            item.repeatCountFieldRange,
+                            active,
+                            true);
+                        if (item.repeatMaximum == 0) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidArrayLength,
+                                 QStringLiteral(
+                                     "Bounded repeat maximum must be at least one"),
+                                 item.repeatMaximumRange});
+                        } else if (controller != nullptr &&
+                                   controller->encoding == DslFieldEncoding::Bits &&
+                                   controller->width != 0 && controller->width < 64 &&
+                                   item.repeatMaximum >=
+                                       (quint64{1} << controller->width)) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::ConstraintOutOfRange,
+                                 QStringLiteral(
+                                     "Repeat maximum does not fit the controlling field"),
+                                 item.repeatMaximumRange});
+                        }
+                        if (!containsField(containsField, item.repeatItems)) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidCondition,
+                                 QStringLiteral(
+                                     "A bounded repeat body must contain at least one field"),
+                                 item.range});
+                        }
+                        const std::size_t scopeStart = declaredFields.size();
+                        (void)self(self, item.repeatItems, active, fieldOffset);
+                        declaredFields.resize(scopeStart);
+                        fieldOffset = std::nullopt;
+                        continue;
+                    }
 
                     const DslBitField& field = item.field;
                     validateFieldAnnotations(field);
-                    if (std::any_of(declaredFields.begin(),
-                                    declaredFields.end(),
-                                    [&field](const DeclaredField& declared) {
-                                        return declared.field->name == field.name;
-                                    })) {
+                    if (std::find(declaredFieldNames.begin(),
+                                  declaredFieldNames.end(),
+                                  field.name) != declaredFieldNames.end()) {
                         result_.diagnostics.push_back(
                             {DslDiagnosticCode::DuplicateName,
                              QStringLiteral("Duplicate field name"),
                              field.range});
                     }
+                    declaredFieldNames.push_back(field.name);
                     declaredFields.push_back({&field, active});
                     if (field.endian == DslEndian::Little &&
                         (!fieldOffset || *fieldOffset % 8 != 0)) {
@@ -1275,7 +1383,7 @@ private:
                 return fieldOffset;
             };
             (void)validateItems(validateItems, structure.items, {}, quint64(0));
-            if (!structure.items.empty() && declaredFields.empty()) {
+            if (!structure.items.empty() && declaredFieldNames.empty()) {
                 result_.diagnostics.push_back(
                     {DslDiagnosticCode::EmptyStruct,
                      QStringLiteral("A structure must contain at least one field"),

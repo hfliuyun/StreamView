@@ -154,6 +154,7 @@ enum class DslStructItemKind : quint8 {
     Field,
     Conditional,
     Switch,
+    Repeat,
 };
 
 enum class DslSwitchArmKind : quint8 {
@@ -178,6 +179,11 @@ struct DslStructItem final {
     QString switchFieldName;
     DslSourceRange switchFieldRange;
     std::vector<SwitchArm> switchArms;
+    QString repeatCountFieldName;
+    DslSourceRange repeatCountFieldRange;
+    quint64 repeatMaximum = 0;
+    DslSourceRange repeatMaximumRange;
+    std::vector<DslStructItem> repeatItems;
     DslSourceRange range;
 };
 

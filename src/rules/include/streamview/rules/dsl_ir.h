@@ -37,10 +37,16 @@ struct DslTypedEnum final {
     DslSourceRange range;
 };
 
+enum class DslConditionOperator : quint8 {
+    Equal,
+    GreaterThan,
+};
+
 struct DslTypedFieldCondition final {
     quint32 fieldIndex = 0;
     quint64 expectedValue = 0;
     bool negated = false;
+    DslConditionOperator op = DslConditionOperator::Equal;
 };
 
 struct DslTypedField final {
@@ -52,10 +58,19 @@ struct DslTypedField final {
     DslSourceRange range;
 };
 
+struct DslTypedRepeatBound final {
+    quint32 controllerFieldIndex = 0;
+    quint32 firstFieldIndex = 0;
+    quint64 maximumCount = 0;
+    std::vector<DslTypedFieldCondition> conditions;
+    DslSourceRange range;
+};
+
 struct DslTypedStruct final {
     QString name;
     core::AnalysisNodeMetadata metadata;
     std::vector<DslTypedField> fields;
+    std::vector<DslTypedRepeatBound> repeatBounds;
     quint32 bytecodeOffset = 0;
     quint32 bytecodeLength = 0;
 };
@@ -88,6 +103,7 @@ enum class DslOpcode : quint8 {
     ReadUnsignedExpGolomb,
     ReadSignedExpGolomb,
     AssertEquals,
+    AssertRepeatCount,
     EndStructure,
 };
 

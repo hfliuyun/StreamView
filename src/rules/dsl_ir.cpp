@@ -30,8 +30,46 @@ void collectFields(const std::vector<DslStructItem>& items,
             for (const DslStructItem::SwitchArm& arm : item.switchArms) {
                 collectFields(arm.items, fields);
             }
+        } else if (item.kind == DslStructItemKind::Repeat) {
+            collectFields(item.repeatItems, fields);
         }
     }
+}
+
+[[nodiscard]] quint64 expandedFieldProjection(const std::vector<DslStructItem>& items) {
+    constexpr quint64 overflowProjection = maximumExpandedFieldsPerStructure + 1;
+    const auto add = [](quint64 left, quint64 right) {
+        return left >= overflowProjection || right >= overflowProjection ||
+                       left > overflowProjection - right
+                   ? overflowProjection
+                   : left + right;
+    };
+    quint64 projection = 0;
+    for (const DslStructItem& item : items) {
+        quint64 itemProjection = 0;
+        if (item.kind == DslStructItemKind::Field) {
+            itemProjection = item.field.arrayLength.value_or(1);
+        } else if (item.kind == DslStructItemKind::Conditional) {
+            itemProjection = add(expandedFieldProjection(item.thenItems),
+                                 expandedFieldProjection(item.elseItems));
+        } else if (item.kind == DslStructItemKind::Switch) {
+            for (const DslStructItem::SwitchArm& arm : item.switchArms) {
+                itemProjection = add(itemProjection, expandedFieldProjection(arm.items));
+            }
+        } else if (item.kind == DslStructItemKind::Repeat) {
+            const quint64 bodyProjection = expandedFieldProjection(item.repeatItems);
+            if (item.repeatMaximum == 0) {
+                itemProjection = 0;
+            } else {
+                itemProjection = bodyProjection <=
+                                         overflowProjection / item.repeatMaximum
+                                     ? bodyProjection * item.repeatMaximum
+                                     : overflowProjection;
+            }
+        }
+        projection = add(projection, itemProjection);
+    }
+    return projection;
 }
 
 [[nodiscard]] core::AnalysisNodeMetadata metadataForAnnotations(
@@ -230,6 +268,20 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                           structure.range);
         }
 
+        std::vector<QString> declaredFieldNames;
+        declaredFieldNames.reserve(sourceFields.size());
+        for (const DslBitField* field : sourceFields) {
+            if (std::find(declaredFieldNames.begin(),
+                          declaredFieldNames.end(),
+                          field->name) != declaredFieldNames.end()) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::DuplicateName,
+                              QStringLiteral("Duplicate field name"),
+                              field->range);
+            }
+            declaredFieldNames.push_back(field->name);
+        }
+
         struct DeclaredField final {
             const DslBitField* source = nullptr;
             std::optional<quint32> typedIndex;
@@ -238,20 +290,21 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         struct ResolvedController final {
             quint32 fieldIndex = 0;
             quint8 width = 0;
+            DslFieldEncoding encoding = DslFieldEncoding::Bits;
         };
-        std::vector<QString> declaredFieldNames;
-        declaredFieldNames.reserve(sourceFields.size());
         std::vector<DeclaredField> declaredFields;
         declaredFields.reserve(sourceFields.size());
+        std::vector<quint64> repeatIndices;
         const auto sameCondition = [](const DslTypedFieldCondition& left,
                                       const DslTypedFieldCondition& right) {
             return left.fieldIndex == right.fieldIndex &&
                    left.expectedValue == right.expectedValue &&
-                   left.negated == right.negated;
+                   left.negated == right.negated && left.op == right.op;
         };
         const auto resolveController = [&](const QString& fieldName,
                                            const DslSourceRange& range,
-                                           const std::vector<DslTypedFieldCondition>& active)
+                                           const std::vector<DslTypedFieldCondition>& active,
+                                           bool allowUnsignedExpGolomb)
             -> std::optional<ResolvedController> {
             const auto found = std::find_if(
                 declaredFields.rbegin(),
@@ -267,12 +320,20 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                               range);
                 return std::nullopt;
             }
-            if (found->source->encoding != DslFieldEncoding::Bits ||
-                found->source->arrayLength || !found->typedIndex) {
+            const bool supportedEncoding =
+                found->source->encoding == DslFieldEncoding::Bits ||
+                (allowUnsignedExpGolomb &&
+                 found->source->encoding == DslFieldEncoding::UnsignedExpGolomb);
+            if (!supportedEncoding || found->source->arrayLength || !found->typedIndex) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidType,
-                              QStringLiteral(
-                                  "Controllers require a previous scalar bits or enum field"),
+                              allowUnsignedExpGolomb
+                                  ? QStringLiteral(
+                                        "Repeat counts require a previous scalar bits, enum, or "
+                                        "ue field")
+                                  : QStringLiteral(
+                                        "Controllers require a previous scalar bits or enum "
+                                        "field"),
                               range);
                 return std::nullopt;
             }
@@ -295,7 +356,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                               range);
                 return std::nullopt;
             }
-            return ResolvedController{*found->typedIndex, found->source->width};
+            return ResolvedController{
+                *found->typedIndex, found->source->width, found->source->encoding};
         };
         const auto resolveConditionValue = [&](const std::optional<ResolvedController>& controller,
                                                quint64 expectedValue,
@@ -318,7 +380,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         const auto resolveCondition = [&](const DslEqualityCondition& condition,
                                           const std::vector<DslTypedFieldCondition>& active) {
             const auto controller = resolveController(
-                condition.fieldName, condition.range, active);
+                condition.fieldName, condition.range, active, false);
             return resolveConditionValue(
                 controller, condition.expectedValue, condition.range);
         };
@@ -326,15 +388,6 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                       const std::vector<DslTypedFieldCondition>& conditions,
                                       std::optional<quint64> fieldOffset)
             -> std::optional<quint64> {
-            if (std::find(declaredFieldNames.begin(), declaredFieldNames.end(), field.name) !=
-                declaredFieldNames.end()) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::DuplicateName,
-                              QStringLiteral("Duplicate field name"),
-                              field.range);
-            }
-            declaredFieldNames.push_back(field.name);
-
             const quint64 elementCount = field.arrayLength.value_or(1);
             if (elementCount == 0 ||
                 elementCount > maximumExpandedFieldsPerStructure - typedStruct.fields.size()) {
@@ -405,6 +458,9 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             }
             DslTypedField typedField;
             typedField.name = field.name;
+            for (const quint64 repeatIndex : repeatIndices) {
+                typedField.name += QStringLiteral("[%1]").arg(repeatIndex);
+            }
             const DslValueTypeKind valueKind =
                 isBits ? DslValueTypeKind::UnsignedBits
                        : (isUnsignedExpGolomb ? DslValueTypeKind::UnsignedExpGolomb
@@ -487,7 +543,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             if (field.arrayLength) {
                 for (quint64 elementIndex = 0; elementIndex < elementCount; ++elementIndex) {
                     DslTypedField element = typedField;
-                    element.name = QStringLiteral("%1[%2]").arg(field.name).arg(elementIndex);
+                    element.name += QStringLiteral("[%1]").arg(elementIndex);
                     typedStruct.fields.push_back(std::move(element));
                 }
             } else {
@@ -550,6 +606,80 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                       : std::nullopt;
                     continue;
                 }
+                if (item.kind == DslStructItemKind::Repeat) {
+                    const auto controller = resolveController(item.repeatCountFieldName,
+                                                              item.repeatCountFieldRange,
+                                                              conditions,
+                                                              true);
+                    if (item.repeatMaximum == 0) {
+                        addDiagnostic(result.diagnostics,
+                                      DslDiagnosticCode::InvalidArrayLength,
+                                      QStringLiteral(
+                                          "Bounded repeat maximum must be at least one"),
+                                      item.repeatMaximumRange);
+                    } else if (controller &&
+                               controller->encoding == DslFieldEncoding::Bits &&
+                               controller->width != 0 && controller->width < 64 &&
+                               item.repeatMaximum >= (quint64{1} << controller->width)) {
+                        addDiagnostic(result.diagnostics,
+                                      DslDiagnosticCode::ConstraintOutOfRange,
+                                      QStringLiteral(
+                                          "Repeat maximum does not fit the controlling field"),
+                                      item.repeatMaximumRange);
+                    }
+
+                    const quint64 bodyProjection = expandedFieldProjection(item.repeatItems);
+                    const quint64 currentFields =
+                        static_cast<quint64>(typedStruct.fields.size());
+                    const quint64 remaining = maximumExpandedFieldsPerStructure - currentFields;
+                    if (bodyProjection == 0) {
+                        addDiagnostic(result.diagnostics,
+                                      DslDiagnosticCode::InvalidCondition,
+                                      QStringLiteral(
+                                          "A bounded repeat body must contain at least one field"),
+                                      item.range);
+                    } else if (item.repeatMaximum != 0 &&
+                               (bodyProjection > remaining ||
+                                item.repeatMaximum > remaining / bodyProjection)) {
+                        addDiagnostic(
+                            result.diagnostics,
+                            DslDiagnosticCode::InvalidArrayLength,
+                            QStringLiteral(
+                                "Bounded repeat expansion exceeds the structure materialization "
+                                "limit"),
+                            item.range);
+                    } else if (item.repeatMaximum != 0) {
+                        const quint32 firstFieldIndex =
+                            static_cast<quint32>(typedStruct.fields.size());
+                        if (controller) {
+                            typedStruct.repeatBounds.push_back({controller->fieldIndex,
+                                                                firstFieldIndex,
+                                                                item.repeatMaximum,
+                                                                conditions,
+                                                                item.range});
+                        }
+                        for (quint64 iteration = 0; iteration < item.repeatMaximum;
+                             ++iteration) {
+                            const std::size_t scopeStart = declaredFields.size();
+                            std::vector<DslTypedFieldCondition> iterationConditions =
+                                conditions;
+                            if (controller) {
+                                iterationConditions.push_back(
+                                    {controller->fieldIndex,
+                                     iteration,
+                                     false,
+                                     DslConditionOperator::GreaterThan});
+                            }
+                            repeatIndices.push_back(iteration);
+                            fieldOffset =
+                                self(self, item.repeatItems, iterationConditions, fieldOffset);
+                            repeatIndices.pop_back();
+                            declaredFields.resize(scopeStart);
+                        }
+                    }
+                    fieldOffset = std::nullopt;
+                    continue;
+                }
                 if (item.kind != DslStructItemKind::Switch) {
                     addDiagnostic(result.diagnostics,
                                   DslDiagnosticCode::InvalidCondition,
@@ -562,7 +692,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 std::vector<std::optional<DslTypedFieldCondition>> caseGuards;
                 caseGuards.reserve(item.switchArms.size());
                 const auto controller = resolveController(
-                    item.switchFieldName, item.switchFieldRange, conditions);
+                    item.switchFieldName, item.switchFieldRange, conditions, false);
                 std::vector<quint64> caseValues;
                 caseValues.reserve(item.switchArms.size());
                 bool defaultSeen = false;
@@ -814,8 +944,20 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         }
         structure.bytecodeOffset = static_cast<quint32>(typed.bytecode.size());
         bool emitted = appendInstruction({DslOpcode::BeginStructure, structIndex, 0});
-        for (std::size_t fieldIndex = 0; emitted && fieldIndex < structure.fields.size();
+        std::size_t repeatBoundIndex = 0;
+        for (std::size_t fieldIndex = 0; emitted && fieldIndex <= structure.fields.size();
              ++fieldIndex) {
+            while (emitted && repeatBoundIndex < structure.repeatBounds.size() &&
+                   structure.repeatBounds.at(repeatBoundIndex).firstFieldIndex == fieldIndex) {
+                emitted = appendInstruction(
+                    {DslOpcode::AssertRepeatCount,
+                     static_cast<quint32>(repeatBoundIndex),
+                     structure.repeatBounds.at(repeatBoundIndex).maximumCount});
+                ++repeatBoundIndex;
+            }
+            if (fieldIndex == structure.fields.size()) {
+                break;
+            }
             const DslOpcode readOpcode = [&]() {
                 switch (structure.fields.at(fieldIndex).type.kind) {
                 case DslValueTypeKind::UnsignedBits:
@@ -835,6 +977,13 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                      static_cast<quint32>(fieldIndex),
                      *structure.fields.at(fieldIndex).equalsConstraint});
             }
+        }
+        if (repeatBoundIndex != structure.repeatBounds.size()) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidCondition,
+                          QStringLiteral("Typed repeat bound position is invalid"),
+                          {});
+            emitted = false;
         }
         if (!emitted || !appendInstruction({DslOpcode::EndStructure, structIndex, 0})) {
             break;
