@@ -52,6 +52,70 @@ diagnosticCode(H264AnnexBAnalysisStatus status) noexcept {
     return core::DiagnosticCode::InvalidSyntax;
 }
 
+[[nodiscard]] bool hasExtensionHeader(quint64 nalUnitType) noexcept {
+    return nalUnitType == 14U || nalUnitType == 20U || nalUnitType == 21U;
+}
+
+[[nodiscard]] QString issueMessage(H264EbspRbspIssueKind kind) {
+    switch (kind) {
+    case H264EbspRbspIssueKind::Prohibited000000:
+        return QStringLiteral("H.264 EBSP contains prohibited byte sequence 00 00 00");
+    case H264EbspRbspIssueKind::Prohibited000001:
+        return QStringLiteral("H.264 EBSP contains prohibited byte sequence 00 00 01");
+    case H264EbspRbspIssueKind::Prohibited000002:
+        return QStringLiteral("H.264 EBSP contains prohibited byte sequence 00 00 02");
+    case H264EbspRbspIssueKind::Prohibited000003xx:
+        return QStringLiteral(
+            "H.264 EBSP contains prohibited byte sequence 00 00 03 xx with xx greater than 03");
+    case H264EbspRbspIssueKind::FinalZeroByte:
+        return QStringLiteral("H.264 EBSP final byte must not be 00");
+    }
+    return QStringLiteral("H.264 EBSP violates byte-sequence conformance requirements");
+}
+
+[[nodiscard]] H264AnnexBAnalysisStatus
+analysisStatus(H264EbspRbspMapStatus status) noexcept {
+    switch (status) {
+    case H264EbspRbspMapStatus::InProgress:
+        return H264AnnexBAnalysisStatus::InProgress;
+    case H264EbspRbspMapStatus::Complete:
+        return H264AnnexBAnalysisStatus::Complete;
+    case H264EbspRbspMapStatus::Cancelled:
+        return H264AnnexBAnalysisStatus::Cancelled;
+    case H264EbspRbspMapStatus::SourceError:
+        return H264AnnexBAnalysisStatus::SourceError;
+    case H264EbspRbspMapStatus::InvalidBatchSize:
+        return H264AnnexBAnalysisStatus::InvalidBatchSize;
+    case H264EbspRbspMapStatus::ResourceLimit:
+        return H264AnnexBAnalysisStatus::ResourceLimit;
+    case H264EbspRbspMapStatus::InvalidInput:
+        return H264AnnexBAnalysisStatus::InvalidRule;
+    }
+    return H264AnnexBAnalysisStatus::InvalidRule;
+}
+
+[[nodiscard]] QString mappingFailureMessage(H264EbspRbspMapStatus status,
+                                            const QString& mapperMessage) {
+    if (!mapperMessage.isEmpty()) {
+        return mapperMessage;
+    }
+    switch (status) {
+    case H264EbspRbspMapStatus::Cancelled:
+        return QStringLiteral("H.264 EBSP-to-RBSP mapping was cancelled");
+    case H264EbspRbspMapStatus::SourceError:
+        return QStringLiteral("Unable to read source while mapping H.264 EBSP");
+    case H264EbspRbspMapStatus::ResourceLimit:
+        return QStringLiteral("H.264 EBSP-to-RBSP mapping exceeded a resource limit");
+    case H264EbspRbspMapStatus::InvalidInput:
+    case H264EbspRbspMapStatus::InvalidBatchSize:
+        return QStringLiteral("H.264 EBSP-to-RBSP mapper rejected analyzer input");
+    case H264EbspRbspMapStatus::InProgress:
+    case H264EbspRbspMapStatus::Complete:
+        break;
+    }
+    return QStringLiteral("H.264 EBSP-to-RBSP mapping failed");
+}
+
 } // namespace
 
 QString h264AnnexBRuleSource(QString* errorMessage) {
@@ -81,9 +145,18 @@ QString h264AnnexBRuleSource(QString* errorMessage) {
 std::optional<H264AnnexBAnalyzer>
 H264AnnexBAnalyzer::create(const core::RandomAccessSource& source,
                            QString* errorMessage,
-                           std::optional<core::CancellationToken> cancellation) {
+                           std::optional<core::CancellationToken> cancellation,
+                           H264EbspRbspMapLimits mapperLimits) {
     if (errorMessage != nullptr) {
         errorMessage->clear();
+    }
+    if (mapperLimits.maximumMappingSegments == 0 ||
+        mapperLimits.maximumExcludedSpans == 0 || mapperLimits.maximumIssues == 0) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral(
+                "H.264 EBSP-to-RBSP cumulative limits must be greater than zero");
+        }
+        return std::nullopt;
     }
 
     QString loadError;
@@ -154,6 +227,7 @@ H264AnnexBAnalyzer::create(const core::RandomAccessSource& source,
 
     H264AnnexBAnalyzer analyzer(source,
                                 std::move(cancellation),
+                                mapperLimits,
                                 std::move(*compiled.program),
                                 elementStructIndex,
                                 std::move(*tree));
@@ -162,12 +236,13 @@ H264AnnexBAnalyzer::create(const core::RandomAccessSource& source,
 
 H264AnnexBAnalyzer::H264AnnexBAnalyzer(const core::RandomAccessSource& source,
                                        std::optional<core::CancellationToken> cancellation,
+                                       H264EbspRbspMapLimits mapperLimits,
                                        DslTypedProgram program,
                                        quint32 elementStructIndex,
                                        core::AnalysisTree tree)
     : source_(&source), scanner_(source, cancellation), cancellation_(std::move(cancellation)),
-      program_(std::move(program)), elementStructIndex_(elementStructIndex),
-      tree_(std::move(tree)) {}
+      mapperLimits_(mapperLimits), program_(std::move(program)),
+      elementStructIndex_(elementStructIndex), tree_(std::move(tree)) {}
 
 std::optional<core::FieldLocation>
 H264AnnexBAnalyzer::makeLocation(std::vector<core::SourceSpan> sourceSpans) {
@@ -202,6 +277,9 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
     if (record.nalUnit) {
         nalSpans.push_back(*record.nalUnit);
     }
+    if (record.trailingZero8Bits) {
+        nalSpans.push_back(*record.trailingZero8Bits);
+    }
     const auto nalLocation = makeLocation(std::move(nalSpans));
     const auto startCodeLocation = makeLocation({*record.startCode});
     if (!nalLocation || !startCodeLocation) {
@@ -209,9 +287,10 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
         return false;
     }
 
+    const quint64 nalUnitIndex = nextNalUnitIndex_;
     core::AnalysisNodeSpec nalSpec;
     nalSpec.kind = core::AnalysisNodeKind::Region;
-    nalSpec.name = QStringLiteral("nal_unit[%1]").arg(nextNalUnitIndex_);
+    nalSpec.name = QStringLiteral("nal_unit[%1]").arg(nalUnitIndex);
     nalSpec.state = core::MaterializationState::Indexing;
     nalSpec.location = *nalLocation;
     const auto nalNode = tree_.appendChild(tree_.rootId(), std::move(nalSpec));
@@ -219,8 +298,32 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
         *errorMessage = QStringLiteral("Unable to append NAL unit to analysis tree");
         return false;
     }
-    batch.nalUnitNodes.push_back(*nalNode);
     ++nextNalUnitIndex_;
+    const auto failPublishedNal = [this,
+                                   &batch,
+                                   &nalLocation,
+                                   nalNode,
+                                   nalUnitIndex,
+                                   failureStatus,
+                                   errorMessage](QString message) {
+        *errorMessage = std::move(message);
+        const auto node = tree_.node(*nalNode);
+        if (node && node->state() == core::MaterializationState::Indexing) {
+            core::ParseDiagnostic diagnostic;
+            diagnostic.code = diagnosticCode(*failureStatus);
+            diagnostic.severity = core::DiagnosticSeverity::Error;
+            diagnostic.message = *errorMessage;
+            diagnostic.fieldPath = QStringLiteral("nal_unit[%1]").arg(nalUnitIndex);
+            diagnostic.location = *nalLocation;
+            (void)tree_.markPartial(*nalNode,
+                                    *failureStatus == H264AnnexBAnalysisStatus::Cancelled
+                                        ? core::MaterializationState::Cancelled
+                                        : core::MaterializationState::Invalid,
+                                    std::move(diagnostic));
+        }
+        batch.nalUnitNodes.push_back(*nalNode);
+        return false;
+    };
 
     core::AnalysisNodeSpec startCodeSpec;
     startCodeSpec.kind = core::AnalysisNodeKind::Region;
@@ -228,8 +331,7 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
     startCodeSpec.state = core::MaterializationState::Materialized;
     startCodeSpec.location = *startCodeLocation;
     if (!tree_.appendChild(*nalNode, std::move(startCodeSpec))) {
-        *errorMessage = QStringLiteral("Unable to append start code to analysis tree");
-        return false;
+        return failPublishedNal(QStringLiteral("Unable to append start code to analysis tree"));
     }
 
     const core::SourceBitAddress headerStart = record.nalUnit
@@ -238,12 +340,10 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
     const quint64 headerBitLength = record.nalUnit ? 8 : 0;
     const auto headerSpan = core::SourceSpan::create(headerStart, headerBitLength);
     if (!headerSpan) {
-        *errorMessage = QStringLiteral("NAL header exceeds source coordinate limits");
-        return false;
+        return failPublishedNal(QStringLiteral("NAL header exceeds source coordinate limits"));
     }
     if (nextViewId_ == 0) {
-        *errorMessage = QStringLiteral("Logical view identifier limit reached");
-        return false;
+        return failPublishedNal(QStringLiteral("Logical view identifier limit reached"));
     }
     const core::LogicalViewId headerViewId(nextViewId_);
     nextViewId_ = nextViewId_ == std::numeric_limits<quint64>::max() ? 0 : nextViewId_ + 1;
@@ -253,8 +353,7 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
     }
     const auto mapping = core::SourceMapping::create(headerViewId, std::move(headerSpans));
     if (!mapping) {
-        *errorMessage = QStringLiteral("Unable to create direct NAL header mapping");
-        return false;
+        return failPublishedNal(QStringLiteral("Unable to create direct NAL header mapping"));
     }
 
     core::BitReader reader(*source_, *mapping);
@@ -271,34 +370,40 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
                                                                     *nalNode,
                                                                     executionOptions);
     if (!execution.materialized()) {
-        if (!execution.structureNode) {
-            *errorMessage = execution.errorMessage.isEmpty()
-                              ? QStringLiteral("Unable to decode NAL unit header")
-                              : execution.errorMessage;
-            if (execution.status == DslExecutionStatus::Cancelled) {
-                *failureStatus = H264AnnexBAnalysisStatus::Cancelled;
-            } else if (execution.status == DslExecutionStatus::ResourceLimit) {
-                *failureStatus = H264AnnexBAnalysisStatus::ResourceLimit;
-            } else if (execution.status == DslExecutionStatus::SourceError) {
-                *failureStatus = H264AnnexBAnalysisStatus::SourceError;
+        core::ParseDiagnostic diagnostic;
+        if (execution.structureNode) {
+            const auto structure = tree_.node(*execution.structureNode);
+            if (structure && !structure->diagnostics().empty()) {
+                diagnostic = structure->diagnostics().front();
             }
-            return false;
         }
-        if (execution.status == DslExecutionStatus::InvalidDefinition) {
-            *errorMessage = execution.errorMessage.isEmpty()
-                              ? QStringLiteral("Unable to decode NAL unit header")
-                              : execution.errorMessage;
-            return false;
+        if (diagnostic.message.isEmpty()) {
+            diagnostic.severity = core::DiagnosticSeverity::Error;
+            diagnostic.message = execution.errorMessage.isEmpty()
+                                     ? QStringLiteral("Unable to decode NAL unit header")
+                                     : execution.errorMessage;
+            diagnostic.fieldPath = QStringLiteral("nal_unit[%1].NalUnitHeader")
+                                       .arg(nalUnitIndex);
+            switch (execution.status) {
+            case DslExecutionStatus::TruncatedSource:
+                diagnostic.code = core::DiagnosticCode::TruncatedSource;
+                break;
+            case DslExecutionStatus::SourceError:
+                diagnostic.code = core::DiagnosticCode::SourceError;
+                break;
+            case DslExecutionStatus::Cancelled:
+                diagnostic.code = core::DiagnosticCode::Cancelled;
+                break;
+            case DslExecutionStatus::ResourceLimit:
+                diagnostic.code = core::DiagnosticCode::ResourceLimit;
+                break;
+            case DslExecutionStatus::InvalidSyntax:
+            case DslExecutionStatus::InvalidDefinition:
+            case DslExecutionStatus::Materialized:
+                diagnostic.code = core::DiagnosticCode::InvalidSyntax;
+                break;
+            }
         }
-
-        const auto structure = tree_.node(*execution.structureNode);
-        if (!structure || structure->diagnostics().empty()) {
-            *errorMessage = execution.errorMessage.isEmpty()
-                              ? QStringLiteral("NAL unit header failed without a diagnostic")
-                              : execution.errorMessage;
-            return false;
-        }
-        core::ParseDiagnostic diagnostic = structure->diagnostics().front();
         if (!diagnostic.location || diagnostic.location->sourceSpans().empty()) {
             if (headerSpan->bitLength() != 0) {
                 const auto headerRange = core::LogicalRange::create(
@@ -309,16 +414,20 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
                 diagnostic.location = *nalLocation;
             }
         }
+        if (!appendTrailingZeroRegion(record, *nalNode, errorMessage)) {
+            return failPublishedNal(*errorMessage);
+        }
         const auto nalState = execution.status == DslExecutionStatus::Cancelled
                                   ? core::MaterializationState::Cancelled
                                   : core::MaterializationState::Invalid;
         if (!tree_.markPartial(*nalNode, nalState, std::move(diagnostic))) {
-            *errorMessage = QStringLiteral("Unable to mark NAL unit as a partial result");
-            return false;
+            return failPublishedNal(
+                QStringLiteral("Unable to mark NAL unit as a partial result"));
         }
         *errorMessage = execution.errorMessage.isEmpty()
                           ? QStringLiteral("NAL unit header contains invalid or truncated syntax")
                           : execution.errorMessage;
+        batch.nalUnitNodes.push_back(*nalNode);
         if (execution.status == DslExecutionStatus::SourceError) {
             *failureStatus = H264AnnexBAnalysisStatus::SourceError;
             return false;
@@ -336,11 +445,276 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
         }
         return true;
     }
+
+    if (!execution.structureNode) {
+        return failPublishedNal(
+            QStringLiteral("Materialized NAL header has no structure node"));
+    }
+    const auto headerNode = tree_.node(*execution.structureNode);
+    if (!headerNode) {
+        return failPublishedNal(QStringLiteral("Materialized NAL header is unavailable"));
+    }
+    std::optional<core::AnalysisNode> nalUnitTypeNode;
+    for (const core::AnalysisNodeId childId : headerNode->children()) {
+        const auto child = tree_.node(childId);
+        if (!child || child->name() != QStringLiteral("nal_unit_type")) {
+            continue;
+        }
+        if (nalUnitTypeNode) {
+            return failPublishedNal(
+                QStringLiteral("Materialized NAL header has duplicate nal_unit_type fields"));
+        }
+        nalUnitTypeNode = child;
+    }
+    if (!nalUnitTypeNode) {
+        return failPublishedNal(
+            QStringLiteral("Materialized NAL header has no nal_unit_type field"));
+    }
+    bool typeConversionSucceeded = false;
+    const quint64 nalUnitType = nalUnitTypeNode->value().toULongLong(&typeConversionSucceeded);
+    if (!typeConversionSucceeded) {
+        return failPublishedNal(
+            QStringLiteral("Materialized NAL header has an invalid nal_unit_type field"));
+    }
+
+    const quint64 nalBitLength = record.nalUnit ? record.nalUnit->bitLength() : 0;
+    if (nalBitLength > 8U && !hasExtensionHeader(nalUnitType)) {
+        const quint64 nalStart = record.nalUnit->start().absoluteBitOffset();
+        if (nalStart > std::numeric_limits<quint64>::max() - 8U) {
+            return failPublishedNal(
+                QStringLiteral("H.264 EBSP payload start exceeds coordinate limits"));
+        }
+        const core::SourceBitAddress payloadStart(nalStart + 8U);
+        const auto payloadSpan = core::SourceSpan::create(payloadStart, nalBitLength - 8U);
+        if (!payloadSpan || nextViewId_ == 0) {
+            return failPublishedNal(
+                QStringLiteral("Unable to represent H.264 EBSP payload coordinates"));
+        }
+        const core::LogicalViewId rbspViewId(nextViewId_);
+        nextViewId_ = nextViewId_ == std::numeric_limits<quint64>::max() ? 0 : nextViewId_ + 1;
+        pendingNalUnit_.emplace(PendingNalUnit{
+            record,
+            *nalNode,
+            nalUnitIndex,
+            H264EbspRbspMapper(
+                *source_, rbspViewId, *payloadSpan, mapperLimits_, cancellation_),
+        });
+        return true;
+    }
+
+    if (!appendTrailingZeroRegion(record, *nalNode, errorMessage)) {
+        return failPublishedNal(*errorMessage);
+    }
     if (!tree_.transition(*nalNode, core::MaterializationState::Materialized)) {
-        *errorMessage = QStringLiteral("Unable to materialize NAL unit node");
+        return failPublishedNal(QStringLiteral("Unable to materialize NAL unit node"));
+    }
+    batch.nalUnitNodes.push_back(*nalNode);
+    return true;
+}
+
+bool H264AnnexBAnalyzer::appendTrailingZeroRegion(const H264StartCodeRecord& record,
+                                                  core::AnalysisNodeId nalNode,
+                                                  QString* errorMessage) {
+    if (!record.trailingZero8Bits) {
+        if (record.trailingZero8BitsLength != 0) {
+            *errorMessage =
+                QStringLiteral("Annex B record has a trailing-zero length without a source span");
+            return false;
+        }
+        return true;
+    }
+    if (record.trailingZero8BitsLength == 0) {
+        *errorMessage =
+            QStringLiteral("Annex B record has a trailing-zero source span without a length");
+        return false;
+    }
+
+    const auto location = makeLocation({*record.trailingZero8Bits});
+    if (!location) {
+        *errorMessage = QStringLiteral("Unable to map Annex B trailing-zero framing");
+        return false;
+    }
+
+    core::AnalysisNodeSpec spec;
+    spec.kind = core::AnalysisNodeKind::Region;
+    spec.name = QStringLiteral("trailing_zero_8bits");
+    spec.state = core::MaterializationState::Materialized;
+    spec.location = *location;
+    spec.metadata.typeName = QStringLiteral("trailing_zero_8bits");
+    spec.metadata.description = QStringLiteral("Annex B zero-byte framing after the NAL unit.");
+    spec.metadata.specification =
+        core::AnalysisSpecification{QStringLiteral("ITU-T H.264"), QStringLiteral("B.1.1")};
+    if (!tree_.appendChild(nalNode, std::move(spec))) {
+        *errorMessage = QStringLiteral("Unable to append Annex B trailing-zero framing");
         return false;
     }
     return true;
+}
+
+bool H264AnnexBAnalyzer::finishPendingNalUnit(const H264EbspRbspMapBatch& mapBatch,
+                                              H264AnnexBAnalysisBatch& batch,
+                                              H264AnnexBAnalysisStatus* failureStatus,
+                                              QString* errorMessage) {
+    *failureStatus = H264AnnexBAnalysisStatus::InvalidRule;
+    if (!pendingNalUnit_ || mapBatch.status == H264EbspRbspMapStatus::InProgress) {
+        *errorMessage = QStringLiteral("H.264 analyzer has no terminal pending mapping");
+        return false;
+    }
+
+    PendingNalUnit& pending = *pendingNalUnit_;
+    const auto failPendingNal = [this,
+                                 &batch,
+                                 &pending,
+                                 failureStatus,
+                                 errorMessage](QString message) {
+        *failureStatus = H264AnnexBAnalysisStatus::InvalidRule;
+        *errorMessage = std::move(message);
+        const core::AnalysisNodeId nodeId = pending.node;
+        const auto node = tree_.node(nodeId);
+        if (node && node->state() == core::MaterializationState::Indexing) {
+            core::ParseDiagnostic diagnostic;
+            diagnostic.code = core::DiagnosticCode::InvalidSyntax;
+            diagnostic.severity = core::DiagnosticSeverity::Error;
+            diagnostic.message = *errorMessage;
+            diagnostic.fieldPath = QStringLiteral("nal_unit[%1]").arg(pending.index);
+            diagnostic.location = node->location();
+            (void)tree_.markPartial(nodeId,
+                                    core::MaterializationState::Invalid,
+                                    std::move(diagnostic));
+        }
+        batch.nalUnitNodes.push_back(nodeId);
+        pendingNalUnit_.reset();
+        return false;
+    };
+    const core::SourceMapping& mapping = pending.mapper.mapping();
+    std::optional<core::FieldLocation> rbspLocation;
+    if (mapping.logicalBitLength() != 0) {
+        const auto range = core::LogicalRange::create(
+            core::LogicalBitAddress(mapping.viewId(), 0), mapping.logicalBitLength());
+        rbspLocation = range ? mapping.locate(*range) : std::nullopt;
+        if (!rbspLocation) {
+            return failPendingNal(
+                QStringLiteral("Unable to locate the mapped H.264 RBSP payload"));
+        }
+    }
+
+    const bool mappingComplete = mapBatch.status == H264EbspRbspMapStatus::Complete;
+    H264AnnexBAnalysisStatus mappedFailureStatus = analysisStatus(mapBatch.status);
+    if (mappedFailureStatus == H264AnnexBAnalysisStatus::InvalidBatchSize) {
+        mappedFailureStatus = H264AnnexBAnalysisStatus::InvalidRule;
+    }
+    const core::MaterializationState rbspState =
+        mappingComplete
+            ? core::MaterializationState::Materialized
+            : (mappedFailureStatus == H264AnnexBAnalysisStatus::Cancelled
+                   ? core::MaterializationState::Cancelled
+                   : core::MaterializationState::Invalid);
+
+    core::AnalysisNodeSpec rbspSpec;
+    rbspSpec.kind = core::AnalysisNodeKind::Region;
+    rbspSpec.name = QStringLiteral("rbsp_payload");
+    rbspSpec.state = rbspState;
+    rbspSpec.location = rbspLocation;
+    rbspSpec.metadata.typeName = QStringLiteral("h264_rbsp");
+    rbspSpec.metadata.description =
+        QStringLiteral("Raw byte sequence payload mapped without emulation-prevention bytes.");
+    rbspSpec.metadata.specification = core::AnalysisSpecification{
+        QStringLiteral("ITU-T H.264"), QStringLiteral("7.3.1, 7.4.1")};
+    const auto rbspNode = tree_.appendChild(pending.node, std::move(rbspSpec));
+    if (!rbspNode) {
+        return failPendingNal(
+            QStringLiteral("Unable to append the mapped H.264 RBSP payload"));
+    }
+
+    const QString rbspPath = QStringLiteral("nal_unit[%1].rbsp_payload").arg(pending.index);
+    std::optional<core::ParseDiagnostic> mappingFailureDiagnostic;
+    if (!mappingComplete) {
+        core::ParseDiagnostic diagnostic;
+        diagnostic.code = diagnosticCode(mappedFailureStatus);
+        diagnostic.severity = core::DiagnosticSeverity::Error;
+        diagnostic.message = mappingFailureMessage(mapBatch.status, mapBatch.errorMessage);
+        diagnostic.fieldPath = rbspPath;
+        diagnostic.location = rbspLocation;
+        mappingFailureDiagnostic = diagnostic;
+        if (!tree_.addDiagnostic(*rbspNode, diagnostic)) {
+            return failPendingNal(
+                QStringLiteral("Unable to attach the H.264 RBSP mapping diagnostic"));
+        }
+    }
+
+    std::size_t excludedIndex = 0;
+    for (const H264EbspRbspExcludedSpan& excluded : pending.mapper.excludedSpans()) {
+        const auto location = makeLocation({excluded.sourceSpan});
+        if (!location) {
+            return failPendingNal(
+                QStringLiteral("Unable to locate an emulation-prevention byte"));
+        }
+        core::AnalysisNodeSpec excludedSpec;
+        excludedSpec.kind = core::AnalysisNodeKind::Region;
+        excludedSpec.name =
+            QStringLiteral("emulation_prevention_three_byte[%1]").arg(excludedIndex);
+        excludedSpec.state = core::MaterializationState::Materialized;
+        excludedSpec.location = *location;
+        excludedSpec.metadata.typeName = QStringLiteral("emulation_prevention_three_byte");
+        excludedSpec.metadata.description =
+            QStringLiteral("Byte excluded while deriving the H.264 RBSP logical view.");
+        excludedSpec.metadata.specification = core::AnalysisSpecification{
+            QStringLiteral("ITU-T H.264"), QStringLiteral("7.3.1")};
+        if (!tree_.appendChild(pending.node, std::move(excludedSpec))) {
+            return failPendingNal(
+                QStringLiteral("Unable to append an emulation-prevention byte"));
+        }
+        ++excludedIndex;
+    }
+
+    if (!appendTrailingZeroRegion(pending.record, pending.node, errorMessage)) {
+        return failPendingNal(*errorMessage);
+    }
+
+    if (mappingComplete) {
+        for (const H264EbspRbspIssue& issue : pending.mapper.issues()) {
+            const auto location = makeLocation({issue.sourceSpan});
+            if (!location) {
+                return failPendingNal(
+                    QStringLiteral("Unable to locate an H.264 EBSP conformance issue"));
+            }
+            core::ParseDiagnostic diagnostic;
+            diagnostic.code = core::DiagnosticCode::InvalidSyntax;
+            diagnostic.severity = core::DiagnosticSeverity::Error;
+            diagnostic.message = issueMessage(issue.kind);
+            diagnostic.fieldPath = rbspPath;
+            diagnostic.location = *location;
+            if (!tree_.addDiagnostic(pending.node, std::move(diagnostic))) {
+                return failPendingNal(
+                    QStringLiteral("Unable to attach an H.264 EBSP conformance issue"));
+            }
+        }
+
+        const core::MaterializationState nalState = pending.mapper.issues().empty()
+                                                        ? core::MaterializationState::Materialized
+                                                        : core::MaterializationState::Invalid;
+        if (!tree_.transition(pending.node, nalState)) {
+            return failPendingNal(
+                QStringLiteral("Unable to finish the mapped H.264 NAL unit"));
+        }
+        batch.nalUnitNodes.push_back(pending.node);
+        pendingNalUnit_.reset();
+        return true;
+    }
+
+    *failureStatus = mappedFailureStatus;
+    *errorMessage = mappingFailureDiagnostic->message;
+    const core::MaterializationState nalState =
+        mappedFailureStatus == H264AnnexBAnalysisStatus::Cancelled
+            ? core::MaterializationState::Cancelled
+            : core::MaterializationState::Invalid;
+    if (!tree_.markPartial(pending.node, nalState, *mappingFailureDiagnostic)) {
+        return failPendingNal(
+            QStringLiteral("Unable to mark the mapped H.264 NAL unit as partial"));
+    }
+    batch.nalUnitNodes.push_back(pending.node);
+    pendingNalUnit_.reset();
+    return false;
 }
 
 void H264AnnexBAnalyzer::markRootPartial(core::DiagnosticCode code,
@@ -355,49 +729,112 @@ void H264AnnexBAnalyzer::markRootPartial(core::DiagnosticCode code,
 }
 
 H264AnnexBAnalysisBatch H264AnnexBAnalyzer::analyzeBatch(
-    std::size_t maximumRecords, quint64 maximumInspectedPositions) {
+    std::size_t maximumRecords,
+    quint64 maximumInspectedPositions,
+    quint64 maximumMappedBytes) {
     H264AnnexBAnalysisBatch result;
     if (terminal_) {
         result.status = terminalStatus_;
         result.errorMessage = terminalErrorMessage_;
         return result;
     }
+    if (maximumRecords == 0 || maximumInspectedPositions == 0 || maximumMappedBytes == 0) {
+        result.status = H264AnnexBAnalysisStatus::InvalidBatchSize;
+        result.errorMessage = QStringLiteral(
+            "Maximum analysis records, scan positions, and mapped bytes must be greater than zero");
+        return result;
+    }
 
-    const bool cancellationRequestedBeforeScan =
-        cancellation_ && cancellation_->isCancellationRequested();
-    const StartCodeScanBatch scanBatch =
-        scanner_.scanBatch(maximumRecords, maximumInspectedPositions);
-    result.status = analysisStatus(scanBatch.status);
-    result.errorMessage = scanBatch.errorMessage;
-    const bool cancellationRequestedAfterScan =
-        cancellation_ && cancellation_->isCancellationRequested();
-    const bool allowExecutionCancellation =
-        cancellation_.has_value() && !cancellationRequestedBeforeScan &&
-        !cancellationRequestedAfterScan;
-    for (const H264StartCodeRecord& record : scanBatch.records) {
+    const auto terminalizeFailure = [this, &result](H264AnnexBAnalysisStatus status,
+                                                    QString message) {
+        result.status = status;
+        result.errorMessage = std::move(message);
+        terminal_ = true;
+        terminalStatus_ = result.status;
+        terminalErrorMessage_ = result.errorMessage;
+        const auto rootState = result.status == H264AnnexBAnalysisStatus::Cancelled
+                                   ? core::MaterializationState::Cancelled
+                                   : core::MaterializationState::Invalid;
+        markRootPartial(diagnosticCode(result.status), rootState, result.errorMessage);
+    };
+
+    if (!deferredScanStatus_) {
+        const bool cancellationRequestedBeforeScan =
+            cancellation_ && cancellation_->isCancellationRequested();
+        const StartCodeScanBatch scanBatch =
+            scanner_.scanBatch(maximumRecords, maximumInspectedPositions);
+        const bool cancellationRequestedAfterScan =
+            cancellation_ && cancellation_->isCancellationRequested();
+        const bool allowExecutionCancellation =
+            cancellation_.has_value() && !cancellationRequestedBeforeScan &&
+            !cancellationRequestedAfterScan;
+        for (const H264StartCodeRecord& record : scanBatch.records) {
+            queuedRecords_.push_back({record, allowExecutionCancellation});
+        }
+        deferredScanStatus_ = scanBatch.status;
+        deferredScanErrorMessage_ = scanBatch.errorMessage;
+    }
+
+    quint64 remainingMappedBytes = maximumMappedBytes;
+    while (pendingNalUnit_ || !queuedRecords_.empty()) {
+        if (pendingNalUnit_) {
+            if (remainingMappedBytes == 0) {
+                result.status = H264AnnexBAnalysisStatus::InProgress;
+                return result;
+            }
+            const quint64 cursorBefore = pendingNalUnit_->mapper.sourceCursor();
+            const H264EbspRbspMapBatch mapBatch =
+                pendingNalUnit_->mapper.mapBatch(remainingMappedBytes);
+            const quint64 cursorAfter = pendingNalUnit_->mapper.sourceCursor();
+            if (cursorAfter < cursorBefore || cursorAfter - cursorBefore > remainingMappedBytes) {
+                terminalizeFailure(
+                    H264AnnexBAnalysisStatus::InvalidRule,
+                    QStringLiteral("H.264 EBSP mapper exceeded the analyzer work budget"));
+                return result;
+            }
+            remainingMappedBytes -= cursorAfter - cursorBefore;
+            if (mapBatch.status == H264EbspRbspMapStatus::InProgress) {
+                result.status = H264AnnexBAnalysisStatus::InProgress;
+                return result;
+            }
+
+            QString publishError;
+            H264AnnexBAnalysisStatus failureStatus = H264AnnexBAnalysisStatus::InvalidRule;
+            if (!finishPendingNalUnit(mapBatch, result, &failureStatus, &publishError)) {
+                terminalizeFailure(failureStatus, publishError);
+                return result;
+            }
+            continue;
+        }
+
+        if (remainingMappedBytes == 0) {
+            result.status = H264AnnexBAnalysisStatus::InProgress;
+            return result;
+        }
+        QueuedRecord queued = std::move(queuedRecords_.front());
+        queuedRecords_.pop_front();
         QString publishError;
         H264AnnexBAnalysisStatus failureStatus = H264AnnexBAnalysisStatus::InvalidRule;
-        if (!publishRecord(record,
+        if (!publishRecord(queued.record,
                            result,
-                           allowExecutionCancellation,
+                           queued.allowExecutionCancellation,
                            &failureStatus,
                            &publishError)) {
-            result.status = failureStatus;
-            result.errorMessage = publishError;
-            terminal_ = true;
-            terminalStatus_ = result.status;
-            terminalErrorMessage_ = result.errorMessage;
-            const auto rootState = result.status == H264AnnexBAnalysisStatus::Cancelled
-                                       ? core::MaterializationState::Cancelled
-                                       : core::MaterializationState::Invalid;
-            markRootPartial(diagnosticCode(result.status),
-                            rootState,
-                            result.errorMessage);
+            terminalizeFailure(failureStatus, publishError);
             return result;
         }
     }
 
-    switch (scanBatch.status) {
+    if (!deferredScanStatus_) {
+        terminalizeFailure(H264AnnexBAnalysisStatus::InvalidRule,
+                           QStringLiteral("H.264 analyzer lost its deferred scanner status"));
+        return result;
+    }
+
+    const StartCodeScanStatus scanStatus = *deferredScanStatus_;
+    result.status = analysisStatus(scanStatus);
+    result.errorMessage = deferredScanErrorMessage_;
+    switch (scanStatus) {
     case StartCodeScanStatus::Complete:
         if (const auto root = tree_.node(tree_.rootId()); root && root->children().empty()) {
             markRootPartial(core::DiagnosticCode::InvalidSyntax,
@@ -413,9 +850,12 @@ H264AnnexBAnalysisBatch H264AnnexBAnalyzer::analyzeBatch(
         terminal_ = true;
         break;
     case StartCodeScanStatus::Cancelled:
+        if (result.errorMessage.isEmpty()) {
+            result.errorMessage = QStringLiteral("H.264 Annex B scan was cancelled");
+        }
         markRootPartial(core::DiagnosticCode::Cancelled,
                         core::MaterializationState::Cancelled,
-                        QStringLiteral("H.264 Annex B scan was cancelled"));
+                        result.errorMessage);
         terminal_ = true;
         break;
     case StartCodeScanStatus::SourceError:
@@ -425,7 +865,18 @@ H264AnnexBAnalysisBatch H264AnnexBAnalyzer::analyzeBatch(
         terminal_ = true;
         break;
     case StartCodeScanStatus::InProgress:
+        deferredScanStatus_.reset();
+        deferredScanErrorMessage_.clear();
+        result.status = H264AnnexBAnalysisStatus::InProgress;
+        result.errorMessage.clear();
+        break;
     case StartCodeScanStatus::InvalidBatchSize:
+        result.status = H264AnnexBAnalysisStatus::InvalidRule;
+        result.errorMessage = QStringLiteral("H.264 scanner rejected a validated analysis batch");
+        markRootPartial(core::DiagnosticCode::InvalidSyntax,
+                        core::MaterializationState::Invalid,
+                        result.errorMessage);
+        terminal_ = true;
         break;
     }
 
