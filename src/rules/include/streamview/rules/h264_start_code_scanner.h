@@ -58,6 +58,11 @@ public:
         std::size_t maximumRecords = 256,
         quint64 maximumInspectedPositions = defaultWorkBudget());
 
+    void replaceCancellationToken(
+        std::optional<core::CancellationToken> cancellation) noexcept {
+        cancellation_ = std::move(cancellation);
+    }
+
     [[nodiscard]] bool finished() const noexcept { return finished_; }
     [[nodiscard]] quint64 cursor() const noexcept { return cursor_; }
 

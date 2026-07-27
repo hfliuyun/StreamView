@@ -244,6 +244,45 @@ H264AnnexBAnalyzer::H264AnnexBAnalyzer(const core::RandomAccessSource& source,
       mapperLimits_(mapperLimits), program_(std::move(program)),
       elementStructIndex_(elementStructIndex), tree_(std::move(tree)) {}
 
+bool H264AnnexBAnalyzer::resumeAfterCancellation(
+    std::optional<core::CancellationToken> cancellation,
+    QString* errorMessage) {
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    const auto reject = [errorMessage](const QString& message) {
+        if (errorMessage != nullptr) {
+            *errorMessage = message;
+        }
+        return false;
+    };
+
+    if (!terminal_ || terminalStatus_ != H264AnnexBAnalysisStatus::Cancelled) {
+        return reject(QStringLiteral("Only a cancelled H.264 analysis can be resumed"));
+    }
+    if (cancellation && cancellation->isCancellationRequested()) {
+        return reject(QStringLiteral("Replacement cancellation token is already requested"));
+    }
+    const auto root = tree_.node(tree_.rootId());
+    if (!root || root->state() != core::MaterializationState::Cancelled) {
+        return reject(QStringLiteral("Cancelled H.264 analysis root is unavailable"));
+    }
+    if (!tree_.resumeCancelled(tree_.rootId())) {
+        return reject(QStringLiteral("Unable to resume the H.264 analysis root"));
+    }
+
+    cancellation_ = std::move(cancellation);
+    scanner_.replaceCancellationToken(cancellation_);
+    if (deferredScanStatus_ == StartCodeScanStatus::Cancelled) {
+        deferredScanStatus_.reset();
+        deferredScanErrorMessage_.clear();
+    }
+    terminal_ = false;
+    terminalStatus_ = H264AnnexBAnalysisStatus::InProgress;
+    terminalErrorMessage_.clear();
+    return true;
+}
+
 std::optional<core::FieldLocation>
 H264AnnexBAnalyzer::makeLocation(std::vector<core::SourceSpan> sourceSpans) {
     if (nextViewId_ == 0) {

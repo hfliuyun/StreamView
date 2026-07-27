@@ -172,6 +172,53 @@ private:
     mutable bool cancellationRequested_ = false;
 };
 
+class ArmedCancellingSource final : public RandomAccessSource {
+public:
+    explicit ArmedCancellingSource(std::vector<std::byte> data) : data_(std::move(data)) {}
+
+    void arm(quint64 byteOffset, CancellationSource& cancellation) noexcept {
+        cancellationOffset_ = byteOffset;
+        cancellation_ = &cancellation;
+        armed_ = true;
+    }
+
+    [[nodiscard]] quint64 sizeBytes() const noexcept override {
+        return static_cast<quint64>(data_.size());
+    }
+    [[nodiscard]] QString identity() const override {
+        return QStringLiteral("armed-cancelling-memory");
+    }
+
+    [[nodiscard]] SourceReadResult
+    readAt(quint64 byteOffset, std::span<std::byte> destination) const override {
+        if (armed_ && byteOffset == cancellationOffset_) {
+            armed_ = false;
+            (void)cancellation_->requestCancellation();
+        }
+        if (destination.empty()) {
+            return {SourceReadStatus::Complete, 0, {}};
+        }
+        if (byteOffset >= data_.size()) {
+            return {SourceReadStatus::EndOfSource, 0, {}};
+        }
+        const auto offset = static_cast<std::size_t>(byteOffset);
+        const std::size_t count = std::min(destination.size(), data_.size() - offset);
+        std::copy_n(data_.begin() + static_cast<std::ptrdiff_t>(offset),
+                    static_cast<std::ptrdiff_t>(count),
+                    destination.begin());
+        return {count == destination.size() ? SourceReadStatus::Complete
+                                            : SourceReadStatus::EndOfSource,
+                count,
+                {}};
+    }
+
+private:
+    std::vector<std::byte> data_;
+    mutable CancellationSource* cancellation_ = nullptr;
+    mutable quint64 cancellationOffset_ = 0;
+    mutable bool armed_ = false;
+};
+
 } // namespace
 
 class H264AnnexBAnalyzerTest final : public QObject {
@@ -755,6 +802,243 @@ private slots:
         QCOMPARE(root->state(), MaterializationState::Cancelled);
         QCOMPARE(root->diagnostics().front().code,
                  streamview::core::DiagnosticCode::Cancelled);
+    }
+
+    void resumesScannerCancellationWithoutReplayingNodes() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x65, 0x12}));
+        CancellationSource cancellation;
+        QVERIFY(cancellation.requestCancellation());
+        QString errorMessage;
+        auto analyzer =
+            H264AnnexBAnalyzer::create(source, &errorMessage, cancellation.token());
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto cancelled = analyzer->analyzeBatch();
+        QCOMPARE(cancelled.status, H264AnnexBAnalysisStatus::Cancelled);
+        QVERIFY(cancelled.nalUnitNodes.empty());
+        QCOMPARE(analyzer->scanCursor(), quint64(0));
+        QCOMPARE(analyzer->tree().nodeCount(), std::size_t(1));
+        const auto cancelledRoot = analyzer->tree().node(analyzer->tree().rootId());
+        QVERIFY(cancelledRoot.has_value());
+        QCOMPARE(cancelledRoot->state(), MaterializationState::Cancelled);
+        QCOMPARE(cancelledRoot->diagnostics().size(), std::size_t(1));
+
+        QString resumeError = QStringLiteral("stale error");
+        QVERIFY(analyzer->resumeAfterCancellation(std::nullopt, &resumeError));
+        QVERIFY(resumeError.isEmpty());
+        QVERIFY(!analyzer->finished());
+        QCOMPARE(analyzer->scanCursor(), quint64(0));
+        QCOMPARE(analyzer->tree().nodeCount(), std::size_t(1));
+        const auto resumedRoot = analyzer->tree().node(analyzer->tree().rootId());
+        QVERIFY(resumedRoot.has_value());
+        QCOMPARE(resumedRoot->state(), MaterializationState::Indexing);
+        QVERIFY(resumedRoot->diagnostics().empty());
+
+        const auto resumed = analyzer->analyzeBatch();
+        QCOMPARE(resumed.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(resumed.nalUnitNodes.size(), std::size_t(1));
+        const auto nal = analyzer->tree().node(resumed.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->name(), QStringLiteral("nal_unit[0]"));
+        const auto completedRoot = analyzer->tree().node(analyzer->tree().rootId());
+        QVERIFY(completedRoot.has_value());
+        QCOMPARE(completedRoot->state(), MaterializationState::Materialized);
+        QVERIFY(completedRoot->diagnostics().empty());
+
+        const auto replay = analyzer->analyzeBatch();
+        QCOMPARE(replay.status, H264AnnexBAnalysisStatus::Complete);
+        QVERIFY(replay.nalUnitNodes.empty());
+    }
+
+    void resumesRepeatedMapperCancellationsWithStableAppendOnlyNodes() {
+        std::vector<std::byte> data;
+        const auto appendNal = [&data](quint8 header,
+                                       std::size_t payloadLength,
+                                       std::byte payloadByte) {
+            const auto prefix = bytes({0x00, 0x00, 0x01});
+            data.insert(data.end(), prefix.begin(), prefix.end());
+            data.push_back(static_cast<std::byte>(header));
+            data.insert(data.end(), payloadLength, payloadByte);
+        };
+        appendNal(0x65, 1025, std::byte{0x12});
+        const quint64 secondStart = static_cast<quint64>(data.size());
+        appendNal(0x41, 1025, std::byte{0x34});
+        appendNal(0x41, 1, std::byte{0x56});
+
+        ArmedCancellingSource source(std::move(data));
+        CancellationSource initialCancellation;
+        QVERIFY(initialCancellation.requestCancellation());
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(
+            source, &errorMessage, initialCancellation.token());
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto initiallyCancelled = analyzer->analyzeBatch();
+        QCOMPARE(initiallyCancelled.status, H264AnnexBAnalysisStatus::Cancelled);
+        QVERIFY(initiallyCancelled.nalUnitNodes.empty());
+
+        CancellationSource firstMapperCancellation;
+        source.arm(4, firstMapperCancellation);
+        QVERIFY(analyzer->resumeAfterCancellation(firstMapperCancellation.token()));
+        const auto firstCancelledNal = analyzer->analyzeBatch();
+        QCOMPARE(firstCancelledNal.status, H264AnnexBAnalysisStatus::Cancelled);
+        QCOMPARE(firstCancelledNal.nalUnitNodes.size(), std::size_t(1));
+        const auto firstId = firstCancelledNal.nalUnitNodes.front();
+        const auto firstNal = analyzer->tree().node(firstId);
+        QVERIFY(firstNal.has_value());
+        QCOMPARE(firstNal->name(), QStringLiteral("nal_unit[0]"));
+        QCOMPARE(firstNal->state(), MaterializationState::Cancelled);
+
+        const auto nodesBeforeSecondResume = analyzer->tree().nodeCount();
+        CancellationSource secondMapperCancellation;
+        source.arm(secondStart + 4U, secondMapperCancellation);
+        QVERIFY(analyzer->resumeAfterCancellation(secondMapperCancellation.token()));
+        QCOMPARE(analyzer->tree().nodeCount(), nodesBeforeSecondResume);
+        const auto secondCancelledNal = analyzer->analyzeBatch();
+        QCOMPARE(secondCancelledNal.status, H264AnnexBAnalysisStatus::Cancelled);
+        QCOMPARE(secondCancelledNal.nalUnitNodes.size(), std::size_t(1));
+        const auto secondId = secondCancelledNal.nalUnitNodes.front();
+        QVERIFY(secondId != firstId);
+        const auto secondNal = analyzer->tree().node(secondId);
+        QVERIFY(secondNal.has_value());
+        QCOMPARE(secondNal->name(), QStringLiteral("nal_unit[1]"));
+        QCOMPARE(secondNal->state(), MaterializationState::Cancelled);
+
+        const auto nodesBeforeFinalResume = analyzer->tree().nodeCount();
+        QVERIFY(analyzer->resumeAfterCancellation());
+        QCOMPARE(analyzer->tree().nodeCount(), nodesBeforeFinalResume);
+        const auto completed = analyzer->analyzeBatch();
+        QCOMPARE(completed.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(completed.nalUnitNodes.size(), std::size_t(1));
+        const auto thirdId = completed.nalUnitNodes.front();
+        QVERIFY(thirdId != firstId);
+        QVERIFY(thirdId != secondId);
+        const auto thirdNal = analyzer->tree().node(thirdId);
+        QVERIFY(thirdNal.has_value());
+        QCOMPARE(thirdNal->name(), QStringLiteral("nal_unit[2]"));
+        QCOMPARE(thirdNal->state(), MaterializationState::Materialized);
+
+        const auto root = analyzer->tree().node(analyzer->tree().rootId());
+        QVERIFY(root.has_value());
+        QCOMPARE(root->state(), MaterializationState::Materialized);
+        QVERIFY(root->diagnostics().empty());
+        QCOMPARE(root->children().size(), std::size_t(3));
+        QCOMPARE(root->children().at(0), firstId);
+        QCOMPARE(root->children().at(1), secondId);
+        QCOMPARE(root->children().at(2), thirdId);
+        QVERIFY(analyzer->tree().hasPartialResults());
+        QVERIFY(!analyzer->tree().isFullyMaterialized());
+    }
+
+    void rejectsRequestedReplacementTokenWithoutMutation() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x65}));
+        CancellationSource cancellation;
+        QVERIFY(cancellation.requestCancellation());
+        QString errorMessage;
+        auto analyzer =
+            H264AnnexBAnalyzer::create(source, &errorMessage, cancellation.token());
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto cancelled = analyzer->analyzeBatch();
+        QCOMPARE(cancelled.status, H264AnnexBAnalysisStatus::Cancelled);
+        const auto rootBefore = analyzer->tree().node(analyzer->tree().rootId());
+        QVERIFY(rootBefore.has_value());
+        const auto nodeCount = analyzer->tree().nodeCount();
+        const auto cursor = analyzer->scanCursor();
+
+        CancellationSource replacement;
+        QVERIFY(replacement.requestCancellation());
+        QString resumeError;
+        QVERIFY(!analyzer->resumeAfterCancellation(replacement.token(), &resumeError));
+        QVERIFY(resumeError.contains(QStringLiteral("already requested")));
+        QVERIFY(analyzer->finished());
+        QCOMPARE(analyzer->tree().nodeCount(), nodeCount);
+        QCOMPARE(analyzer->scanCursor(), cursor);
+        const auto rootAfter = analyzer->tree().node(analyzer->tree().rootId());
+        QVERIFY(rootAfter.has_value());
+        QCOMPARE(rootAfter->state(), rootBefore->state());
+        QCOMPARE(rootAfter->diagnostics().size(), rootBefore->diagnostics().size());
+        QCOMPARE(rootAfter->diagnostics().front().message,
+                 rootBefore->diagnostics().front().message);
+
+        const auto replay = analyzer->analyzeBatch();
+        QCOMPARE(replay.status, H264AnnexBAnalysisStatus::Cancelled);
+        QCOMPARE(replay.errorMessage, cancelled.errorMessage);
+        QVERIFY(replay.nalUnitNodes.empty());
+    }
+
+    void rejectsNonCancelledAnalyzersWithoutMutation() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x65}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        QString resumeError;
+        QVERIFY(!analyzer->resumeAfterCancellation(std::nullopt, &resumeError));
+        QVERIFY(resumeError.contains(QStringLiteral("cancelled")));
+        QVERIFY(!analyzer->finished());
+        QCOMPARE(analyzer->scanCursor(), quint64(0));
+        QCOMPARE(analyzer->tree().nodeCount(), std::size_t(1));
+
+        const auto completed = analyzer->analyzeBatch();
+        QCOMPARE(completed.status, H264AnnexBAnalysisStatus::Complete);
+        const auto rootBefore = analyzer->tree().node(analyzer->tree().rootId());
+        QVERIFY(rootBefore.has_value());
+        const auto nodeCount = analyzer->tree().nodeCount();
+        const auto cursor = analyzer->scanCursor();
+        QVERIFY(!analyzer->resumeAfterCancellation());
+        QCOMPARE(analyzer->tree().nodeCount(), nodeCount);
+        QCOMPARE(analyzer->scanCursor(), cursor);
+        const auto rootAfter = analyzer->tree().node(analyzer->tree().rootId());
+        QVERIFY(rootAfter.has_value());
+        QCOMPARE(rootAfter->state(), rootBefore->state());
+        QCOMPARE(rootAfter->diagnostics().size(), rootBefore->diagnostics().size());
+        const auto replay = analyzer->analyzeBatch();
+        QCOMPARE(replay.status, H264AnnexBAnalysisStatus::Complete);
+        QVERIFY(replay.nalUnitNodes.empty());
+    }
+
+    void rejectsIrrecoverableFailureStatesWithoutMutation() {
+        FailAfterFirstReadSource failingSource;
+        QString errorMessage;
+        auto sourceErrorAnalyzer = H264AnnexBAnalyzer::create(failingSource, &errorMessage);
+        QVERIFY2(sourceErrorAnalyzer.has_value(), qPrintable(errorMessage));
+        const auto sourceError = sourceErrorAnalyzer->analyzeBatch();
+        QCOMPARE(sourceError.status, H264AnnexBAnalysisStatus::SourceError);
+        const auto sourceErrorCount = sourceErrorAnalyzer->tree().nodeCount();
+        const auto sourceErrorRoot =
+            sourceErrorAnalyzer->tree().node(sourceErrorAnalyzer->tree().rootId());
+        QVERIFY(sourceErrorRoot.has_value());
+        QVERIFY(!sourceErrorAnalyzer->resumeAfterCancellation());
+        QCOMPARE(sourceErrorAnalyzer->tree().nodeCount(), sourceErrorCount);
+        QCOMPARE(sourceErrorAnalyzer->tree()
+                     .node(sourceErrorAnalyzer->tree().rootId())
+                     ->state(),
+                 sourceErrorRoot->state());
+        QCOMPARE(sourceErrorAnalyzer->analyzeBatch().status,
+                 H264AnnexBAnalysisStatus::SourceError);
+
+        MemorySource limitedSource(
+            bytes({0x00, 0x00, 0x01, 0x65, 0x00, 0x00, 0x03, 0x01}));
+        H264EbspRbspMapLimits limits;
+        limits.maximumMappingSegments = 1;
+        limits.maximumExcludedSpans = 4;
+        limits.maximumIssues = 4;
+        auto limitedAnalyzer =
+            H264AnnexBAnalyzer::create(limitedSource, &errorMessage, std::nullopt, limits);
+        QVERIFY2(limitedAnalyzer.has_value(), qPrintable(errorMessage));
+        const auto limited = limitedAnalyzer->analyzeBatch();
+        QCOMPARE(limited.status, H264AnnexBAnalysisStatus::ResourceLimit);
+        const auto limitedCount = limitedAnalyzer->tree().nodeCount();
+        const auto limitedRoot =
+            limitedAnalyzer->tree().node(limitedAnalyzer->tree().rootId());
+        QVERIFY(limitedRoot.has_value());
+        QVERIFY(!limitedAnalyzer->resumeAfterCancellation());
+        QCOMPARE(limitedAnalyzer->tree().nodeCount(), limitedCount);
+        QCOMPARE(limitedAnalyzer->tree().node(limitedAnalyzer->tree().rootId())->state(),
+                 limitedRoot->state());
+        QCOMPARE(limitedAnalyzer->analyzeBatch().status,
+                 H264AnnexBAnalysisStatus::ResourceLimit);
     }
 
     void reportsInputWithoutAStartCodeAsInvalid() {

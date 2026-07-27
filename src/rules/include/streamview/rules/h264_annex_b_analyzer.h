@@ -56,6 +56,9 @@ public:
         std::size_t maximumRecords = 256,
         quint64 maximumInspectedPositions = H264StartCodeScanner::defaultWorkBudget(),
         quint64 maximumMappedBytes = H264EbspRbspMapper::defaultWorkBudget());
+    [[nodiscard]] bool resumeAfterCancellation(
+        std::optional<core::CancellationToken> cancellation = std::nullopt,
+        QString* errorMessage = nullptr);
 
     [[nodiscard]] const core::AnalysisTree& tree() const noexcept { return tree_; }
     [[nodiscard]] bool finished() const noexcept { return terminal_; }

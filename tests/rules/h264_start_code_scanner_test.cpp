@@ -211,7 +211,7 @@ private slots:
     }
 
     void observesCancellationBeforeReading() {
-        MemorySource source(std::vector<std::byte>(4096, std::byte{0}));
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x65}));
         CancellationSource cancellation;
         QVERIFY(cancellation.requestCancellation());
         H264StartCodeScanner scanner(source, cancellation.token());
@@ -220,6 +220,50 @@ private slots:
         QCOMPARE(result.status, StartCodeScanStatus::Cancelled);
         QVERIFY(result.records.empty());
         QCOMPARE(scanner.cursor(), quint64(0));
+
+        CancellationSource replacement;
+        scanner.replaceCancellationToken(replacement.token());
+        const auto resumed = scanner.scanBatch();
+        QCOMPARE(resumed.status, StartCodeScanStatus::Complete);
+        QCOMPARE(resumed.records.size(), std::size_t(1));
+        QCOMPARE(resumed.records.front().startCodeOffset, quint64(0));
+        QCOMPARE(resumed.records.front().nalUnitOffset, quint64(3));
+        QCOMPARE(resumed.records.front().nalUnitLength, quint64(1));
+
+        const auto replay = scanner.scanBatch();
+        QCOMPARE(replay.status, StartCodeScanStatus::Complete);
+        QVERIFY(replay.records.empty());
+    }
+
+    void replacementRetainsPendingStartCodeAndTrailingZeros() {
+        auto data = bytes({0x00, 0x00, 0x01});
+        data.insert(data.end(), 1020, std::byte{0xAA});
+        data.insert(data.end(), 3, std::byte{0x00});
+        MemorySource source(std::move(data));
+        CancellationSource cancellation;
+        H264StartCodeScanner scanner(source, cancellation.token());
+
+        const auto pending = scanner.scanBatch(2, 1024);
+        QCOMPARE(pending.status, StartCodeScanStatus::InProgress);
+        QVERIFY(pending.records.empty());
+        QCOMPARE(scanner.cursor(), quint64(1026));
+
+        QVERIFY(cancellation.requestCancellation());
+        const auto cancelled = scanner.scanBatch();
+        QCOMPARE(cancelled.status, StartCodeScanStatus::Cancelled);
+        QVERIFY(cancelled.records.empty());
+        QCOMPARE(scanner.cursor(), quint64(1026));
+
+        CancellationSource replacement;
+        scanner.replaceCancellationToken(replacement.token());
+        const auto resumed = scanner.scanBatch();
+        QCOMPARE(resumed.status, StartCodeScanStatus::Complete);
+        QCOMPARE(resumed.records.size(), std::size_t(1));
+        QCOMPARE(resumed.records.front().startCodeOffset, quint64(0));
+        QCOMPARE(resumed.records.front().nalUnitOffset, quint64(3));
+        QCOMPARE(resumed.records.front().nalUnitLength, quint64(1020));
+        QCOMPARE(resumed.records.front().trailingZero8BitsOffset, quint64(1023));
+        QCOMPARE(resumed.records.front().trailingZero8BitsLength, quint64(3));
     }
 
     void rejectsZeroBatchSizeWithoutAdvancing() {
