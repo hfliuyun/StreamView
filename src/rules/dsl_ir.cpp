@@ -23,9 +23,13 @@ void collectFields(const std::vector<DslStructItem>& items,
     for (const DslStructItem& item : items) {
         if (item.kind == DslStructItemKind::Field) {
             fields.push_back(&item.field);
-        } else {
+        } else if (item.kind == DslStructItemKind::Conditional) {
             collectFields(item.thenItems, fields);
             collectFields(item.elseItems, fields);
+        } else if (item.kind == DslStructItemKind::Switch) {
+            for (const DslStructItem::SwitchArm& arm : item.switchArms) {
+                collectFields(arm.items, fields);
+            }
         }
     }
 }
@@ -231,6 +235,10 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             std::optional<quint32> typedIndex;
             std::vector<DslTypedFieldCondition> conditions;
         };
+        struct ResolvedController final {
+            quint32 fieldIndex = 0;
+            quint8 width = 0;
+        };
         std::vector<QString> declaredFieldNames;
         declaredFieldNames.reserve(sourceFields.size());
         std::vector<DeclaredField> declaredFields;
@@ -241,21 +249,22 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                    left.expectedValue == right.expectedValue &&
                    left.negated == right.negated;
         };
-        const auto resolveCondition = [&](const DslEqualityCondition& condition,
-                                          const std::vector<DslTypedFieldCondition>& active)
-            -> std::optional<DslTypedFieldCondition> {
+        const auto resolveController = [&](const QString& fieldName,
+                                           const DslSourceRange& range,
+                                           const std::vector<DslTypedFieldCondition>& active)
+            -> std::optional<ResolvedController> {
             const auto found = std::find_if(
                 declaredFields.rbegin(),
                 declaredFields.rend(),
-                [&condition](const DeclaredField& declared) {
-                    return declared.source->name == condition.fieldName;
+                [&fieldName](const DeclaredField& declared) {
+                    return declared.source->name == fieldName;
                 });
             if (found == declaredFields.rend()) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::UnknownReference,
                               QStringLiteral(
-                                  "Condition field must be declared before the if statement"),
-                              condition.range);
+                                  "Controller field must be declared before the statement"),
+                              range);
                 return std::nullopt;
             }
             if (found->source->encoding != DslFieldEncoding::Bits ||
@@ -263,8 +272,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidType,
                               QStringLiteral(
-                                  "Conditions require a previous scalar bits or enum field"),
-                              condition.range);
+                                  "Controllers require a previous scalar bits or enum field"),
+                              range);
                 return std::nullopt;
             }
             const bool available = std::all_of(
@@ -282,21 +291,36 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidCondition,
                               QStringLiteral(
-                                  "Condition field is not guaranteed on the current branch"),
-                              condition.range);
+                                  "Controller field is not guaranteed on the current branch"),
+                              range);
                 return std::nullopt;
             }
-            if (found->source->width != 0 && found->source->width < 64 &&
-                condition.expectedValue >= (quint64{1} << found->source->width)) {
+            return ResolvedController{*found->typedIndex, found->source->width};
+        };
+        const auto resolveConditionValue = [&](const std::optional<ResolvedController>& controller,
+                                               quint64 expectedValue,
+                                               const DslSourceRange& range)
+            -> std::optional<DslTypedFieldCondition> {
+            if (!controller) {
+                return std::nullopt;
+            }
+            if (controller->width != 0 && controller->width < 64 &&
+                expectedValue >= (quint64{1} << controller->width)) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::ConstraintOutOfRange,
                               QStringLiteral(
                                   "Condition value does not fit the controlling field"),
-                              condition.range);
+                              range);
                 return std::nullopt;
             }
-            return DslTypedFieldCondition{
-                *found->typedIndex, condition.expectedValue, false};
+            return DslTypedFieldCondition{controller->fieldIndex, expectedValue, false};
+        };
+        const auto resolveCondition = [&](const DslEqualityCondition& condition,
+                                          const std::vector<DslTypedFieldCondition>& active) {
+            const auto controller = resolveController(
+                condition.fieldName, condition.range, active);
+            return resolveConditionValue(
+                controller, condition.expectedValue, condition.range);
         };
         const auto compileField = [&](const DslBitField& field,
                                       const std::vector<DslTypedFieldCondition>& conditions,
@@ -503,26 +527,146 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     fieldOffset = compileField(item.field, conditions, fieldOffset);
                     continue;
                 }
-                const auto resolved = resolveCondition(item.condition, conditions);
-                std::vector<DslTypedFieldCondition> thenConditions = conditions;
-                std::vector<DslTypedFieldCondition> elseConditions = conditions;
-                if (resolved) {
-                    thenConditions.push_back(*resolved);
-                    DslTypedFieldCondition negated = *resolved;
-                    negated.negated = true;
-                    elseConditions.push_back(negated);
+                if (item.kind == DslStructItemKind::Conditional) {
+                    const auto resolved = resolveCondition(item.condition, conditions);
+                    std::vector<DslTypedFieldCondition> thenConditions = conditions;
+                    std::vector<DslTypedFieldCondition> elseConditions = conditions;
+                    if (resolved) {
+                        thenConditions.push_back(*resolved);
+                        DslTypedFieldCondition negated = *resolved;
+                        negated.negated = true;
+                        elseConditions.push_back(negated);
+                    }
+                    const auto thenOffset =
+                        self(self, item.thenItems, thenConditions, fieldOffset);
+                    const auto elseOffset = item.elseItems.empty()
+                                                ? fieldOffset
+                                                : self(self,
+                                                       item.elseItems,
+                                                       elseConditions,
+                                                       fieldOffset);
+                    fieldOffset = thenOffset && elseOffset && *thenOffset == *elseOffset
+                                      ? thenOffset
+                                      : std::nullopt;
+                    continue;
                 }
-                const auto thenOffset =
-                    self(self, item.thenItems, thenConditions, fieldOffset);
-                const auto elseOffset = item.elseItems.empty()
-                                            ? fieldOffset
-                                            : self(self,
-                                                   item.elseItems,
-                                                   elseConditions,
-                                                   fieldOffset);
-                fieldOffset = thenOffset && elseOffset && *thenOffset == *elseOffset
-                                  ? thenOffset
-                                  : std::nullopt;
+                if (item.kind != DslStructItemKind::Switch) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidCondition,
+                                  QStringLiteral("Structure item kind is invalid"),
+                                  item.range);
+                    fieldOffset = std::nullopt;
+                    continue;
+                }
+
+                std::vector<std::optional<DslTypedFieldCondition>> caseGuards;
+                caseGuards.reserve(item.switchArms.size());
+                const auto controller = resolveController(
+                    item.switchFieldName, item.switchFieldRange, conditions);
+                std::vector<quint64> caseValues;
+                caseValues.reserve(item.switchArms.size());
+                bool defaultSeen = false;
+                for (std::size_t armIndex = 0;
+                     armIndex < item.switchArms.size();
+                     ++armIndex) {
+                    const DslStructItem::SwitchArm& arm =
+                        item.switchArms.at(armIndex);
+                    if (arm.kind == DslSwitchArmKind::Default) {
+                        if (defaultSeen) {
+                            addDiagnostic(
+                                result.diagnostics,
+                                DslDiagnosticCode::InvalidCondition,
+                                QStringLiteral("A switch may contain at most one default arm"),
+                                arm.range);
+                        }
+                        defaultSeen = true;
+                        if (armIndex + 1 != item.switchArms.size()) {
+                            addDiagnostic(result.diagnostics,
+                                          DslDiagnosticCode::InvalidCondition,
+                                          QStringLiteral(
+                                              "The default switch arm must appear last"),
+                                          arm.range);
+                        }
+                        continue;
+                    }
+                    if (arm.kind != DslSwitchArmKind::Case) {
+                        addDiagnostic(result.diagnostics,
+                                      DslDiagnosticCode::InvalidCondition,
+                                      QStringLiteral("Switch arm kind is invalid"),
+                                      arm.range);
+                        continue;
+                    }
+                    if (defaultSeen) {
+                        addDiagnostic(
+                            result.diagnostics,
+                            DslDiagnosticCode::InvalidCondition,
+                            QStringLiteral("Switch case arms may not follow the default arm"),
+                            arm.range);
+                    }
+                    if (std::find(caseValues.begin(),
+                                  caseValues.end(),
+                                  arm.caseValue) != caseValues.end()) {
+                        addDiagnostic(result.diagnostics,
+                                      DslDiagnosticCode::InvalidCondition,
+                                      QStringLiteral("Duplicate switch case value"),
+                                      arm.valueRange);
+                    }
+                    caseValues.push_back(arm.caseValue);
+                    caseGuards.push_back(resolveConditionValue(
+                        controller, arm.caseValue, arm.valueRange));
+                }
+                if (caseValues.empty()) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidCondition,
+                                  QStringLiteral("A switch must contain at least one case arm"),
+                                  item.range);
+                }
+
+                std::vector<std::optional<quint64>> armOffsets;
+                armOffsets.reserve(item.switchArms.size() +
+                                   (defaultSeen ? 0 : 1));
+                std::size_t caseGuardIndex = 0;
+                for (const DslStructItem::SwitchArm& arm : item.switchArms) {
+                    std::vector<DslTypedFieldCondition> armConditions = conditions;
+                    if (arm.kind == DslSwitchArmKind::Case) {
+                        if (caseGuardIndex < caseGuards.size() &&
+                            caseGuards.at(caseGuardIndex)) {
+                            armConditions.push_back(*caseGuards.at(caseGuardIndex));
+                        }
+                        ++caseGuardIndex;
+                    } else if (arm.kind == DslSwitchArmKind::Default) {
+                        for (const auto& resolvedGuard : caseGuards) {
+                            if (!resolvedGuard) {
+                                continue;
+                            }
+                            DslTypedFieldCondition guard = *resolvedGuard;
+                            guard.negated = true;
+                            armConditions.push_back(guard);
+                        }
+                    }
+                    armOffsets.push_back(
+                        self(self, arm.items, armConditions, fieldOffset));
+                }
+                if (!defaultSeen) {
+                    armOffsets.push_back(fieldOffset);
+                }
+                const auto firstKnown = std::find_if(
+                    armOffsets.begin(),
+                    armOffsets.end(),
+                    [](const std::optional<quint64>& offset) {
+                        return offset.has_value();
+                    });
+                if (firstKnown == armOffsets.end() ||
+                    std::any_of(
+                        armOffsets.begin(),
+                        armOffsets.end(),
+                        [&firstKnown](const std::optional<quint64>& offset) {
+                            return !offset || *offset != **firstKnown;
+                        })) {
+                    fieldOffset = std::nullopt;
+                } else {
+                    fieldOffset = *firstKnown;
+                }
             }
             return fieldOffset;
         };

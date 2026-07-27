@@ -35,6 +35,7 @@ enum class DslTokenKind : quint8 {
     RightBracket,
     Semicolon,
     Comma,
+    Colon,
     Equals,
     EqualEqual,
     EndOfFile,
@@ -152,14 +153,31 @@ struct DslEqualityCondition final {
 enum class DslStructItemKind : quint8 {
     Field,
     Conditional,
+    Switch,
+};
+
+enum class DslSwitchArmKind : quint8 {
+    Case,
+    Default,
 };
 
 struct DslStructItem final {
+    struct SwitchArm final {
+        DslSwitchArmKind kind = DslSwitchArmKind::Case;
+        quint64 caseValue = 0;
+        DslSourceRange valueRange;
+        std::vector<DslStructItem> items;
+        DslSourceRange range;
+    };
+
     DslStructItemKind kind = DslStructItemKind::Field;
     DslBitField field;
     DslEqualityCondition condition;
     std::vector<DslStructItem> thenItems;
     std::vector<DslStructItem> elseItems;
+    QString switchFieldName;
+    DslSourceRange switchFieldRange;
+    std::vector<SwitchArm> switchArms;
     DslSourceRange range;
 };
 

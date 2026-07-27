@@ -11,6 +11,7 @@ using streamview::rules::DslEndian;
 using streamview::rules::DslFieldEncoding;
 using streamview::rules::DslLexer;
 using streamview::rules::DslParser;
+using streamview::rules::DslSwitchArmKind;
 using streamview::rules::DslStructItemKind;
 using streamview::rules::DslTokenKind;
 
@@ -248,6 +249,104 @@ private slots:
         QVERIFY(hasDiagnostic(variable, DslDiagnosticCode::InvalidType));
         QVERIFY(hasDiagnostic(outOfRange, DslDiagnosticCode::ConstraintOutOfRange));
         QVERIFY(hasDiagnostic(unavailable, DslDiagnosticCode::InvalidCondition));
+    }
+
+    void parsesNestedEqualitySwitchArmsInDeclarationOrder() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> kind; switch (kind) { "
+            "case 1: { bits<3> compact_value; } "
+            "case 2: { if (kind == 2) { bits<5> extended_value; } } "
+            "default: { switch (kind) { case 3: { bits<4> unknown_value; } } } "
+            "} bits<1> tail; } entry Header;"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& items = result.program.structs.front().items;
+        QCOMPARE(items.size(), std::size_t(3));
+        QCOMPARE(items.at(1).kind, DslStructItemKind::Switch);
+        QCOMPARE(items.at(1).switchFieldName, QStringLiteral("kind"));
+        QCOMPARE(items.at(1).switchArms.size(), std::size_t(3));
+        QCOMPARE(items.at(1).switchArms.at(0).kind, DslSwitchArmKind::Case);
+        QCOMPARE(items.at(1).switchArms.at(0).caseValue, quint64(1));
+        QCOMPARE(items.at(1).switchArms.at(0).items.front().field.name,
+                 QStringLiteral("compact_value"));
+        QCOMPARE(items.at(1).switchArms.at(1).kind, DslSwitchArmKind::Case);
+        QCOMPARE(items.at(1).switchArms.at(1).caseValue, quint64(2));
+        QCOMPARE(items.at(1).switchArms.at(1).items.front().kind,
+                 DslStructItemKind::Conditional);
+        QCOMPARE(items.at(1).switchArms.at(2).kind, DslSwitchArmKind::Default);
+        QCOMPARE(items.at(1).switchArms.at(2).items.front().kind,
+                 DslStructItemKind::Switch);
+        QVERIFY(items.at(1).switchFieldRange.end.offset >
+                items.at(1).switchFieldRange.start.offset);
+        QVERIFY(items.at(1).range.end.offset > items.at(1).range.start.offset);
+        QCOMPARE(items.at(2).field.name, QStringLiteral("tail"));
+    }
+
+    void rejectsInvalidEqualitySwitchControllersAndLabels() {
+        struct Case final {
+            QString source;
+            DslDiagnosticCode diagnostic;
+        };
+        const std::vector<Case> cases{
+            {QStringLiteral(
+                 "struct Header { switch (missing) { case 0: { bits<1> value; } } } "
+                 "entry Header;"),
+             DslDiagnosticCode::UnknownReference},
+            {QStringLiteral(
+                 "struct Header { bits<1> flags[2]; switch (flags) { "
+                 "case 0: { bits<1> value; } } } entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral(
+                 "struct Header { ue code; switch (code) { case 0: { bits<1> value; } } } "
+                 "entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral(
+                 "struct Header { bits<1> kind; switch (kind) { "
+                 "case 2: { bits<1> value; } } } entry Header;"),
+             DslDiagnosticCode::ConstraintOutOfRange},
+            {QStringLiteral(
+                 "struct Header { bits<2> kind; switch (kind) { "
+                 "case 1: { bits<1> first; } case 1: { bits<1> second; } } } "
+                 "entry Header;"),
+             DslDiagnosticCode::InvalidCondition},
+            {QStringLiteral(
+                 "struct Header { bits<2> kind; switch (kind) { "
+                 "default: { bits<1> fallback; } case 1: { bits<1> value; } } } "
+                 "entry Header;"),
+             DslDiagnosticCode::InvalidCondition},
+            {QStringLiteral(
+                 "struct Header { bits<2> kind; switch (kind) { "
+                 "default: { bits<1> first; } default: { bits<1> second; } } } "
+                 "entry Header;"),
+             DslDiagnosticCode::InvalidCondition},
+            {QStringLiteral(
+                 "struct Header { bits<2> kind; switch (kind) { "
+                 "default: { bits<1> value; } } } entry Header;"),
+             DslDiagnosticCode::InvalidCondition},
+            {QStringLiteral(
+                 "struct Header { bits<1> kind; if (kind == 1) { bits<1> local; } "
+                 "switch (local) { case 0: { bits<1> value; } } } entry Header;"),
+             DslDiagnosticCode::InvalidCondition},
+            {QStringLiteral(
+                 "struct Header { bits<1> kind; switch (kind) { "
+                 "case 0: { bits<1> value; } case 1: { bits<1> value; } } } "
+                 "entry Header;"),
+             DslDiagnosticCode::DuplicateName},
+        };
+
+        for (const Case& testCase : cases) {
+            const auto result = DslParser::parse(testCase.source);
+            QVERIFY(!result.succeeded());
+            QVERIFY(hasDiagnostic(result, testCase.diagnostic));
+        }
+
+        const auto missingColon = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> kind; switch (kind) { "
+            "case 0 { bits<1> value; } } } entry Header;"));
+        QVERIFY(hasDiagnostic(missingColon, DslDiagnosticCode::MissingToken));
     }
 
     void rejectsInvalidEndianAndUnknownEnumReferences() {

@@ -362,6 +362,182 @@ private slots:
         QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidArrayLength));
     }
 
+    void lowersEqualitySwitchArmsToDeterministicGuardedFields() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> kind; switch (kind) { "
+            "case 1: { bits<3> compact_value; } "
+            "case 2: { bits<1> flags[2] @equals(0); } "
+            "default: { bits<4> unknown_value; } } bits<2> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto first = DslCompiler::compile(parsed.program);
+        const auto second = DslCompiler::compile(parsed.program);
+        QVERIFY2(first.succeeded(),
+                 first.diagnostics.empty()
+                     ? ""
+                     : qPrintable(first.diagnostics.front().message));
+        QVERIFY(second.succeeded());
+        const auto& fields = first.program->structs.front().fields;
+        const std::vector<QString> names{
+            QStringLiteral("kind"),
+            QStringLiteral("compact_value"),
+            QStringLiteral("flags[0]"),
+            QStringLiteral("flags[1]"),
+            QStringLiteral("unknown_value"),
+            QStringLiteral("tail"),
+        };
+        QCOMPARE(fields.size(), names.size());
+        for (std::size_t index = 0; index < names.size(); ++index) {
+            QCOMPARE(fields.at(index).name, names.at(index));
+        }
+        QCOMPARE(fields.at(1).conditions.size(), std::size_t(1));
+        QCOMPARE(fields.at(1).conditions.front().fieldIndex, quint32(0));
+        QCOMPARE(fields.at(1).conditions.front().expectedValue, quint64(1));
+        QVERIFY(!fields.at(1).conditions.front().negated);
+        for (std::size_t index = 2; index <= 3; ++index) {
+            QCOMPARE(fields.at(index).conditions.size(), std::size_t(1));
+            QCOMPARE(fields.at(index).conditions.front().fieldIndex, quint32(0));
+            QCOMPARE(fields.at(index).conditions.front().expectedValue, quint64(2));
+            QVERIFY(!fields.at(index).conditions.front().negated);
+        }
+        QCOMPARE(fields.at(4).conditions.size(), std::size_t(2));
+        QCOMPARE(fields.at(4).conditions.at(0).fieldIndex, quint32(0));
+        QCOMPARE(fields.at(4).conditions.at(0).expectedValue, quint64(1));
+        QVERIFY(fields.at(4).conditions.at(0).negated);
+        QCOMPARE(fields.at(4).conditions.at(1).fieldIndex, quint32(0));
+        QCOMPARE(fields.at(4).conditions.at(1).expectedValue, quint64(2));
+        QVERIFY(fields.at(4).conditions.at(1).negated);
+        QVERIFY(fields.at(0).conditions.empty());
+        QVERIFY(fields.at(5).conditions.empty());
+
+        QCOMPARE(first.program->bytecode.size(), std::size_t(10));
+        QCOMPARE(first.program->bytecode.size(), second.program->bytecode.size());
+        for (std::size_t index = 0; index < first.program->bytecode.size(); ++index) {
+            QCOMPARE(first.program->bytecode.at(index).opcode,
+                     second.program->bytecode.at(index).opcode);
+            QCOMPARE(first.program->bytecode.at(index).operand,
+                     second.program->bytecode.at(index).operand);
+            QCOMPARE(first.program->bytecode.at(index).immediate,
+                     second.program->bytecode.at(index).immediate);
+        }
+    }
+
+    void stacksNestedSwitchAndConditionalGuards() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> kind; switch (kind) { "
+            "case 1: { bits<1> flag; if (flag == 1) { bits<2> nested; } } "
+            "case 2: { bits<3> alternative; } "
+            "default: { bits<4> fallback; } } } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& fields = compiled.program->structs.front().fields;
+        QCOMPARE(fields.size(), std::size_t(5));
+        QCOMPARE(fields.at(2).name, QStringLiteral("nested"));
+        QCOMPARE(fields.at(2).conditions.size(), std::size_t(2));
+        QCOMPARE(fields.at(2).conditions.at(0).fieldIndex, quint32(0));
+        QCOMPARE(fields.at(2).conditions.at(0).expectedValue, quint64(1));
+        QVERIFY(!fields.at(2).conditions.at(0).negated);
+        QCOMPARE(fields.at(2).conditions.at(1).fieldIndex, quint32(1));
+        QCOMPARE(fields.at(2).conditions.at(1).expectedValue, quint64(1));
+        QVERIFY(!fields.at(2).conditions.at(1).negated);
+        QCOMPARE(fields.at(4).name, QStringLiteral("fallback"));
+        QCOMPARE(fields.at(4).conditions.size(), std::size_t(2));
+        QVERIFY(fields.at(4).conditions.at(0).negated);
+        QVERIFY(fields.at(4).conditions.at(1).negated);
+    }
+
+    void resolvesEnumControllersForEqualitySwitches() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "enum Kind { compact = 1; extended = 2; } "
+            "struct Header { bits<2> kind @enum(Kind); switch (kind) { "
+            "case 1: { bits<3> compact_value; } "
+            "case 2: { bits<5> extended_value; } } } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& fields = compiled.program->structs.front().fields;
+        QCOMPARE(fields.at(0).type.kind, DslValueTypeKind::Enum);
+        QCOMPARE(fields.at(1).conditions.size(), std::size_t(1));
+        QCOMPARE(fields.at(1).conditions.front().fieldIndex, quint32(0));
+        QCOMPARE(fields.at(1).conditions.front().expectedValue, quint64(1));
+        QCOMPARE(fields.at(2).conditions.size(), std::size_t(1));
+        QCOMPARE(fields.at(2).conditions.front().fieldIndex, quint32(0));
+        QCOMPARE(fields.at(2).conditions.front().expectedValue, quint64(2));
+    }
+
+    void preservesStaticAlignmentOnlyAcrossCompleteEqualSwitchWidths() {
+        const auto aligned = DslParser::parse(QStringLiteral(
+            "struct Header { bits<8> kind; switch (kind) { "
+            "case 1: { bits<8> first; } case 2: { bits<8> second; } "
+            "default: { bits<8> fallback; } } bits<16, little> tail; } entry Header;"));
+        const auto unequal = DslParser::parse(QStringLiteral(
+            "struct Header { bits<8> kind; switch (kind) { "
+            "case 1: { bits<8> first; } case 2: { bits<16> second; } "
+            "default: { bits<8> fallback; } } bits<16, little> tail; } entry Header;"));
+        const auto missingDefault = DslParser::parse(QStringLiteral(
+            "struct Header { bits<8> kind; switch (kind) { "
+            "case 1: { bits<8> first; } } bits<16, little> tail; } entry Header;"));
+        QVERIFY(aligned.succeeded());
+        QVERIFY(!unequal.succeeded());
+        QVERIFY(!missingDefault.succeeded());
+
+        QVERIFY(DslCompiler::compile(aligned.program).succeeded());
+        const auto compiledUnequal = DslCompiler::compile(unequal.program);
+        const auto compiledMissingDefault = DslCompiler::compile(missingDefault.program);
+        QVERIFY(!compiledUnequal.succeeded());
+        QVERIFY(!compiledMissingDefault.succeeded());
+        QVERIFY(hasDiagnostic(compiledUnequal, DslDiagnosticCode::InvalidEndian));
+        QVERIFY(hasDiagnostic(compiledMissingDefault, DslDiagnosticCode::InvalidEndian));
+    }
+
+    void rejectsMalformedSwitchesAndCountsEveryArmAgainstTheFieldLimit() {
+        const auto duplicate = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> kind; switch (kind) { "
+            "case 1: { bits<1> first; } case 1: { bits<1> second; } } } "
+            "entry Header;"));
+        const auto noCase = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> kind; switch (kind) { "
+            "default: { bits<1> value; } } } entry Header;"));
+        const auto expanded = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> kind; switch (kind) { "
+            "case 0: { bits<1> first[49999]; } "
+            "case 1: { bits<1> second[50000]; } } } entry Header;"));
+
+        const auto compiledDuplicate = DslCompiler::compile(duplicate.program);
+        const auto compiledNoCase = DslCompiler::compile(noCase.program);
+        const auto compiledExpanded = DslCompiler::compile(expanded.program);
+        QVERIFY(!compiledDuplicate.succeeded());
+        QVERIFY(!compiledNoCase.succeeded());
+        QVERIFY(!compiledExpanded.succeeded());
+        QVERIFY(hasDiagnostic(compiledDuplicate, DslDiagnosticCode::InvalidCondition));
+        QVERIFY(hasDiagnostic(compiledNoCase, DslDiagnosticCode::InvalidCondition));
+        QVERIFY(hasDiagnostic(compiledExpanded, DslDiagnosticCode::InvalidArrayLength));
+    }
+
+    void keepsMalformedSwitchGuardSlotsAlignedDuringDefensiveCompilation() {
+        auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> kind; switch (kind) { "
+            "case 0: { bits<1> local; } "
+            "case 1: { if (local == 0) { bits<1> value; } } } } entry Header;"));
+        QVERIFY(!parsed.succeeded());
+        parsed.program.structs.front().items.at(1).switchArms.at(0).caseValue = 2;
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(!compiled.succeeded());
+        QVERIFY(!compiled.program.has_value());
+        QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::ConstraintOutOfRange));
+        QVERIFY(!hasDiagnostic(compiled, DslDiagnosticCode::InvalidCondition));
+    }
+
     void rejectsEnumValuesThatDoNotFitAndUnalignedLittleEndianFields() {
         const auto tooWide = DslParser::parse(QStringLiteral(
             "enum Type { too_large = 8; } "
