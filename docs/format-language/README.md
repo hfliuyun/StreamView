@@ -44,7 +44,7 @@ struct NalUnitHeader {
 }
 ```
 
-The eventual reference must define primitive types, signedness, byte order, bit order, overflow behavior, arrays, enums, structures, conditionals, switches, bounded loops, pure helpers, scope, name resolution, and specification annotations. The accepted minimum subset is intentionally smaller and does not yet include expressions or control flow.
+The eventual reference must define primitive types, signedness, byte order, bit order, overflow behavior, arrays, enums, structures, conditionals, switches, bounded loops, pure helpers, scope, name resolution, and specification annotations. The accepted minimum subset is intentionally smaller and does not yet include general expressions or control flow beyond the equality conditional described below.
 
 The accepted M3 type slice adds declaration-order enums and an explicit byte
 order on `bits` fields. Enum declarations name unsigned integer values; a field
@@ -63,6 +63,11 @@ after a scalar field name, such as `bits<8> payload[4]`, `ue codes[3]`, or
 and executed fields named `payload[0]` through `payload[3]`; it introduces no
 array value, container node, or array-specific opcode.
 
+The accepted conditional slice adds nested
+`if (previous_field == integer) { ... } else { ... }` blocks. `else` is
+optional. The comparison is a restricted presence decision over a previous
+scalar fixed-width value, not a general expression.
+
 ## Minimum DSL 0.1 Subset
 
 The first executable subset uses the following grammar. Whitespace and `//` or
@@ -76,10 +81,14 @@ program       := { declaration }
 declaration   := { annotation } ( enum | struct | sequence | entry )
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
-struct        := "struct" identifier "{" { field } "}" [ ";" ]
+struct        := "struct" identifier "{" { struct_item } "}" [ ";" ]
+struct_item   := field | conditional
 field         := { annotation } field_type identifier [ "[" integer "]" ]
                  { annotation } ";"
 field_type    := "bits" "<" integer [ "," identifier ] ">" | "ue" | "se"
+conditional   := "if" "(" identifier "==" integer ")"
+                 "{" { struct_item } "}"
+                 [ "else" "{" { struct_item } "}" ]
 sequence      := "sequence" "<" identifier ">" identifier "="
                  "scan" "(" identifier ")" ";"
 entry         := "entry" identifier ";"
@@ -121,6 +130,19 @@ The static rules for this subset are:
   An array of `ue` or `se` fields has unknown total width, so a later
   little-endian field is rejected under the same rule as a scalar Exp-Golomb
   field.
+- A conditional controller must name an earlier scalar `bits` or enum field
+  that is guaranteed to have been materialized on every path reaching that
+  condition. Arrays, `ue`, `se`, future fields, unknown fields, and a
+  branch-local field used outside its guaranteeing branch are rejected. The
+  integer must fit the controller's unsigned bit width. Conditions may nest,
+  and both branches are statically checked even though only one executes.
+  General expressions, Boolean combinations, `else if`, and non-equality
+  operators are not accepted in this slice.
+- Field names remain unique across all branches of a structure. Every possible
+  branch field counts toward the 99,999-field projection limit. Static
+  alignment is tracked independently through both branches; the conditional
+  exit retains a known offset only when both paths end at the same known
+  offset, with an omitted `else` treated as an empty path.
 - The only accepted progressive sequence form is
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`.
   `Element` must name a declared structure.
@@ -140,10 +162,10 @@ The static rules for this subset are:
   parser still returns its partial IR and all diagnostics with line/column
   ranges so an editor can report more than the first error.
 
-`enum`, `big`, `little`, `ue`, and `se` are contextual words in the positions
-shown by the grammar and remain ordinary identifiers elsewhere. Existing
-scalar declarations are unchanged, and `bits<N>` remains exactly equivalent
-to `bits<N, big>`; this slice deprecates no accepted 0.1 syntax.
+`enum`, `big`, `little`, `ue`, `se`, `if`, and `else` are contextual words in
+the positions shown by the grammar and remain ordinary identifiers elsewhere.
+Existing scalar declarations are unchanged, and `bits<N>` remains exactly
+equivalent to `bits<N, big>`; this slice deprecates no accepted 0.1 syntax.
 
 The parser produces a source-oriented declaration model for diagnostics. The
 static compiler resolves enum, structure, sequence, and entry references into a
@@ -155,9 +177,12 @@ the resolved enum and byte-order information; the Exp-Golomb types have zero
 static bit width, default bit order, no enum reference, and no equality
 constraint. A fixed array is expanded in source order into typed fields named
 `name[0]` through `name[count - 1]`; every element emits its own read and, when
-present, equality-check instruction. No alternate source-coordinate operation
-is introduced. A program with any parser or compiler diagnostic has no
-executable typed IR.
+present, equality-check instruction. Conditional blocks are lowered into the
+same declaration-order field stream. Each possible field carries resolved
+presence guards that reference earlier typed-field indexes; no jump opcode or
+general control-flow bytecode is introduced. No alternate source-coordinate
+operation is introduced. A program with any parser or compiler diagnostic has
+no executable typed IR.
 `svtool rule check` runs both stages. The bundled Annex B runner also compiles its rule
 once when the analyzer is created and executes the resolved structure index
 for every record.
@@ -183,6 +208,16 @@ span; mapped multi-span transformations are reserved
 for the later mapped-transformation runtime. The executor retains the field
 type, description, and specification reference on the analysis-node snapshot;
 presentation derives field width from that node's logical range.
+
+Before each field read, the VM validates and evaluates its presence guards in
+outer-to-inner order. A false guard skips the field without consuming source
+bits, creating an analysis node, enforcing enum membership, or applying an
+`@equals` value check. Selected fields retain the existing value, diagnostic,
+and source-location behavior, so the following selected field begins exactly
+where the previous selected field ended. Guard metadata that references an
+unknown, current, future, incorrectly typed, or unavailable controller is an
+invalid typed definition. Field definitions are still validated when their
+branch is absent, so malformed typed IR cannot hide behind a false guard.
 
 For an Exp-Golomb codeword, let `leadingZeroBits` be the number of zero bits
 before the marker bit and let `suffix` be the following unsigned value of the
@@ -317,6 +352,27 @@ struct Samples {
 entry Samples;
 ```
 
+Valid equality-conditional example:
+
+```cpp
+enum PacketKind {
+    compact = 1;
+    extended = 2;
+}
+
+struct Packet {
+    bits<2> kind @enum(PacketKind);
+    if (kind == 1) {
+        bits<3> compact_value;
+    } else {
+        bits<5> extended_value;
+    }
+    bits<3> tail;
+}
+
+entry Packet;
+```
+
 Invalid minimum examples include `bits<0> flag;`, `bits<65> flag;`,
 `bits<12, little> value;`, a little-endian field after an unaligned field,
 `ue value @equals(0);`, `se value @enum(Type);`, a little-endian field after a
@@ -325,9 +381,12 @@ second dimension in an array length, a structure projection above 99,999
 fields, a truncated array element, a truncated Exp-Golomb codeword, 64 leading
 zero bits, `@enum(Missing)`, an enum member value that does not fit its field,
 duplicate enum member names, a sequence without `@index(progressive)`,
-`scan(other_scanner)`, two declarations with the same name, or a program with
-no `entry`. Enum and field parsing recovers at the next member/field semicolon
-or closing brace and preserves all source ranges and diagnostics.
+`if (future == 1)` before `future` is declared, an array or `ue`/`se` condition
+controller, a condition integer outside the controller width, a branch-local
+controller used after its branch, `if (flag = 1)`, `scan(other_scanner)`, two
+declarations with the same name, or a program with no `entry`. Enum and field
+parsing recovers at the next member/field semicolon or closing brace and
+preserves all source ranges and diagnostics.
 
 ## Source And Logical Coordinates
 
@@ -408,6 +467,13 @@ an instruction limit, or a node limit can therefore stop between elements
 while preserving the elements completed before the failure. The static
 99,999-field projection limit ensures one default structure materialization
 cannot require more than the documented 100,000 nodes.
+
+Conditional syntax also reserves no separate opcode or node budget. Every
+possible field still emits its read instruction, and `@equals` still emits its
+assertion instruction. Those instructions count toward the instruction budget
+and remain cancellation points when the field is skipped. Only a selected
+field consumes source bits and one materialized-node slot. All fields from both
+branches count toward the static 99,999-field projection limit.
 
 All limits must be greater than zero. The host may lower them for a particular
 execution but a rule cannot raise or inspect them. The accepted minimum subset

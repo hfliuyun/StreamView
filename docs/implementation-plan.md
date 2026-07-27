@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 2
-Last Completed Step: M3 fixed-size arrays, including one-dimensional grammar, compile-time expansion, alignment, metadata/constraint propagation, per-element VM semantics, partial results, and materialization limits
-Next Action: Add the next documented M3 primitive runtime feature: conditionals
-Last Verification: Local dev/ci/sanitize reconfigure, full build, and CTest each passed 22/22; hosted runs 30008470576 and 30008968266 passed on Windows, macOS, and Ubuntu
+Last Completed Step: M3 equality conditionals, including nested grammar, branch-aware static validation and alignment, guarded typed fields, selected-only source/node semantics, malformed-IR validation, and budgets
+Next Action: Add the next documented M3 primitive runtime feature: switch
+Last Verification: Local dev/ci/sanitize reconfigure, full build, and CTest each passed 22/22; hosted runs 30269316726 and 30270854648 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -23,7 +23,8 @@ Blockers: None
 - 模块划分为 C++20/Qt Core 分析核心、DSL/规则运行时、Qt Widgets 应用和内部工具 `svtool`；正式格式只能通过 DSL 实现。
 - 核心类型包括源 bit 地址、源区间、逻辑范围、字段位置、分析节点、诊断和物化状态。字段可映射多个源区间；状态区分 lazy、indexing、waiting-dependency、cancelled、unsupported、invalid、materialized。
 - SPS/PPS、AudioSpecificConfig 和 sample description 使用带源位置的版本目录；解析时选择当前位置之前最近的有效定义。
-- DSL 使用手写 lexer、递归下降声明解析器、Pratt 表达式解析器、静态类型 IR 和受限 bytecode VM。
+- DSL 当前使用手写 lexer、递归下降声明/受限条件解析器、静态类型 IR 和受限 bytecode VM；
+  Pratt 表达式解析器留待一般表达式切片。
 - 文件接口固定为 `.svfmt`、`.svrule`、`rule.toml` 和 `.svsession`；应用、DSL、官方规则初始版本分别为 `0.1.0`、`0.1`、`0.1.0`。
 - SQLite WAL 保存大型索引和物化结果；内存只保留 64 KiB 源页面及节点 LRU，默认预算 128 MiB。
 - 单窗口单会话；Qt UI 采用左右 dock、中央自绘原始数据视图、分页分析树和全局诊断面板。
@@ -69,7 +70,9 @@ Blockers: None
 - [ ] 逐项加入 enum、显式 endian、`ue/se`、数组、条件、switch、有界循环、纯函数和 computed fields；每项先补英文规范、中文说明、正反例和 TDD。
   - [x] enum、显式 endian、`ue/se`。
   - [x] 固定长度数组：一维正整数长度，编译期扁平展开，逐元素 metadata/constraint、坐标、诊断和预算。
-  - [ ] 条件语句；随后再进入 switch、有界循环、纯函数和 computed fields。
+  - [x] 条件语句：可嵌套的前置 scalar `bits`/enum 等值判断、可选 `else`、branch-aware
+    可用性与对齐、guarded typed fields，以及未选分支不读取 source/不创建节点的 VM 语义。
+  - [ ] switch；随后再进入有界循环、纯函数和 computed fields。
 - [x] 固化调用/视图深度 64、节点深度 256、单次物化 100,000 节点和每 1,024 指令取消检查。（另固化单次结构 1,000,000 指令预算；当前最小子集尚无嵌套调用或 view，预算已由 VM/API 保留。）
 
 验收：稳定子集按声明顺序生成相同 typed IR/bytecode 和结果；超限与取消保留部分树并附可定位诊断，Annex B runner 在创建时编译一次规则，`svtool rule check` 同时执行 parser/compiler。
@@ -131,7 +134,7 @@ Blockers: None
 
 ## 阶段 2：DSL v0.1、沙箱与大型文件基础设施
 
-- [ ] 完成枚举、显式大小端、`ue/se`、数组、条件、switch、有界循环、纯函数和计算字段。（枚举、显式大小端、`ue/se` 与固定长度数组已完成；下一项为条件语句。）
+- [ ] 完成枚举、显式大小端、`ue/se`、数组、条件、switch、有界循环、纯函数和计算字段。（枚举、显式大小端、`ue/se`、固定长度数组与条件语句已完成；下一项为 switch。）
 - [ ] 完成 mapped transformation、lazy 区域、渐进索引和位置感知上下文目录。
 - [ ] 完成 bytecode 预算和取消：调用/视图深度 64、节点深度 256、单次物化 100,000 节点，每 1,024 指令检查取消。
 - [ ] 完成 SQLite 分页缓存、后台批次提交、schema 版本和崩溃恢复。
@@ -243,3 +246,4 @@ Blockers: None
 - 2026-07-23：完成 M3 enum 与显式 endian 切片：parser/AST 支持 declaration-order enum、`bits<N, big|little>` 和 `@enum(Type)`；compiler 解析 typed enum/endian、命名空间、宽度及字节对齐；VM 在不改变 MSB-first source coordinate 的前提下解释 8–64 bit 小端值，并对未知 enum 值、未对齐 source 及 malformed typed IR 保留部分结果和可定位诊断。实现拆分为 `0b69530`（enum/endian parser 与 typed IR）和 `c30f28a`（VM 数值语义与运行时回归）；英文规范、中文伴随说明及正反例已同步。本机 `cmake --preset dev/ci/sanitize`、三套 build preset 与三套 `ctest` 均通过 22/22。下一步实现 `ue/se`。
 - 2026-07-23：完成 M3 `ue/se` 切片：parser/AST 接受 `ue` 与 `se`；compiler 生成 `UnsignedExpGolomb`/`SignedExpGolomb` typed fields 和独立 read opcodes；VM 实现 H.264 Exp-Golomb 解码、signed 映射、63 个前导零/127-bit 码字上限、事务式 reader 回滚、部分结果保留、source-located diagnostics 及有符号/无符号节点值。实现拆分为 `a67099e`（parser/IR）和 `9b288c3`（VM 与运行时回归）；英文规范、中文伴随说明及正反例已同步。本机 `dev`、`ci`、`sanitize` 配置、完整构建与 CTest 均为 22/22；hosted run `30002644468` 验证 `a67099e` 三平台成功，hosted run `30003006906` 验证 `9b288c3` 三平台成功。下一步实现固定长度数组。
 - 2026-07-23：完成 M3 固定长度数组切片：parser/AST 接受 scalar 字段后的一维正整数字面量长度；compiler 在 99,999 字段结构上限内展开 `name[index]` typed fields 和逐元素 bytecode，并按数组总宽计算静态 endian 对齐；既有 VM 逐元素保留 metadata、`@enum`、`@equals`、source location、诊断和预算语义，截断、约束或资源超限保留此前元素。实现拆分为 `1b5f07b`（parser/compiler、展开上限与 typed IR 回归）和 `208b37d`（executor 的 bits/little/ue/se/enum/partial-results/budget 回归）；英文规范、中文伴随说明及正反例已同步。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 22/22；hosted run `30008470576` 与 `30008968266` 均在 Windows、macOS、Ubuntu 成功。下一步实现条件语句。
+- 2026-07-27：完成 M3 等值条件切片：parser/AST 接受可嵌套的 `if (previous_field == integer) { ... } else { ... }`，`else` 可省略；parser/compiler 拒绝未知、未来、数组、`ue/se`、超宽或当前路径不可用的 controller，按分支合并静态 offset，并把所有可能字段降低为 declaration-order guarded typed fields。VM 在 read 前验证并短路 guard，未选字段不读取 source、不创建节点、不执行 enum/`@equals` 数值检查，但其 read/assert instruction 仍计预算和取消点；malformed guard 与藏在未选分支中的非法 field definition 均被拒绝。实现拆分为 `158c674`（parser/compiler 与静态回归）和 `e023e1a`（VM 与真假分支、嵌套数组、enum、little-endian、`ue/se`、截断、约束、预算及 malformed IR 回归）；英文规范、中文伴随说明、ADR-0020 和正反例同步。本机 `dev`、`ci`、`sanitize` 完整配置、构建与 CTest 均为 22/22；hosted run `30269316726` 与 `30270854648` 均在 Windows、macOS、Ubuntu 成功。下一步实现 switch。
