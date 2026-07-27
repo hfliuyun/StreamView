@@ -44,7 +44,7 @@ struct NalUnitHeader {
 }
 ```
 
-The eventual reference must define primitive types, signedness, byte order, bit order, overflow behavior, arrays, enums, structures, conditionals, switches, bounded loops, pure helpers, scope, name resolution, and specification annotations. The accepted minimum subset is intentionally smaller and does not yet include general expressions or control flow beyond the equality conditionals and switches described below.
+The eventual reference must define primitive types, signedness, byte order, bit order, overflow behavior, arrays, enums, structures, conditionals, switches, bounded loops, pure helpers, scope, name resolution, and specification annotations. The accepted minimum subset is intentionally smaller and does not yet include general expressions or control flow beyond the equality conditionals, switches, and bounded repeats described below.
 
 The accepted M3 type slice adds declaration-order enums and an explicit byte
 order on `bits` fields. Enum declarations name unsigned integer values; a field
@@ -73,6 +73,12 @@ The accepted switch slice adds nested
 Each arm has its own braced body, `default` is optional, and selection uses the
 same restricted equality guards as the conditional slice.
 
+The accepted bounded-repeat slice adds nested
+`repeat (previous_count, maximum) { ... }` blocks. A decoded unsigned count
+selects zero through `maximum` projected iterations. The positive literal
+`maximum` bounds both the compiled field projection and the accepted runtime
+count; this is not a general loop or count expression.
+
 ## Minimum DSL 0.1 Subset
 
 The first executable subset uses the following grammar. Whitespace and `//` or
@@ -87,7 +93,7 @@ declaration   := { annotation } ( enum | struct | sequence | entry )
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { struct_item } "}" [ ";" ]
-struct_item   := field | conditional | switch
+struct_item   := field | conditional | switch | repeat
 field         := { annotation } field_type identifier [ "[" integer "]" ]
                  { annotation } ";"
 field_type    := "bits" "<" integer [ "," identifier ] ">" | "ue" | "se"
@@ -98,6 +104,8 @@ switch        := "switch" "(" identifier ")" "{"
                  switch_case { switch_case } [ switch_default ] "}"
 switch_case   := "case" integer ":" "{" { struct_item } "}"
 switch_default := "default" ":" "{" { struct_item } "}"
+repeat        := "repeat" "(" identifier "," integer ")"
+                 "{" { struct_item } "}"
 sequence      := "sequence" "<" identifier ">" identifier "="
                  "scan" "(" identifier ")" ";"
 entry         := "entry" identifier ";"
@@ -165,6 +173,27 @@ The static rules for this subset are:
   offset; the switch exit retains a known offset only when all paths end at the
   same known offset. When `default` is omitted, an unmatched empty path also
   participates in that merge.
+- A repeat controller must name an earlier scalar unsigned `bits`, enum, or
+  `ue` field that is guaranteed to have been materialized on every path reaching
+  the statement. Arrays, `se`, unknown or future fields, and branch-local fields
+  used outside their guaranteeing branch are rejected. The `maximum` is a
+  positive unsigned integer literal and must fit a fixed-width controller.
+  Count expressions, sentinel or EOF termination, and `break` are not accepted.
+  A repeat body must contain at least one field and may contain fields,
+  conditionals, switches, and nested repeats.
+- The compiler validates and projects a repeat body exactly `maximum` times.
+  Source declaration names remain unique across the complete structure. A body
+  declaration is visible to later items in the same iteration, but repeat-local
+  declarations are unavailable in another iteration or after the repeat.
+  Materialized names append enclosing repeat indexes from outermost to
+  innermost, followed by an optional fixed-array index: `value[i]`,
+  `value[outer][inner]`, and `value[i][j]`. Every projected field counts toward
+  the 99,999-field limit.
+- Static alignment is checked separately through every projected iteration, so
+  a fixed alignment error inside a repeat is rejected. Because the runtime may
+  select any count from zero through `maximum`, the structure-relative offset
+  after a repeat is considered unknown. A later little-endian field is rejected
+  even when a future expression analysis might be able to prove it aligned.
 - The only accepted progressive sequence form is
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`.
   `Element` must name a declared structure.
@@ -184,8 +213,8 @@ The static rules for this subset are:
   parser still returns its partial IR and all diagnostics with line/column
   ranges so an editor can report more than the first error.
 
-`enum`, `big`, `little`, `ue`, `se`, `if`, `else`, `switch`, `case`, and
-`default` are contextual words in the positions shown by the grammar and
+`enum`, `big`, `little`, `ue`, `se`, `if`, `else`, `switch`, `case`, `default`,
+and `repeat` are contextual words in the positions shown by the grammar and
 remain ordinary identifiers elsewhere.
 Existing scalar declarations are unchanged, and `bits<N>` remains exactly
 equivalent to `bits<N, big>`; this slice deprecates no accepted 0.1 syntax.
@@ -194,20 +223,31 @@ The parser produces a source-oriented declaration model for diagnostics. The
 static compiler resolves enum, structure, sequence, and entry references into a
 typed program, preserves declaration order, and emits deterministic bytecode
 using `begin-structure`, `read-unsigned-bits`, `read-unsigned-exp-golomb`,
-`read-signed-exp-golomb`, `assert-equals`, and `end-structure` operations. Each
-read opcode must match the resolved field type. The fixed-width read carries
-the resolved enum and byte-order information; the Exp-Golomb types have zero
-static bit width, default bit order, no enum reference, and no equality
-constraint. A fixed array is expanded in source order into typed fields named
-`name[0]` through `name[count - 1]`; every element emits its own read and, when
-present, equality-check instruction. Conditional blocks are lowered into the
-same declaration-order field stream. Each possible field carries resolved
-presence guards that reference earlier typed-field indexes; no jump opcode or
-general control-flow bytecode is introduced. Switch case fields receive one
-positive equality guard. Default fields receive the conjunction of every case
-guard negated; an omitted default emits no field for the unmatched path.
-Nested switch and conditional guards are appended outer-to-inner. No alternate
-source-coordinate operation is introduced. A program with any parser or
+`read-signed-exp-golomb`, `assert-equals`, `assert-repeat-count`, and
+`end-structure` operations. Each read opcode must match the resolved field type.
+The fixed-width read carries the resolved enum and byte-order information; the
+Exp-Golomb types have zero static bit width, default bit order, no enum
+reference, and no equality constraint. A fixed array is expanded in source
+order into typed fields named `name[0]` through `name[count - 1]`; every element
+emits its own read and, when present, equality-check instruction. Conditional
+blocks are lowered into the same declaration-order field stream. Each possible
+field carries resolved presence guards that reference earlier typed-field
+indexes; no jump opcode or general control-flow bytecode is introduced. Switch
+case fields receive one positive equality guard. Default fields receive the
+conjunction of every case guard negated; an omitted default emits no field for
+the unmatched path. Nested switch and conditional guards are appended outer-to-
+inner.
+
+A repeat body is projected `maximum` times into that same typed-field stream.
+Every field in iteration `i` appends a positive `count > i` guard after its
+enclosing guards. Its materialized name appends the active repeat indexes before
+any fixed-array index. Each projected repeat statement records its controller,
+maximum, first body field, enclosing guards, and source range, and emits one
+guarded `assert-repeat-count` at the statement position before the first body
+read. This adds a greater-than presence comparison and a bound assertion, but
+no jump, back edge, mutable index, or alternate source-coordinate operation.
+Unsigned Exp-Golomb values are retained for repeat controllers without becoming
+valid equality-conditional or switch controllers. A program with any parser or
 compiler diagnostic has no executable typed IR.
 `svtool rule check` runs both stages. The bundled Annex B runner also compiles its rule
 once when the analyzer is created and executes the resolved structure index
@@ -247,6 +287,20 @@ branch is absent, so malformed typed IR cannot hide behind a false guard.
 Consequently, exactly one matching switch case is materialized, otherwise the
 default arm is materialized when present, and a switch without a matching case
 or default consumes no arm input.
+
+At a repeat statement whose enclosing guards are true, the bound assertion
+checks the saved controller value before any body input is consumed. A count
+above `maximum` is never clamped: it retains the count field, marks the structure
+invalid, and reports `invalid-syntax` at that field. If an enclosing guard is
+false, the assertion and all body fields are skipped without requiring the
+controller value. A projected iteration is present exactly when `count > i`.
+Only present iterations consume source bits or materialized-node slots; absent
+iterations create no nodes or source locations and perform no enum or
+`@equals` value check. A selected field otherwise keeps the existing value,
+metadata, partial-result, and source-coordinate behavior, including diagnostic
+paths such as `Header.value[1][0]`. Invalid repeat metadata, controller guards,
+or assertion placement is an invalid typed definition rather than guessed
+execution.
 
 For an Exp-Golomb codeword, let `leadingZeroBits` be the number of zero bits
 before the marker bit and let `suffix` be the following unsigned value of the
@@ -429,6 +483,20 @@ struct Packet {
 entry Packet;
 ```
 
+Valid bounded-repeat example:
+
+```cpp
+struct SampleTable {
+    bits<8> sample_count;
+    repeat (sample_count, 16) {
+        bits<16, little> value @description("Little-endian sample.");
+        bits<8> flags[2];
+    }
+}
+
+entry SampleTable;
+```
+
 Invalid minimum examples include `bits<0> flag;`, `bits<65> flag;`,
 `bits<12, little> value;`, a little-endian field after an unaligned field,
 `ue value @equals(0);`, `se value @enum(Type);`, a little-endian field after a
@@ -443,11 +511,20 @@ controller used after its branch, `if (flag = 1)`, a switch over a future,
 array, or `ue`/`se` controller, an out-of-range or duplicate case value, a
 switch with no case, a repeated or non-final default, a missing case colon or
 braced arm body, `break`, fallthrough, multiple labels for one arm, a case
-range or enum member label, `scan(other_scanner)`, two declarations with the
-same name, or a program with no `entry`. Enum and field parsing recovers at the
-next member/field semicolon or closing brace. An unknown switch label or a
-label whose arm opener is missing recovers at the next `case`, `default`, or
-switch closing brace. All recovery preserves source ranges and diagnostics.
+range or enum member label, a repeat over an unknown, future, array, `se`, or
+unavailable branch-local controller, `repeat (count, 0)`, a maximum that does
+not fit its fixed-width controller, a count or maximum expression, an empty
+repeat body, an annotation before `repeat`, a repeat projection above 99,999
+fields, a repeat-local controller used by another iteration or after the
+repeat, a little-endian field after a repeat, `scan(other_scanner)`, two
+declarations with the same name, or a program with no `entry`. A malformed
+repeat header produces source-ranged missing-token diagnostics. If its body
+opener is missing, parsing recovers at the next field semicolon or enclosing
+closing brace; missing header tokens otherwise continue into a recognizable
+braced body when possible. Enum and field parsing recovers at the next
+member/field semicolon or closing brace. An unknown switch label or a label
+whose arm opener is missing recovers at the next `case`, `default`, or switch
+closing brace. All recovery preserves source ranges and diagnostics.
 
 ## Source And Logical Coordinates
 
@@ -536,6 +613,17 @@ and remain cancellation points when the field is skipped. Only a selected
 field consumes source bits and one materialized-node slot. All fields from all
 branches and switch arms count toward the static 99,999-field projection
 limit.
+
+Each projected repeat statement adds one `assert-repeat-count` instruction.
+Every read and equality assertion produced by the declared `maximum` counts
+toward the instruction budget and remains a cancellation point even when its
+iteration is absent. The bound assertion is also charged and remains a
+cancellation point when its enclosing guards are false. Only present iterations
+consume source bits and materialized-node slots. All projected fields count
+toward the static 99,999-field limit, so a conservative maximum increases typed
+program size and possible instruction work even when the decoded count is
+small. A reached count above the declared maximum is `invalid-syntax`, not a
+resource-limit condition.
 
 All limits must be greater than zero. The host may lower them for a particular
 execution but a rule cannot raise or inspect them. The accepted minimum subset

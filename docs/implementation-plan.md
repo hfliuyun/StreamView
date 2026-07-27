@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 2
-Last Completed Step: M3 equality switches, including nested grammar, multi-arm static validation and alignment, case/default guard lowering, selected-only source/node semantics, malformed-IR validation, and budgets
-Next Action: Add the next documented M3 primitive runtime feature: bounded loops
-Last Verification: Local dev/ci/sanitize reconfigure, full build, and CTest each passed 22/22; hosted runs 30274571076 and 30275735715 passed on Windows, macOS, and Ubuntu
+Last Completed Step: M3 bounded repeats, including nested grammar, static projection and scope, guarded count assertions, selected-iteration execution, partial results, malformed-IR validation, and budgets
+Next Action: Define and implement the next documented M3 slice: pure functions and computed fields
+Last Verification: Local dev/ci/sanitize reconfigure, full build, and CTest each passed 22/22; hosted runs 30281017826 and 30282525878 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -75,7 +75,10 @@ Blockers: None
   - [x] switch：前置 scalar `bits`/enum controller、互异整数 case、可选末尾 default、嵌套
     switch/条件、全 arm 静态验证与对齐、case/default guard lowering，以及 selected-only VM
     语义。
-  - [ ] 有界循环；随后再进入纯函数和 computed fields。
+  - [x] 有界循环：前置无符号 `bits`/enum/`ue` controller、正整数字面量 maximum、嵌套
+    body、静态投影与局部作用域、`count > index` guard、边界断言、selected-only VM 语义，
+    以及超限、部分结果、预算、取消和 malformed IR 回归。
+  - [ ] 纯函数与 computed fields。
 - [x] 固化调用/视图深度 64、节点深度 256、单次物化 100,000 节点和每 1,024 指令取消检查。（另固化单次结构 1,000,000 指令预算；当前最小子集尚无嵌套调用或 view，预算已由 VM/API 保留。）
 
 验收：稳定子集按声明顺序生成相同 typed IR/bytecode 和结果；超限与取消保留部分树并附可定位诊断，Annex B runner 在创建时编译一次规则，`svtool rule check` 同时执行 parser/compiler。
@@ -137,7 +140,7 @@ Blockers: None
 
 ## 阶段 2：DSL v0.1、沙箱与大型文件基础设施
 
-- [ ] 完成枚举、显式大小端、`ue/se`、数组、条件、switch、有界循环、纯函数和计算字段。（枚举、显式大小端、`ue/se`、固定长度数组、条件语句与 switch 已完成；下一项为有界循环。）
+- [ ] 完成枚举、显式大小端、`ue/se`、数组、条件、switch、有界循环、纯函数和计算字段。（枚举、显式大小端、`ue/se`、固定长度数组、条件语句、switch 与有界循环已完成；下一项为纯函数和计算字段。）
 - [ ] 完成 mapped transformation、lazy 区域、渐进索引和位置感知上下文目录。
 - [ ] 完成 bytecode 预算和取消：调用/视图深度 64、节点深度 256、单次物化 100,000 节点，每 1,024 指令检查取消。
 - [ ] 完成 SQLite 分页缓存、后台批次提交、schema 版本和崩溃恢复。
@@ -251,3 +254,4 @@ Blockers: None
 - 2026-07-23：完成 M3 固定长度数组切片：parser/AST 接受 scalar 字段后的一维正整数字面量长度；compiler 在 99,999 字段结构上限内展开 `name[index]` typed fields 和逐元素 bytecode，并按数组总宽计算静态 endian 对齐；既有 VM 逐元素保留 metadata、`@enum`、`@equals`、source location、诊断和预算语义，截断、约束或资源超限保留此前元素。实现拆分为 `1b5f07b`（parser/compiler、展开上限与 typed IR 回归）和 `208b37d`（executor 的 bits/little/ue/se/enum/partial-results/budget 回归）；英文规范、中文伴随说明及正反例已同步。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 22/22；hosted run `30008470576` 与 `30008968266` 均在 Windows、macOS、Ubuntu 成功。下一步实现条件语句。
 - 2026-07-27：完成 M3 等值条件切片：parser/AST 接受可嵌套的 `if (previous_field == integer) { ... } else { ... }`，`else` 可省略；parser/compiler 拒绝未知、未来、数组、`ue/se`、超宽或当前路径不可用的 controller，按分支合并静态 offset，并把所有可能字段降低为 declaration-order guarded typed fields。VM 在 read 前验证并短路 guard，未选字段不读取 source、不创建节点、不执行 enum/`@equals` 数值检查，但其 read/assert instruction 仍计预算和取消点；malformed guard 与藏在未选分支中的非法 field definition 均被拒绝。实现拆分为 `158c674`（parser/compiler 与静态回归）和 `e023e1a`（VM 与真假分支、嵌套数组、enum、little-endian、`ue/se`、截断、约束、预算及 malformed IR 回归）；英文规范、中文伴随说明、ADR-0020 和正反例同步。本机 `dev`、`ci`、`sanitize` 完整配置、构建与 CTest 均为 22/22；hosted run `30269316726` 与 `30270854648` 均在 Windows、macOS、Ubuntu 成功。下一步实现 switch。
 - 2026-07-27：完成 M3 等值 switch 切片：parser/AST 接受可嵌套的 `switch (previous_field)`、一个或多个互异整数 `case` 和可选的末尾 `default`，每个 arm 使用显式花括号 body；parser/compiler 拒绝未知、未来、数组、`ue/se`、超宽或路径不可用 controller，以及重复 case、缺少 case、重复或非末尾 default，并从同一入口 offset 验证所有路径。compiler 把 case 降低为正向等值 guard，把 default 降低为全部 case guard 的否定合取；无 default 时静态合并包含未匹配空路径，不新增 opcode。executor 回归覆盖 case/default/无匹配、嵌套条件、enum、小端、数组、`ue/se`、截断、`@equals`、预算、malformed guard 和未选 arm 中的非法字段。实现拆分为 `7d37025`（parser/compiler 与静态回归）和 `0cc6c5d`（executor 回归）；英文规范、中文伴随说明和 ADR-0021 同步。本机 `dev`、`ci`、`sanitize` 完整配置、构建与 CTest 均为 22/22；hosted run `30274571076` 与 `30275735715` 均在 Windows、macOS、Ubuntu 成功。下一步实现有界循环。
+- 2026-07-27：完成 M3 有界 repeat 切片：parser/AST 接受可嵌套的 `repeat (count_field, maximum) { ... }`，controller 为此前且当前路径保证存在的无符号 scalar `bits`、enum 或 `ue`，maximum 为正整数字面量；compiler 按 maximum 静态投影 body，使用 `count > index` guard、repeat-local scope、索引化名称和 statement-position bound assertion，保持线性 bytecode 并把全部投影计入 99,999 字段上限。VM 在消费 body 前拒绝超过 maximum 的计数，缺席迭代不读取 source 或创建节点，但其 read/assert 指令仍计预算和取消点；回归覆盖嵌套 `ue` controller、小端、数组、metadata、`ue/se`、enum、截断、`@equals`、预算、执行中取消和 malformed IR。实现拆分为 `c00ba9b`（ADR-0022 与切片决策）、`4800f41`（parser/compiler/VM）和 `4875f42`（executor 深度回归）；英文规范、中文伴随说明和正反例同步。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 22/22；hosted run `30281017826` 与 `30282525878` 均在 Windows、macOS、Ubuntu 成功。下一步定义并实现纯函数与 computed fields。

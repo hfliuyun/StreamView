@@ -45,7 +45,8 @@ struct NalUnitHeader {
 
 最终参考文档必须分别定义基本类型、有无符号、字节序、bit 顺序、溢出行为、数组、枚举、
 结构、条件、分支、有界循环、纯函数、作用域、名称解析和规范注解。当前接受的最小子集
-有意更小，暂不包含一般表达式，也不包含下述等值条件和 switch 之外的控制流。
+有意更小，暂不包含一般表达式，也不包含下述等值条件、switch 和有界 repeat 之外的
+控制流。
 
 当前接受的 M3 类型切片新增了按声明顺序保存的 enum，以及 `bits` 字段的显式字节序。
 enum 声明为无符号整数命名；字段通过 `@enum(Type)` 把这些名称关联到解码值。
@@ -67,6 +68,11 @@ location 覆盖完整编码码字，而不是固定 bit 数。
 每个 arm 都有自己的花括号 body，`default` 可以省略，选择逻辑复用条件切片的受限等值
 guard。
 
+当前接受的有界 repeat 切片新增了可嵌套的
+`repeat (previous_count, maximum) { ... }` block。此前解码出的无符号计数选择零到
+`maximum` 次投影迭代；正整数字面量 `maximum` 同时约束编译后的字段投影与运行时可接受
+计数。这不是通用 loop 或计数表达式。
+
 ## DSL 0.1 最小子集
 
 首个可执行子集使用以下语法。token 之间可以有空白，以及 `//` 或 `/* ... */`
@@ -79,7 +85,7 @@ declaration   := { annotation } ( enum | struct | sequence | entry )
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { struct_item } "}" [ ";" ]
-struct_item   := field | conditional | switch
+struct_item   := field | conditional | switch | repeat
 field         := { annotation } field_type identifier [ "[" integer "]" ]
                  { annotation } ";"
 field_type    := "bits" "<" integer [ "," identifier ] ">" | "ue" | "se"
@@ -90,6 +96,8 @@ switch        := "switch" "(" identifier ")" "{"
                  switch_case { switch_case } [ switch_default ] "}"
 switch_case   := "case" integer ":" "{" { struct_item } "}"
 switch_default := "default" ":" "{" { struct_item } "}"
+repeat        := "repeat" "(" identifier "," integer ")"
+                 "{" { struct_item } "}"
 sequence      := "sequence" "<" identifier ">" identifier "="
                  "scan" "(" identifier ")" ";"
 entry         := "entry" identifier ";"
@@ -134,6 +142,20 @@ value         := integer | string | identifier
   field 都计入 99,999 字段投影上限。每个 arm 从相同的入口静态 offset 开始；只有所有路径
   都在相同的已知 offset 结束时，switch 出口才保留已知 offset。省略 `default` 时，未匹配
   的空路径也参与合并。
+- repeat controller 必须是此前声明的无符号标量 `bits`、enum 或 `ue` 字段，并且在到达
+  该语句的每条路径上都保证已经物化。数组、`se`、未知或未来字段，以及离开所属保证
+  分支后使用的 branch-local 字段都会被拒绝。`maximum` 必须是正的无符号整数字面量；
+  使用定宽 controller 时，它必须能被该字段表示。不接受计数表达式、sentinel/EOF 终止
+  或 `break`。repeat body 必须至少包含一个字段，并可包含字段、条件、switch 和嵌套
+  repeat。
+- compiler 会验证 repeat body，并将它精确投影 `maximum` 次。source 声明名在整个结构
+  内仍必须唯一。body 声明可供同一次迭代内的后续 item 使用，但 repeat-local 声明在其他
+  迭代或 repeat 之后不可用。物化名称按从外到内的顺序追加各层 repeat index，再追加可选
+  的固定数组 index：`value[i]`、`value[outer][inner]` 和 `value[i][j]`。每个投影字段都
+  计入 99,999 字段上限。
+- 静态对齐会沿每个投影迭代分别检查，因此 repeat body 内的固定对齐错误会被拒绝。运行时
+  可以选择零到 `maximum` 次迭代，所以 repeat 之后的结构内 offset 被视为未知；即使未来
+  的表达式分析可能证明对齐，当前切片仍拒绝 repeat 之后的小端字段。
 - 唯一接受的渐进 sequence 形式是
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`。
   `Element` 必须是已声明结构。
@@ -147,25 +169,34 @@ value         := integer | string | identifier
   应用到每个展开元素。
 - 出现词法或静态诊断时，source 不会生成可执行规则；parser 仍返回部分 IR 以及带行列范围的全部诊断，便于编辑器一次报告多个错误。
 
-`enum`、`big`、`little`、`ue`、`se`、`if`、`else`、`switch`、`case` 和 `default`
-只在上述语法位置作为上下文关键字，其他位置仍可作为普通 identifier。既有 scalar 声明
+`enum`、`big`、`little`、`ue`、`se`、`if`、`else`、`switch`、`case`、`default` 和
+`repeat` 只在上述语法位置作为上下文关键字，其他位置仍可作为普通 identifier。既有 scalar 声明
 保持不变，`bits<N>` 仍与
 `bits<N, big>` 完全等价；本切片不弃用任何已接受的 0.1 语法。
 
 parser 生成面向 source、用于诊断的声明模型。静态 compiler 把 enum、结构、sequence 和
 entry 引用解析成 typed program，保留声明顺序，并确定性生成 `begin-structure`、
-`read-unsigned-bits`、`read-unsigned-exp-golomb`、`read-signed-exp-golomb`、`assert-equals`
-和 `end-structure` bytecode。每个 read opcode 必须与字段类型匹配；Exp-Golomb typed field
-的静态 bit width 为零、使用默认 bit order，且没有 enum reference 或 equality constraint。
-固定数组按 source 顺序展开成名为 `name[0]` 到 `name[count - 1]` 的 typed field；每个元素
-各自产生 read instruction，并在存在 `@equals` 时各自产生 assertion instruction。条件 block
-被降低到同一条按声明顺序排列的字段流，每个可能字段携带引用此前 typed-field index 的已解析
-presence guard；不会新增 jump opcode 或一般控制流 bytecode。switch case 字段携带一个正向
-等值 guard；default 字段携带全部 case guard 的否定合取，省略 default 时不会为未匹配路径
-生成字段。嵌套 switch 与条件的 guard 按外层到内层追加。不会新增替代 source-coordinate
-操作。parser 或 compiler 出现任何诊断时都不生成可执行 typed IR。`svtool rule check` 会运行
-这两个阶段；内置 Annex B runner 也只在 analyzer 创建时编译一次规则，之后按已解析的结构
-索引执行每条记录。
+`read-unsigned-bits`、`read-unsigned-exp-golomb`、`read-signed-exp-golomb`、
+`assert-equals`、`assert-repeat-count` 和 `end-structure` bytecode。每个 read opcode 必须与字段类型匹配；
+Exp-Golomb typed field 的静态 bit width 为零、使用默认 bit order，且没有 enum reference 或
+equality constraint。固定数组按 source 顺序展开成名为 `name[0]` 到
+`name[count - 1]` 的 typed field；每个元素各自产生 read instruction，并在存在 `@equals`
+时各自产生 assertion instruction。条件 block 被降低到同一条按声明顺序排列的字段流，每个
+可能字段携带引用此前 typed-field index 的已解析 presence guard；不会新增 jump opcode 或
+一般控制流 bytecode。switch case 字段携带一个正向等值 guard；default 字段携带全部 case
+guard 的否定合取，省略 default 时不会为未匹配路径生成字段。嵌套 switch 与条件的 guard
+按外层到内层追加。
+
+repeat body 按 `maximum` 次投影到同一条 typed-field 流。第 `i` 次迭代中的每个字段在外层
+guard 之后追加一个正向 `count > i` guard；物化名称先追加当前各层 repeat index，再追加
+固定数组 index。每个投影后的 repeat 语句记录 controller、maximum、首个 body 字段、外层
+guard 和 source range，并在语句位置、首个 body read 之前生成一条带 guard 的
+`assert-repeat-count`。这种 lowering 只新增 greater-than presence 比较和边界断言，不新增
+jump、回边、可变 index 或替代 source-coordinate 操作。无符号 Exp-Golomb 值会保留下来
+作为 repeat controller，但不会因此成为等值条件或 switch 的合法 controller。parser 或
+compiler 出现任何诊断时都不生成可执行 typed IR。`svtool rule check` 会运行这两个阶段；
+内置 Annex B runner 也只在 analyzer 创建时编译一次规则，之后按已解析的结构索引执行每条
+记录。
 
 最小 VM 通过 bounded bit reader 按顺序执行结构。成功字段会成为带解码值和源位置的
 syntax-field 节点。小端字段在读取完成后反转完整 source byte 的数值权重，
@@ -188,6 +219,15 @@ VM 在每次字段读取前按外层到内层的顺序验证并计算 presence g
 typed IR 不能藏在 false guard 后面。
 因此 switch 只物化唯一匹配的 case；没有 case 匹配时，如果存在 default 则物化 default，
 否则不消耗任何 arm 输入。
+
+当 repeat 语句的外层 guard 为 true 时，边界断言会在消费任何 body 输入之前检查已保存的
+controller 值。计数超过 `maximum` 时绝不截断：保留计数字段，把结构标记为 invalid，并在
+该字段位置报告 `invalid-syntax`。外层 guard 为 false 时，边界断言和全部 body 字段都会
+跳过，也不要求 controller 值存在。第 `i` 次投影迭代仅在 `count > i` 时存在。只有存在的
+迭代才消耗 source bit 或物化节点名额；缺席迭代不创建节点或 source location，也不执行
+enum member 或 `@equals` 数值检查。选中字段沿用既有数值、metadata、部分结果和 source
+坐标行为，诊断路径包括 `Header.value[1][0]` 这样的投影名称。非法 repeat metadata、
+controller guard 或 assertion 位置属于 invalid typed definition，运行时不会猜测执行。
 
 对 Exp-Golomb 码字，令 `leadingZeroBits` 为 marker bit 前的连续零 bit 数，`suffix` 为
 随后同宽度的无符号值。`ue` 返回无符号 64 位值
@@ -348,6 +388,20 @@ struct Packet {
 entry Packet;
 ```
 
+有界 repeat 合法示例：
+
+```cpp
+struct SampleTable {
+    bits<8> sample_count;
+    repeat (sample_count, 16) {
+        bits<16, little> value @description("小端样本。");
+        bits<8> flags[2];
+    }
+}
+
+entry SampleTable;
+```
+
 最小非法示例包括 `bits<0> flag;`、`bits<65> flag;`、`bits<12, little> value;`、
 位于未对齐字段之后的小端字段、`ue value @equals(0);`、`se value @enum(Type);`、
 变长字段之后的小端字段、`bits<1> flags[0];`、`bits<1> flags[];`、数组长度表达式或第二
@@ -358,7 +412,13 @@ controller、条件整数超出 controller 宽度、离开分支后使用 branch
 `if (flag = 1)`、使用未来字段、数组或 `ue`/`se` controller 的 switch、超出宽度或重复的
 case 值、没有 case 的 switch、重复或不位于最后的 default、缺少冒号或花括号 body 的 case、
 `break`、fallthrough、同一 arm 的多个 label、case 范围或 enum member label、
-`scan(other_scanner)`、重复声明同名，以及没有 `entry` 的程序。enum 和字段解析在下一个
+使用未知、未来、数组、`se` 或路径上不可用的 branch-local controller 的 repeat、
+`repeat (count, 0)`、不能由定宽 controller 表示的 maximum、计数或 maximum 表达式、空
+repeat body、repeat 前的 annotation、投影后超过 99,999 字段、在其他迭代或 repeat 之后
+使用 repeat-local controller、repeat 之后的小端字段、`scan(other_scanner)`、重复声明同名，
+以及没有 `entry` 的程序。malformed repeat header 会产生带 source range 的 missing-token
+诊断；缺少 body 左花括号时，parser 在下一个字段分号或外层右花括号处恢复，其他 header
+token 缺失时则尽可能继续解析仍可识别的花括号 body。enum 和字段解析在下一个
 member/field 分号或右花括号处恢复；遇到未知 switch label 或缺少 arm 左花括号时，在下一个
 `case`、`default` 或 switch 右花括号处恢复。所有恢复都会保留 source range 和诊断。
 
@@ -437,6 +497,13 @@ enum 成员检查和字节序转换都属于现有的字段读取操作，不增
 `@equals` 仍生成 assertion instruction；即使字段被跳过，这些指令仍计入 instruction
 budget，并保留取消检查点。只有选中字段消耗 source bit 和一个物化节点名额；全部分支和
 switch arm 的字段都计入静态 99,999 字段投影上限。
+
+每个投影后的 repeat 语句增加一条 `assert-repeat-count` instruction。按声明的 `maximum`
+产生的每条 read 和 equality assertion 都计入 instruction budget，并且即使所属迭代缺席也
+保留取消检查点。边界断言本身同样计费；即使外层 guard 为 false，它仍保留取消检查点。
+只有存在的迭代消耗 source bit 和物化节点名额。全部投影字段都计入静态 99,999 字段上限，
+因此保守的 maximum 即使面对较小的解码计数，也会增大 typed program 和可能执行的指令量。
+执行路径抵达的计数超过 maximum 时报告 `invalid-syntax`，不是 `resource-limit`。
 
 所有限制都必须大于零。host 可以为一次执行降低限制，但规则本身不能提高或读取限制。
 当前最小子集尚无嵌套调用或 view；加入这些操作时必须消耗已经保留的深度预算。超过指令、
