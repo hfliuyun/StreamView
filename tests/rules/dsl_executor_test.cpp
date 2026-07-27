@@ -378,6 +378,574 @@ private slots:
         QCOMPARE(large->metadata().typeName, QStringLiteral("computed<bool>"));
     }
 
+    void registersMappedLazyByteRegionsWithoutReadingPayloads() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { @lazy(2) bytes payload @description(\"Payload.\"); } "
+            "entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0xaa, 0xff, 0xbb}));
+        const auto mapping = mappingForSpans({{0, 8}, {16, 8}});
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *mapping);
+        auto tree = AnalysisTree::create(QStringLiteral("mapped-lazy"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(16));
+        QCOMPARE(result.instructionsExecuted, quint64(3));
+        QCOMPARE(result.nodesCreated, quint64(2));
+        QCOMPARE(reader.position(), quint64(16));
+        QCOMPARE(source.readCount(), quint64(0));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->state(), MaterializationState::Materialized);
+        QCOMPARE(structure->children().size(), std::size_t(1));
+        const auto payload = tree->node(structure->children().front());
+        QVERIFY(payload.has_value());
+        QCOMPARE(payload->kind(), AnalysisNodeKind::Region);
+        QCOMPARE(payload->state(), MaterializationState::Lazy);
+        QCOMPARE(payload->name(), QStringLiteral("payload"));
+        QCOMPARE(payload->metadata().typeName, QStringLiteral("bytes"));
+        QCOMPARE(payload->metadata().description, QStringLiteral("Payload."));
+        QVERIFY(payload->location().has_value());
+        QCOMPARE(payload->location()->logicalRange().start().bitOffset(), quint64(0));
+        QCOMPARE(payload->location()->logicalRange().bitLength(), quint64(16));
+        QCOMPARE(payload->location()->sourceSpans().size(), std::size_t(2));
+        QCOMPARE(payload->location()->sourceSpans().at(0).start().absoluteBitOffset(), quint64(0));
+        QCOMPARE(payload->location()->sourceSpans().at(0).bitLength(), quint64(8));
+        QCOMPARE(payload->location()->sourceSpans().at(1).start().absoluteBitOffset(), quint64(16));
+        QCOMPARE(payload->location()->sourceSpans().at(1).bitLength(), quint64(8));
+    }
+
+    void registersLogicallyAlignedLazyRegionsFromUnalignedSourceSpans() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { @lazy(1) bytes payload; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0x0a, 0xa0}));
+        const auto mapping = mappingForSpans({{4, 8}});
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *mapping);
+        auto tree = AnalysisTree::create(QStringLiteral("unaligned-source-lazy"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(8));
+        QCOMPARE(reader.position(), quint64(8));
+        QCOMPARE(source.readCount(), quint64(0));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(1));
+        const auto payload = tree->node(structure->children().front());
+        QVERIFY(payload.has_value());
+        QCOMPARE(payload->state(), MaterializationState::Lazy);
+        QVERIFY(payload->location().has_value());
+        QCOMPARE(payload->location()->logicalRange().start().bitOffset(), quint64(0));
+        QCOMPARE(payload->location()->logicalRange().bitLength(), quint64(8));
+        QCOMPARE(payload->location()->sourceSpans().size(), std::size_t(1));
+        QCOMPARE(payload->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(4));
+        QCOMPARE(payload->location()->sourceSpans().front().bitLength(), quint64(8));
+    }
+
+    void skipsDynamicLazyPayloadsAndContinuesWithTrailingFields() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<8> size; @lazy(size) bytes payload; bits<8> tail; } "
+            "entry Header;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0x02, 0xaa, 0xbb, 0xcc}));
+        const auto mapping = mappingForBytes(4);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 32);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("dynamic-lazy"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                       quint32(0),
+                                                       reader,
+                                                       *mapping,
+                                                       0,
+                                                       *tree,
+                                                       tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(32));
+        QCOMPARE(result.instructionsExecuted, quint64(5));
+        QCOMPARE(result.nodesCreated, quint64(4));
+        QCOMPARE(source.readCount(), quint64(2));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(3));
+        const auto payload = tree->node(structure->children().at(1));
+        const auto tail = tree->node(structure->children().at(2));
+        QVERIFY(payload.has_value());
+        QVERIFY(tail.has_value());
+        QCOMPARE(payload->kind(), AnalysisNodeKind::Region);
+        QCOMPARE(payload->state(), MaterializationState::Lazy);
+        QCOMPARE(payload->location()->logicalRange().start().bitOffset(), quint64(8));
+        QCOMPARE(payload->location()->logicalRange().bitLength(), quint64(16));
+        QCOMPARE(payload->location()->sourceSpans().size(), std::size_t(1));
+        QCOMPARE(payload->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(8));
+        QCOMPARE(payload->location()->sourceSpans().front().bitLength(), quint64(16));
+        QCOMPARE(tail->value().toULongLong(), quint64(0xcc));
+        QCOMPARE(tail->location()->logicalRange().start().bitOffset(), quint64(24));
+    }
+
+    void materializesZeroLengthLazyRegionsWithoutAdvancingTheReader() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { @lazy(0) bytes empty; bits<8> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0x5a}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("empty-lazy"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Header"), reader, *mapping, 0, *tree, tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(8));
+        QCOMPARE(reader.position(), quint64(8));
+        QCOMPARE(source.readCount(), quint64(1));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(2));
+        const auto empty = tree->node(structure->children().at(0));
+        const auto tail = tree->node(structure->children().at(1));
+        QVERIFY(empty.has_value());
+        QVERIFY(tail.has_value());
+        QCOMPARE(empty->kind(), AnalysisNodeKind::Region);
+        QCOMPARE(empty->state(), MaterializationState::Materialized);
+        QVERIFY(empty->location().has_value());
+        QCOMPARE(empty->location()->logicalRange().start().bitOffset(), quint64(0));
+        QCOMPARE(empty->location()->logicalRange().bitLength(), quint64(0));
+        QVERIFY(empty->location()->sourceSpans().empty());
+        QCOMPARE(tail->value().toULongLong(), quint64(0x5a));
+        QVERIFY(tail->location().has_value());
+        QCOMPARE(tail->location()->logicalRange().start().bitOffset(), quint64(0));
+    }
+
+    void skipsGuardedLazyRegionsWithoutEvaluatingTheirExpressions() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<8> present; if (present == 1) { "
+            "@lazy(1 / 0) bytes payload; } bits<8> tail; } entry Header;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0x00, 0x5a}));
+        const auto mapping = mappingForBytes(2);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 16);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("skipped-lazy"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                       quint32(0),
+                                                       reader,
+                                                       *mapping,
+                                                       0,
+                                                       *tree,
+                                                       tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(16));
+        QCOMPARE(result.instructionsExecuted, quint64(5));
+        QCOMPARE(result.nodesCreated, quint64(3));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(2));
+        QCOMPARE(tree->node(structure->children().at(0))->name(), QStringLiteral("present"));
+        QCOMPARE(tree->node(structure->children().at(1))->name(), QStringLiteral("tail"));
+        QCOMPARE(tree->node(structure->children().at(1))->value().toULongLong(), quint64(0x5a));
+    }
+
+    void rejectsLazyRangeFailuresBeforeAppendingOrAdvancing() {
+        const auto truncatedParsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<8> size; @lazy(size) bytes payload; } entry Header;"));
+        const auto truncatedCompiled = DslCompiler::compile(truncatedParsed.program);
+        QVERIFY(truncatedParsed.succeeded());
+        QVERIFY(truncatedCompiled.succeeded());
+
+        MemorySource truncatedSource(bytes({0x03, 0x00, 0xaa, 0x00, 0xbb}));
+        const auto truncatedMapping = mappingForSpans({{0, 8}, {16, 8}, {32, 8}});
+        QVERIFY(truncatedMapping.has_value());
+        BitReader truncatedReader(truncatedSource, *truncatedMapping);
+        auto truncatedTree = AnalysisTree::create(QStringLiteral("truncated-lazy"));
+        QVERIFY(truncatedTree.has_value());
+
+        const auto truncated = DslExecutor::decodeStruct(*truncatedCompiled.program,
+                                                         quint32(0),
+                                                         truncatedReader,
+                                                         *truncatedMapping,
+                                                         0,
+                                                         *truncatedTree,
+                                                         truncatedTree->rootId());
+        QCOMPARE(truncated.status, DslExecutionStatus::TruncatedSource);
+        QCOMPARE(truncated.instructionsExecuted, quint64(3));
+        QCOMPARE(truncated.bitsConsumed, quint64(8));
+        QCOMPARE(truncated.nodesCreated, quint64(2));
+        QCOMPARE(truncatedReader.position(), quint64(8));
+        QCOMPARE(truncatedSource.readCount(), quint64(1));
+        const auto truncatedStructure = truncatedTree->node(*truncated.structureNode);
+        QVERIFY(truncatedStructure.has_value());
+        QCOMPARE(truncatedStructure->children().size(), std::size_t(1));
+        QCOMPARE(truncatedStructure->diagnostics().size(), std::size_t(1));
+        const auto& diagnostic = truncatedStructure->diagnostics().front();
+        QCOMPARE(diagnostic.code, DiagnosticCode::TruncatedSource);
+        QCOMPARE(diagnostic.fieldPath, QStringLiteral("Header.payload"));
+        QVERIFY(diagnostic.location.has_value());
+        QCOMPARE(diagnostic.location->logicalRange().start().bitOffset(), quint64(8));
+        QCOMPARE(diagnostic.location->logicalRange().bitLength(), quint64(16));
+        QCOMPARE(diagnostic.location->sourceSpans().size(), std::size_t(2));
+        QCOMPARE(diagnostic.location->sourceSpans().at(0).start().absoluteBitOffset(),
+                 quint64(16));
+        QCOMPARE(diagnostic.location->sourceSpans().at(0).bitLength(), quint64(8));
+        QCOMPARE(diagnostic.location->sourceSpans().at(1).start().absoluteBitOffset(),
+                 quint64(32));
+        QCOMPARE(diagnostic.location->sourceSpans().at(1).bitLength(), quint64(8));
+
+        const std::vector<QString> invalidCounts{
+            QStringLiteral("18446744073709551615 + 1"),
+            QStringLiteral("2305843009213693952"),
+        };
+        for (std::size_t index = 0; index < invalidCounts.size(); ++index) {
+            const auto parsed = DslParser::parse(
+                QStringLiteral("struct Header { @lazy(%1) bytes payload; } entry Header;")
+                    .arg(invalidCounts.at(index)));
+            const auto compiled = DslCompiler::compile(parsed.program);
+            QVERIFY(parsed.succeeded());
+            QVERIFY(compiled.succeeded());
+
+            MemorySource source(bytes({0xaa}));
+            const auto mapping = mappingForBytes(1);
+            const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+            QVERIFY(mapping.has_value());
+            QVERIFY(range.has_value());
+            BitReader reader(source, *range);
+            auto tree =
+                AnalysisTree::create(QStringLiteral("invalid-lazy-count-%1").arg(index));
+            QVERIFY(tree.has_value());
+            const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                          quint32(0),
+                                                          reader,
+                                                          *mapping,
+                                                          0,
+                                                          *tree,
+                                                          tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::InvalidSyntax);
+            QCOMPARE(result.instructionsExecuted, quint64(2));
+            QCOMPARE(result.bitsConsumed, quint64(0));
+            QCOMPARE(result.nodesCreated, quint64(1));
+            QCOMPARE(reader.position(), quint64(0));
+            QCOMPARE(source.readCount(), quint64(0));
+            const auto structure = tree->node(*result.structureNode);
+            QVERIFY(structure.has_value());
+            QVERIFY(structure->children().empty());
+            QCOMPARE(structure->diagnostics().front().fieldPath,
+                     QStringLiteral("Header.payload"));
+            QVERIFY(!structure->diagnostics().front().location.has_value());
+        }
+    }
+
+    void rejectsLazyRegionsAtUnalignedAbsoluteLogicalStarts() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { @lazy(1) bytes payload; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0x03, 0x41, 0x20}));
+        const auto mapping = mappingForSpans({{4, 20}});
+        QVERIFY(mapping.has_value());
+        auto reader = BitReader::fromMappingSlice(source, *mapping, 4, 8);
+        QVERIFY(reader.has_value());
+        auto tree = AnalysisTree::create(QStringLiteral("unaligned-logical-lazy"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(parsed.program,
+                                                       QStringLiteral("Header"),
+                                                       *reader,
+                                                       *mapping,
+                                                       4,
+                                                       *tree,
+                                                       tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(result.instructionsExecuted, quint64(2));
+        QCOMPARE(result.bitsConsumed, quint64(0));
+        QCOMPARE(result.nodesCreated, quint64(1));
+        QCOMPARE(reader->position(), quint64(0));
+        QCOMPARE(source.readCount(), quint64(0));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QVERIFY(structure->children().empty());
+        QVERIFY(!structure->diagnostics().front().location.has_value());
+    }
+
+    void accountsForLazyNodeInstructionAndCancellationBudgets() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<8> size; @lazy(size) bytes payload; } entry Header;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+        const auto mapping = mappingForBytes(2);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 16);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+
+        MemorySource instructionSource(bytes({0x01, 0xaa}));
+        BitReader instructionReader(instructionSource, *range);
+        auto instructionTree = AnalysisTree::create(QStringLiteral("lazy-instruction-budget"));
+        QVERIFY(instructionTree.has_value());
+        DslExecutionOptions instructionOptions;
+        instructionOptions.limits.maximumInstructions = 2;
+        const auto instructionResult = DslExecutor::decodeStruct(*compiled.program,
+                                                                  quint32(0),
+                                                                  instructionReader,
+                                                                  *mapping,
+                                                                  0,
+                                                                  *instructionTree,
+                                                                  instructionTree->rootId(),
+                                                                  instructionOptions);
+        QCOMPARE(instructionResult.status, DslExecutionStatus::ResourceLimit);
+        QCOMPARE(instructionResult.instructionsExecuted, quint64(2));
+        QCOMPARE(instructionResult.bitsConsumed, quint64(8));
+        QCOMPARE(instructionResult.nodesCreated, quint64(2));
+        QCOMPARE(instructionReader.position(), quint64(8));
+        const auto instructionStructure =
+            instructionTree->node(*instructionResult.structureNode);
+        QVERIFY(instructionStructure.has_value());
+        QCOMPARE(instructionStructure->children().size(), std::size_t(1));
+
+        MemorySource nodeSource(bytes({0x01, 0xaa}));
+        BitReader nodeReader(nodeSource, *range);
+        auto nodeTree = AnalysisTree::create(QStringLiteral("lazy-node-budget"));
+        QVERIFY(nodeTree.has_value());
+        DslExecutionOptions nodeOptions;
+        nodeOptions.limits.maximumMaterializedNodes = 2;
+        const auto nodeResult = DslExecutor::decodeStruct(*compiled.program,
+                                                         quint32(0),
+                                                         nodeReader,
+                                                         *mapping,
+                                                         0,
+                                                         *nodeTree,
+                                                         nodeTree->rootId(),
+                                                         nodeOptions);
+        QCOMPARE(nodeResult.status, DslExecutionStatus::ResourceLimit);
+        QCOMPARE(nodeResult.instructionsExecuted, quint64(3));
+        QCOMPARE(nodeResult.bitsConsumed, quint64(8));
+        QCOMPARE(nodeResult.nodesCreated, quint64(2));
+        QCOMPARE(nodeReader.position(), quint64(8));
+        const auto nodeStructure = nodeTree->node(*nodeResult.structureNode);
+        QVERIFY(nodeStructure.has_value());
+        QCOMPARE(nodeStructure->children().size(), std::size_t(1));
+        QCOMPARE(nodeStructure->diagnostics().front().fieldPath,
+                 QStringLiteral("Header.payload"));
+
+        CancellationSource cancellation;
+        CancellingMemorySource cancellingSource(bytes({0x01, 0xaa}), cancellation);
+        BitReader cancellingReader(cancellingSource, *range);
+        auto cancellingTree = AnalysisTree::create(QStringLiteral("lazy-cancelled"));
+        QVERIFY(cancellingTree.has_value());
+        DslExecutionOptions cancellationOptions;
+        cancellationOptions.cancellation = cancellation.token();
+        cancellationOptions.limits.cancellationCheckInterval = 1;
+        const auto cancelled = DslExecutor::decodeStruct(*compiled.program,
+                                                        quint32(0),
+                                                        cancellingReader,
+                                                        *mapping,
+                                                        0,
+                                                        *cancellingTree,
+                                                        cancellingTree->rootId(),
+                                                        cancellationOptions);
+        QCOMPARE(cancelled.status, DslExecutionStatus::Cancelled);
+        QCOMPARE(cancelled.instructionsExecuted, quint64(2));
+        QCOMPARE(cancelled.bitsConsumed, quint64(8));
+        QCOMPARE(cancelled.nodesCreated, quint64(2));
+        QCOMPARE(cancellingReader.position(), quint64(8));
+        const auto cancelledStructure = cancellingTree->node(*cancelled.structureNode);
+        QVERIFY(cancelledStructure.has_value());
+        QCOMPARE(cancelledStructure->state(), MaterializationState::Cancelled);
+        QCOMPARE(cancelledStructure->children().size(), std::size_t(1));
+    }
+
+    void rejectsMalformedLazyDefinitionsBeforeExecution() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<8> size; @lazy(size) bytes payload; bits<8> tail; } "
+            "entry Header;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+
+        std::vector<DslTypedProgram> malformed;
+        auto missingExpression = *compiled.program;
+        missingExpression.structs.front().fields.at(1).lazyByteCountExpression.reset();
+        malformed.push_back(std::move(missingExpression));
+
+        auto invalidWidth = *compiled.program;
+        invalidWidth.structs.front().fields.at(1).type.bitWidth = 8;
+        malformed.push_back(std::move(invalidWidth));
+
+        auto invalidEndian = *compiled.program;
+        invalidEndian.structs.front().fields.at(1).type.endian =
+            streamview::rules::DslEndian::Little;
+        malformed.push_back(std::move(invalidEndian));
+
+        auto invalidEnum = *compiled.program;
+        invalidEnum.structs.front().fields.at(1).type.enumIndex = 0;
+        malformed.push_back(std::move(invalidEnum));
+
+        auto invalidConstraint = *compiled.program;
+        invalidConstraint.structs.front().fields.at(1).equalsConstraint = 1;
+        malformed.push_back(std::move(invalidConstraint));
+
+        auto invalidScalarType = *compiled.program;
+        invalidScalarType.structs.front().fields.at(1).lazyByteCountExpression->type =
+            DslScalarType::Bool;
+        malformed.push_back(std::move(invalidScalarType));
+
+        auto invalidKind = *compiled.program;
+        invalidKind.structs.front().fields.at(1).lazyByteCountExpression->kind =
+            static_cast<DslTypedExpressionKind>(255);
+        malformed.push_back(std::move(invalidKind));
+
+        auto skippedInvalidKind = *compiled.program;
+        skippedInvalidKind.structs.front().fields.at(1).conditions.push_back(
+            {0, 0, false, DslConditionOperator::Equal});
+        skippedInvalidKind.structs.front().fields.at(1).lazyByteCountExpression->kind =
+            static_cast<DslTypedExpressionKind>(255);
+        malformed.push_back(std::move(skippedInvalidKind));
+
+        auto futureReference = *compiled.program;
+        futureReference.structs.front().fields.at(1).lazyByteCountExpression->fieldIndex = 2;
+        malformed.push_back(std::move(futureReference));
+
+        auto lazyDependency = *compiled.program;
+        DslTypedExpression literal;
+        literal.kind = DslTypedExpressionKind::UnsignedLiteral;
+        literal.type = DslScalarType::U64;
+        literal.unsignedValue = 1;
+        auto& firstField = lazyDependency.structs.front().fields.at(0);
+        firstField.type.kind = DslValueTypeKind::LazyBytes;
+        firstField.type.bitWidth = 0;
+        firstField.lazyByteCountExpression = literal;
+        malformed.push_back(std::move(lazyDependency));
+
+        auto sourceWithLazyExpression = *compiled.program;
+        sourceWithLazyExpression.structs.front().fields.front().lazyByteCountExpression =
+            sourceWithLazyExpression.structs.front().fields.at(1).lazyByteCountExpression;
+        malformed.push_back(std::move(sourceWithLazyExpression));
+
+        auto lazyWithComputedExpression = *compiled.program;
+        lazyWithComputedExpression.structs.front().fields.at(1).computedExpression = literal;
+        malformed.push_back(std::move(lazyWithComputedExpression));
+
+        const auto mapping = mappingForBytes(3);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 24);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        for (std::size_t index = 0; index < malformed.size(); ++index) {
+            MemorySource source(bytes({0x01, 0xaa, 0xbb}));
+            BitReader reader(source, *range);
+            auto tree =
+                AnalysisTree::create(QStringLiteral("malformed-lazy-definition-%1").arg(index));
+            QVERIFY(tree.has_value());
+            const auto result = DslExecutor::decodeStruct(malformed.at(index),
+                                                          quint32(0),
+                                                          reader,
+                                                          *mapping,
+                                                          0,
+                                                          *tree,
+                                                          tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+            QCOMPARE(result.instructionsExecuted, quint64(0));
+            QCOMPARE(result.bitsConsumed, quint64(0));
+            QCOMPARE(result.nodesCreated, quint64(0));
+            QCOMPARE(reader.position(), quint64(0));
+            QCOMPARE(source.readCount(), quint64(0));
+            QVERIFY(!result.structureNode.has_value());
+        }
+    }
+
+    void rejectsMalformedLazyOpcodesAfterRetainingEarlierFields() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<8> size; @lazy(size) bytes payload; } entry Header;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+        const auto lazyInstruction =
+            std::find_if(compiled.program->bytecode.cbegin(),
+                         compiled.program->bytecode.cend(),
+                         [](const auto& instruction) {
+                             return instruction.opcode == DslOpcode::RegisterLazyBytes;
+                         });
+        QVERIFY(lazyInstruction != compiled.program->bytecode.cend());
+        const auto lazyInstructionIndex = static_cast<std::size_t>(
+            std::distance(compiled.program->bytecode.cbegin(), lazyInstruction));
+
+        std::vector<DslTypedProgram> malformed;
+        auto wrongOperand = *compiled.program;
+        wrongOperand.bytecode.at(lazyInstructionIndex).operand = 0;
+        malformed.push_back(std::move(wrongOperand));
+        auto wrongReadOpcode = *compiled.program;
+        wrongReadOpcode.bytecode.at(lazyInstructionIndex).opcode = DslOpcode::ReadUnsignedBits;
+        malformed.push_back(std::move(wrongReadOpcode));
+        auto wrongComputedOpcode = *compiled.program;
+        wrongComputedOpcode.bytecode.at(lazyInstructionIndex).opcode = DslOpcode::EvaluateComputed;
+        malformed.push_back(std::move(wrongComputedOpcode));
+        auto invalidOpcode = *compiled.program;
+        invalidOpcode.bytecode.at(lazyInstructionIndex).opcode = static_cast<DslOpcode>(255);
+        malformed.push_back(std::move(invalidOpcode));
+
+        const auto mapping = mappingForBytes(2);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 16);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        for (std::size_t index = 0; index < malformed.size(); ++index) {
+            MemorySource source(bytes({0x01, 0xaa}));
+            BitReader reader(source, *range);
+            auto tree =
+                AnalysisTree::create(QStringLiteral("malformed-lazy-opcode-%1").arg(index));
+            QVERIFY(tree.has_value());
+            const auto result = DslExecutor::decodeStruct(malformed.at(index),
+                                                          quint32(0),
+                                                          reader,
+                                                          *mapping,
+                                                          0,
+                                                          *tree,
+                                                          tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+            QCOMPARE(result.instructionsExecuted, quint64(3));
+            QCOMPARE(result.bitsConsumed, quint64(8));
+            QCOMPARE(result.nodesCreated, quint64(2));
+            QCOMPARE(reader.position(), quint64(8));
+            QCOMPARE(source.readCount(), quint64(1));
+            const auto structure = tree->node(*result.structureNode);
+            QVERIFY(structure.has_value());
+            QCOMPARE(structure->state(), MaterializationState::Invalid);
+            QCOMPARE(structure->children().size(), std::size_t(1));
+            QCOMPARE(tree->node(structure->children().front())->name(), QStringLiteral("size"));
+        }
+    }
+
     void shortCircuitsBooleanExpressionsAndRejectsInvalidArithmetic() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "struct Header { bits<1> pad; "

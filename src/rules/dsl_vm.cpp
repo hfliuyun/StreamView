@@ -713,6 +713,54 @@ DslExecutionResult DslVirtualMachine::execute(
             field.type.kind == DslValueTypeKind::ComputedBool;
         const bool computedUnsigned =
             field.type.kind == DslValueTypeKind::ComputedUnsigned;
+        const bool lazyBytes = field.type.kind == DslValueTypeKind::LazyBytes;
+        if (lazyBytes) {
+            if (field.type.bitWidth != 0 || field.type.endian != DslEndian::Big ||
+                field.type.enumIndex || field.equalsConstraint || field.computedExpression ||
+                !field.lazyByteCountExpression) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed lazy byte region definition is invalid"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            TypedExpressionValidationState validation;
+            if (!validateTypedExpression(*field.lazyByteCountExpression,
+                                         structure,
+                                         fieldIndex,
+                                         field.conditions,
+                                         1,
+                                         validation)) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            validation.errorMessage,
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            if (field.lazyByteCountExpression->type != DslScalarType::U64) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed lazy byte-count expression result is invalid"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            continue;
+        }
+        if (field.lazyByteCountExpression) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Non-lazy typed field has a lazy byte-count expression"),
+                        &field,
+                        std::nullopt,
+                        std::nullopt,
+                        false);
+            return result;
+        }
         if (!computedBoolean && !computedUnsigned) {
             if (field.computedExpression) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
@@ -1229,6 +1277,142 @@ DslExecutionResult DslVirtualMachine::execute(
                 computedBoolean ? static_cast<quint64>(evaluated.value.booleanValue)
                                 : evaluated.value.unsignedValue;
             fieldRanges.at(instruction.operand).reset();
+            lastField = instruction.operand;
+            lastValue.reset();
+            lastFieldSkipped = false;
+            ++nextFieldIndex;
+            break;
+        }
+        case DslOpcode::RegisterLazyBytes: {
+            if (!result.structureNode || instruction.operand != nextFieldIndex ||
+                instruction.operand >= structure.fields.size()) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR lazy byte region instruction is invalid"),
+                            nullptr);
+                return result;
+            }
+            const DslTypedField& field = structure.fields.at(instruction.operand);
+            if (field.type.kind != DslValueTypeKind::LazyBytes ||
+                !field.lazyByteCountExpression) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR lazy byte region definition is invalid"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            const std::optional<bool> fieldPresent =
+                conditionsPresent(field.conditions, &field, QStringLiteral("lazy byte region"));
+            if (!fieldPresent) {
+                return result;
+            }
+            if (!*fieldPresent) {
+                lastField = instruction.operand;
+                lastValue.reset();
+                lastFieldSkipped = true;
+                ++nextFieldIndex;
+                break;
+            }
+
+            const ComputedEvaluationResult evaluated =
+                evaluateTypedExpression(*field.lazyByteCountExpression, fieldValues);
+            if (!evaluated.complete()) {
+                markFailure(evaluated.status,
+                            evaluated.errorMessage,
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            const quint64 byteCount = evaluated.value.unsignedValue;
+            if (byteCount > std::numeric_limits<quint64>::max() / 8U) {
+                markFailure(DslExecutionStatus::InvalidSyntax,
+                            QStringLiteral("Lazy byte region bit length overflows"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            const quint64 bitCount = byteCount * 8U;
+            const quint64 fieldStart = reader.position();
+            if (addWouldOverflow(logicalStart, fieldStart) ||
+                (logicalStart + fieldStart) % 8U != 0) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed lazy byte region start is not byte-aligned"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            if (bitCount > reader.remainingBits()) {
+                const quint64 availableBits = reader.remainingBits();
+                markFailure(DslExecutionStatus::TruncatedSource,
+                            QStringLiteral("Lazy byte region exceeds the available source range"),
+                            &field,
+                            fieldStart,
+                            availableBits,
+                            availableBits != 0);
+                return result;
+            }
+            const quint64 absoluteStart = logicalStart + fieldStart;
+            const auto range = core::LogicalRange::create(
+                core::LogicalBitAddress(mapping.viewId(), absoluteStart), bitCount);
+            const auto location = range ? mapping.locate(*range) : std::nullopt;
+            if (!location) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Unable to map DSL lazy byte region"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            const quint32 structureDepth = parentDepth + 1U;
+            if (structureDepth >= options.limits.maximumNodeDepth) {
+                markFailure(DslExecutionStatus::ResourceLimit,
+                            QStringLiteral("DSL analysis node depth limit exceeded"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            if (result.nodesCreated >= options.limits.maximumMaterializedNodes) {
+                markFailure(DslExecutionStatus::ResourceLimit,
+                            QStringLiteral("DSL materialized-node budget exceeded"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+
+            core::AnalysisNodeSpec fieldSpec;
+            fieldSpec.kind = core::AnalysisNodeKind::Region;
+            fieldSpec.name = field.name;
+            fieldSpec.state = bitCount == 0 ? core::MaterializationState::Materialized
+                                            : core::MaterializationState::Lazy;
+            fieldSpec.location = *location;
+            fieldSpec.metadata = field.metadata;
+            if (!tree.appendChild(*result.structureNode, std::move(fieldSpec))) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Unable to append lazy byte region node"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            ++result.nodesCreated;
+            const quint64 fieldEnd = fieldStart + bitCount;
+            (void)reader.seek(fieldEnd);
+            result.bitsConsumed = reader.position();
+            fieldValues.at(instruction.operand).reset();
+            fieldRanges.at(instruction.operand) = MaterializedFieldRange{fieldStart, bitCount};
             lastField = instruction.operand;
             lastValue.reset();
             lastFieldSkipped = false;
