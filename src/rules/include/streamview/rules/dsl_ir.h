@@ -16,6 +16,8 @@ enum class DslValueTypeKind : quint8 {
     Enum,
     UnsignedExpGolomb,
     SignedExpGolomb,
+    ComputedBool,
+    ComputedUnsigned,
 };
 
 struct DslValueType final {
@@ -49,10 +51,30 @@ struct DslTypedFieldCondition final {
     DslConditionOperator op = DslConditionOperator::Equal;
 };
 
+enum class DslTypedExpressionKind : quint8 {
+    UnsignedLiteral,
+    BooleanLiteral,
+    FieldReference,
+    Unary,
+    Binary,
+};
+
+struct DslTypedExpression final {
+    DslTypedExpressionKind kind = DslTypedExpressionKind::UnsignedLiteral;
+    DslScalarType type = DslScalarType::U64;
+    DslUnaryOperator unaryOperator = DslUnaryOperator::LogicalNot;
+    DslBinaryOperator binaryOperator = DslBinaryOperator::Add;
+    quint64 unsignedValue = 0;
+    bool booleanValue = false;
+    quint32 fieldIndex = 0;
+    std::vector<DslTypedExpression> operands;
+};
+
 struct DslTypedField final {
     QString name;
     DslValueType type;
     std::optional<quint64> equalsConstraint;
+    std::optional<DslTypedExpression> computedExpression;
     std::vector<DslTypedFieldCondition> conditions;
     core::AnalysisNodeMetadata metadata;
     DslSourceRange range;
@@ -102,6 +124,7 @@ enum class DslOpcode : quint8 {
     ReadUnsignedBits,
     ReadUnsignedExpGolomb,
     ReadSignedExpGolomb,
+    EvaluateComputed,
     AssertEquals,
     AssertRepeatCount,
     EndStructure,

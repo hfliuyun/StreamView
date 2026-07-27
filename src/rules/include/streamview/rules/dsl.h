@@ -38,6 +38,17 @@ enum class DslTokenKind : quint8 {
     Colon,
     Equals,
     EqualEqual,
+    Bang,
+    BangEqual,
+    Star,
+    Slash,
+    Percent,
+    Plus,
+    Minus,
+    LessEqual,
+    GreaterEqual,
+    AndAnd,
+    OrOr,
     EndOfFile,
     Invalid,
 };
@@ -72,6 +83,7 @@ enum class DslDiagnosticCode : quint8 {
     EnumValueOutOfRange,
     InvalidArrayLength,
     InvalidCondition,
+    InvalidExpression,
 };
 
 struct DslDiagnostic final {
@@ -121,6 +133,65 @@ enum class DslFieldEncoding : quint8 {
     SignedExpGolomb,
 };
 
+enum class DslScalarType : quint8 {
+    Bool,
+    U64,
+};
+
+enum class DslExpressionKind : quint8 {
+    UnsignedLiteral,
+    BooleanLiteral,
+    Identifier,
+    Call,
+    Unary,
+    Binary,
+};
+
+enum class DslUnaryOperator : quint8 {
+    LogicalNot,
+};
+
+enum class DslBinaryOperator : quint8 {
+    Multiply,
+    Divide,
+    Remainder,
+    Add,
+    Subtract,
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    LogicalAnd,
+    LogicalOr,
+};
+
+struct DslExpression final {
+    DslExpressionKind kind = DslExpressionKind::UnsignedLiteral;
+    DslUnaryOperator unaryOperator = DslUnaryOperator::LogicalNot;
+    DslBinaryOperator binaryOperator = DslBinaryOperator::Add;
+    quint64 unsignedValue = 0;
+    bool booleanValue = false;
+    QString name;
+    std::vector<DslExpression> operands;
+    DslSourceRange range;
+};
+
+struct DslFunctionParameter final {
+    DslScalarType type = DslScalarType::U64;
+    QString name;
+    DslSourceRange range;
+};
+
+struct DslPureFunction final {
+    DslScalarType returnType = DslScalarType::U64;
+    QString name;
+    std::vector<DslFunctionParameter> parameters;
+    DslExpression expression;
+    DslSourceRange range;
+};
+
 struct DslEnumValue final {
     QString name;
     quint64 value = 0;
@@ -144,14 +215,24 @@ struct DslBitField final {
     DslSourceRange range;
 };
 
+struct DslComputedField final {
+    DslScalarType type = DslScalarType::U64;
+    QString name;
+    DslExpression expression;
+    std::vector<DslAnnotation> annotations;
+    DslSourceRange range;
+};
+
 struct DslEqualityCondition final {
     QString fieldName;
     quint64 expectedValue = 0;
+    bool booleanShorthand = false;
     DslSourceRange range;
 };
 
 enum class DslStructItemKind : quint8 {
     Field,
+    Computed,
     Conditional,
     Switch,
     Repeat,
@@ -173,6 +254,7 @@ struct DslStructItem final {
 
     DslStructItemKind kind = DslStructItemKind::Field;
     DslBitField field;
+    DslComputedField computed;
     DslEqualityCondition condition;
     std::vector<DslStructItem> thenItems;
     std::vector<DslStructItem> elseItems;
@@ -209,6 +291,7 @@ struct DslEntry final {
 };
 
 struct DslProgram final {
+    std::vector<DslPureFunction> pureFunctions;
     std::vector<DslEnum> enums;
     std::vector<DslStruct> structs;
     std::vector<DslProgressiveScan> scans;

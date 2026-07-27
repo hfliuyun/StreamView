@@ -571,6 +571,8 @@ DslExecutionResult DslVirtualMachine::execute(
                     break;
                 case DslValueTypeKind::UnsignedExpGolomb:
                 case DslValueTypeKind::SignedExpGolomb:
+                case DslValueTypeKind::ComputedBool:
+                case DslValueTypeKind::ComputedUnsigned:
                     markFailure(DslExecutionStatus::InvalidDefinition,
                                 QStringLiteral("Typed IR opcode does not match the field type"),
                                 &field);
@@ -726,6 +728,11 @@ DslExecutionResult DslVirtualMachine::execute(
             }
             break;
         }
+        case DslOpcode::EvaluateComputed:
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Computed expression execution is not implemented"),
+                        nullptr);
+            return result;
         case DslOpcode::AssertEquals: {
             const DslTypedField* field = instruction.operand < structure.fields.size()
                                              ? &structure.fields.at(instruction.operand)

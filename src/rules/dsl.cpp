@@ -174,9 +174,25 @@ private:
             punctuation(DslTokenKind::At);
             return;
         case '<':
+            if (index_ + 1 < source_.size() &&
+                source_.at(index_ + 1) == QLatin1Char('=')) {
+                advance();
+                advance();
+                result_.tokens.push_back(
+                    {DslTokenKind::LessEqual, QStringLiteral("<="), 0, {start, position()}});
+                return;
+            }
             punctuation(DslTokenKind::Less);
             return;
         case '>':
+            if (index_ + 1 < source_.size() &&
+                source_.at(index_ + 1) == QLatin1Char('=')) {
+                advance();
+                advance();
+                result_.tokens.push_back(
+                    {DslTokenKind::GreaterEqual, QStringLiteral(">="), 0, {start, position()}});
+                return;
+            }
             punctuation(DslTokenKind::Greater);
             return;
         case '{':
@@ -217,19 +233,65 @@ private:
             }
             punctuation(DslTokenKind::Equals);
             return;
-        default:
-            advance();
-            addDiagnostic(DslDiagnosticCode::InvalidCharacter,
-                          QStringLiteral("Invalid character in DSL source"),
-                          start,
-                          position());
-            result_.tokens.push_back(
-                {DslTokenKind::Invalid,
-                 source_.mid(static_cast<qsizetype>(start.offset), 1),
-                 0,
-                 {start, position()}});
+        case '!':
+            if (index_ + 1 < source_.size() &&
+                source_.at(index_ + 1) == QLatin1Char('=')) {
+                advance();
+                advance();
+                result_.tokens.push_back(
+                    {DslTokenKind::BangEqual, QStringLiteral("!="), 0, {start, position()}});
+                return;
+            }
+            punctuation(DslTokenKind::Bang);
             return;
+        case '*':
+            punctuation(DslTokenKind::Star);
+            return;
+        case '/':
+            punctuation(DslTokenKind::Slash);
+            return;
+        case '%':
+            punctuation(DslTokenKind::Percent);
+            return;
+        case '+':
+            punctuation(DslTokenKind::Plus);
+            return;
+        case '-':
+            punctuation(DslTokenKind::Minus);
+            return;
+        case '&':
+            if (index_ + 1 < source_.size() &&
+                source_.at(index_ + 1) == QLatin1Char('&')) {
+                advance();
+                advance();
+                result_.tokens.push_back(
+                    {DslTokenKind::AndAnd, QStringLiteral("&&"), 0, {start, position()}});
+                return;
+            }
+            break;
+        case '|':
+            if (index_ + 1 < source_.size() &&
+                source_.at(index_ + 1) == QLatin1Char('|')) {
+                advance();
+                advance();
+                result_.tokens.push_back(
+                    {DslTokenKind::OrOr, QStringLiteral("||"), 0, {start, position()}});
+                return;
+            }
+            break;
+        default:
+            break;
         }
+        advance();
+        addDiagnostic(DslDiagnosticCode::InvalidCharacter,
+                      QStringLiteral("Invalid character in DSL source"),
+                      start,
+                      position());
+        result_.tokens.push_back(
+            {DslTokenKind::Invalid,
+             source_.mid(static_cast<qsizetype>(start.offset), 1),
+             0,
+             {start, position()}});
     }
 
     void lexInteger(DslSourcePosition start) {
@@ -381,7 +443,9 @@ public:
                 }
                 break;
             }
-            if (isIdentifier(QStringLiteral("enum"))) {
+            if (isIdentifier(QStringLiteral("pure"))) {
+                parsePureFunction(annotations);
+            } else if (isIdentifier(QStringLiteral("enum"))) {
                 parseEnum(annotations);
             } else if (isIdentifier(QStringLiteral("struct"))) {
                 parseStruct(annotations);
@@ -391,7 +455,8 @@ public:
                 parseEntry(annotations);
             } else {
                 error(DslDiagnosticCode::UnexpectedToken,
-                      QStringLiteral("Expected enum, struct, sequence, or entry declaration"));
+                      QStringLiteral(
+                          "Expected pure, enum, struct, sequence, or entry declaration"));
                 recoverDeclaration();
             }
         }
@@ -452,6 +517,230 @@ private:
         return true;
     }
 
+    bool parseScalarType(DslScalarType* type, const QString& description) {
+        if (matchIdentifier(QStringLiteral("bool"))) {
+            *type = DslScalarType::Bool;
+            return true;
+        }
+        if (matchIdentifier(QStringLiteral("u64"))) {
+            *type = DslScalarType::U64;
+            return true;
+        }
+        if (at(DslTokenKind::Identifier)) {
+            const DslToken invalid = consume();
+            result_.diagnostics.push_back(
+                {DslDiagnosticCode::InvalidType,
+                 QStringLiteral("Scalar types must be bool or u64"),
+                 invalid.range});
+            return false;
+        }
+        error(DslDiagnosticCode::MissingToken, QStringLiteral("Expected ") + description);
+        return false;
+    }
+
+    [[nodiscard]] DslExpression makeBinaryExpression(DslExpression left,
+                                                     DslBinaryOperator binaryOperator,
+                                                     DslExpression right) const {
+        DslExpression expression;
+        expression.kind = DslExpressionKind::Binary;
+        expression.binaryOperator = binaryOperator;
+        expression.range = {left.range.start, right.range.end};
+        expression.operands.push_back(std::move(left));
+        expression.operands.push_back(std::move(right));
+        return expression;
+    }
+
+    DslExpression parseNestedExpression() {
+        if (expressionParseDepth_ >= 64) {
+            const DslSourceRange range = current().range;
+            error(DslDiagnosticCode::InvalidExpression,
+                  QStringLiteral("Expression nesting exceeds 64 levels"));
+            recoverExpression();
+            DslExpression expression;
+            expression.range = range;
+            return expression;
+        }
+        ++expressionParseDepth_;
+        DslExpression expression = parseExpression();
+        --expressionParseDepth_;
+        return expression;
+    }
+
+    DslExpression parseNestedUnaryExpression() {
+        if (expressionParseDepth_ >= 64) {
+            const DslSourceRange range = current().range;
+            error(DslDiagnosticCode::InvalidExpression,
+                  QStringLiteral("Expression nesting exceeds 64 levels"));
+            recoverExpression();
+            DslExpression expression;
+            expression.range = range;
+            return expression;
+        }
+        ++expressionParseDepth_;
+        DslExpression expression = parseUnaryExpression();
+        --expressionParseDepth_;
+        return expression;
+    }
+
+    DslExpression parsePrimaryExpression() {
+        if (at(DslTokenKind::IntegerLiteral)) {
+            const DslToken literal = consume();
+            DslExpression expression;
+            expression.kind = DslExpressionKind::UnsignedLiteral;
+            expression.unsignedValue = literal.integerValue;
+            expression.range = literal.range;
+            return expression;
+        }
+        if (at(DslTokenKind::Identifier)) {
+            const DslToken identifier = consume();
+            if (match(DslTokenKind::LeftParen)) {
+                DslExpression expression;
+                expression.kind = DslExpressionKind::Call;
+                expression.name = identifier.lexeme;
+                while (!at(DslTokenKind::RightParen) &&
+                       !at(DslTokenKind::EndOfFile)) {
+                    expression.operands.push_back(parseNestedExpression());
+                    if (!match(DslTokenKind::Comma)) {
+                        break;
+                    }
+                    if (at(DslTokenKind::RightParen)) {
+                        error(DslDiagnosticCode::UnexpectedToken,
+                              QStringLiteral("Expected expression after ','"));
+                        break;
+                    }
+                }
+                expect(DslTokenKind::RightParen,
+                       QStringLiteral("')' after function arguments"));
+                expression.range = {
+                    identifier.range.start,
+                    lexResult_.tokens.at(index_ - 1).range.end,
+                };
+                return expression;
+            }
+            DslExpression expression;
+            if (identifier.lexeme == QStringLiteral("true") ||
+                identifier.lexeme == QStringLiteral("false")) {
+                expression.kind = DslExpressionKind::BooleanLiteral;
+                expression.booleanValue = identifier.lexeme == QStringLiteral("true");
+            } else {
+                expression.kind = DslExpressionKind::Identifier;
+                expression.name = identifier.lexeme;
+            }
+            expression.range = identifier.range;
+            return expression;
+        }
+        if (match(DslTokenKind::LeftParen)) {
+            const DslSourcePosition start = lexResult_.tokens.at(index_ - 1).range.start;
+            DslExpression expression = parseNestedExpression();
+            expect(DslTokenKind::RightParen, QStringLiteral("')' after expression"));
+            expression.range = {start, lexResult_.tokens.at(index_ - 1).range.end};
+            return expression;
+        }
+
+        const DslSourceRange range = current().range;
+        error(DslDiagnosticCode::UnexpectedToken, QStringLiteral("Expected expression"));
+        if (!at(DslTokenKind::Comma) && !at(DslTokenKind::RightParen) &&
+            !at(DslTokenKind::Semicolon) && !at(DslTokenKind::RightBrace) &&
+            !at(DslTokenKind::EndOfFile)) {
+            consume();
+        }
+        DslExpression expression;
+        expression.range = range;
+        return expression;
+    }
+
+    DslExpression parseUnaryExpression() {
+        if (!match(DslTokenKind::Bang)) {
+            return parsePrimaryExpression();
+        }
+        const DslSourcePosition start = lexResult_.tokens.at(index_ - 1).range.start;
+        DslExpression expression;
+        expression.kind = DslExpressionKind::Unary;
+        expression.unaryOperator = DslUnaryOperator::LogicalNot;
+        expression.operands.push_back(parseNestedUnaryExpression());
+        expression.range = {start, expression.operands.front().range.end};
+        return expression;
+    }
+
+    DslExpression parseMultiplicativeExpression() {
+        DslExpression expression = parseUnaryExpression();
+        while (at(DslTokenKind::Star) || at(DslTokenKind::Slash) ||
+               at(DslTokenKind::Percent)) {
+            const DslTokenKind operation = consume().kind;
+            const DslBinaryOperator binaryOperator =
+                operation == DslTokenKind::Star
+                    ? DslBinaryOperator::Multiply
+                    : operation == DslTokenKind::Slash ? DslBinaryOperator::Divide
+                                                       : DslBinaryOperator::Remainder;
+            expression = makeBinaryExpression(
+                std::move(expression), binaryOperator, parseUnaryExpression());
+        }
+        return expression;
+    }
+
+    DslExpression parseAdditiveExpression() {
+        DslExpression expression = parseMultiplicativeExpression();
+        while (at(DslTokenKind::Plus) || at(DslTokenKind::Minus)) {
+            const DslBinaryOperator binaryOperator =
+                consume().kind == DslTokenKind::Plus ? DslBinaryOperator::Add
+                                                     : DslBinaryOperator::Subtract;
+            expression = makeBinaryExpression(
+                std::move(expression), binaryOperator, parseMultiplicativeExpression());
+        }
+        return expression;
+    }
+
+    DslExpression parseRelationalExpression() {
+        DslExpression expression = parseAdditiveExpression();
+        while (at(DslTokenKind::Less) || at(DslTokenKind::LessEqual) ||
+               at(DslTokenKind::Greater) || at(DslTokenKind::GreaterEqual)) {
+            const DslTokenKind operation = consume().kind;
+            DslBinaryOperator binaryOperator = DslBinaryOperator::Less;
+            if (operation == DslTokenKind::LessEqual) {
+                binaryOperator = DslBinaryOperator::LessEqual;
+            } else if (operation == DslTokenKind::Greater) {
+                binaryOperator = DslBinaryOperator::Greater;
+            } else if (operation == DslTokenKind::GreaterEqual) {
+                binaryOperator = DslBinaryOperator::GreaterEqual;
+            }
+            expression = makeBinaryExpression(
+                std::move(expression), binaryOperator, parseAdditiveExpression());
+        }
+        return expression;
+    }
+
+    DslExpression parseEqualityExpression() {
+        DslExpression expression = parseRelationalExpression();
+        while (at(DslTokenKind::EqualEqual) || at(DslTokenKind::BangEqual)) {
+            const DslBinaryOperator binaryOperator =
+                consume().kind == DslTokenKind::EqualEqual ? DslBinaryOperator::Equal
+                                                           : DslBinaryOperator::NotEqual;
+            expression = makeBinaryExpression(
+                std::move(expression), binaryOperator, parseRelationalExpression());
+        }
+        return expression;
+    }
+
+    DslExpression parseLogicalAndExpression() {
+        DslExpression expression = parseEqualityExpression();
+        while (match(DslTokenKind::AndAnd)) {
+            expression = makeBinaryExpression(std::move(expression),
+                                              DslBinaryOperator::LogicalAnd,
+                                              parseEqualityExpression());
+        }
+        return expression;
+    }
+
+    DslExpression parseExpression() {
+        DslExpression expression = parseLogicalAndExpression();
+        while (match(DslTokenKind::OrOr)) {
+            expression = makeBinaryExpression(std::move(expression),
+                                              DslBinaryOperator::LogicalOr,
+                                              parseLogicalAndExpression());
+        }
+        return expression;
+    }
+
     std::vector<DslAnnotation> parseAnnotations() {
         std::vector<DslAnnotation> annotations;
         while (match(DslTokenKind::At)) {
@@ -491,6 +780,87 @@ private:
             annotations.push_back(std::move(annotation));
         }
         return annotations;
+    }
+
+    void parsePureFunction(const std::vector<DslAnnotation>& annotations) {
+        const DslSourcePosition start = consume().range.start;
+        if (!annotations.empty()) {
+            result_.diagnostics.push_back(
+                {DslDiagnosticCode::InvalidAnnotation,
+                 QStringLiteral("Pure functions do not accept annotations"),
+                 annotations.front().range});
+        }
+
+        DslPureFunction function;
+        parseScalarType(&function.returnType, QStringLiteral("pure function return type"));
+        if (!expectIdentifier(&function.name, QStringLiteral("pure function name"))) {
+            recoverDeclaration();
+            return;
+        }
+        if (!expect(DslTokenKind::LeftParen,
+                    QStringLiteral("'(' after pure function name"))) {
+            recoverDeclaration();
+            return;
+        }
+        if (!at(DslTokenKind::RightParen)) {
+            while (true) {
+                const DslSourcePosition parameterStart = current().range.start;
+                DslFunctionParameter parameter;
+                parseScalarType(&parameter.type, QStringLiteral("parameter type"));
+                if (!expectIdentifier(&parameter.name, QStringLiteral("parameter name"))) {
+                    recoverExpression();
+                }
+                parameter.range = {
+                    parameterStart,
+                    lexResult_.tokens.at(index_ - 1).range.end,
+                };
+                function.parameters.push_back(std::move(parameter));
+                if (!match(DslTokenKind::Comma)) {
+                    break;
+                }
+                if (at(DslTokenKind::RightParen)) {
+                    error(DslDiagnosticCode::UnexpectedToken,
+                          QStringLiteral("Expected parameter after ','"));
+                    break;
+                }
+            }
+        }
+        expect(DslTokenKind::RightParen,
+               QStringLiteral("')' after pure function parameters"));
+        if (!expect(DslTokenKind::LeftBrace,
+                    QStringLiteral("'{' before pure function body"))) {
+            recoverDeclaration();
+            return;
+        }
+        if (!matchIdentifier(QStringLiteral("return"))) {
+            error(DslDiagnosticCode::UnexpectedToken,
+                  QStringLiteral("Pure function body must contain one return expression"));
+            while (!at(DslTokenKind::EndOfFile) && !at(DslTokenKind::RightBrace)) {
+                consume();
+            }
+            expect(DslTokenKind::RightBrace,
+                   QStringLiteral("'}' after pure function body"));
+            return;
+        }
+        function.expression = parseExpression();
+        expect(DslTokenKind::Semicolon,
+               QStringLiteral("';' after pure function return expression"));
+        if (!at(DslTokenKind::RightBrace)) {
+            error(DslDiagnosticCode::UnexpectedToken,
+                  QStringLiteral("Pure function body allows only one return expression"));
+            while (!at(DslTokenKind::EndOfFile) && !at(DslTokenKind::RightBrace)) {
+                consume();
+            }
+        }
+        expect(DslTokenKind::RightBrace, QStringLiteral("'}' after pure function body"));
+        function.range = {start, lexResult_.tokens.at(index_ - 1).range.end};
+        if (function.parameters.size() > 16) {
+            result_.diagnostics.push_back(
+                {DslDiagnosticCode::InvalidType,
+                 QStringLiteral("Pure functions may declare at most 16 parameters"),
+                 function.range});
+        }
+        result_.program.pureFunctions.push_back(std::move(function));
     }
 
     void parseEnum(const std::vector<DslAnnotation>& annotations) {
@@ -627,6 +997,52 @@ private:
         items.push_back(std::move(item));
     }
 
+    void parseComputedField(std::vector<DslStructItem>& items,
+                            const std::vector<DslAnnotation>& fieldAnnotations) {
+        const DslSourcePosition start = consume().range.start;
+        DslComputedField field;
+        field.annotations = fieldAnnotations;
+        expect(DslTokenKind::Less, QStringLiteral("'<' after computed"));
+        parseScalarType(&field.type, QStringLiteral("computed field type"));
+        expect(DslTokenKind::Greater, QStringLiteral("'>' after computed field type"));
+        if (!expectIdentifier(&field.name, QStringLiteral("computed field name"))) {
+            recoverField();
+            return;
+        }
+        if (match(DslTokenKind::LeftBracket)) {
+            result_.diagnostics.push_back(
+                {DslDiagnosticCode::InvalidArrayLength,
+                 QStringLiteral("Computed fields cannot be arrays"),
+                 lexResult_.tokens.at(index_ - 1).range});
+            while (!at(DslTokenKind::EndOfFile) &&
+                   !at(DslTokenKind::RightBracket) &&
+                   !at(DslTokenKind::Semicolon) &&
+                   !at(DslTokenKind::RightBrace)) {
+                consume();
+            }
+            match(DslTokenKind::RightBracket);
+        }
+        expect(DslTokenKind::Equals, QStringLiteral("'=' before computed expression"));
+        field.expression = parseExpression();
+        if (!at(DslTokenKind::At) && !at(DslTokenKind::Semicolon)) {
+            error(DslDiagnosticCode::UnexpectedToken,
+                  QStringLiteral("Unexpected token after computed expression"));
+            recoverExpression();
+        }
+        const std::vector<DslAnnotation> trailingAnnotations = parseAnnotations();
+        field.annotations.insert(field.annotations.end(),
+                                 trailingAnnotations.begin(),
+                                 trailingAnnotations.end());
+        expect(DslTokenKind::Semicolon, QStringLiteral("';' after computed field"));
+        field.range = {start, lexResult_.tokens.at(index_ - 1).range.end};
+
+        DslStructItem item;
+        item.kind = DslStructItemKind::Computed;
+        item.computed = std::move(field);
+        item.range = item.computed.range;
+        items.push_back(std::move(item));
+    }
+
     void parseConditional(std::vector<DslStructItem>& items) {
         const DslSourcePosition start = consume().range.start;
         DslStructItem item;
@@ -634,19 +1050,31 @@ private:
         expect(DslTokenKind::LeftParen, QStringLiteral("'(' after if"));
         const DslSourcePosition conditionStart = current().range.start;
         expectIdentifier(&item.condition.fieldName, QStringLiteral("condition field name"));
-        if (!match(DslTokenKind::EqualEqual)) {
+        if (match(DslTokenKind::EqualEqual)) {
+            if (at(DslTokenKind::IntegerLiteral)) {
+                item.condition.expectedValue = consume().integerValue;
+            } else {
+                error(DslDiagnosticCode::MissingToken,
+                      QStringLiteral("Expected integer condition value"));
+            }
+        } else if (at(DslTokenKind::RightParen)) {
+            item.condition.booleanShorthand = true;
+            item.condition.expectedValue = 1;
+        } else {
             if (match(DslTokenKind::Equals)) {
                 error(DslDiagnosticCode::UnexpectedToken,
                       QStringLiteral("Conditions require the '==' operator"));
+                if (at(DslTokenKind::IntegerLiteral)) {
+                    item.condition.expectedValue = consume().integerValue;
+                }
             } else {
                 error(DslDiagnosticCode::MissingToken, QStringLiteral("'==' in condition"));
+                while (!at(DslTokenKind::EndOfFile) &&
+                       !at(DslTokenKind::RightParen) &&
+                       !at(DslTokenKind::LeftBrace)) {
+                    consume();
+                }
             }
-        }
-        if (at(DslTokenKind::IntegerLiteral)) {
-            item.condition.expectedValue = consume().integerValue;
-        } else {
-            error(DslDiagnosticCode::MissingToken,
-                  QStringLiteral("Expected integer condition value"));
         }
         item.condition.range = {conditionStart, lexResult_.tokens.at(index_ - 1).range.end};
         expect(DslTokenKind::RightParen, QStringLiteral("')' after condition"));
@@ -787,6 +1215,8 @@ private:
                          annotations.front().range});
                 }
                 parseRepeat(items);
+            } else if (isIdentifier(QStringLiteral("computed"))) {
+                parseComputedField(items, annotations);
             } else {
                 parseField(items, annotations);
             }
@@ -868,6 +1298,14 @@ private:
         }
     }
 
+    void recoverExpression() {
+        while (!at(DslTokenKind::EndOfFile) && !at(DslTokenKind::Comma) &&
+               !at(DslTokenKind::RightParen) && !at(DslTokenKind::Semicolon) &&
+               !at(DslTokenKind::RightBrace)) {
+            consume();
+        }
+    }
+
     void recoverSwitchArm() {
         while (!at(DslTokenKind::EndOfFile) && !at(DslTokenKind::RightBrace) &&
                !isIdentifier(QStringLiteral("case")) &&
@@ -906,6 +1344,251 @@ private:
     }
 
     void validateProgram() {
+        const auto validateExpression = [&](const auto& self,
+                                            const DslExpression& expression,
+                                            const auto& resolveIdentifier,
+                                            std::size_t availableFunctionCount,
+                                            std::size_t depth,
+                                            std::size_t& nodeCount)
+            -> std::optional<DslScalarType> {
+            ++nodeCount;
+            if (nodeCount > 256) {
+                if (nodeCount == 257) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidExpression,
+                         QStringLiteral("Expressions may contain at most 256 nodes"),
+                         expression.range});
+                }
+                return std::nullopt;
+            }
+            if (depth > 64) {
+                result_.diagnostics.push_back(
+                    {DslDiagnosticCode::InvalidExpression,
+                     QStringLiteral("Expressions may have depth at most 64"),
+                     expression.range});
+                return std::nullopt;
+            }
+
+            switch (expression.kind) {
+            case DslExpressionKind::UnsignedLiteral:
+                return DslScalarType::U64;
+            case DslExpressionKind::BooleanLiteral:
+                return DslScalarType::Bool;
+            case DslExpressionKind::Identifier:
+                return resolveIdentifier(expression.name, expression.range);
+            case DslExpressionKind::Call: {
+                const auto functionsEnd = result_.program.pureFunctions.begin() +
+                                          static_cast<std::ptrdiff_t>(availableFunctionCount);
+                const auto found = std::find_if(
+                    result_.program.pureFunctions.begin(),
+                    functionsEnd,
+                    [&expression](const DslPureFunction& function) {
+                        return function.name == expression.name;
+                    });
+                std::vector<std::optional<DslScalarType>> argumentTypes;
+                argumentTypes.reserve(expression.operands.size());
+                for (const DslExpression& argument : expression.operands) {
+                    argumentTypes.push_back(self(self,
+                                                 argument,
+                                                 resolveIdentifier,
+                                                 availableFunctionCount,
+                                                 depth + 1,
+                                                 nodeCount));
+                }
+                if (found == functionsEnd) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::UnknownReference,
+                         QStringLiteral("Pure function is not declared before this call"),
+                         expression.range});
+                    return std::nullopt;
+                }
+                if (found->parameters.size() != argumentTypes.size()) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidType,
+                         QStringLiteral("Pure function argument count does not match"),
+                         expression.range});
+                    return found->returnType;
+                }
+                for (std::size_t index = 0; index < argumentTypes.size(); ++index) {
+                    if (argumentTypes.at(index) &&
+                        *argumentTypes.at(index) != found->parameters.at(index).type) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidType,
+                             QStringLiteral("Pure function argument type does not match"),
+                             expression.operands.at(index).range});
+                    }
+                }
+                return found->returnType;
+            }
+            case DslExpressionKind::Unary: {
+                if (expression.operands.size() != 1) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidExpression,
+                         QStringLiteral("Unary expressions require one operand"),
+                         expression.range});
+                    return std::nullopt;
+                }
+                const auto operandType = self(self,
+                                              expression.operands.front(),
+                                              resolveIdentifier,
+                                              availableFunctionCount,
+                                              depth + 1,
+                                              nodeCount);
+                if (operandType && *operandType != DslScalarType::Bool) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidType,
+                         QStringLiteral("Logical negation requires a bool operand"),
+                         expression.range});
+                }
+                return DslScalarType::Bool;
+            }
+            case DslExpressionKind::Binary:
+                break;
+            }
+
+            if (expression.operands.size() != 2) {
+                result_.diagnostics.push_back(
+                    {DslDiagnosticCode::InvalidExpression,
+                     QStringLiteral("Binary expressions require two operands"),
+                     expression.range});
+                return std::nullopt;
+            }
+            const auto leftType = self(self,
+                                       expression.operands.at(0),
+                                       resolveIdentifier,
+                                       availableFunctionCount,
+                                       depth + 1,
+                                       nodeCount);
+            const auto rightType = self(self,
+                                        expression.operands.at(1),
+                                        resolveIdentifier,
+                                        availableFunctionCount,
+                                        depth + 1,
+                                        nodeCount);
+            const auto requireOperands = [&](DslScalarType required,
+                                             const QString& message) {
+                if ((leftType && *leftType != required) ||
+                    (rightType && *rightType != required)) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidType, message, expression.range});
+                }
+            };
+            switch (expression.binaryOperator) {
+            case DslBinaryOperator::Multiply:
+            case DslBinaryOperator::Divide:
+            case DslBinaryOperator::Remainder:
+            case DslBinaryOperator::Add:
+            case DslBinaryOperator::Subtract:
+                requireOperands(DslScalarType::U64,
+                                QStringLiteral("Arithmetic operators require u64 operands"));
+                return DslScalarType::U64;
+            case DslBinaryOperator::Equal:
+            case DslBinaryOperator::NotEqual:
+                if (leftType && rightType && *leftType != *rightType) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidType,
+                         QStringLiteral("Equality operands must have the same type"),
+                         expression.range});
+                }
+                return DslScalarType::Bool;
+            case DslBinaryOperator::Less:
+            case DslBinaryOperator::LessEqual:
+            case DslBinaryOperator::Greater:
+            case DslBinaryOperator::GreaterEqual:
+                requireOperands(DslScalarType::U64,
+                                QStringLiteral("Ordering operators require u64 operands"));
+                return DslScalarType::Bool;
+            case DslBinaryOperator::LogicalAnd:
+            case DslBinaryOperator::LogicalOr:
+                requireOperands(DslScalarType::Bool,
+                                QStringLiteral("Logical operators require bool operands"));
+                return DslScalarType::Bool;
+            }
+            return std::nullopt;
+        };
+
+        for (std::size_t index = 0; index < result_.program.pureFunctions.size(); ++index) {
+            const DslPureFunction& function = result_.program.pureFunctions.at(index);
+            const bool duplicateFunction = std::any_of(
+                result_.program.pureFunctions.begin(),
+                result_.program.pureFunctions.begin() + static_cast<std::ptrdiff_t>(index),
+                [&function](const DslPureFunction& previous) {
+                    return previous.name == function.name;
+                });
+            const bool conflictsWithDeclaration =
+                std::any_of(result_.program.enums.begin(),
+                            result_.program.enums.end(),
+                            [&function](const DslEnum& enumeration) {
+                                return enumeration.name == function.name;
+                            }) ||
+                std::any_of(result_.program.structs.begin(),
+                            result_.program.structs.end(),
+                            [&function](const DslStruct& structure) {
+                                return structure.name == function.name;
+                            }) ||
+                std::any_of(result_.program.scans.begin(),
+                            result_.program.scans.end(),
+                            [&function](const DslProgressiveScan& scan) {
+                                return scan.name == function.name;
+                            });
+            if (duplicateFunction || conflictsWithDeclaration) {
+                result_.diagnostics.push_back(
+                    {DslDiagnosticCode::DuplicateName,
+                     QStringLiteral("Pure function names share the top-level namespace"),
+                     function.range});
+            }
+            for (std::size_t parameterIndex = 0;
+                 parameterIndex < function.parameters.size();
+                 ++parameterIndex) {
+                const DslFunctionParameter& parameter =
+                    function.parameters.at(parameterIndex);
+                const bool duplicateParameter = std::any_of(
+                    function.parameters.begin(),
+                    function.parameters.begin() +
+                        static_cast<std::ptrdiff_t>(parameterIndex),
+                    [&parameter](const DslFunctionParameter& previous) {
+                        return previous.name == parameter.name;
+                    });
+                if (duplicateParameter) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::DuplicateName,
+                         QStringLiteral("Pure function parameter names must be unique"),
+                         parameter.range});
+                }
+            }
+            const auto resolveParameter = [&](const QString& name,
+                                              const DslSourceRange& range)
+                -> std::optional<DslScalarType> {
+                const auto found = std::find_if(
+                    function.parameters.begin(),
+                    function.parameters.end(),
+                    [&name](const DslFunctionParameter& parameter) {
+                        return parameter.name == name;
+                    });
+                if (found == function.parameters.end()) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::UnknownReference,
+                         QStringLiteral("Pure function expressions may reference only parameters"),
+                         range});
+                    return std::nullopt;
+                }
+                return found->type;
+            };
+            std::size_t nodeCount = 0;
+            const auto expressionType = validateExpression(validateExpression,
+                                                           function.expression,
+                                                           resolveParameter,
+                                                           index,
+                                                           1,
+                                                           nodeCount);
+            if (expressionType && *expressionType != function.returnType) {
+                result_.diagnostics.push_back(
+                    {DslDiagnosticCode::InvalidType,
+                     QStringLiteral("Pure function return expression type does not match"),
+                     function.expression.range});
+            }
+        }
+
         for (std::size_t index = 0; index < result_.program.enums.size(); ++index) {
             const DslEnum& enumeration = result_.program.enums.at(index);
             validatePresentationAnnotations(enumeration.annotations);
@@ -983,8 +1666,16 @@ private:
                 bool negated = false;
             };
             struct DeclaredField final {
-                const DslBitField* field = nullptr;
+                QString name;
+                const DslBitField* syntax = nullptr;
+                const DslComputedField* computed = nullptr;
+                DslScalarType type = DslScalarType::U64;
                 std::vector<ActiveCondition> conditions;
+            };
+            enum class ControllerUse : quint8 {
+                Equality,
+                Repeat,
+                Boolean,
             };
             std::vector<QString> declaredFieldNames;
             std::vector<DeclaredField> declaredFields;
@@ -997,13 +1688,13 @@ private:
             const auto validateController = [&](const QString& fieldName,
                                                 const DslSourceRange& range,
                                                 const std::vector<ActiveCondition>& active,
-                                                bool allowUnsignedExpGolomb)
-                -> const DslBitField* {
+                                                ControllerUse use)
+                -> const DeclaredField* {
                 const auto found = std::find_if(
                     declaredFields.rbegin(),
                     declaredFields.rend(),
                     [&fieldName](const DeclaredField& declared) {
-                        return declared.field->name == fieldName;
+                        return declared.name == fieldName;
                     });
                 if (found == declaredFields.rend()) {
                     result_.diagnostics.push_back(
@@ -1013,20 +1704,32 @@ private:
                          range});
                     return nullptr;
                 }
-                const bool supportedEncoding =
-                    found->field->encoding == DslFieldEncoding::Bits ||
-                    (allowUnsignedExpGolomb &&
-                     found->field->encoding == DslFieldEncoding::UnsignedExpGolomb);
-                if (!supportedEncoding || found->field->arrayLength) {
+                const bool syntaxScalar = found->syntax != nullptr &&
+                                          !found->syntax->arrayLength;
+                const bool supported =
+                    use == ControllerUse::Boolean
+                        ? found->computed != nullptr &&
+                              found->type == DslScalarType::Bool
+                        : found->computed != nullptr
+                              ? found->type == DslScalarType::U64
+                              : syntaxScalar &&
+                                    (found->syntax->encoding == DslFieldEncoding::Bits ||
+                                     (use == ControllerUse::Repeat &&
+                                      found->syntax->encoding ==
+                                          DslFieldEncoding::UnsignedExpGolomb));
+                if (!supported) {
+                    QString message = QStringLiteral(
+                        "Controllers require a previous scalar bits, enum, or computed<u64> field");
+                    if (use == ControllerUse::Repeat) {
+                        message = QStringLiteral(
+                            "Repeat counts require a previous scalar bits, enum, ue, or "
+                            "computed<u64> field");
+                    } else if (use == ControllerUse::Boolean) {
+                        message = QStringLiteral(
+                            "Boolean conditions require a previous computed<bool> field");
+                    }
                     result_.diagnostics.push_back(
-                        {DslDiagnosticCode::InvalidType,
-                         allowUnsignedExpGolomb
-                             ? QStringLiteral(
-                                   "Repeat counts require a previous scalar bits, enum, or ue "
-                                   "field")
-                             : QStringLiteral(
-                                   "Controllers require a previous scalar bits or enum field"),
-                         range});
+                        {DslDiagnosticCode::InvalidType, message, range});
                     return nullptr;
                 }
                 const bool available = std::all_of(
@@ -1048,14 +1751,14 @@ private:
                          range});
                     return nullptr;
                 }
-                return found->field;
+                return &*found;
             };
-            const auto validateConditionValue = [&](const DslBitField* controller,
+            const auto validateConditionValue = [&](const DeclaredField* controller,
                                                     quint64 expectedValue,
                                                     const DslSourceRange& range) {
-                if (controller != nullptr && controller->width != 0 &&
-                    controller->width < 64 &&
-                    expectedValue >= (quint64{1} << controller->width)) {
+                if (controller != nullptr && controller->syntax != nullptr &&
+                    controller->syntax->width != 0 && controller->syntax->width < 64 &&
+                    expectedValue >= (quint64{1} << controller->syntax->width)) {
                     result_.diagnostics.push_back(
                         {DslDiagnosticCode::ConstraintOutOfRange,
                          QStringLiteral("Condition value does not fit the controlling field"),
@@ -1064,10 +1767,15 @@ private:
             };
             const auto validateCondition = [&](const DslEqualityCondition& condition,
                                                const std::vector<ActiveCondition>& active) {
-                const DslBitField* controller = validateController(
-                    condition.fieldName, condition.range, active, false);
-                validateConditionValue(
-                    controller, condition.expectedValue, condition.range);
+                const ControllerUse use = condition.booleanShorthand
+                                              ? ControllerUse::Boolean
+                                              : ControllerUse::Equality;
+                const DeclaredField* controller = validateController(
+                    condition.fieldName, condition.range, active, use);
+                if (!condition.booleanShorthand) {
+                    validateConditionValue(
+                        controller, condition.expectedValue, condition.range);
+                }
             };
             const auto validateFieldAnnotations = [&](const DslBitField& field) {
                 validatePresentationAnnotations(field.annotations);
@@ -1151,10 +1859,25 @@ private:
                     }
                 }
             };
+            const auto validateComputedAnnotations =
+                [&](const DslComputedField& field) {
+                    validatePresentationAnnotations(field.annotations);
+                    for (const DslAnnotation& annotation : field.annotations) {
+                        if (annotation.name != QStringLiteral("description") &&
+                            annotation.name != QStringLiteral("spec")) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidAnnotation,
+                                 QStringLiteral(
+                                     "Computed fields accept only @description and @spec"),
+                                 annotation.range});
+                        }
+                    }
+                };
             const auto containsField = [](const auto& self,
                                           const std::vector<DslStructItem>& items) -> bool {
                 for (const DslStructItem& item : items) {
-                    if (item.kind == DslStructItemKind::Field) {
+                    if (item.kind == DslStructItemKind::Field ||
+                        item.kind == DslStructItemKind::Computed) {
                         return true;
                     }
                     if (item.kind == DslStructItemKind::Conditional &&
@@ -1205,8 +1928,11 @@ private:
                         continue;
                     }
                     if (item.kind == DslStructItemKind::Switch) {
-                        const DslBitField* controller = validateController(
-                            item.switchFieldName, item.switchFieldRange, active, false);
+                        const DeclaredField* controller = validateController(
+                            item.switchFieldName,
+                            item.switchFieldRange,
+                            active,
+                            ControllerUse::Equality);
                         std::vector<const DslStructItem::SwitchArm*> caseArms;
                         std::vector<quint64> caseValues;
                         bool defaultSeen = false;
@@ -1300,11 +2026,11 @@ private:
                         continue;
                     }
                     if (item.kind == DslStructItemKind::Repeat) {
-                        const DslBitField* controller = validateController(
+                        const DeclaredField* controller = validateController(
                             item.repeatCountFieldName,
                             item.repeatCountFieldRange,
                             active,
-                            true);
+                            ControllerUse::Repeat);
                         if (item.repeatMaximum == 0) {
                             result_.diagnostics.push_back(
                                 {DslDiagnosticCode::InvalidArrayLength,
@@ -1312,10 +2038,12 @@ private:
                                      "Bounded repeat maximum must be at least one"),
                                  item.repeatMaximumRange});
                         } else if (controller != nullptr &&
-                                   controller->encoding == DslFieldEncoding::Bits &&
-                                   controller->width != 0 && controller->width < 64 &&
+                                   controller->syntax != nullptr &&
+                                   controller->syntax->encoding == DslFieldEncoding::Bits &&
+                                   controller->syntax->width != 0 &&
+                                   controller->syntax->width < 64 &&
                                    item.repeatMaximum >=
-                                       (quint64{1} << controller->width)) {
+                                       (quint64{1} << controller->syntax->width)) {
                             result_.diagnostics.push_back(
                                 {DslDiagnosticCode::ConstraintOutOfRange,
                                  QStringLiteral(
@@ -1336,6 +2064,92 @@ private:
                         continue;
                     }
 
+                    if (item.kind == DslStructItemKind::Computed) {
+                        const DslComputedField& field = item.computed;
+                        validateComputedAnnotations(field);
+                        if (std::find(declaredFieldNames.begin(),
+                                      declaredFieldNames.end(),
+                                      field.name) != declaredFieldNames.end()) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::DuplicateName,
+                                 QStringLiteral("Duplicate field name"),
+                                 field.range});
+                        }
+                        const auto resolveComputedIdentifier =
+                            [&](const QString& name,
+                                const DslSourceRange& range)
+                            -> std::optional<DslScalarType> {
+                            const auto found = std::find_if(
+                                declaredFields.rbegin(),
+                                declaredFields.rend(),
+                                [&name](const DeclaredField& declared) {
+                                    return declared.name == name;
+                                });
+                            if (found == declaredFields.rend()) {
+                                result_.diagnostics.push_back(
+                                    {DslDiagnosticCode::UnknownReference,
+                                     QStringLiteral(
+                                         "Computed field dependency must be declared earlier"),
+                                     range});
+                                return std::nullopt;
+                            }
+                            const bool available = std::all_of(
+                                found->conditions.begin(),
+                                found->conditions.end(),
+                                [&active, &sameCondition](const ActiveCondition& required) {
+                                    return std::any_of(
+                                        active.begin(),
+                                        active.end(),
+                                        [&required, &sameCondition](
+                                            const ActiveCondition& candidate) {
+                                            return sameCondition(required, candidate);
+                                        });
+                                });
+                            if (!available) {
+                                result_.diagnostics.push_back(
+                                    {DslDiagnosticCode::InvalidCondition,
+                                     QStringLiteral(
+                                         "Computed field dependency is not guaranteed on the "
+                                         "current branch"),
+                                     range});
+                                return std::nullopt;
+                            }
+                            if (found->computed != nullptr) {
+                                return found->type;
+                            }
+                            if (found->syntax == nullptr || found->syntax->arrayLength ||
+                                found->syntax->encoding ==
+                                    DslFieldEncoding::SignedExpGolomb) {
+                                result_.diagnostics.push_back(
+                                    {DslDiagnosticCode::InvalidType,
+                                     QStringLiteral(
+                                         "Computed expressions require scalar unsigned fields"),
+                                     range});
+                                return std::nullopt;
+                            }
+                            return DslScalarType::U64;
+                        };
+                        std::size_t nodeCount = 0;
+                        const auto expressionType = validateExpression(
+                            validateExpression,
+                            field.expression,
+                            resolveComputedIdentifier,
+                            result_.program.pureFunctions.size(),
+                            1,
+                            nodeCount);
+                        if (expressionType && *expressionType != field.type) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidType,
+                                 QStringLiteral(
+                                     "Computed expression type does not match its declaration"),
+                                 field.expression.range});
+                        }
+                        declaredFieldNames.push_back(field.name);
+                        declaredFields.push_back(
+                            {field.name, nullptr, &field, field.type, active});
+                        continue;
+                    }
+
                     const DslBitField& field = item.field;
                     validateFieldAnnotations(field);
                     if (std::find(declaredFieldNames.begin(),
@@ -1347,7 +2161,8 @@ private:
                              field.range});
                     }
                     declaredFieldNames.push_back(field.name);
-                    declaredFields.push_back({&field, active});
+                    declaredFields.push_back(
+                        {field.name, &field, nullptr, DslScalarType::U64, active});
                     if (field.endian == DslEndian::Little &&
                         (!fieldOffset || *fieldOffset % 8 != 0)) {
                         result_.diagnostics.push_back(
@@ -1471,6 +2286,7 @@ private:
 
     DslLexResult lexResult_;
     std::size_t index_ = 0;
+    std::size_t expressionParseDepth_ = 0;
     DslParseResult result_;
 };
 

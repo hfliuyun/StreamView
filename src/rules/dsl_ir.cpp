@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <limits>
 #include <utility>
 
@@ -10,6 +11,11 @@ namespace streamview::rules {
 namespace {
 
 constexpr quint64 maximumExpandedFieldsPerStructure = 99'999;
+constexpr std::size_t maximumExpressionExpansionWork = 16 * 256;
+
+[[nodiscard]] bool validScalarType(DslScalarType type) noexcept {
+    return type == DslScalarType::Bool || type == DslScalarType::U64;
+}
 
 void addDiagnostic(std::vector<DslDiagnostic>& diagnostics,
                    DslDiagnosticCode code,
@@ -19,10 +25,11 @@ void addDiagnostic(std::vector<DslDiagnostic>& diagnostics,
 }
 
 void collectFields(const std::vector<DslStructItem>& items,
-                   std::vector<const DslBitField*>& fields) {
+                   std::vector<const DslStructItem*>& fields) {
     for (const DslStructItem& item : items) {
-        if (item.kind == DslStructItemKind::Field) {
-            fields.push_back(&item.field);
+        if (item.kind == DslStructItemKind::Field ||
+            item.kind == DslStructItemKind::Computed) {
+            fields.push_back(&item);
         } else if (item.kind == DslStructItemKind::Conditional) {
             collectFields(item.thenItems, fields);
             collectFields(item.elseItems, fields);
@@ -49,6 +56,8 @@ void collectFields(const std::vector<DslStructItem>& items,
         quint64 itemProjection = 0;
         if (item.kind == DslStructItemKind::Field) {
             itemProjection = item.field.arrayLength.value_or(1);
+        } else if (item.kind == DslStructItemKind::Computed) {
+            itemProjection = 1;
         } else if (item.kind == DslStructItemKind::Conditional) {
             itemProjection = add(expandedFieldProjection(item.thenItems),
                                  expandedFieldProjection(item.elseItems));
@@ -208,7 +217,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         typed.bytecode.push_back(instruction);
         return true;
     };
-    if (program.enums.size() > std::numeric_limits<quint32>::max() ||
+    if (program.pureFunctions.size() > std::numeric_limits<quint32>::max() ||
+        program.enums.size() > std::numeric_limits<quint32>::max() ||
         program.structs.size() > std::numeric_limits<quint32>::max() ||
         program.scans.size() > std::numeric_limits<quint32>::max()) {
         addDiagnostic(result.diagnostics,
@@ -247,21 +257,451 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         typed.enums.push_back(std::move(typedEnum));
     }
 
+    struct ExpressionWorkState final {
+        std::size_t stepCount = 0;
+        bool reported = false;
+    };
+    struct ExpressionBuildState final {
+        ExpressionBuildState() = default;
+        ExpressionBuildState(const ExpressionBuildState&) = delete;
+        ExpressionBuildState& operator=(const ExpressionBuildState&) = delete;
+
+        ExpressionWorkState ownedWork;
+        ExpressionWorkState* work = &ownedWork;
+        std::size_t nodeCount = 0;
+        bool sizeReported = false;
+        bool depthReported = false;
+    };
+    using ExpressionResolver = std::function<std::optional<DslTypedExpression>(
+        const QString&, const DslSourceRange&)>;
+    const auto claimExpressionNode = [&](ExpressionBuildState& state,
+                                         std::size_t depth,
+                                         const DslSourceRange& range) {
+        if (depth > 64) {
+            if (!state.depthReported) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidExpression,
+                              QStringLiteral("Expanded expressions may have depth at most 64"),
+                              range);
+                state.depthReported = true;
+            }
+            return false;
+        }
+        ++state.nodeCount;
+        if (state.nodeCount > 256) {
+            if (!state.sizeReported) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidExpression,
+                              QStringLiteral(
+                                  "Expanded expressions may contain at most 256 nodes"),
+                              range);
+                state.sizeReported = true;
+            }
+            return false;
+        }
+        return true;
+    };
+    const auto claimExpressionWork = [&](ExpressionBuildState& state,
+                                         const DslSourceRange& range) {
+        ++state.work->stepCount;
+        if (state.work->stepCount <= maximumExpressionExpansionWork) {
+            return true;
+        }
+        if (!state.work->reported) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidExpression,
+                          QStringLiteral("Expression expansion work exceeds the sandbox limit"),
+                          range);
+            state.work->reported = true;
+        }
+        return false;
+    };
+    std::function<std::optional<DslTypedExpression>(
+        const DslTypedExpression&,
+        std::size_t,
+        ExpressionBuildState&,
+        const DslSourceRange&)>
+        cloneExpression;
+    cloneExpression = [&](const DslTypedExpression& source,
+                          std::size_t depth,
+                          ExpressionBuildState& state,
+                          const DslSourceRange& range)
+        -> std::optional<DslTypedExpression> {
+        if (!claimExpressionWork(state, range) ||
+            !claimExpressionNode(state, depth, range)) {
+            return std::nullopt;
+        }
+        DslTypedExpression cloned = source;
+        cloned.operands.clear();
+        for (const DslTypedExpression& operand : source.operands) {
+            const auto clonedOperand = cloneExpression(operand, depth + 1, state, range);
+            if (!clonedOperand) {
+                return std::nullopt;
+            }
+            cloned.operands.push_back(*clonedOperand);
+        }
+        return cloned;
+    };
+
+    std::function<std::optional<DslTypedExpression>(
+        const DslExpression&,
+        const ExpressionResolver&,
+        std::size_t,
+        std::size_t,
+        ExpressionBuildState&)>
+        compileExpression;
+    compileExpression = [&](const DslExpression& expression,
+                            const ExpressionResolver& resolveIdentifier,
+                            std::size_t availableFunctionCount,
+                            std::size_t depth,
+                            ExpressionBuildState& state)
+        -> std::optional<DslTypedExpression> {
+        if (!claimExpressionWork(state, expression.range)) {
+            return std::nullopt;
+        }
+        if (expression.kind == DslExpressionKind::Identifier) {
+            const auto resolved = resolveIdentifier(expression.name, expression.range);
+            if (!resolved) {
+                return std::nullopt;
+            }
+            return cloneExpression(*resolved, depth, state, expression.range);
+        }
+        if (expression.kind == DslExpressionKind::Call) {
+            const std::size_t functionCount =
+                std::min(availableFunctionCount, program.pureFunctions.size());
+            const auto functionsEnd = program.pureFunctions.begin() +
+                                      static_cast<std::ptrdiff_t>(functionCount);
+            const auto found = std::find_if(
+                program.pureFunctions.begin(),
+                functionsEnd,
+                [&expression](const DslPureFunction& function) {
+                    return function.name == expression.name;
+                });
+            if (found == functionsEnd) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::UnknownReference,
+                              QStringLiteral(
+                                  "Pure function is not declared before this call"),
+                              expression.range);
+                return std::nullopt;
+            }
+            if (found->parameters.size() != expression.operands.size()) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              QStringLiteral("Pure function argument count does not match"),
+                              expression.range);
+                return std::nullopt;
+            }
+            std::vector<std::optional<DslTypedExpression>> arguments;
+            arguments.reserve(expression.operands.size());
+            for (const DslExpression& argument : expression.operands) {
+                ExpressionBuildState argumentState;
+                argumentState.work = state.work;
+                arguments.push_back(compileExpression(argument,
+                                                       resolveIdentifier,
+                                                       functionCount,
+                                                       depth + 1,
+                                                       argumentState));
+            }
+            bool argumentsValid = true;
+            for (std::size_t index = 0; index < arguments.size(); ++index) {
+                if (!arguments.at(index)) {
+                    argumentsValid = false;
+                    continue;
+                }
+                if (arguments.at(index)->type != found->parameters.at(index).type) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidType,
+                                  QStringLiteral("Pure function argument type does not match"),
+                                  expression.operands.at(index).range);
+                    argumentsValid = false;
+                }
+            }
+            if (!argumentsValid) {
+                return std::nullopt;
+            }
+            const ExpressionResolver resolveParameter =
+                [&found, &arguments, &result](const QString& name,
+                                             const DslSourceRange& range)
+                -> std::optional<DslTypedExpression> {
+                const auto parameter = std::find_if(
+                    found->parameters.begin(),
+                    found->parameters.end(),
+                    [&name](const DslFunctionParameter& candidate) {
+                        return candidate.name == name;
+                    });
+                if (parameter == found->parameters.end()) {
+                    addDiagnostic(
+                        result.diagnostics,
+                        DslDiagnosticCode::UnknownReference,
+                        QStringLiteral(
+                            "Pure function expressions may reference only parameters"),
+                        range);
+                    return std::nullopt;
+                }
+                const std::size_t parameterIndex = static_cast<std::size_t>(
+                    std::distance(found->parameters.begin(), parameter));
+                if (parameterIndex >= arguments.size()) {
+                    return std::nullopt;
+                }
+                return arguments.at(parameterIndex);
+            };
+            const std::size_t functionIndex = static_cast<std::size_t>(
+                std::distance(program.pureFunctions.begin(), found));
+            return compileExpression(
+                found->expression, resolveParameter, functionIndex, depth + 1, state);
+        }
+
+        if (!claimExpressionNode(state, depth, expression.range)) {
+            return std::nullopt;
+        }
+        DslTypedExpression typedExpression;
+        switch (expression.kind) {
+        case DslExpressionKind::UnsignedLiteral:
+            typedExpression.kind = DslTypedExpressionKind::UnsignedLiteral;
+            typedExpression.type = DslScalarType::U64;
+            typedExpression.unsignedValue = expression.unsignedValue;
+            return typedExpression;
+        case DslExpressionKind::BooleanLiteral:
+            typedExpression.kind = DslTypedExpressionKind::BooleanLiteral;
+            typedExpression.type = DslScalarType::Bool;
+            typedExpression.booleanValue = expression.booleanValue;
+            return typedExpression;
+        case DslExpressionKind::Unary: {
+            if (expression.operands.size() != 1 ||
+                expression.unaryOperator != DslUnaryOperator::LogicalNot) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidExpression,
+                              QStringLiteral("Unary expression is invalid"),
+                              expression.range);
+                return std::nullopt;
+            }
+            const auto operand = compileExpression(expression.operands.front(),
+                                                   resolveIdentifier,
+                                                   availableFunctionCount,
+                                                   depth + 1,
+                                                   state);
+            if (!operand) {
+                return std::nullopt;
+            }
+            if (operand->type != DslScalarType::Bool) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              QStringLiteral("Logical negation requires a bool operand"),
+                              expression.range);
+                return std::nullopt;
+            }
+            typedExpression.kind = DslTypedExpressionKind::Unary;
+            typedExpression.type = DslScalarType::Bool;
+            typedExpression.unaryOperator = expression.unaryOperator;
+            typedExpression.operands.push_back(*operand);
+            return typedExpression;
+        }
+        case DslExpressionKind::Binary:
+            break;
+        case DslExpressionKind::Identifier:
+        case DslExpressionKind::Call:
+            return std::nullopt;
+        default:
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidExpression,
+                          QStringLiteral("Expression kind is invalid"),
+                          expression.range);
+            return std::nullopt;
+        }
+        if (expression.operands.size() != 2) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidExpression,
+                          QStringLiteral("Binary expression requires two operands"),
+                          expression.range);
+            return std::nullopt;
+        }
+        const auto left = compileExpression(expression.operands.at(0),
+                                            resolveIdentifier,
+                                            availableFunctionCount,
+                                            depth + 1,
+                                            state);
+        const auto right = compileExpression(expression.operands.at(1),
+                                             resolveIdentifier,
+                                             availableFunctionCount,
+                                             depth + 1,
+                                             state);
+        if (!left || !right) {
+            return std::nullopt;
+        }
+        DslScalarType resultType = DslScalarType::U64;
+        bool typesValid = true;
+        switch (expression.binaryOperator) {
+        case DslBinaryOperator::Multiply:
+        case DslBinaryOperator::Divide:
+        case DslBinaryOperator::Remainder:
+        case DslBinaryOperator::Add:
+        case DslBinaryOperator::Subtract:
+            typesValid = left->type == DslScalarType::U64 &&
+                         right->type == DslScalarType::U64;
+            resultType = DslScalarType::U64;
+            break;
+        case DslBinaryOperator::Equal:
+        case DslBinaryOperator::NotEqual:
+            typesValid = left->type == right->type;
+            resultType = DslScalarType::Bool;
+            break;
+        case DslBinaryOperator::Less:
+        case DslBinaryOperator::LessEqual:
+        case DslBinaryOperator::Greater:
+        case DslBinaryOperator::GreaterEqual:
+            typesValid = left->type == DslScalarType::U64 &&
+                         right->type == DslScalarType::U64;
+            resultType = DslScalarType::Bool;
+            break;
+        case DslBinaryOperator::LogicalAnd:
+        case DslBinaryOperator::LogicalOr:
+            typesValid = left->type == DslScalarType::Bool &&
+                         right->type == DslScalarType::Bool;
+            resultType = DslScalarType::Bool;
+            break;
+        default:
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidExpression,
+                          QStringLiteral("Binary expression operator is invalid"),
+                          expression.range);
+            return std::nullopt;
+        }
+        if (!typesValid) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidType,
+                          QStringLiteral("Expression operand types do not match the operator"),
+                          expression.range);
+            return std::nullopt;
+        }
+        typedExpression.kind = DslTypedExpressionKind::Binary;
+        typedExpression.type = resultType;
+        typedExpression.binaryOperator = expression.binaryOperator;
+        typedExpression.operands.push_back(*left);
+        typedExpression.operands.push_back(*right);
+        return typedExpression;
+    };
+
+    for (std::size_t index = 0; index < program.pureFunctions.size(); ++index) {
+        const DslPureFunction& function = program.pureFunctions.at(index);
+        if (!validScalarType(function.returnType)) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidType,
+                          QStringLiteral("Pure function return type is invalid"),
+                          function.range);
+        }
+        if (function.parameters.size() > 16) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidType,
+                          QStringLiteral("Pure functions may declare at most 16 parameters"),
+                          function.range);
+        }
+        const bool duplicateName = std::any_of(
+            program.pureFunctions.begin(),
+            program.pureFunctions.begin() + static_cast<std::ptrdiff_t>(index),
+            [&function](const DslPureFunction& previous) {
+                return previous.name == function.name;
+            });
+        const bool conflictsWithTopLevel =
+            std::any_of(program.enums.begin(),
+                        program.enums.end(),
+                        [&function](const DslEnum& enumeration) {
+                            return enumeration.name == function.name;
+                        }) ||
+            std::any_of(program.structs.begin(),
+                        program.structs.end(),
+                        [&function](const DslStruct& structure) {
+                            return structure.name == function.name;
+                        }) ||
+            std::any_of(program.scans.begin(),
+                        program.scans.end(),
+                        [&function](const DslProgressiveScan& scan) {
+                            return scan.name == function.name;
+                        });
+        if (duplicateName || conflictsWithTopLevel) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::DuplicateName,
+                          QStringLiteral(
+                              "Pure function names share the top-level namespace"),
+                          function.range);
+        }
+        for (std::size_t parameterIndex = 0;
+             parameterIndex < function.parameters.size();
+             ++parameterIndex) {
+            const DslFunctionParameter& parameter =
+                function.parameters.at(parameterIndex);
+            if (!validScalarType(parameter.type)) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              QStringLiteral("Pure function parameter type is invalid"),
+                              parameter.range);
+            }
+            if (std::any_of(
+                    function.parameters.begin(),
+                    function.parameters.begin() +
+                        static_cast<std::ptrdiff_t>(parameterIndex),
+                    [&parameter](const DslFunctionParameter& previous) {
+                        return previous.name == parameter.name;
+                    })) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::DuplicateName,
+                              QStringLiteral(
+                                  "Pure function parameter names must be unique"),
+                              parameter.range);
+            }
+        }
+        const ExpressionResolver resolveParameter =
+            [&function, &result](const QString& name,
+                                const DslSourceRange& range)
+            -> std::optional<DslTypedExpression> {
+            const auto found = std::find_if(
+                function.parameters.begin(),
+                function.parameters.end(),
+                [&name](const DslFunctionParameter& parameter) {
+                    return parameter.name == name;
+                });
+            if (found == function.parameters.end()) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::UnknownReference,
+                              QStringLiteral(
+                                  "Pure function expressions may reference only parameters"),
+                              range);
+                return std::nullopt;
+            }
+            DslTypedExpression placeholder;
+            placeholder.kind = found->type == DslScalarType::Bool
+                                   ? DslTypedExpressionKind::BooleanLiteral
+                                   : DslTypedExpressionKind::UnsignedLiteral;
+            placeholder.type = found->type;
+            return placeholder;
+        };
+        ExpressionBuildState state;
+        const auto compiled = compileExpression(
+            function.expression, resolveParameter, index, 1, state);
+        if (compiled && compiled->type != function.returnType) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidType,
+                          QStringLiteral(
+                              "Pure function return expression type does not match"),
+                          function.expression.range);
+        }
+    }
+
     typed.structs.reserve(program.structs.size());
     for (const DslStruct& structure : program.structs) {
-        std::vector<const DslBitField*> sourceFields;
-        collectFields(structure.items, sourceFields);
+        std::vector<const DslStructItem*> fieldDeclarations;
+        collectFields(structure.items, fieldDeclarations);
         DslTypedStruct typedStruct;
         typedStruct.name = structure.name;
         typedStruct.metadata = metadataForAnnotations(structure.annotations);
         typedStruct.metadata.typeName = QStringLiteral("struct");
-        if (sourceFields.size() > maximumIndexedSize) {
+        if (fieldDeclarations.size() > maximumIndexedSize) {
             addDiagnostic(result.diagnostics,
                           DslDiagnosticCode::InvalidType,
                           QStringLiteral("A structure contains too many fields"),
                           structure.range);
         }
-        if (sourceFields.empty()) {
+        if (fieldDeclarations.empty()) {
             addDiagnostic(result.diagnostics,
                           DslDiagnosticCode::EmptyStruct,
                           QStringLiteral("A structure must contain at least one field"),
@@ -269,31 +709,46 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         }
 
         std::vector<QString> declaredFieldNames;
-        declaredFieldNames.reserve(sourceFields.size());
-        for (const DslBitField* field : sourceFields) {
+        declaredFieldNames.reserve(fieldDeclarations.size());
+        for (const DslStructItem* item : fieldDeclarations) {
+            const QString& name = item->kind == DslStructItemKind::Field
+                                      ? item->field.name
+                                      : item->computed.name;
+            const DslSourceRange& range = item->kind == DslStructItemKind::Field
+                                              ? item->field.range
+                                              : item->computed.range;
             if (std::find(declaredFieldNames.begin(),
                           declaredFieldNames.end(),
-                          field->name) != declaredFieldNames.end()) {
+                          name) != declaredFieldNames.end()) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::DuplicateName,
                               QStringLiteral("Duplicate field name"),
-                              field->range);
+                              range);
             }
-            declaredFieldNames.push_back(field->name);
+            declaredFieldNames.push_back(name);
         }
 
         struct DeclaredField final {
+            QString name;
             const DslBitField* source = nullptr;
+            const DslComputedField* computed = nullptr;
+            DslScalarType scalarType = DslScalarType::U64;
             std::optional<quint32> typedIndex;
             std::vector<DslTypedFieldCondition> conditions;
+        };
+        enum class ControllerUse : quint8 {
+            Equality,
+            Repeat,
+            Boolean,
         };
         struct ResolvedController final {
             quint32 fieldIndex = 0;
             quint8 width = 0;
             DslFieldEncoding encoding = DslFieldEncoding::Bits;
+            bool computed = false;
         };
         std::vector<DeclaredField> declaredFields;
-        declaredFields.reserve(sourceFields.size());
+        declaredFields.reserve(fieldDeclarations.size());
         std::vector<quint64> repeatIndices;
         const auto sameCondition = [](const DslTypedFieldCondition& left,
                                       const DslTypedFieldCondition& right) {
@@ -304,13 +759,13 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         const auto resolveController = [&](const QString& fieldName,
                                            const DslSourceRange& range,
                                            const std::vector<DslTypedFieldCondition>& active,
-                                           bool allowUnsignedExpGolomb)
+                                           ControllerUse use)
             -> std::optional<ResolvedController> {
             const auto found = std::find_if(
                 declaredFields.rbegin(),
                 declaredFields.rend(),
                 [&fieldName](const DeclaredField& declared) {
-                    return declared.source->name == fieldName;
+                    return declared.name == fieldName;
                 });
             if (found == declaredFields.rend()) {
                 addDiagnostic(result.diagnostics,
@@ -320,20 +775,33 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                               range);
                 return std::nullopt;
             }
-            const bool supportedEncoding =
-                found->source->encoding == DslFieldEncoding::Bits ||
-                (allowUnsignedExpGolomb &&
-                 found->source->encoding == DslFieldEncoding::UnsignedExpGolomb);
-            if (!supportedEncoding || found->source->arrayLength || !found->typedIndex) {
+            const bool syntaxScalar = found->source != nullptr &&
+                                      !found->source->arrayLength;
+            const bool supported =
+                use == ControllerUse::Boolean
+                    ? found->computed != nullptr &&
+                          found->scalarType == DslScalarType::Bool
+                    : found->computed != nullptr
+                          ? found->scalarType == DslScalarType::U64
+                          : syntaxScalar &&
+                                (found->source->encoding == DslFieldEncoding::Bits ||
+                                 (use == ControllerUse::Repeat &&
+                                  found->source->encoding ==
+                                      DslFieldEncoding::UnsignedExpGolomb));
+            if (!supported || !found->typedIndex) {
+                QString message = QStringLiteral(
+                    "Controllers require a previous scalar bits, enum, or computed<u64> field");
+                if (use == ControllerUse::Repeat) {
+                    message = QStringLiteral(
+                        "Repeat counts require a previous scalar bits, enum, ue, or "
+                        "computed<u64> field");
+                } else if (use == ControllerUse::Boolean) {
+                    message = QStringLiteral(
+                        "Boolean conditions require a previous computed<bool> field");
+                }
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidType,
-                              allowUnsignedExpGolomb
-                                  ? QStringLiteral(
-                                        "Repeat counts require a previous scalar bits, enum, or "
-                                        "ue field")
-                                  : QStringLiteral(
-                                        "Controllers require a previous scalar bits or enum "
-                                        "field"),
+                              message,
                               range);
                 return std::nullopt;
             }
@@ -357,7 +825,12 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 return std::nullopt;
             }
             return ResolvedController{
-                *found->typedIndex, found->source->width, found->source->encoding};
+                *found->typedIndex,
+                found->source != nullptr ? found->source->width : quint8(0),
+                found->source != nullptr ? found->source->encoding
+                                         : DslFieldEncoding::Bits,
+                found->computed != nullptr,
+            };
         };
         const auto resolveConditionValue = [&](const std::optional<ResolvedController>& controller,
                                                quint64 expectedValue,
@@ -379,8 +852,11 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         };
         const auto resolveCondition = [&](const DslEqualityCondition& condition,
                                           const std::vector<DslTypedFieldCondition>& active) {
+            const ControllerUse use = condition.booleanShorthand
+                                          ? ControllerUse::Boolean
+                                          : ControllerUse::Equality;
             const auto controller = resolveController(
-                condition.fieldName, condition.range, active, false);
+                condition.fieldName, condition.range, active, use);
             return resolveConditionValue(
                 controller, condition.expectedValue, condition.range);
         };
@@ -397,7 +873,12 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     QStringLiteral(
                         "Fixed array expansion exceeds the structure materialization limit"),
                     field.range);
-                declaredFields.push_back({&field, std::nullopt, conditions});
+                declaredFields.push_back({field.name,
+                                          &field,
+                                          nullptr,
+                                          DslScalarType::U64,
+                                          std::nullopt,
+                                          conditions});
                 return std::nullopt;
             }
             const bool isBits = field.encoding == DslFieldEncoding::Bits;
@@ -410,7 +891,12 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                               DslDiagnosticCode::InvalidType,
                               QStringLiteral("Field encoding is invalid"),
                               field.range);
-                declaredFields.push_back({&field, std::nullopt, conditions});
+                declaredFields.push_back({field.name,
+                                          &field,
+                                          nullptr,
+                                          DslScalarType::U64,
+                                          std::nullopt,
+                                          conditions});
                 return std::nullopt;
             }
             if (isBits && (field.width == 0 || field.width > 64)) {
@@ -418,7 +904,12 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                               DslDiagnosticCode::InvalidBitWidth,
                               QStringLiteral("Bit field width must be in the range 1..64"),
                               field.range);
-                declaredFields.push_back({&field, std::nullopt, conditions});
+                declaredFields.push_back({field.name,
+                                          &field,
+                                          nullptr,
+                                          DslScalarType::U64,
+                                          std::nullopt,
+                                          conditions});
                 return std::nullopt;
             }
             if (!isBits && field.width != 0) {
@@ -549,7 +1040,12 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             } else {
                 typedStruct.fields.push_back(std::move(typedField));
             }
-            declaredFields.push_back({&field, firstTypedIndex, conditions});
+            declaredFields.push_back({field.name,
+                                      &field,
+                                      nullptr,
+                                      DslScalarType::U64,
+                                      firstTypedIndex,
+                                      conditions});
             if (!isBits) {
                 return std::nullopt;
             }
@@ -573,6 +1069,148 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             }
             return *fieldOffset + totalWidth;
         };
+        const auto compileComputed =
+            [&](const DslComputedField& field,
+                const std::vector<DslTypedFieldCondition>& conditions,
+                std::optional<quint64> fieldOffset) -> std::optional<quint64> {
+            if (typedStruct.fields.size() >= maximumExpandedFieldsPerStructure) {
+                addDiagnostic(
+                    result.diagnostics,
+                    DslDiagnosticCode::InvalidArrayLength,
+                    QStringLiteral(
+                        "Computed field expansion exceeds the structure materialization limit"),
+                    field.range);
+                declaredFields.push_back({field.name,
+                                          nullptr,
+                                          &field,
+                                          field.type,
+                                          std::nullopt,
+                                          conditions});
+                return fieldOffset;
+            }
+            if (!validScalarType(field.type)) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              QStringLiteral("Computed field type is invalid"),
+                              field.range);
+            }
+            for (const DslAnnotation& annotation : field.annotations) {
+                const bool descriptionValid =
+                    annotation.name == QStringLiteral("description") &&
+                    annotation.arguments.size() == 1 &&
+                    annotation.arguments.front().kind ==
+                        DslAnnotationValueKind::String;
+                const bool specificationValid =
+                    annotation.name == QStringLiteral("spec") &&
+                    annotation.arguments.size() == 2 &&
+                    annotation.arguments.at(0).kind ==
+                        DslAnnotationValueKind::String &&
+                    annotation.arguments.at(1).kind ==
+                        DslAnnotationValueKind::String;
+                if (!descriptionValid && !specificationValid) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidAnnotation,
+                                  QStringLiteral(
+                                      "Computed fields accept only valid @description and @spec "
+                                      "annotations"),
+                                  annotation.range);
+                }
+            }
+            const ExpressionResolver resolveField =
+                [&](const QString& name,
+                    const DslSourceRange& range)
+                -> std::optional<DslTypedExpression> {
+                const auto found = std::find_if(
+                    declaredFields.rbegin(),
+                    declaredFields.rend(),
+                    [&name](const DeclaredField& declared) {
+                        return declared.name == name;
+                    });
+                if (found == declaredFields.rend()) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::UnknownReference,
+                                  QStringLiteral(
+                                      "Computed field dependency must be declared earlier"),
+                                  range);
+                    return std::nullopt;
+                }
+                const bool available = std::all_of(
+                    found->conditions.begin(),
+                    found->conditions.end(),
+                    [&conditions, &sameCondition](
+                        const DslTypedFieldCondition& required) {
+                        return std::any_of(
+                            conditions.begin(),
+                            conditions.end(),
+                            [&required, &sameCondition](
+                                const DslTypedFieldCondition& candidate) {
+                                return sameCondition(required, candidate);
+                            });
+                    });
+                if (!available) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidCondition,
+                                  QStringLiteral(
+                                      "Computed field dependency is not guaranteed on the "
+                                      "current branch"),
+                                  range);
+                    return std::nullopt;
+                }
+                if (!found->typedIndex ||
+                    (found->source != nullptr &&
+                     (found->source->arrayLength ||
+                      found->source->encoding == DslFieldEncoding::SignedExpGolomb))) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidType,
+                                  QStringLiteral(
+                                      "Computed expressions require scalar unsigned fields"),
+                                  range);
+                    return std::nullopt;
+                }
+                DslTypedExpression reference;
+                reference.kind = DslTypedExpressionKind::FieldReference;
+                reference.type = found->computed != nullptr
+                                     ? found->scalarType
+                                     : DslScalarType::U64;
+                reference.fieldIndex = *found->typedIndex;
+                return reference;
+            };
+            ExpressionBuildState state;
+            const auto expression = compileExpression(field.expression,
+                                                      resolveField,
+                                                      program.pureFunctions.size(),
+                                                      1,
+                                                      state);
+            if (expression && expression->type != field.type) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              QStringLiteral(
+                                  "Computed expression type does not match its declaration"),
+                              field.expression.range);
+            }
+
+            DslTypedField typedField;
+            typedField.name = field.name;
+            for (const quint64 repeatIndex : repeatIndices) {
+                typedField.name += QStringLiteral("[%1]").arg(repeatIndex);
+            }
+            typedField.type.kind = field.type == DslScalarType::Bool
+                                       ? DslValueTypeKind::ComputedBool
+                                       : DslValueTypeKind::ComputedUnsigned;
+            typedField.computedExpression = expression;
+            typedField.conditions = conditions;
+            typedField.metadata = metadataForAnnotations(
+                field.annotations, typedStruct.metadata.specification);
+            typedField.metadata.typeName = field.type == DslScalarType::Bool
+                                               ? QStringLiteral("computed<bool>")
+                                               : QStringLiteral("computed<u64>");
+            typedField.range = field.range;
+            const quint32 typedIndex = static_cast<quint32>(typedStruct.fields.size());
+            typedStruct.fields.push_back(std::move(typedField));
+            declaredFields.push_back(
+                {field.name, nullptr, &field, field.type, typedIndex, conditions});
+            return fieldOffset;
+        };
         const auto compileItems = [&](const auto& self,
                                       const std::vector<DslStructItem>& items,
                                       const std::vector<DslTypedFieldCondition>& conditions,
@@ -581,6 +1219,10 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             for (const DslStructItem& item : items) {
                 if (item.kind == DslStructItemKind::Field) {
                     fieldOffset = compileField(item.field, conditions, fieldOffset);
+                    continue;
+                }
+                if (item.kind == DslStructItemKind::Computed) {
+                    fieldOffset = compileComputed(item.computed, conditions, fieldOffset);
                     continue;
                 }
                 if (item.kind == DslStructItemKind::Conditional) {
@@ -610,14 +1252,14 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     const auto controller = resolveController(item.repeatCountFieldName,
                                                               item.repeatCountFieldRange,
                                                               conditions,
-                                                              true);
+                                                              ControllerUse::Repeat);
                     if (item.repeatMaximum == 0) {
                         addDiagnostic(result.diagnostics,
                                       DslDiagnosticCode::InvalidArrayLength,
                                       QStringLiteral(
                                           "Bounded repeat maximum must be at least one"),
                                       item.repeatMaximumRange);
-                    } else if (controller &&
+                    } else if (controller && !controller->computed &&
                                controller->encoding == DslFieldEncoding::Bits &&
                                controller->width != 0 && controller->width < 64 &&
                                item.repeatMaximum >= (quint64{1} << controller->width)) {
@@ -692,7 +1334,10 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 std::vector<std::optional<DslTypedFieldCondition>> caseGuards;
                 caseGuards.reserve(item.switchArms.size());
                 const auto controller = resolveController(
-                    item.switchFieldName, item.switchFieldRange, conditions, false);
+                    item.switchFieldName,
+                    item.switchFieldRange,
+                    conditions,
+                    ControllerUse::Equality);
                 std::vector<quint64> caseValues;
                 caseValues.reserve(item.switchArms.size());
                 bool defaultSeen = false;
@@ -967,6 +1612,9 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     return DslOpcode::ReadUnsignedExpGolomb;
                 case DslValueTypeKind::SignedExpGolomb:
                     return DslOpcode::ReadSignedExpGolomb;
+                case DslValueTypeKind::ComputedBool:
+                case DslValueTypeKind::ComputedUnsigned:
+                    return DslOpcode::EvaluateComputed;
                 }
                 return DslOpcode::ReadUnsignedBits;
             }();

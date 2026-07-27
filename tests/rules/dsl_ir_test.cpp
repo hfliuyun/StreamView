@@ -13,6 +13,7 @@ using streamview::rules::DslEndian;
 using streamview::rules::DslEntryKind;
 using streamview::rules::DslOpcode;
 using streamview::rules::DslParser;
+using streamview::rules::DslTypedExpressionKind;
 using streamview::rules::DslValueTypeKind;
 
 namespace {
@@ -136,6 +137,217 @@ private slots:
         for (std::size_t index = 0; index < expected.size(); ++index) {
             QCOMPARE(compiled.program->bytecode.at(index).opcode, expected.at(index));
         }
+    }
+
+    void inlinesPureCallsIntoDeterministicComputedExpressions() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            pure u64 add(u64 left, u64 right) { return left + right; }
+            pure bool between(u64 value, u64 low, u64 high) {
+                return value >= low && value <= high;
+            }
+            struct Header {
+                bits<8> value;
+                computed<u64> adjusted = add(value, 1) @description("Adjusted.");
+                computed<bool> selected = between(adjusted, 2, 5) @spec("Example", "1");
+                bits<16, little> tail;
+            }
+            entry Header;
+        )"));
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+
+        const auto first = DslCompiler::compile(parsed.program);
+        const auto second = DslCompiler::compile(parsed.program);
+        QVERIFY2(first.succeeded(),
+                 first.diagnostics.empty()
+                     ? ""
+                     : qPrintable(first.diagnostics.front().message));
+        QVERIFY(second.succeeded());
+        const auto& fields = first.program->structs.front().fields;
+        QCOMPARE(fields.size(), std::size_t(4));
+        QCOMPARE(fields.at(0).type.kind, DslValueTypeKind::UnsignedBits);
+        QCOMPARE(fields.at(1).type.kind, DslValueTypeKind::ComputedUnsigned);
+        QCOMPARE(fields.at(2).type.kind, DslValueTypeKind::ComputedBool);
+        QCOMPARE(fields.at(3).type.endian, DslEndian::Little);
+        QCOMPARE(fields.at(1).metadata.description, QStringLiteral("Adjusted."));
+        QVERIFY(fields.at(2).metadata.specification.has_value());
+        QVERIFY(fields.at(1).computedExpression.has_value());
+        QVERIFY(fields.at(2).computedExpression.has_value());
+
+        const auto& adjusted = *fields.at(1).computedExpression;
+        QCOMPARE(adjusted.kind, DslTypedExpressionKind::Binary);
+        QCOMPARE(adjusted.binaryOperator,
+                 streamview::rules::DslBinaryOperator::Add);
+        QCOMPARE(adjusted.operands.size(), std::size_t(2));
+        QCOMPARE(adjusted.operands.at(0).kind,
+                 DslTypedExpressionKind::FieldReference);
+        QCOMPARE(adjusted.operands.at(0).fieldIndex, quint32(0));
+        QCOMPARE(adjusted.operands.at(1).unsignedValue, quint64(1));
+
+        const auto& selected = *fields.at(2).computedExpression;
+        QCOMPARE(selected.kind, DslTypedExpressionKind::Binary);
+        QCOMPARE(selected.binaryOperator,
+                 streamview::rules::DslBinaryOperator::LogicalAnd);
+
+        const std::vector<DslOpcode> expected{
+            DslOpcode::BeginStructure,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::EvaluateComputed,
+            DslOpcode::EvaluateComputed,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::EndStructure,
+        };
+        QCOMPARE(first.program->bytecode.size(), expected.size());
+        QCOMPARE(first.program->bytecode.size(), second.program->bytecode.size());
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            QCOMPARE(first.program->bytecode.at(index).opcode, expected.at(index));
+            QCOMPARE(first.program->bytecode.at(index).opcode,
+                     second.program->bytecode.at(index).opcode);
+            QCOMPARE(first.program->bytecode.at(index).operand,
+                     second.program->bytecode.at(index).operand);
+        }
+    }
+
+    void lowersComputedControllersIntoExistingGuardsAndRepeatBounds() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header {
+                bits<2> raw;
+                computed<u64> kind = raw;
+                computed<bool> present = kind == 1;
+                if (present) { bits<1> conditional_value; }
+                switch (kind) { case 1: { bits<1> switched_value; } }
+                computed<u64> count = kind;
+                repeat (count, 2) {
+                    computed<u64> local = count + 1;
+                    bits<1> repeated_value;
+                }
+            }
+            entry Header;
+        )"));
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& structure = compiled.program->structs.front();
+        const auto& fields = structure.fields;
+        QCOMPARE(fields.size(), std::size_t(10));
+        QCOMPARE(fields.at(3).name, QStringLiteral("conditional_value"));
+        QCOMPARE(fields.at(3).conditions.front().fieldIndex, quint32(2));
+        QCOMPARE(fields.at(3).conditions.front().expectedValue, quint64(1));
+        QCOMPARE(fields.at(4).name, QStringLiteral("switched_value"));
+        QCOMPARE(fields.at(4).conditions.front().fieldIndex, quint32(1));
+        QCOMPARE(fields.at(6).name, QStringLiteral("local[0]"));
+        QCOMPARE(fields.at(8).name, QStringLiteral("local[1]"));
+        QCOMPARE(fields.at(6).conditions.front().fieldIndex, quint32(5));
+        QCOMPARE(fields.at(6).conditions.front().op,
+                 DslConditionOperator::GreaterThan);
+        QCOMPARE(fields.at(8).conditions.front().expectedValue, quint64(1));
+        QCOMPARE(structure.repeatBounds.size(), std::size_t(1));
+        QCOMPARE(structure.repeatBounds.front().controllerFieldIndex, quint32(5));
+        QCOMPARE(structure.repeatBounds.front().firstFieldIndex, quint32(6));
+
+        const auto assertBound = std::find_if(
+            compiled.program->bytecode.begin(),
+            compiled.program->bytecode.end(),
+            [](const auto& instruction) {
+                return instruction.opcode == DslOpcode::AssertRepeatCount;
+            });
+        QVERIFY(assertBound != compiled.program->bytecode.end());
+        QVERIFY(assertBound + 1 != compiled.program->bytecode.end());
+        QCOMPARE((assertBound + 1)->opcode, DslOpcode::EvaluateComputed);
+    }
+
+    void rejectsExpandedPureExpressionsAndComputedProjectionOverflow() {
+        const auto balanced = [](const auto& self, int leaves) -> QString {
+            if (leaves == 1) {
+                return QStringLiteral("value");
+            }
+            const int left = leaves / 2;
+            return QStringLiteral("(%1 + %2)")
+                .arg(self(self, left), self(self, leaves - left));
+        };
+        const QString oversizedSource =
+            QStringLiteral("pure u64 large(u64 value) { return %1; } "
+                           "struct Header { bits<1> value; "
+                           "computed<u64> result = large(value) + large(value); } "
+                           "entry Header;")
+                .arg(balanced(balanced, 128));
+        const auto oversized = DslParser::parse(oversizedSource);
+        const auto projection = DslParser::parse(QStringLiteral(
+            "struct Header { bits<17> count; repeat (count, 99999) { "
+            "computed<u64> value = count; } } entry Header;"));
+        QVERIFY2(oversized.succeeded(),
+                 oversized.diagnostics.empty()
+                     ? ""
+                     : qPrintable(oversized.diagnostics.front().message));
+        QVERIFY(projection.succeeded());
+
+        const auto compiledOversized = DslCompiler::compile(oversized.program);
+        const auto compiledProjection = DslCompiler::compile(projection.program);
+        QVERIFY(!compiledOversized.succeeded());
+        QVERIFY(hasDiagnostic(compiledOversized, DslDiagnosticCode::InvalidExpression));
+        QVERIFY(!compiledProjection.succeeded());
+        QVERIFY(hasDiagnostic(compiledProjection, DslDiagnosticCode::InvalidArrayLength));
+    }
+
+    void boundsInliningWorkForUnusedPureArguments() {
+        QString source = QStringLiteral(
+            "pure u64 first(u64 p0, u64 p1, u64 p2, u64 p3, "
+            "u64 p4, u64 p5, u64 p6, u64 p7, u64 p8, u64 p9, "
+            "u64 p10, u64 p11, u64 p12, u64 p13, u64 p14, u64 p15) { "
+            "return p0; } ");
+        QString previous = QStringLiteral("value");
+        for (int level = 1; level <= 4; ++level) {
+            QStringList arguments;
+            for (int index = 0; index < 16; ++index) {
+                arguments.push_back(previous);
+            }
+            const QString functionName = QStringLiteral("level%1").arg(level);
+            source += QStringLiteral("pure u64 %1(u64 value) { return first(%2); } ")
+                          .arg(functionName, arguments.join(QStringLiteral(", ")));
+            previous = functionName + QStringLiteral("(value)");
+        }
+        source += QStringLiteral(
+            "struct Header { bits<1> value; computed<u64> result = level4(value); } "
+            "entry Header;");
+        const auto parsed = DslParser::parse(source);
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(!compiled.succeeded());
+        QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidExpression));
+    }
+
+    void rejectsMalformedComputedExpressionAst() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value; computed<u64> result = value + 1; } "
+            "entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        auto invalidKind = parsed.program;
+        invalidKind.structs.front().items.at(1).computed.expression.kind =
+            static_cast<streamview::rules::DslExpressionKind>(255);
+        const auto compiledKind = DslCompiler::compile(invalidKind);
+        QVERIFY(!compiledKind.succeeded());
+        QVERIFY(hasDiagnostic(compiledKind, DslDiagnosticCode::InvalidExpression));
+
+        auto invalidOperator = parsed.program;
+        invalidOperator.structs.front().items.at(1).computed.expression.binaryOperator =
+            static_cast<streamview::rules::DslBinaryOperator>(255);
+        const auto compiledOperator = DslCompiler::compile(invalidOperator);
+        QVERIFY(!compiledOperator.succeeded());
+        QVERIFY(hasDiagnostic(compiledOperator, DslDiagnosticCode::InvalidExpression));
     }
 
     void expandsFixedLengthArraysIntoDeterministicTypedFieldsAndBytecode() {

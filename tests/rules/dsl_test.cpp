@@ -6,11 +6,14 @@
 #include <optional>
 
 using streamview::rules::DslAnnotationValueKind;
+using streamview::rules::DslBinaryOperator;
 using streamview::rules::DslDiagnosticCode;
 using streamview::rules::DslEndian;
+using streamview::rules::DslExpressionKind;
 using streamview::rules::DslFieldEncoding;
 using streamview::rules::DslLexer;
 using streamview::rules::DslParser;
+using streamview::rules::DslScalarType;
 using streamview::rules::DslSwitchArmKind;
 using streamview::rules::DslStructItemKind;
 using streamview::rules::DslTokenKind;
@@ -43,6 +46,34 @@ private slots:
         QCOMPARE(result.tokens.at(5).kind, DslTokenKind::StringLiteral);
         QCOMPARE(result.tokens.at(5).lexeme, QStringLiteral("line\nvalue"));
         QCOMPARE(result.tokens.back().kind, DslTokenKind::EndOfFile);
+    }
+
+    void lexesComputedExpressionOperators() {
+        const auto result = DslLexer::lex(
+            QStringLiteral("! != * / % + - < <= > >= == && ||"));
+
+        QVERIFY(result.succeeded());
+        const std::vector<DslTokenKind> expected{
+            DslTokenKind::Bang,
+            DslTokenKind::BangEqual,
+            DslTokenKind::Star,
+            DslTokenKind::Slash,
+            DslTokenKind::Percent,
+            DslTokenKind::Plus,
+            DslTokenKind::Minus,
+            DslTokenKind::Less,
+            DslTokenKind::LessEqual,
+            DslTokenKind::Greater,
+            DslTokenKind::GreaterEqual,
+            DslTokenKind::EqualEqual,
+            DslTokenKind::AndAnd,
+            DslTokenKind::OrOr,
+            DslTokenKind::EndOfFile,
+        };
+        QCOMPARE(result.tokens.size(), expected.size());
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            QCOMPARE(result.tokens.at(index).kind, expected.at(index));
+        }
     }
 
     void parsesMinimumProgramIntoTypedIr() {
@@ -450,6 +481,160 @@ private slots:
             "struct Header { bits<2> count; repeat (count,) { bits<1> value; } } "
             "entry Header;"));
         QVERIFY(hasDiagnostic(missingMaximum, DslDiagnosticCode::MissingToken));
+    }
+
+    void parsesPureFunctionsComputedFieldsAndBooleanConditions() {
+        const auto result = DslParser::parse(QStringLiteral(R"(
+            pure bool between(u64 value, u64 low, u64 high) {
+                return value >= low && value <= high;
+            }
+            pure u64 add(u64 value, u64 amount) {
+                return value + amount;
+            }
+            struct Header {
+                bits<5> type;
+                @description("Video coding layer flag.")
+                computed<bool> is_vcl = between(type, 1, 5) @spec("H.264", "7.4.1");
+                computed<u64> adjusted = add(type, 1);
+                if (is_vcl) { computed<u64> selected = adjusted + 1; }
+                else { bits<1> reserved; }
+            }
+            entry Header;
+        )"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        QCOMPARE(result.program.pureFunctions.size(), std::size_t(2));
+        const auto& between = result.program.pureFunctions.front();
+        QCOMPARE(between.name, QStringLiteral("between"));
+        QCOMPARE(between.returnType, DslScalarType::Bool);
+        QCOMPARE(between.parameters.size(), std::size_t(3));
+        QCOMPARE(between.parameters.front().name, QStringLiteral("value"));
+        QCOMPARE(between.parameters.front().type, DslScalarType::U64);
+        QCOMPARE(between.expression.kind, DslExpressionKind::Binary);
+        QCOMPARE(between.expression.binaryOperator, DslBinaryOperator::LogicalAnd);
+        QCOMPARE(between.expression.operands.size(), std::size_t(2));
+
+        const auto& items = result.program.structs.front().items;
+        QCOMPARE(items.size(), std::size_t(4));
+        QCOMPARE(items.at(1).kind, DslStructItemKind::Computed);
+        QCOMPARE(items.at(1).computed.name, QStringLiteral("is_vcl"));
+        QCOMPARE(items.at(1).computed.type, DslScalarType::Bool);
+        QCOMPARE(items.at(1).computed.expression.kind, DslExpressionKind::Call);
+        QCOMPARE(items.at(1).computed.expression.operands.size(), std::size_t(3));
+        QCOMPARE(items.at(1).computed.annotations.size(), std::size_t(2));
+        QCOMPARE(items.at(2).computed.type, DslScalarType::U64);
+        QCOMPARE(items.at(3).kind, DslStructItemKind::Conditional);
+        QVERIFY(items.at(3).condition.booleanShorthand);
+        QCOMPARE(items.at(3).condition.fieldName, QStringLiteral("is_vcl"));
+        QCOMPARE(items.at(3).condition.expectedValue, quint64(1));
+        QCOMPARE(items.at(3).thenItems.front().kind, DslStructItemKind::Computed);
+        QCOMPARE(items.at(3).elseItems.front().kind, DslStructItemKind::Field);
+    }
+
+    void parsesBooleanConditionsWithOptionalElse() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct Header { computed<bool> present = true; "
+            "if (present) { bits<1> value; } } entry Header;"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& conditional = result.program.structs.front().items.at(1);
+        QCOMPARE(conditional.kind, DslStructItemKind::Conditional);
+        QVERIFY(conditional.condition.booleanShorthand);
+        QVERIFY(conditional.elseItems.empty());
+    }
+
+    void rejectsInvalidPureAndComputedDeclarations() {
+        struct Case final {
+            QString source;
+            DslDiagnosticCode diagnostic;
+        };
+        const std::vector<Case> cases{
+            {QStringLiteral(
+                 "@description(\"bad\") pure bool flag() { return true; } "
+                 "struct Header { bits<1> value; } entry Header;"),
+             DslDiagnosticCode::InvalidAnnotation},
+            {QStringLiteral(
+                 "pure u64 duplicate(u64 value, u64 value) { return value; } "
+                 "struct Header { bits<1> value; } entry Header;"),
+             DslDiagnosticCode::DuplicateName},
+            {QStringLiteral(
+                 "pure bool first() { return later(); } "
+                 "pure bool later() { return true; } "
+                 "struct Header { bits<1> value; } entry Header;"),
+             DslDiagnosticCode::UnknownReference},
+            {QStringLiteral(
+                 "struct Header { computed<bool> flags[2] = true; } entry Header;"),
+             DslDiagnosticCode::InvalidArrayLength},
+            {QStringLiteral(
+                 "struct Header { computed<u64> value = 1 @equals(1); } entry Header;"),
+             DslDiagnosticCode::InvalidAnnotation},
+            {QStringLiteral(
+                 "struct Header { computed<u64> value = missing + 1; } entry Header;"),
+             DslDiagnosticCode::UnknownReference},
+            {QStringLiteral(
+                 "struct Header { se delta; computed<u64> value = delta; } entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral(
+                 "struct Header { bits<1> flags[2]; computed<u64> value = flags; } "
+                 "entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral(
+                 "struct Header { computed<u64> value = true + 1; } entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral(
+                 "struct Header { computed<bool> flag = true; "
+                 "switch (flag) { case 1: { bits<1> value; } } } entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral(
+                 "struct Header { computed<bool> flag = true; "
+                 "repeat (flag, 1) { bits<1> value; } } entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral(
+                 "struct Header { bits<1> selector; if (selector == 1) { "
+                 "computed<u64> local = 1; } computed<u64> value = local; } "
+                 "entry Header;"),
+             DslDiagnosticCode::InvalidCondition},
+        };
+
+        for (const Case& testCase : cases) {
+            const auto result = DslParser::parse(testCase.source);
+            QVERIFY(!result.succeeded());
+            QVERIFY(hasDiagnostic(result, testCase.diagnostic));
+        }
+    }
+
+    void recoversAfterMalformedComputedCallArguments() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "pure u64 add(u64 left, u64 right) { return left + right; } "
+            "struct Header { computed<u64> bad = add(1, ); bits<1> tail; } "
+            "entry Header;"));
+
+        QVERIFY(!result.succeeded());
+        QVERIFY(hasDiagnostic(result, DslDiagnosticCode::UnexpectedToken));
+        QCOMPARE(result.program.structs.size(), std::size_t(1));
+        QCOMPARE(result.program.structs.front().items.size(), std::size_t(2));
+        QCOMPARE(result.program.structs.front().items.back().field.name,
+                 QStringLiteral("tail"));
+    }
+
+    void recoversAfterInvalidBooleanConditionExpression() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct Header { computed<bool> flag = true; "
+            "if (flag != false) { bits<1> selected; } bits<1> tail; } "
+            "entry Header;"));
+
+        QVERIFY(!result.succeeded());
+        QVERIFY(hasDiagnostic(result, DslDiagnosticCode::MissingToken));
+        QCOMPARE(result.program.structs.size(), std::size_t(1));
+        const auto& items = result.program.structs.front().items;
+        QCOMPARE(items.size(), std::size_t(3));
+        QCOMPARE(items.back().field.name, QStringLiteral("tail"));
     }
 
     void rejectsInvalidEndianAndUnknownEnumReferences() {
