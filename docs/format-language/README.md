@@ -432,13 +432,17 @@ access window and publishes `H264StartCodeRecord` values in batches bounded by
 both record count and inspected source positions. The default work budget is
 64 KiB of source positions per call, and the monotonic scan cursor provides UI
 progress. Each record contains the three- or four-byte start-code span and the
-following NAL-unit span (an empty final unit has no payload span). Prefixes may
-cross a window boundary. Cancellation is checked at least every 1,024 inspected
-source positions; already published records remain valid and the batch reports
-`cancelled`. The NAL offset and zero length remain valid for an empty unit even
-though its optional payload span is absent. A source whose byte size cannot be
-represented by the 64-bit source-bit coordinate model is rejected before the
-scanner reads it.
+following NAL-unit span (an empty final unit has no payload span). The NAL-unit
+span excludes the maximal `trailing_zero_8bits` run before the next start code
+or end of source; the scanner exposes that framing run as a separate span. A
+`00 00 00 01` prefix remains one four-byte start code; between two start codes,
+any additional preceding zeros belong to the previous unit's trailing framing.
+Prefixes may cross a window boundary. Cancellation is checked at least every
+1,024 inspected source positions; already published records remain valid and
+the batch reports `cancelled`. The NAL offset and zero length remain valid for
+an empty unit even though its optional payload span is absent. A source whose
+byte size cannot be represented by the 64-bit source-bit coordinate model is
+rejected before the scanner reads it.
 
 The built-in H.264 Annex B candidate detector inspects at most the first 64 KiB
 of an already loaded source prefix. It does not use the file name or extension.
@@ -461,11 +465,38 @@ it.
 The bundled minimum H.264 rule uses the grammar above; the tree projection in
 this section is profile/runtime behavior rather than additional DSL syntax. For
 each scanner record, the Annex B runner publishes a `nal_unit[index]` region
-whose source location covers the start code and any non-empty NAL payload. Its
-`start_code` child covers only the three- or four-byte prefix. A
-`NalUnitHeader` child consumes exactly the first eight payload bits and exposes
-`forbidden_zero_bit`, `nal_ref_idc`, and `nal_unit_type`; payload bits after the
-header remain uninterpreted by this minimum profile.
+whose source location covers the start code, any non-empty NAL payload, and any
+separately identified trailing-zero framing. Its `start_code` child covers only
+the three- or four-byte prefix. A `NalUnitHeader` child consumes exactly the
+first eight payload bits and exposes `forbidden_zero_bit`, `nal_ref_idc`, and
+`nal_unit_type`.
+
+After a successful direct header, an ordinary non-empty payload is mapped from
+EBSP to an RBSP logical view without copying bytes. Each complete `00 00 03`
+sequence excludes the `03` as an
+`emulation_prevention_three_byte[index]`; adjacent forwarded bytes are
+coalesced into source spans. The NAL children appear in this order:
+`start_code`, `NalUnitHeader`, optional `rbsp_payload`, zero or more
+`emulation_prevention_three_byte[index]` regions in source order, and optional
+`trailing_zero_8bits`. NAL-unit types `14`, `20`, and `21` require extension
+headers that this profile does not yet parse, so their bytes after the direct
+header remain uninterpreted and are not passed to the mapper.
+
+Annex B analysis batches have an independent positive mapped-byte budget in
+addition to their record-count and inspected-position budgets. The default is
+64 KiB of EBSP source bytes per call. Exhausting that budget reports
+`in-progress` and preserves the mapper's committed prefix so a later batch can
+resume the same NAL.
+
+The mapper reports source-located conformance issues separately from the RBSP
+transformation. It still excludes `03` from `00 00 03 xx` when `xx > 03`, and
+reports that prohibited sequence; it forwards but reports `00 00 00`,
+`00 00 01`, and `00 00 02`, and reports a non-empty payload whose final byte is
+`00`. These issues retain the complete `rbsp_payload` and excluded regions,
+mark only the affected NAL invalid, and do not prevent later NAL units from
+being analyzed. Cancellation, source error, and resource-limit failures retain
+the direct header and publish the committed RBSP prefix with the corresponding
+state and diagnostic before terminalizing the NAL and root.
 
 An empty final NAL still publishes its NAL region and start-code child. It also
 publishes an invalid, zero-field `NalUnitHeader`; the containing NAL's

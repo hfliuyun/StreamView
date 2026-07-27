@@ -326,7 +326,10 @@ source failure 或溢出都会把 reader seek 回字段起点，不创建半成�
 内建 `h264_start_code` scanner 通过 64 KiB 随机访问窗口读取 source，并按记录数和已检查
 source position 数量双重限制每个 batch。默认每次最多检查 64 KiB source position，单调
 递增的 scan cursor 用于 UI 进度。每条记录包含三字节或四字节 start code 的 source 区间，
-以及后续 NAL unit 区间（最后一个空 unit 没有 payload 区间）。start code 可以跨窗口。
+以及后续 NAL unit 区间（最后一个空 unit 没有 payload 区间）。NAL unit 区间不包含下一个
+start code 或 source 结尾之前最长的一段 `trailing_zero_8bits`；scanner 会把这段 framing
+作为独立 source 区间公开。`00 00 00 01` 仍作为一个四字节 start code；在两个 start code
+之间，更早的额外零字节属于前一个 unit 的 trailing framing。start code 可以跨窗口。
 每检查至少 1,024 个 source position 就检查一次取消；已经发布的记录保持有效，batch 返回
 `cancelled`。空 unit 虽然没有可选 payload 区间，其 NAL offset 和零 length 仍然有效。
 如果 source 字节大小无法用 64 位源 bit 坐标模型表示，scanner 会在读取前拒绝该 source。
@@ -347,9 +350,28 @@ source position 数量双重限制每个 batch。默认每次最多检查 64 KiB
 
 内置最小 H.264 规则使用上面的语法；本节的分析树投影属于 profile/运行时行为，不是新增
 DSL 语法。Annex B runner 为每条 scanner record 发布一个 `nal_unit[index]` region，其源位置
-覆盖 start code 和非空 NAL payload。它的 `start_code` 子节点只覆盖三字节或四字节前缀。
-`NalUnitHeader` 子节点只消耗 payload 的前 8 bit，并公开 `forbidden_zero_bit`、
-`nal_ref_idc` 和 `nal_unit_type`；最小 profile 不解释 header 之后的 payload bit。
+覆盖 start code、非空 NAL payload 和单独识别出的 trailing-zero framing。它的 `start_code`
+子节点只覆盖三字节或四字节前缀。`NalUnitHeader` 子节点只消耗 payload 的前 8 bit，并公开
+`forbidden_zero_bit`、`nal_ref_idc` 和 `nal_unit_type`。
+
+direct header 成功后，普通非空 payload 会在不复制字节的情况下从 EBSP 映射为 RBSP logical
+view。每个完整的 `00 00 03` 都会排除其中的 `03`，并把它呈现为
+`emulation_prevention_three_byte[index]`；相邻的 forwarded byte 会合并为 source span。NAL
+子节点固定按以下顺序出现：`start_code`、`NalUnitHeader`、可选的 `rbsp_payload`、按 source
+顺序排列的零个或多个 `emulation_prevention_three_byte[index]` region，以及可选的
+`trailing_zero_8bits`。NAL unit type `14`、`20`、`21` 需要当前 profile 尚未解析的 extension
+header，因此 direct header 之后的字节仍保持 uninterpreted，也不会传给 mapper。
+
+Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
+的 mapped-byte budget；默认每次最多处理 64 KiB EBSP source byte。预算耗尽时返回
+`in-progress`，并保留 mapper 已提交的前缀，后续 batch 可从同一个 NAL 继续。
+
+mapper 把带 source 位置的 conformance issue 与 RBSP transformation 分开报告。对于
+`00 00 03 xx` 且 `xx > 03`，仍排除 `03` 并报告该禁止序列；`00 00 00`、`00 00 01` 和
+`00 00 02` 会被转发但同时报告；非空 payload 的最后一个字节为 `00` 时也会报告。此类 issue
+保留完整的 `rbsp_payload` 与 excluded region，只把受影响的 NAL 标记为 invalid，并继续分析
+后续 NAL。取消、source error 或 resource limit 失败会保留 direct header，按已提交的 RBSP
+前缀发布对应 state 和 diagnostic，然后再终止当前 NAL 与 root。
 
 最后一个空 NAL 仍会发布 NAL region 和 start-code 子节点，并发布一个没有字段的 invalid
 `NalUnitHeader`；所属 NAL 的 `truncated-source` 汇总诊断锚定在已知 NAL region。
