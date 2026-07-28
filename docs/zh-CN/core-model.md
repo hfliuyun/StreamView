@@ -90,6 +90,26 @@ source 末尾的页会标记为 `end-of-source`，但仍属于成功的页结果
 buffer 中未写入的部分。超出范围的 page 是空的 end-of-source 结果；发生 page 坐标
 溢出则是错误。
 
+## 分页分析缓存
+
+`PagedCache` 使用 SQLite WAL 把可重建的 progressive-index 与 materialized-result
+数据保存为不透明 page；它不会缓存媒体 source byte，也不解释 payload 编码。调用方
+以数据库路径和不透明 namespace 打开一个 thread-affine cache instance，然后按精确
+page key 读取，或一次提交完整 batch。在 M5 用 source fingerprint、精确 rule-package
+identity 与 content hash、schema/cache namespace 以及 payload-format version 绑定之前，
+namespace 只负责分区；仅凭 path-like source identity 不得跨 session 复用。
+
+每个 payload 为 1 至 64 KiB。一次原子提交包含 1 至 256 个互异 page key，因此最多
+16 MiB；成功时所有替换一起可见，失败时一个也不可见。page 缺失是正常 cache miss。
+wrong-thread 访问和非法 key 会在接触 storage 前被拒绝。
+
+打开 cache 时会检查 QSQLITE runtime driver、WAL 配置、StreamView application ID、
+schema version、必需 schema 和 SQLite 完整性。SQLite 回滚中断的 transaction；
+persistent marker 让下次打开可以显式识别并清理由 process crash 遗留的 batch，清理
+失败则中止打开。在 `synchronous=NORMAL` 下，这不承诺断电后仍持久。cache 只保存
+已经提交的可重建 page，不恢复 live analyzer、scanner、mapper、analysis tree 或
+context directory。
+
 ## Bit Reader
 
 有界 bit reader 每次按最高有效位优先顺序读取 1 至 64 bit，位置相对于声明的

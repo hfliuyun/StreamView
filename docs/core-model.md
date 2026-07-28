@@ -108,6 +108,32 @@ source and never expose the unwritten part of the page buffer. An out-of-range
 page is an empty end-of-source result; an overflowing page coordinate is an
 error.
 
+## Paged Analysis Cache
+
+`PagedCache` stores rebuildable progressive-index and materialized-result data
+as opaque pages in SQLite WAL. It does not cache media-source bytes or interpret
+the payload encoding. A caller opens one thread-affine cache instance with a
+database path and an opaque namespace, then reads exact page keys or commits a
+complete batch. The namespace is only a partition until M5 binds it to a source
+fingerprint, exact rule-package identity and content hash, schema/cache
+namespace, and payload-format versions; path-like source identity alone must
+never authorize cross-session reuse.
+
+Each payload contains 1 through 64 KiB. One atomic commit contains 1 through
+256 unique page keys and therefore at most 16 MiB. A successful commit exposes
+every replacement together; a failed commit exposes none. Missing pages are
+normal cache misses. Wrong-thread access and invalid keys are rejected before
+storage is touched.
+
+Cache open verifies the QSQLITE runtime driver, WAL configuration, StreamView
+application ID, schema version, required schema, and SQLite integrity. SQLite
+rolls back an interrupted transaction, while a persistent marker lets the next
+open identify and remove batches abandoned by a process crash. Marker-cleanup
+failure aborts open. With `synchronous=NORMAL`, this is not a power-loss
+durability promise. The cache stores committed rebuildable pages only; it does
+not restore a live analyzer, scanner, mapper, analysis tree, or context
+directory.
+
 ## Bit Reader
 
 The bounded bit reader consumes 1 through 64 bits at a time in
