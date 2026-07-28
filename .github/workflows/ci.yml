@@ -116,7 +116,7 @@ jobs:
         run: cmake --build --preset ci
 
       - name: Test
-        run: ctest --preset ci
+        run: ctest --preset ci --output-on-failure
 
       - name: Install deployable tree
         run: cmake --install build/ci --prefix "${{ github.workspace }}/dist"

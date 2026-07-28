@@ -156,7 +156,8 @@ class UniqueHandle final {
 [[nodiscard]] UniqueHandle openWindowsPath(const QString& path) {
     const QString nativePath = QDir::toNativeSeparators(path);
     return UniqueHandle(CreateFileW(reinterpret_cast<LPCWSTR>(nativePath.utf16()), GENERIC_READ,
-                                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                    OPEN_EXISTING,
                                     FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
                                     nullptr));
 }
