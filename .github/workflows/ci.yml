@@ -118,6 +118,23 @@ jobs:
       - name: Test
         run: ctest --preset ci --output-on-failure
 
+      - name: Report Windows test failure
+        if: failure() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $temporary = Join-Path $env:GITHUB_WORKSPACE 'build/ci/Testing/Temporary'
+          $failedPath = Join-Path $temporary 'LastTestsFailed.log'
+          $detailPath = Join-Path $temporary 'LastTest.log'
+          $failed = if (Test-Path $failedPath) { Get-Content $failedPath -Raw } else { 'unknown test' }
+          $detail = if (Test-Path $detailPath) { Get-Content $detailPath -Raw } else { 'no CTest log' }
+          $message = "Failed tests:`n$failed`nCTest log:`n$detail"
+          if ($message.Length -gt 60000) {
+            $message = $message.Substring(0, 60000)
+          }
+          $message = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+          Write-Output "::error title=Windows CTest failure::$message"
+          exit 0
+
       - name: Install deployable tree
         run: cmake --install build/ci --prefix "${{ github.workspace }}/dist"
 
