@@ -882,6 +882,36 @@ cancelled partial result remains cancelled, so a root that later reaches
 `materialized` may still belong to a tree with partial results. This in-memory
 recovery is not a serialized or cross-process checkpoint contract.
 
+## Position-Aware Context Directories
+
+The runtime infrastructure exposes a format-neutral context-directory type for
+completed definitions that later syntax may reference. The accepted kinds are
+H.264 SPS and PPS, AAC AudioSpecificConfig, and ISO BMFF sample descriptions. A
+key also contains a numeric scope so equal sample-description or parameter-set
+values in different tracks do not collide. This slice adds the core type, not
+session ownership or DSL syntax; typed format declarations, payload access, and
+runner integration arrive with the official format rules.
+
+A definition is selectable only at source positions at or after its complete
+source span's exclusive end. Among such definitions for the same key, lookup
+selects the one ending nearest the query position. Registration may occur out of
+source order, but same-key spans cannot overlap and stable definition IDs follow
+append order.
+
+A dependent definition binds exact dependency-generation IDs selected before
+its own source span starts. At a consumer position, every dependency must still
+resolve to that same generation. A later redefinition makes the dependent
+context unavailable; the runtime neither falls back to an older requested-key
+generation nor guesses. Malformed definitions are not registered, rejected
+registration is transactional, and later cross-generation dependency cycles
+or dependency chains beyond 64 definitions produce dependency-unavailable
+results.
+
+The directory owns only key, span, analysis-node, and dependency identity. The
+rule owner retains the typed format payload. It performs no source reads and
+follows the single-writer analysis-worker model. See
+[ADR-0028](../adr/0028-resolve-context-generations-by-source-position.md).
+
 ## Sandbox And Resource Limits
 
 Rules receive bounded, read-only access to the current media source. The runtime

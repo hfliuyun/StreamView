@@ -708,6 +708,32 @@ entry sequence 的 analysis root 上已经过时的 cancellation diagnostic。�
 partial result 提交的 NAL 仍保持 cancelled，因此后来进入 `materialized` 的 root 仍可能属于
 含 partial result 的 tree。这种内存恢复不是 serialized 或 cross-process checkpoint 契约。
 
+## 位置感知上下文目录
+
+runtime infrastructure 为供后续语法引用的 completed definition 暴露一个与具体格式
+无关的 context-directory 类型。当前接受的 kind 包含 H.264 SPS/PPS、AAC
+AudioSpecificConfig 和 ISO BMFF sample description。key 还包含数字 scope，防止不同
+track 中相同 sample-description 或 parameter-set value 冲突。本切片新增 core type，
+不新增 session ownership 或 DSL syntax；typed format declaration、payload access
+与 runner integration 随官方格式规则实现。
+
+definition 只有在查询 source position 到达或越过其完整 source span 的排他结束
+位置时才可选。同一 key 的多个可选 definition 中，lookup 选择结束位置最接近
+查询位置的一项。注册可以不按 source 顺序，但同 key span 不能重叠，稳定
+definition ID 仍按追加顺序分配。
+
+dependent definition 会绑定在自身 source span 开始前选中的精确
+dependency-generation ID。在 consumer 位置，每个 dependency 都必须仍解析到同一
+generation。后续重定义会让 dependent context unavailable；runtime 不会退回所请求
+key 的更旧 generation，也不会猜测。malformed definition 不注册，被拒绝的注册是
+事务式的；
+后续跨 generation dependency cycle 会产生 dependency-unavailable result，超过 64 个
+definition 的 dependency chain 也会得到同一结果。
+
+目录只持有 key、span、analysis-node 和 dependency identity，typed format payload 仍由
+rule owner 保存。目录不读取 source，并遵循 analysis-worker 单写者模型。详见
+[ADR-0028](../adr/0028-resolve-context-generations-by-source-position.md)。
+
 ## 沙箱与资源限制
 
 规则只能以有界、只读方式访问当前媒体源。运行时限制执行步数、输入输出范围、递归深度、

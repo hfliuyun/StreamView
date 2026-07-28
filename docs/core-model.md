@@ -39,6 +39,43 @@ to another view, and a range outside the logical view. Values without an exact
 mapping must later be represented as computed fields rather than source-backed
 locations.
 
+## Position-Aware Context Directories
+
+`ContextDirectory` records completed source-backed definitions that later
+syntax may reference. Its closed definition kinds cover H.264 SPS and PPS, AAC
+AudioSpecificConfig, and ISO BMFF sample descriptions. A key combines that kind
+with a host-assigned numeric scope and kind-specific value. Scope zero is the
+natural standalone-stream scope; a container uses distinct stable scopes for
+tracks whose context IDs may otherwise collide.
+
+Each definition has a non-empty absolute source span, an analysis-node ID, a
+monotonic definition ID, and exact dependency-generation IDs. For a key and
+query source position, the directory selects the definition whose exclusive
+source-span end is the greatest end not after the query. A definition is not
+visible while the query is inside that definition, becomes visible exactly at
+its exclusive end, and never affects earlier positions.
+
+Definitions for one key cannot overlap, but registration need not follow source
+order. This permits lazy and known-offset analysis while preserving deterministic
+position lookup. IDs follow append order, are never reused, and lookup returns
+snapshots that remain valid after later registration.
+
+A dependency must be the exact generation selected before the dependent
+definition starts. Lookup rechecks that every bound dependency is still the
+current generation at the consumer position. Redefinition therefore reports
+`dependency-unavailable` for stale dependent context instead of falling back or
+guessing. Resolution visits at most 64 definitions. Dependency cycles produced
+by later cross-redefinitions and chains beyond that limit are reported
+unavailable.
+
+Malformed definitions are not registered and do not shadow the preceding valid
+generation. Rejected registration changes no visible directory state. The
+directory stores no format-specific payload, performs no source read, and uses
+the analysis worker's existing single-writer ownership. The first consuming
+format rule will connect one directory to its analysis session. Persistence and
+SQLite paging are separate later contracts; see
+[ADR-0028](adr/0028-resolve-context-generations-by-source-position.md).
+
 ## Read-Only Sources
 
 The random-access source interface exposes only size, identity, and `readAt`.

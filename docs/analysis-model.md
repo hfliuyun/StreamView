@@ -72,6 +72,14 @@ optional exact field location. Initial diagnostic codes cover truncated source,
 invalid syntax, unsupported syntax, cancellation, source I/O failure, resource
 limits, and unavailable dependencies.
 
+A position-aware context lookup reports an unavailable dependency when the
+latest requested definition was valid at its own source position but one of its
+exact dependency generations is no longer current at the consumer position.
+The directory does not mutate the tree. The analysis worker may leave the
+consumer `waiting-dependency` when later discovery can satisfy it, or retain a
+partial result with a `DependencyUnavailable` diagnostic when the dependency is
+terminal. It must not silently select an older context generation.
+
 Marking a node cancelled, unsupported, or invalid attaches the diagnostic and
 changes only that node's state. Existing nodes, children, values, and source
 locations remain available. The tree reports that it contains partial results

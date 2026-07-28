@@ -34,6 +34,36 @@ source bits `[8, 16)` 与 `[24, 32)`。
 mapping 会拒绝请求。没有精确 mapping 的值后续必须表示为 computed field，不能
 伪装成有 source 位置的字段。
 
+## 位置感知上下文目录
+
+`ContextDirectory` 记录供后续语法引用、已经完成且有 source backing 的 definition。
+封闭的 definition kind 包含 H.264 SPS/PPS、AAC AudioSpecificConfig 和 ISO BMFF
+sample description。key 由 kind、host 分配的数字 scope 和由 kind 解释的 value 组成。
+scope 零是独立 elementary stream 的自然 scope；container 为 context ID 可能冲突的
+不同 track 使用不同稳定 scope。
+
+每个 definition 包含非空绝对 source span、analysis-node ID、单调 definition ID 和精确
+dependency-generation ID。给定 key 和查询 source position，目录选择 exclusive
+source-span end 不晚于查询位置、且结束位置最大的 definition。查询仍位于
+definition 内部时它不可见；到达排他结束位置时恰好可见，也永远不会影响
+更早位置。
+
+同一 key 的 definition 不能重叠，但注册不必遵循 source 顺序，因此 lazy 与
+known-offset 分析仍能保持确定的位置查询。ID 按追加顺序分配、永不复用；
+lookup 返回的 snapshot 在后续注册之后仍有效。
+
+dependency 必须是在 dependent definition 开始前选中的精确 generation。lookup 会在
+consumer 位置重新检查每个绑定 dependency 是否仍是当前 generation。发生重定义
+时，stale dependent context 会报告 `dependency-unavailable`，不会回退或猜测。
+resolution 最多访问 64 个 definition；后续交叉重定义形成的 dependency cycle 与
+超过该上限的 chain 都报告 unavailable。
+
+malformed definition 不会注册，也不会遮蔽此前的有效 generation。被拒绝的注册
+不改变可见目录状态。目录不保存格式专用 payload、不读取 source，并沿用
+analysis worker 单写者模型。首个消费该目录的正式格式规则会把一个目录实例
+接入自己的 analysis session。持久化和 SQLite paging 属于后续独立契约；详见
+[ADR-0028](../adr/0028-resolve-context-generations-by-source-position.md)。
+
 ## 严格只读 Source
 
 随机访问 source 接口只暴露大小、身份和 `readAt`。本地文件实现只使用 Qt 只读

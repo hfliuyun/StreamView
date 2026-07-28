@@ -58,6 +58,13 @@ Parse diagnostic 包含稳定 code、severity、消息、字段路径和可选�
 首批 code 覆盖 source 截断、非法语法、不支持语法、取消、source I/O 错误、资源
 限制和依赖不可用。
 
+当最新 requested definition 在自身 source 位置有效，但其精确 dependency
+generation 在 consumer 位置已经不再是当前 generation 时，位置感知 context lookup
+会报告 unavailable dependency。目录本身不修改 tree。若后续 discovery 仍可能满足
+依赖，analysis worker 可以让 consumer 保持 `waiting-dependency`；若依赖已经
+terminal，则保留 partial result 并附加 `DependencyUnavailable` diagnostic。它不能
+静默选择更旧的 context generation。
+
 把节点标记为 cancelled、unsupported 或 invalid 时，只会附加诊断并改变该节点
 状态；已经完成的节点、子节点、值和 source 位置全部保留。只要任意节点处于这三种
 状态之一，树就报告存在部分结果。仅当所有节点均为 materialized 时，整棵树才算
