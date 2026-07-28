@@ -125,14 +125,38 @@ jobs:
           $temporary = Join-Path $env:GITHUB_WORKSPACE 'build/ci/Testing/Temporary'
           $failedPath = Join-Path $temporary 'LastTestsFailed.log'
           $detailPath = Join-Path $temporary 'LastTest.log'
-          $failed = if (Test-Path $failedPath) { Get-Content $failedPath -Raw } else { 'unknown test' }
-          $detail = if (Test-Path $detailPath) { Get-Content $detailPath -Raw } else { 'no CTest log' }
-          $message = "Failed tests:`n$failed`nCTest log:`n$detail"
-          if ($message.Length -gt 60000) {
-            $message = $message.Substring(0, 60000)
+          $failed = if (Test-Path $failedPath) { Get-Content $failedPath } else { @('0:unknown-test') }
+          $detail = if (Test-Path $detailPath) { Get-Content $detailPath } else { @('no CTest log') }
+          foreach ($entry in $failed) {
+            $testName = ($entry -split ':', 2)[-1]
+            $start = 0
+            for ($index = 0; $index -lt $detail.Count; $index++) {
+              if ($detail[$index] -like "*Testing: $testName") {
+                $start = $index
+                break
+              }
+            }
+            $end = $detail.Count - 1
+            for ($index = $start + 1; $index -lt $detail.Count; $index++) {
+              if ($detail[$index] -match '^\d+/\d+ Testing: ') {
+                $end = $index - 1
+                break
+              }
+            }
+            $section = $detail[$start..$end]
+            $summary = $section | Where-Object {
+              $_ -match 'FAIL!|Loc:|Totals:|QFATAL|QWARN|SKIP|Exception|error'
+            }
+            if (-not $summary) {
+              $summary = $section | Select-Object -Last 40
+            }
+            $message = ($summary -join "`n")
+            if ($message.Length -gt 3500) {
+              $message = $message.Substring(0, 3500)
+            }
+            $message = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=CTest $testName::$message"
           }
-          $message = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-          Write-Output "::error title=Windows CTest failure::$message"
           exit 0
 
       - name: Install deployable tree
