@@ -48,6 +48,16 @@ install(
     BUNDLE DESTINATION .
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+install(
+    FILES "${PROJECT_SOURCE_DIR}/LICENSE"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/StreamView"
+    RENAME "StreamView-LICENSE"
+)
+install(
+    FILES "${PROJECT_SOURCE_DIR}/third_party/tomlplusplus/LICENSE"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/StreamView"
+    RENAME "tomlplusplus-LICENSE"
+)
 
 qt_generate_deploy_app_script(
     TARGET streamview

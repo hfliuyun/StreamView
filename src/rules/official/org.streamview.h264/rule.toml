@@ -1,0 +1,20 @@
+manifest-version = 1
+
+[package]
+id = "org.streamview.h264"
+version = "0.1.0"
+authors = ["StreamView contributors"]
+license = "MIT"
+dependencies = []
+
+[compatibility]
+language = "0.1"
+engine = ">=0.1.0 <0.2.0"
+
+[[entrypoints]]
+id = "annex-b"
+format = "video.h264.annex-b"
+source = "src/h264_annex_b.svfmt"
+profiles = ["baseline", "main", "high"]
+depth = "nal-header"
+detector = "h264-annex-b"

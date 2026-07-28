@@ -38,6 +38,7 @@ target_link_libraries(streamview_paged_cache_tests PRIVATE Qt6::Sql)
 streamview_add_rules_test(streamview_dsl_tests rules/dsl_test.cpp)
 streamview_add_rules_test(streamview_dsl_ir_tests rules/dsl_ir_test.cpp)
 streamview_add_rules_test(streamview_dsl_executor_tests rules/dsl_executor_test.cpp)
+streamview_add_rules_test(streamview_rule_package_tests rules/rule_package_test.cpp)
 streamview_add_rules_test(
     streamview_h264_start_code_scanner_tests
     rules/h264_start_code_scanner_test.cpp

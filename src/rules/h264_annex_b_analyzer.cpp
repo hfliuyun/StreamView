@@ -3,11 +3,13 @@
 #include <streamview/core/bit_reader.h>
 #include <streamview/core/coordinates.h>
 #include <streamview/rules/dsl_executor.h>
+#include <streamview/rules/rule_package.h>
 
 #include <QFile>
 #include <QIODevice>
 
 #include <limits>
+#include <optional>
 #include <utility>
 
 static void initializeStreamViewOfficialRules() {
@@ -32,6 +34,27 @@ namespace {
         return H264AnnexBAnalysisStatus::InvalidBatchSize;
     }
     return H264AnnexBAnalysisStatus::InvalidRule;
+}
+
+[[nodiscard]] std::optional<QByteArray> readBundledPackageFile(const QString& path,
+                                                               QString* errorMessage) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Unable to open bundled rule file %1: %2")
+                                .arg(path, file.errorString());
+        }
+        return std::nullopt;
+    }
+    QByteArray contents = file.readAll();
+    if (file.error() != QFileDevice::NoError) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Unable to read bundled rule file %1: %2")
+                                .arg(path, file.errorString());
+        }
+        return std::nullopt;
+    }
+    return contents;
 }
 
 [[nodiscard]] core::DiagnosticCode
@@ -122,24 +145,44 @@ QString h264AnnexBRuleSource(QString* errorMessage) {
     if (errorMessage != nullptr) {
         errorMessage->clear();
     }
-    initializeStreamViewOfficialRules();
-
-    QFile file(QStringLiteral(":/streamview/rules/h264_annex_b.svfmt"));
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        if (errorMessage != nullptr) {
-            *errorMessage = file.errorString();
+    struct BundledRule final {
+        QString source;
+        QString errorMessage;
+    };
+    static const BundledRule bundled = [] {
+        initializeStreamViewOfficialRules();
+        BundledRule result;
+        const QString root = QStringLiteral(":/streamview/rules/org.streamview.h264/");
+        auto manifest =
+            readBundledPackageFile(root + QStringLiteral("rule.toml"), &result.errorMessage);
+        auto source = readBundledPackageFile(
+            root + QStringLiteral("src/h264_annex_b.svfmt"), &result.errorMessage);
+        if (!manifest || !source) {
+            return result;
         }
-        return {};
-    }
-
-    const QByteArray contents = file.readAll();
-    if (file.error() != QFileDevice::NoError) {
-        if (errorMessage != nullptr) {
-            *errorMessage = file.errorString();
+        RulePackageLoadResult loaded = RulePackage::fromFiles({
+            {QStringLiteral("rule.toml"), std::move(*manifest)},
+            {QStringLiteral("src/h264_annex_b.svfmt"), std::move(*source)},
+        });
+        if (!loaded.succeeded()) {
+            result.errorMessage = QStringLiteral("Bundled H.264 package is invalid: %1")
+                                      .arg(loaded.errorMessage);
+            return result;
         }
-        return {};
+        const QByteArray* contents =
+            loaded.package->fileContents(QStringLiteral("src/h264_annex_b.svfmt"));
+        if (contents == nullptr) {
+            result.errorMessage =
+                QStringLiteral("Bundled H.264 package has no Annex B source");
+            return result;
+        }
+        result.source = QString::fromUtf8(*contents);
+        return result;
+    }();
+    if (bundled.source.isEmpty() && errorMessage != nullptr) {
+        *errorMessage = bundled.errorMessage;
     }
-    return QString::fromUtf8(contents);
+    return bundled.source;
 }
 
 std::optional<H264AnnexBAnalyzer>

@@ -78,7 +78,8 @@ path = "docs/zh-CN/h264-annex-b.md"
   中间只有一个 ASCII 空格，且 `LOWER` 必须早于 `UPPER`。运行时
   `streamview::core::version()` 按 SemVer precedence 落入这个半开区间才兼容。它是 engine
   API contract version，不是 artifact 的 alpha/beta/release-candidate tag；只有 engine contract
-  自身变化时，这些 tag 才影响兼容性。
+  自身变化时，这些 tag 才影响兼容性。prerelease string 不是有效的 running engine-contract
+  version。
 - `entrypoints` 包含 1 到 64 项。每个 `id` 在 package 内唯一，由 1 到 64 个小写 ASCII
   字母、数字和连字符组成，且以字母开头。`format` 使用与 package ID 相同的点分语法。
   `source` 是 `src/` 下以 `.svfmt` 结尾的 canonical package path。`profiles` 包含 1 到

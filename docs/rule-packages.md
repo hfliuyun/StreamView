@@ -91,7 +91,7 @@ The fields mean:
   it lies in that half-open interval under SemVer precedence. This is the engine
   API contract version, not an artifact's alpha, beta, or release-candidate
   tag; those tags do not change compatibility unless the engine contract itself
-  changes.
+  changes. A prerelease string is not a valid running engine-contract version.
 - `entrypoints` contains 1 through 64 entries. Each `id` is unique within the
   package and uses 1 through 64 lowercase ASCII letters, digits, and hyphens,
   beginning with a letter. `format` uses the same dotted identifier grammar as
