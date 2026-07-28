@@ -9,6 +9,9 @@ add_library(streamview_rules STATIC
     h264_start_code_prefix.h
     h264_start_code_scanner.cpp
     rule_catalog.cpp
+    rule_package_archive.cpp
+    rule_package_directory.cpp
+    rule_package_store.cpp
     rule_package.cpp
     include/streamview/rules/dsl.h
     include/streamview/rules/dsl_ir.h
@@ -21,6 +24,7 @@ add_library(streamview_rules STATIC
     include/streamview/rules/language_version.h
     include/streamview/rules/rule_catalog.h
     include/streamview/rules/rule_package.h
+    include/streamview/rules/rule_package_store.h
     language_version.cpp
 )
 

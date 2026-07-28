@@ -716,6 +716,14 @@ RulePackageLoadResult RulePackage::fromFiles(std::vector<RulePackageFile> files)
                                              const RulePackageFile& right) {
         return left.path.toLatin1() < right.path.toLatin1();
     });
+    QStringList foldedSorted = foldedPaths.values();
+    std::sort(foldedSorted.begin(), foldedSorted.end());
+    for (qsizetype index = 1; index < foldedSorted.size(); ++index) {
+        if (foldedSorted.at(index).startsWith(foldedSorted.at(index - 1) + u'/')) {
+            return fail(RulePackageLoadStatus::InvalidTree,
+                        QStringLiteral("A package file path is also used as a directory"));
+        }
+    }
     const auto manifestFile = std::find_if(files.begin(), files.end(), [](const auto& file) {
         return file.path == QStringLiteral("rule.toml");
     });

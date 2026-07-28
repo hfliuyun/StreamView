@@ -212,6 +212,13 @@ private slots:
         const auto collided = RulePackage::fromFiles(std::move(collision));
         QCOMPARE(collided.status, RulePackageLoadStatus::InvalidTree);
         QVERIFY(collided.errorMessage.contains(QStringLiteral("collide")));
+
+        auto prefixCollision = packageFiles();
+        prefixCollision.push_back({QStringLiteral("src/PACKET.SVFMT/data.bin"),
+                                   QByteArrayLiteral("data")});
+        const auto prefixed = RulePackage::fromFiles(std::move(prefixCollision));
+        QCOMPARE(prefixed.status, RulePackageLoadStatus::InvalidTree);
+        QVERIFY(prefixed.errorMessage.contains(QStringLiteral("directory")));
     }
 
     void enforcesTreeAndReferenceBounds() {
