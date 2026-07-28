@@ -54,6 +54,13 @@ Fragmented MP4, MPEG-TS, Matroska/WebM, H.264 CAVLC/CABAC macroblock and residua
 - Publish scan results incrementally; long work reports progress and can be cancelled while retaining completed results.
 - Jumping to a known offset does not wait for a complete-file scan.
 
+Automated large-source verification uses virtual and sparse 100 GB sources. It
+opens a session from one 64 KiB initial page, reads a 12-bit field at a known
+80 GiB offset by requesting only the two required bytes, and cancels then
+resumes bounded H.264 index batches without replacing already published nodes.
+These checks establish bounded access and recovery behavior; the two-second,
+RSS, and latency performance gates still require measured release validation.
+
 ## Sessions And Export
 
 - Saved sessions are separate from the read-only media source and retain source identity, exact rule versions, bookmarks, annotations, and navigation state.

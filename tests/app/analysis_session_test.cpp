@@ -1,6 +1,7 @@
 #include "analysis_session.h"
 
 #include <streamview/core/source.h>
+#include <streamview/core/source_pager.h>
 #include <streamview/rules/h264_annex_b_detector.h>
 
 #include <QTest>
@@ -111,6 +112,41 @@ private:
     mutable std::size_t readCount_ = 0;
 };
 
+class HundredGigabyteInitialSource final : public RandomAccessSource {
+public:
+    [[nodiscard]] quint64 sizeBytes() const noexcept override {
+        return 100ULL * 1024ULL * 1024ULL * 1024ULL;
+    }
+    [[nodiscard]] QString identity() const override {
+        return QStringLiteral("hundred-gigabyte-virtual-source");
+    }
+
+    [[nodiscard]] SourceReadResult
+    readAt(quint64 byteOffset, std::span<std::byte> destination) const override {
+        ++readCount_;
+        lastOffset_ = byteOffset;
+        lastRequestSize_ = destination.size();
+        if (byteOffset != 0U || destination.size() !=
+                                    streamview::core::SourcePager::pageSizeBytes()) {
+            return {SourceReadStatus::Error, 0, QStringLiteral("unexpected initial read")};
+        }
+
+        std::fill(destination.begin(), destination.end(), std::byte{0xFF});
+        const auto fixture = validAnnexB();
+        std::copy(fixture.begin(), fixture.end(), destination.begin());
+        return {SourceReadStatus::Complete, destination.size(), {}};
+    }
+
+    [[nodiscard]] std::size_t readCount() const noexcept { return readCount_; }
+    [[nodiscard]] quint64 lastOffset() const noexcept { return lastOffset_; }
+    [[nodiscard]] std::size_t lastRequestSize() const noexcept { return lastRequestSize_; }
+
+private:
+    mutable std::size_t readCount_ = 0;
+    mutable quint64 lastOffset_ = 0;
+    mutable std::size_t lastRequestSize_ = 0;
+};
+
 } // namespace
 
 class AnalysisSessionTest final : public QObject {
@@ -190,6 +226,24 @@ private slots:
 
         QVERIFY2(session != nullptr, qPrintable(errorMessage));
         QCOMPARE(sourceObserver->readCount(), std::size_t{1});
+        QVERIFY(session->formatDetection().candidate.has_value());
+    }
+
+    void opensAHundredGigabyteVirtualSourceFromOneBoundedInitialPage() {
+        QString errorMessage;
+        auto source = std::make_unique<HundredGigabyteInitialSource>();
+        const auto* sourceObserver = source.get();
+
+        const auto session = AnalysisSession::create(std::move(source), &errorMessage);
+
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+        QCOMPARE(session->sizeBytes(), quint64{100ULL * 1024ULL * 1024ULL * 1024ULL});
+        QCOMPARE(session->identity(), QStringLiteral("hundred-gigabyte-virtual-source"));
+        QCOMPARE(session->initialPage().bytes.size(),
+                 static_cast<std::size_t>(streamview::core::SourcePager::pageSizeBytes()));
+        QCOMPARE(sourceObserver->readCount(), std::size_t{1});
+        QCOMPARE(sourceObserver->lastOffset(), quint64{0});
+        QCOMPARE(sourceObserver->lastRequestSize(), session->initialPage().bytes.size());
         QVERIFY(session->formatDetection().candidate.has_value());
     }
 

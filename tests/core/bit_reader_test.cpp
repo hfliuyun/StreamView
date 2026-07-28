@@ -86,6 +86,44 @@ private:
     bool incompleteSuccess_ = false;
 };
 
+class LargePatternSource final : public RandomAccessSource {
+public:
+    [[nodiscard]] quint64 sizeBytes() const noexcept override {
+        return 100ULL * 1024ULL * 1024ULL * 1024ULL;
+    }
+    [[nodiscard]] QString identity() const override { return QStringLiteral("large-pattern"); }
+
+    [[nodiscard]] SourceReadResult
+    readAt(quint64 byteOffset, std::span<std::byte> destination) const override {
+        ++readCount_;
+        lastOffset_ = byteOffset;
+        lastRequestSize_ = destination.size();
+        if (byteOffset >= sizeBytes()) {
+            return {SourceReadStatus::EndOfSource, 0, {}};
+        }
+
+        const auto count = static_cast<std::size_t>(std::min<quint64>(
+            sizeBytes() - byteOffset, static_cast<quint64>(destination.size())));
+        for (std::size_t index = 0; index < count; ++index) {
+            destination[index] =
+                std::byte((byteOffset + static_cast<quint64>(index)) & 0xFFU);
+        }
+        return {count == destination.size() ? SourceReadStatus::Complete
+                                            : SourceReadStatus::EndOfSource,
+                count,
+                {}};
+    }
+
+    [[nodiscard]] std::size_t readCount() const noexcept { return readCount_; }
+    [[nodiscard]] quint64 lastOffset() const noexcept { return lastOffset_; }
+    [[nodiscard]] std::size_t lastRequestSize() const noexcept { return lastRequestSize_; }
+
+private:
+    mutable std::size_t readCount_ = 0;
+    mutable quint64 lastOffset_ = 0;
+    mutable std::size_t lastRequestSize_ = 0;
+};
+
 } // namespace
 
 class BitReaderTest final : public QObject {
@@ -319,6 +357,23 @@ private slots:
         QCOMPARE(third.value, quint64{0x6c});
         QCOMPARE(reader.position(), quint64{16});
         QCOMPARE(reader.remainingBits(), quint64{0});
+    }
+
+    void readsOnlyTheRequestedFieldAtAKnownHundredGigabyteOffset() {
+        LargePatternSource source;
+        constexpr quint64 knownByteOffset = 80ULL * 1024ULL * 1024ULL * 1024ULL + 0xABU;
+        const auto range = SourceSpan::create(
+            SourceBitAddress(knownByteOffset * 8U + 4U), 12);
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+
+        const auto result = reader.readBits(12);
+
+        QVERIFY(result.complete());
+        QCOMPARE(result.value, quint64{0xBAC});
+        QCOMPARE(source.readCount(), std::size_t{1});
+        QCOMPARE(source.lastOffset(), knownByteOffset);
+        QCOMPARE(source.lastRequestSize(), std::size_t{2});
     }
 
     void readsAnUnaligned64BitValue() {

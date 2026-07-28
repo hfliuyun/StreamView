@@ -103,6 +103,10 @@ private slots:
         QCOMPARE(page.pageIndex, pageIndex);
         QCOMPARE(page.byteOffset, pageIndex * SourcePager::pageSizeBytes());
         QCOMPARE(page.bytes.size(), static_cast<std::size_t>(SourcePager::pageSizeBytes()));
+        QCOMPARE(std::to_integer<unsigned int>(page.bytes.at(0)),
+                 static_cast<unsigned int>(page.byteOffset & 0xFFU));
+        QCOMPARE(std::to_integer<unsigned int>(page.bytes.at(1)),
+                 static_cast<unsigned int>((page.byteOffset + 1U) & 0xFFU));
         QCOMPARE(source.readCount(), std::size_t{1});
         QCOMPARE(source.lastOffset(), page.byteOffset);
         QCOMPARE(source.lastRequestSize(), page.bytes.size());

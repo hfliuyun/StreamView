@@ -1,3 +1,4 @@
+#include <streamview/core/source_pager.h>
 #include <streamview/rules/dsl.h>
 #include <streamview/rules/h264_annex_b_analyzer.h>
 
@@ -15,6 +16,7 @@ using streamview::core::MaterializationState;
 using streamview::core::RandomAccessSource;
 using streamview::core::SourceReadResult;
 using streamview::core::SourceReadStatus;
+using streamview::core::SourcePager;
 using streamview::rules::DslParser;
 using streamview::rules::H264AnnexBAnalysisBatch;
 using streamview::rules::H264AnnexBAnalysisStatus;
@@ -217,6 +219,60 @@ private:
     mutable CancellationSource* cancellation_ = nullptr;
     mutable quint64 cancellationOffset_ = 0;
     mutable bool armed_ = false;
+};
+
+class HundredGigabyteSparseSource final : public RandomAccessSource {
+public:
+    HundredGigabyteSparseSource() : prefix_(1040, std::byte{0xFF}) {
+        const auto put = [this](std::size_t offset,
+                                std::initializer_list<unsigned int> values) {
+            const auto valueBytes = bytes(values);
+            std::copy(valueBytes.begin(),
+                      valueBytes.end(),
+                      prefix_.begin() + static_cast<std::ptrdiff_t>(offset));
+        };
+        put(0, {0x00, 0x00, 0x01, 0x65, 0x12});
+        put(10, {0x00, 0x00, 0x01, 0x6E});
+        put(1030, {0x00, 0x00, 0x01, 0x41});
+    }
+
+    [[nodiscard]] quint64 sizeBytes() const noexcept override {
+        return 100ULL * 1024ULL * 1024ULL * 1024ULL;
+    }
+    [[nodiscard]] QString identity() const override {
+        return QStringLiteral("hundred-gigabyte-sparse");
+    }
+
+    [[nodiscard]] SourceReadResult
+    readAt(quint64 byteOffset, std::span<std::byte> destination) const override {
+        if (byteOffset >= sizeBytes()) {
+            return {SourceReadStatus::EndOfSource, 0, {}};
+        }
+        const auto count = static_cast<std::size_t>(std::min<quint64>(
+            sizeBytes() - byteOffset, static_cast<quint64>(destination.size())));
+        maximumRequestSize_ = std::max(maximumRequestSize_, count);
+        highestReadEnd_ = std::max(highestReadEnd_, byteOffset + static_cast<quint64>(count));
+        for (std::size_t index = 0; index < count; ++index) {
+            const quint64 absolute = byteOffset + static_cast<quint64>(index);
+            destination[index] = absolute < static_cast<quint64>(prefix_.size())
+                                     ? prefix_.at(static_cast<std::size_t>(absolute))
+                                     : std::byte{0xFF};
+        }
+        return {count == destination.size() ? SourceReadStatus::Complete
+                                            : SourceReadStatus::EndOfSource,
+                count,
+                {}};
+    }
+
+    [[nodiscard]] std::size_t maximumRequestSize() const noexcept {
+        return maximumRequestSize_;
+    }
+    [[nodiscard]] quint64 highestReadEnd() const noexcept { return highestReadEnd_; }
+
+private:
+    std::vector<std::byte> prefix_;
+    mutable std::size_t maximumRequestSize_ = 0;
+    mutable quint64 highestReadEnd_ = 0;
 };
 
 } // namespace
@@ -848,6 +904,45 @@ private slots:
         const auto replay = analyzer->analyzeBatch();
         QCOMPARE(replay.status, H264AnnexBAnalysisStatus::Complete);
         QVERIFY(replay.nalUnitNodes.empty());
+    }
+
+    void batchesCancelsAndResumesAHundredGigabyteSparseSource() {
+        HundredGigabyteSparseSource source;
+        CancellationSource cancellation;
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(
+            source, &errorMessage, cancellation.token());
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto first = analyzer->analyzeBatch(1, 64, 64);
+        QCOMPARE(first.status, H264AnnexBAnalysisStatus::InProgress);
+        QCOMPARE(first.nalUnitNodes.size(), std::size_t{1});
+        const auto firstId = first.nalUnitNodes.front();
+        QVERIFY(cancellation.requestCancellation());
+
+        const auto cancelled = analyzer->analyzeBatch(1, 2048, 64);
+        QCOMPARE(cancelled.status, H264AnnexBAnalysisStatus::Cancelled);
+        QVERIFY(cancelled.nalUnitNodes.empty());
+        QVERIFY(analyzer->finished());
+        const auto cancelledRoot = analyzer->tree().node(analyzer->tree().rootId());
+        QVERIFY(cancelledRoot.has_value());
+        QCOMPARE(cancelledRoot->children().size(), std::size_t{1});
+        QCOMPARE(cancelledRoot->children().front(), firstId);
+
+        QVERIFY(analyzer->resumeAfterCancellation());
+        const auto resumed = analyzer->analyzeBatch(1, 64, 64);
+        QCOMPARE(resumed.status, H264AnnexBAnalysisStatus::InProgress);
+        QCOMPARE(resumed.nalUnitNodes.size(), std::size_t{1});
+        QVERIFY(resumed.nalUnitNodes.front() != firstId);
+        const auto resumedRoot = analyzer->tree().node(analyzer->tree().rootId());
+        QVERIFY(resumedRoot.has_value());
+        QCOMPARE(resumedRoot->children().size(), std::size_t{2});
+        QCOMPARE(resumedRoot->children().at(0), firstId);
+        QCOMPARE(resumedRoot->children().at(1), resumed.nalUnitNodes.front());
+
+        QVERIFY(source.maximumRequestSize() <= SourcePager::pageSizeBytes());
+        QVERIFY(source.highestReadEnd() <= SourcePager::pageSizeBytes());
+        QVERIFY(analyzer->scanCursor() < SourcePager::pageSizeBytes());
     }
 
     void resumesRepeatedMapperCancellationsWithStableAppendOnlyNodes() {
