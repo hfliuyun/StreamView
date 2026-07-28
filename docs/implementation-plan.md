@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 2
-Last Completed Step: M4 sparse/virtual 100 GB source verification
-Next Action: Define and implement SQLite WAL paged caching
-Last Verification: Local dev/ci/sanitize passed 24/24; hosted run 30368687174 passed on
+Last Completed Step: M4 SQLite WAL paged cache store
+Next Action: Define M5 rule manifests, content hashes, and catalog identity
+Last Verification: Local dev/ci/sanitize passed 25/25; hosted run 30372439547 passed on
   Windows, macOS, and Ubuntu
 Blockers: None
 
@@ -99,7 +99,7 @@ Blockers: None
 - [x] 实现位置感知上下文目录，支持按源位置选择最近有效 SPS/PPS/ASC/sample
   description。
 - [x] 以稀疏/虚拟 100 GB 源验证初始打开、已知 offset 读取、批次发布、取消和恢复。
-- [ ] 定义并实现 SQLite WAL 分页缓存、批次提交、schema 版本和崩溃恢复。
+- [x] 定义并实现 SQLite WAL 分页缓存、批次提交、schema 版本和崩溃恢复。
 
 验收：内存不随源大小线性增长，跨排除字节的字段仍能返回多个 source spans。
 
@@ -154,7 +154,9 @@ Blockers: None
 - [x] 完成 mapped transformation、lazy 区域、渐进索引和位置感知上下文目录。
   （四项均已完成。）
 - [x] 完成 bytecode 预算和取消：调用/视图深度 64、节点深度 256、单次物化 100,000 节点，每 1,024 指令检查取消。（当前子集没有 runtime call 或 view；对应深度预算已经保留。）
-- [ ] 完成 SQLite 分页缓存、后台批次提交、schema 版本和崩溃恢复。
+- [x] 完成 SQLite 分页缓存、原子批次提交、schema 版本和崩溃恢复。
+- [ ] 在 M5 固定 source fingerprint、精确 rule identity 与 cache namespace 后，接入
+  后台 cache owner 和 versioned index/materialized-result payload。
 - [ ] 完成 TOML 清单、本地规则目录导入、`.svrule` 打包安装、哈希和版本并存。
 - [ ] 防御路径穿越、zip bomb、符号链接和 Unicode 非规范路径。
 - [ ] 为全部稳定 DSL 功能补齐英文规范、中文说明和正反例。
@@ -300,3 +302,17 @@ Blockers: None
   同步。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 24/24；hosted
   run `30368687174` 在 Windows、macOS、Ubuntu 成功。下一步定义并实现 SQLite WAL
   分页缓存、批次提交、schema 版本和崩溃恢复。
+- 2026-07-28：完成 M4 SQLite WAL paged cache store：`07f6961` 以 ADR-0029 固化
+  caller namespace、opaque progressive-index/materialized-result page、64 KiB page、
+  256-page atomic batch、thread affinity、exclusive database ownership，以及 M5 前禁止
+  path-only 跨 session 复用；`c1d7fe2` 在 core 新增不暴露 Qt SQL 的 `PagedCache`，
+  使用 QSQLITE/WAL、固定 application ID 与 schema version 1、`quick_check`、精确
+  schema 校验、pending marker 和 transaction rollback。回归覆盖 runtime driver、
+  WAL/PRAGMA、binary payload、replacement、namespace isolation、完整 64 KiB page、
+  batch/coordinate 上限、forced-write atomic rollback、abandoned-marker recovery、
+  incompatible/corrupt schema、live lock、thread violation 和 connection cleanup。cache
+  不复制媒体 source byte，也不宣称恢复 live analyzer；后台 owner 与 versioned payload
+  在 M5 identity 固定后接入。英文 ADR/core model 与中文伴随说明同步。本机 `dev`、
+  `ci`、`sanitize` 重新配置、完整构建与 CTest 均为 25/25；hosted run `30372439547`
+  在 Windows、macOS、Ubuntu 成功。下一步固定 M5 TOML manifest、content hash、
+  compatibility range 与 rule catalog identity。
