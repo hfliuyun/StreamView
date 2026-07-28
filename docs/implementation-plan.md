@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 2
-Last Completed Step: M4 position-aware context directories
-Next Action: Validate sparse/virtual 100 GB source behavior, then add SQLite WAL paged caching
-Last Verification: Local dev/ci/sanitize passed 24/24; hosted run 30366546716 passed on
+Last Completed Step: M4 sparse/virtual 100 GB source verification
+Next Action: Define and implement SQLite WAL paged caching
+Last Verification: Local dev/ci/sanitize passed 24/24; hosted run 30368687174 passed on
   Windows, macOS, and Ubuntu
 Blockers: None
 
@@ -98,7 +98,8 @@ Blockers: None
   - [x] 实现可恢复 progressive index。
 - [x] 实现位置感知上下文目录，支持按源位置选择最近有效 SPS/PPS/ASC/sample
   description。
-- [ ] 以稀疏/虚拟 100 GB 源验证初始打开、已知 offset 读取、批次发布、取消和恢复；再接 SQLite WAL 分页缓存。
+- [x] 以稀疏/虚拟 100 GB 源验证初始打开、已知 offset 读取、批次发布、取消和恢复。
+- [ ] 定义并实现 SQLite WAL 分页缓存、批次提交、schema 版本和崩溃恢复。
 
 验收：内存不随源大小线性增长，跨排除字节的字段仍能返回多个 source spans。
 
@@ -157,7 +158,8 @@ Blockers: None
 - [ ] 完成 TOML 清单、本地规则目录导入、`.svrule` 打包安装、哈希和版本并存。
 - [ ] 防御路径穿越、zip bomb、符号链接和 Unicode 非规范路径。
 - [ ] 为全部稳定 DSL 功能补齐英文规范、中文说明和正反例。
-- [ ] 验证 100 GB 虚拟/稀疏源可快速打开、渐进索引、取消和恢复。
+- [x] 验证 100 GB 虚拟/稀疏源可快速打开、渐进索引、取消和恢复。（自动化验证
+  有界访问和恢复语义；约两秒、RSS 与 p95 性能门禁仍留在阶段 7 实测。）
 
 ## 阶段 3：H.264 正式结构支持
 
@@ -290,3 +292,11 @@ Blockers: None
   `30366546716` 在 Windows、macOS、Ubuntu 成功。下一步以 sparse/virtual 100 GB
   source 验证初始打开、known-offset read、batch publication、取消与恢复，再接
   SQLite WAL 分页缓存。
+- 2026-07-28：完成 M4 sparse/virtual 100 GB source 自动化验证：`481edfd` 覆盖
+  session 只读取一个 64 KiB 初始页即可打开 100 GB virtual source、在已知 80 GiB
+  offset 读取 12-bit 字段时只请求所需的两个 byte、SourcePager 单页读取，以及 sparse
+  source 上有界 H.264 batch 发布、取消、原地恢复和 append-only node 保留；并明确
+  这些回归不替代阶段 7 的两秒、RSS 与 p95 实测门禁。英文产品需求与中文伴随说明已
+  同步。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 24/24；hosted
+  run `30368687174` 在 Windows、macOS、Ubuntu 成功。下一步定义并实现 SQLite WAL
+  分页缓存、批次提交、schema 版本和崩溃恢复。
