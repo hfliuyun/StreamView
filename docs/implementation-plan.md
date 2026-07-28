@@ -2,9 +2,10 @@
 
 Status: In Progress
 Current Phase: 2
-Last Completed Step: M4 recoverable progressive index
-Next Action: Define and implement position-aware context directories
-Last Verification: Local dev/ci/sanitize reconfigure, full build, and CTest each passed 23/23; hosted runs 30311449960 and 30312007044 passed on Windows, macOS, and Ubuntu
+Last Completed Step: M4 position-aware context directories
+Next Action: Validate sparse/virtual 100 GB source behavior, then add SQLite WAL paged caching
+Last Verification: Local dev/ci/sanitize passed 24/24; hosted run 30366546716 passed on
+  Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -95,7 +96,8 @@ Blockers: None
   - [x] 实现 bounded H.264 EBSP→RBSP mapping 与 excluded-span tree presentation。
   - [x] 实现 lazy boundary。
   - [x] 实现可恢复 progressive index。
-- [ ] 实现位置感知上下文目录，支持按源位置选择最近有效 SPS/PPS/ASC/sample description。
+- [x] 实现位置感知上下文目录，支持按源位置选择最近有效 SPS/PPS/ASC/sample
+  description。
 - [ ] 以稀疏/虚拟 100 GB 源验证初始打开、已知 offset 读取、批次发布、取消和恢复；再接 SQLite WAL 分页缓存。
 
 验收：内存不随源大小线性增长，跨排除字节的字段仍能返回多个 source spans。
@@ -148,8 +150,8 @@ Blockers: None
 ## 阶段 2：DSL v0.1、沙箱与大型文件基础设施
 
 - [x] 完成枚举、显式大小端、`ue/se`、数组、条件、switch、有界循环、纯函数和计算字段。（枚举、显式大小端、`ue/se`、固定长度数组、条件语句、switch、有界循环、纯函数和计算字段已完成。）
-- [ ] 完成 mapped transformation、lazy 区域、渐进索引和位置感知上下文目录。（mapped
-  transformation、lazy 区域和可恢复渐进索引已完成；位置感知上下文目录待实现。）
+- [x] 完成 mapped transformation、lazy 区域、渐进索引和位置感知上下文目录。
+  （四项均已完成。）
 - [x] 完成 bytecode 预算和取消：调用/视图深度 64、节点深度 256、单次物化 100,000 节点，每 1,024 指令检查取消。（当前子集没有 runtime call 或 view；对应深度预算已经保留。）
 - [ ] 完成 SQLite 分页缓存、后台批次提交、schema 版本和崩溃恢复。
 - [ ] 完成 TOML 清单、本地规则目录导入、`.svrule` 打包安装、哈希和版本并存。
@@ -276,3 +278,15 @@ Blockers: None
   已发布 node 不重放。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 23/23；
   hosted runs `30311449960` 与 `30312007044` 均在 Windows、macOS、Ubuntu 成功。下一步
   定义并实现 position-aware context directories。
+- 2026-07-28：完成 M4 position-aware context directory：`b7347ff` 以 ADR-0028
+  固化 definition kind/scope/value key、完整 source-span 可见边界、乱序发现、精确
+  generation dependency、禁止静默 fallback 和 64 层解析上限；`01f1e68` 在 core
+  新增 append-only `ContextDirectory`，按同 key 的有序 non-overlapping spans 二分
+  选择最近已完成定义，并以 stable definition/analysis-node ID 关联未来的
+  SPS、PPS、ASC 和 sample-description payload。回归覆盖 span 内/排他结束位置、
+  四类 key 与 track scope、乱序 snapshot、transactional rejection、stale/future
+  dependency、重定义失效、交叉 cycle 和深度边界。
+  本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 24/24；hosted run
+  `30366546716` 在 Windows、macOS、Ubuntu 成功。下一步以 sparse/virtual 100 GB
+  source 验证初始打开、known-offset read、batch publication、取消与恢复，再接
+  SQLite WAL 分页缓存。
