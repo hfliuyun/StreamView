@@ -43,6 +43,24 @@ streamview_add_rules_test(
     streamview_rule_package_store_tests
     rules/rule_package_store_test.cpp
 )
+if(WIN32)
+    set_tests_properties(streamview_rule_package_store_tests PROPERTIES DISABLED TRUE)
+    foreach(
+        test_case
+        IN ITEMS
+            importsDirectoryAndRoundTripsCanonicalArchive
+            rejectsNoncanonicalAndMalformedArchives
+            rejectsNoncanonicalDirectoryPaths
+            rejectsSymbolicLinksAndExecutableFiles
+            installsIdempotentlyAndRequiresReadOnlyContent
+            reportsCorruptExistingContentWithoutRepairingIt
+    )
+        add_test(
+            NAME streamview_rule_package_store_tests.${test_case}
+            COMMAND streamview_rule_package_store_tests ${test_case}
+        )
+    endforeach()
+endif()
 streamview_add_rules_test(
     streamview_h264_start_code_scanner_tests
     rules/h264_start_code_scanner_test.cpp
