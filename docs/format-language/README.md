@@ -1000,15 +1000,17 @@ be documented before the features that consume them become stable.
 
 ## Rule Packages
 
-A rule package is versioned and declares its format identity, engine compatibility, applicability metadata, and dependencies. Format detection recommends candidates; the user may always override the selection. An analysis session records the exact selected rule and version.
+A rule package is versioned and declares its format identity, engine compatibility, applicability metadata, and dependencies. Format detection recommends candidates; the user may always override the selection. An analysis session records the exact selected package ID, version, content hash, and entry-point ID.
 
 Application, language, and rule-package versions are independent. Package manifests declare an exact language contract and an engine compatibility range. During the `0.x` language phase, documented breaking changes are permitted; after language `1.0`, incompatible changes require a new major language version. An incompatible package is rejected with a diagnostic rather than interpreted heuristically.
 
-First-release packages are self-contained and cannot resolve dependencies from the network at analysis time. The package manifest syntax, dependency rules, and trust policy remain to be designed.
+First-release packages are self-contained, declare an empty dependency list,
+and cannot resolve dependencies from the network at analysis time. Package
+metadata never changes sandbox permissions or establishes trust.
 
-Official rules are bundled with a particular application release. Additional packages may be installed only from a local file or directory in the first release; there is no online marketplace, automatic download, or automatic update. Installation presents package identity, version, format coverage, author metadata, content hash, and compatibility range. Saved sessions pin the exact selected package version, and installed rules receive no additional permissions based on claimed author or trust status.
+Official rules are bundled with a particular application release. Additional packages may be installed only from a local file or directory in the first release; there is no online marketplace, automatic download, or automatic update. Installation presents package identity, version, format coverage, author metadata, content hash, and compatibility range. Saved sessions pin the complete selected package and entry-point identity, and installed rules receive no additional permissions based on claimed author or trust status.
 
-### Provisional Package Layout
+### Package Layout
 
 During development, a package is a directory with a TOML manifest, C-style format definitions, localized documentation, and distributable tests:
 
@@ -1022,6 +1024,19 @@ org.streamview.h264/
 └── tests/
 ```
 
-For local installation, the directory may be encoded as a deterministic ZIP container with a dedicated extension that remains to be selected. The manifest identifies the package, author, license, package version, language contract, engine compatibility range, entry points, declared format/profile/depth coverage, detection metadata, and localized documentation.
+For local installation, the directory may be encoded as a deterministic
+store-only ZIP32 container with the `.svrule` extension. The version 1
+`rule.toml` manifest identifies the package, authors, license, package version,
+exact language contract, half-open engine compatibility range, entry points,
+declared format/profile/depth coverage, host detector metadata, and localized
+documentation. Different package versions coexist; one package ID and version
+cannot silently name different content.
 
-Packaged rules contain no native executable code or symbolic links. Installers reject absolute paths, parent traversal, duplicate or non-normalized paths, and entries escaping the package root. Installed content is retained read-only by content hash. Exact manifest keys, archive canonicalization, extension, and size limits remain provisional.
+Packaged rules contain no native executable code or symbolic links. Installers
+reject absolute paths, parent traversal, duplicate or noncanonical paths,
+Unicode and case-fold aliases, special files, and entries escaping the package
+root. Validated content is retained read-only by a SHA-256 of the complete
+logical package tree, so directory and archive forms share one identity. The
+exact schema, identity framing, catalog behavior, canonical archive records,
+and limits are defined by the normative
+[rule-package format](../rule-packages.md).

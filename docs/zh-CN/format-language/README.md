@@ -798,15 +798,16 @@ invalid definition 被拒绝，运行时不会猜测执行。
 
 ## 规则包
 
-规则包具有版本，并声明格式身份、引擎兼容范围、适用性元数据和依赖。格式探测只推荐候选规则，用户始终可以手动覆盖。分析会话保存最终采用的规则及其精确版本。
+规则包具有版本，并声明格式身份、引擎兼容范围、适用性元数据和依赖。格式探测只推荐候选规则，用户始终可以手动覆盖。分析会话保存最终采用的精确 package ID、version、content hash 与 entry-point ID。
 
 应用、DSL 语言和规则包分别独立版本化。规则包清单声明精确的语言契约和引擎兼容范围。在 DSL `0.x` 阶段可以进行有文档记录的破坏性修改；语言进入 `1.0` 后，不兼容修改必须使用新的语言 major 版本。引擎遇到不兼容规则包时必须拒绝加载并报告诊断，不能猜测执行。
 
-首版规则包自包含，分析时不能通过网络解析依赖。规则包清单语法、依赖规则和信任策略尚待设计。
+首版规则包自包含，显式声明空 dependency list，分析时不能通过网络解析依赖。package metadata
+不会改变 sandbox 权限，也不建立 trust。
 
-官方规则与特定应用版本一起发布。首版只允许从本地文件或目录安装其他规则包，不提供在线市场、自动下载或自动更新。安装前显示包身份、版本、格式覆盖、作者元数据、内容哈希和兼容范围。已保存会话锁定实际采用的精确规则版本；规则不会因为作者或“可信”声明而获得额外权限。
+官方规则与特定应用版本一起发布。首版只允许从本地文件或目录安装其他规则包，不提供在线市场、自动下载或自动更新。安装前显示包身份、版本、格式覆盖、作者元数据、内容哈希和兼容范围。已保存会话锁定完整 package 与 entry-point identity；规则不会因为作者或“可信”声明而获得额外权限。
 
-### 暂定规则包结构
+### 规则包结构
 
 开发时，规则包是一个目录，其中包含 TOML 清单、C 风格格式定义、本地化文档和可分发测试：
 
@@ -820,6 +821,14 @@ org.streamview.h264/
 └── tests/
 ```
 
-本地安装时，可以将目录编码为确定性的 ZIP 容器，并使用尚待确定的专用扩展名。清单用于声明包身份、作者、许可证、规则包版本、语言契约、引擎兼容范围、入口点、格式/profile/解析深度覆盖、探测元数据和本地化文档。
+本地安装时，可以把目录编码成确定性的 store-only ZIP32 容器，扩展名固定为 `.svrule`。
+version 1 `rule.toml` manifest 声明 package、作者、license、package version、精确 language
+contract、半开 engine compatibility range、entry point、format/profile/depth coverage、host
+detector metadata 与本地化文档。不同 package version 可以并存；同一个 package ID 与 version
+不能静默表示不同 content。
 
-发布的规则包不能包含原生可执行代码或符号链接。安装器必须拒绝绝对路径、父目录穿越、重复或未规范化路径，以及任何逃逸包根目录的条目。安装内容按内容哈希只读保存。具体清单字段、归档规范化算法、文件扩展名和大小限制仍是暂定设计。
+发布的规则包不能包含原生可执行代码或 symbolic link。installer 必须拒绝 absolute path、parent
+traversal、重复或非 canonical path、Unicode/case-fold alias、特殊文件以及任何逃逸 package root
+的 entry。通过验证的 content 按完整 logical package tree 的 SHA-256 只读保留，因此目录与
+archive 形式共享一个 identity。精确 schema、identity framing、catalog 行为、canonical archive
+record 与限制由规范性的[规则包格式](../../rule-packages.md)定义。
