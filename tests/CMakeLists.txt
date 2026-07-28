@@ -57,7 +57,7 @@ if(WIN32)
     )
         add_test(
             NAME streamview_rule_package_store_tests.${test_case}
-            COMMAND streamview_rule_package_store_tests ${test_case}
+            COMMAND streamview_rule_package_store_tests ${test_case} -o -,txt
         )
     endforeach()
 endif()
