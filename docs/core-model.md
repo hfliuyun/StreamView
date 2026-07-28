@@ -123,7 +123,8 @@ Each payload contains 1 through 64 KiB. One atomic commit contains 1 through
 256 unique page keys and therefore at most 16 MiB. A successful commit exposes
 every replacement together; a failed commit exposes none. Missing pages are
 normal cache misses. Wrong-thread access and invalid keys are rejected before
-storage is touched.
+storage is touched. One live instance owns its database path exclusively; a
+second open fails until the owner closes or a stale process lock is recovered.
 
 Cache open verifies the QSQLITE runtime driver, WAL configuration, StreamView
 application ID, schema version, required schema, and SQLite integrity. SQLite

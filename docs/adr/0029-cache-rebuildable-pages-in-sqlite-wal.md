@@ -68,9 +68,19 @@ miss is normal rebuildable absence, not a storage failure.
 
 Each `PagedCache` instance and its SQLite connection are created, used, and
 destroyed on one thread. Wrong-thread reads and commits are rejected before SQL
-is touched. The first implementation does not expose a connection pool or
-background queue. A future worker creates and owns its cache instance in that
-worker thread.
+is touched; wrong-thread destruction is a fatal contract violation because Qt
+cannot safely remove the owning thread's connection. The first implementation
+does not expose a connection pool or background queue. A future worker creates
+and owns its cache instance in that worker thread.
+
+One live `PagedCache` owns one database path exclusively through a cross-process
+lock file. Another open of that path fails while the owner is alive. This keeps
+schema initialization, recovery, and the marker protocol single-writer even
+when different namespaces share one file. A stale lock from a terminated
+same-host process is removed using its recorded process identity before crash
+recovery; a live lock is never removed merely because of its age. Future
+concurrent readers or writers require a separate connection-ownership and
+recovery-lock decision.
 
 The SQLite file uses a fixed StreamView `application_id` and schema version 1
 through `user_version`. A new empty database is initialized transactionally.
@@ -92,9 +102,10 @@ checks driver availability on every supported build platform. The core target
 links Qt Sql privately so no `QSql*` type enters the public header.
 
 Process-crash recovery combines SQLite transactions with an explicit pending
-marker. Before a page transaction starts, `commitBatch` transactionally records
-one persistent marker for that namespace. It then starts an immediate
-transaction, writes every page, deletes the marker, and commits. Therefore:
+marker. While holding exclusive ownership of the database path, `commitBatch`
+records one persistent marker for that namespace in a separate autocommit step.
+It then starts an immediate transaction, writes every page, deletes the marker,
+and commits. Therefore:
 
 - a crash before or during the transaction leaves the marker, while SQLite
   rolls back every uncommitted page change;
@@ -111,6 +122,12 @@ or cache pages survive sudden power loss. Cache data remains rebuildable.
 The marker is recovery evidence, not a serializable analyzer checkpoint. Page
 payloads from completed commits remain rebuildable cache data and may be
 discarded whenever their namespace cannot be validated.
+
+The recovered count includes a marked batch attempt whose cleanup did not
+finish, normally because the process terminated. An ordinary commit error
+performs best-effort marker cleanup before returning and is not counted when
+that cleanup succeeds. A recovered marker does not imply that page writes had
+begun.
 
 ## Consequences
 

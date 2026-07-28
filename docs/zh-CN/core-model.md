@@ -101,7 +101,8 @@ namespace 只负责分区；仅凭 path-like source identity 不得跨 session �
 
 每个 payload 为 1 至 64 KiB。一次原子提交包含 1 至 256 个互异 page key，因此最多
 16 MiB；成功时所有替换一起可见，失败时一个也不可见。page 缺失是正常 cache miss。
-wrong-thread 访问和非法 key 会在接触 storage 前被拒绝。
+wrong-thread 访问和非法 key 会在接触 storage 前被拒绝。一个 live instance 独占其
+database path；在 owner 关闭或 stale process lock 被回收之前，第二次打开会失败。
 
 打开 cache 时会检查 QSQLITE runtime driver、WAL 配置、StreamView application ID、
 schema version、必需 schema 和 SQLite 完整性。SQLite 回滚中断的 transaction；
