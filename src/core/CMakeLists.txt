@@ -1,11 +1,13 @@
 add_library(streamview_core STATIC
     analysis_model.cpp
     bit_reader.cpp
+    context_directory.cpp
     coordinates.cpp
     source.cpp
     source_pager.cpp
     include/streamview/core/analysis_model.h
     include/streamview/core/bit_reader.h
+    include/streamview/core/context_directory.h
     include/streamview/core/coordinates.h
     include/streamview/core/source.h
     include/streamview/core/source_pager.h
