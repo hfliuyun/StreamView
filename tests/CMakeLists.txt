@@ -50,7 +50,8 @@ if(WIN32)
         IN ITEMS
             importsDirectoryAndRoundTripsCanonicalArchive
             rejectsNoncanonicalAndMalformedArchives
-            rejectsNoncanonicalDirectoryPaths
+            rejectsUnicodeDirectoryPaths
+            rejectsOversizedEmptyDirectoryPaths
             rejectsSymbolicLinksAndExecutableFiles
             installsIdempotentlyAndRequiresReadOnlyContent
             reportsCorruptExistingContentWithoutRepairingIt

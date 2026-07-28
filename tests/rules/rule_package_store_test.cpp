@@ -381,7 +381,7 @@ class RulePackageStoreTest final : public QObject {
         }
     }
 
-    void rejectsNoncanonicalDirectoryPaths() {
+    void rejectsUnicodeDirectoryPaths() {
         QTemporaryDir unicodeDirectory;
         QVERIFY(unicodeDirectory.isValid());
         const QString unicodeRoot = realPath(unicodeDirectory);
@@ -390,7 +390,9 @@ class RulePackageStoreTest final : public QObject {
                           QByteArrayLiteral("data")));
         QCOMPARE(RulePackageStore::importDirectory(unicodeRoot).status,
                  RulePackageImportStatus::InvalidInput);
+    }
 
+    void rejectsOversizedEmptyDirectoryPaths() {
         QTemporaryDir longPathDirectory;
         QVERIFY(longPathDirectory.isValid());
         const QString longPathRoot = realPath(longPathDirectory);
