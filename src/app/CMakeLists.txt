@@ -11,6 +11,8 @@ add_library(streamview_app STATIC
     raw_data_model.h
     raw_data_view.cpp
     raw_data_view.h
+    session_document.cpp
+    session_document.h
     source_selection.h
 )
 

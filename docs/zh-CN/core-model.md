@@ -94,6 +94,24 @@ content 不会造成 mismatch。不支持的 metadata 与 I/O error 都是显式
 不会回退使用 path identity。详见
 [ADR-0031](adr/0031-versioned-file-source-fingerprints.md)。
 
+## 持久 Session Document
+
+`SessionDocument` 是一个 local file 与一个完整 rule entry-point identity 的紧凑、versioned
+user-state 记录。Version 1 使用闭合 UTF-8 JSON schema，包含 source path 与描述性 identity、
+完整 `SourceFingerprint`、package ID/version/content hash 与 entry-point ID、bookmark、
+annotation、expanded analysis path，以及 raw/selection view state。所有 64-bit quantity 使用
+canonical decimal string，避免 JSON binary64 丢失 source-coordinate 精度。parser 限制 document
+size、nesting、text 与 collection count，并拒绝 duplicate、missing、unknown、mistyped、
+unsupported、malformed 或 source 外 value。
+
+保存使用关闭 direct-write fallback 的 `QSaveFile`。恢复会验证完整 document，以只读方式打开
+local file，比较从同一 handle 新计算的 fingerprint，执行精确且兼容的 catalog lookup，从该
+resolved entry 构造 analyzer，最后才绑定 user state。失败不会返回 replacement session，也不会
+应用 saved coordinate。bundled H.264 analyzer 同样保留完整 catalog-resolved identity。
+path-like identity 不能授权恢复，virtual source 也不能借此 fallback 持久化。cache page 与 live
+analyzer state 不属于 `.svsession`；参见[会话格式](session-format.md)与
+[ADR-0033](adr/0033-save-exact-analysis-sessions-as-atomic-json.md)。
+
 ## 分页 Source 访问
 
 `SourcePager` 在 `RandomAccessSource` 之上提供有界分页视图。每页最多 64 KiB，

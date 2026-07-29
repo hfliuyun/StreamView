@@ -3,7 +3,11 @@
 #include <streamview/core/source.h>
 #include <streamview/core/source_pager.h>
 #include <streamview/rules/h264_annex_b_detector.h>
+#include <streamview/rules/rule_catalog.h>
+#include <streamview/rules/rule_package.h>
 
+#include <QFile>
+#include <QTemporaryDir>
 #include <QTest>
 
 #include <algorithm>
@@ -14,6 +18,11 @@
 #include <vector>
 
 using streamview::app::AnalysisSession;
+using streamview::app::AnalysisSessionRestoreStatus;
+using streamview::app::RawDisplayMode;
+using streamview::app::SessionAnnotation;
+using streamview::app::SessionBookmark;
+using streamview::app::SessionUserState;
 using streamview::core::MaterializationState;
 using streamview::core::RandomAccessSource;
 using streamview::core::SourceReadResult;
@@ -86,6 +95,14 @@ private:
 
 std::vector<std::byte> validAnnexB() {
     return {std::byte{0x00}, std::byte{0x00}, std::byte{0x01}, std::byte{0x65}};
+}
+
+QByteArray validAnnexBBytes() { return QByteArray::fromHex("00000165"); }
+
+bool writeFile(const QString& path, const QByteArray& bytes) {
+    QFile file(path);
+    return file.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
+           file.write(bytes) == bytes.size();
 }
 
 class SingleInitialReadSource final : public RandomAccessSource {
@@ -161,6 +178,9 @@ private slots:
 
         QVERIFY2(session != nullptr, qPrintable(errorMessage));
         QCOMPARE(session->identity(), QStringLiteral("fixture.264"));
+        QCOMPARE(session->ruleIdentity().packageIdentity().packageId(),
+                 QStringLiteral("org.streamview.h264"));
+        QCOMPARE(session->ruleIdentity().entryPointId(), QStringLiteral("annex-b"));
         QCOMPARE(session->sizeBytes(), quint64{4});
         QVERIFY(!session->finished());
         QVERIFY(session->formatDetection().candidate.has_value());
@@ -264,6 +284,155 @@ private slots:
         const auto root = session->tree().node(session->tree().rootId());
         QVERIFY(root.has_value());
         QCOMPARE(root->state(), MaterializationState::Invalid);
+    }
+
+    void savesAndRestoresAnExactlyPinnedFileSession() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("fixture.264"));
+        const QString sessionPath = directory.filePath(QStringLiteral("fixture.svsession"));
+        QVERIFY(writeFile(mediaPath, validAnnexBBytes()));
+
+        QString errorMessage;
+        auto original = AnalysisSession::openFile(mediaPath, &errorMessage);
+        QVERIFY2(original != nullptr, qPrintable(errorMessage));
+        const auto expectedRule = original->ruleIdentity();
+        SessionUserState state;
+        state.bookmarks = {SessionBookmark{QStringLiteral("header"), 24}};
+        state.annotations = {SessionAnnotation{QStringLiteral("IDR"), 24, 8}};
+        state.expandedPaths = {QStringLiteral("root/nal_unit[0]")};
+        state.view.rawDisplayMode = RawDisplayMode::Combined;
+        state.view.selectedSourceBitOffset = 25;
+        state.view.selectedAnalysisPath = QStringLiteral("root/nal_unit[0]/NalUnitHeader");
+        QVERIFY2(original->saveSession(sessionPath, state, &errorMessage),
+                 qPrintable(errorMessage));
+        original.reset();
+
+        auto package = streamview::rules::loadH264AnnexBRulePackage();
+        QVERIFY2(package.succeeded(), qPrintable(package.errorMessage));
+        streamview::rules::RulePackageCatalog catalog;
+        QVERIFY(catalog.registerPackage(std::move(*package.package)).succeeded());
+
+        auto restored = AnalysisSession::restoreSession(sessionPath, catalog);
+
+        QVERIFY2(restored.succeeded(), qPrintable(restored.errorMessage));
+        QCOMPARE(restored.session->ruleIdentity(), expectedRule);
+        QVERIFY(restored.session->userState() == state);
+        QCOMPARE(restored.ruleStatus,
+                 std::optional(streamview::rules::RuleCatalogLookupStatus::Found));
+    }
+
+    void rejectsAChangedSourceBeforeApplyingSavedLocations() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("fixture.264"));
+        const QString sessionPath = directory.filePath(QStringLiteral("fixture.svsession"));
+        QVERIFY(writeFile(mediaPath, validAnnexBBytes()));
+        QString errorMessage;
+        auto original = AnalysisSession::openFile(mediaPath, &errorMessage);
+        QVERIFY2(original != nullptr, qPrintable(errorMessage));
+        QVERIFY2(original->saveSession(sessionPath, {}, &errorMessage), qPrintable(errorMessage));
+        original.reset();
+        QVERIFY(writeFile(mediaPath, QByteArray::fromHex("00000141")));
+
+        streamview::rules::RulePackageCatalog catalog;
+        const auto restored = AnalysisSession::restoreSession(sessionPath, catalog);
+
+        QCOMPARE(restored.status, AnalysisSessionRestoreStatus::SourceFingerprintMismatch);
+        QVERIFY(restored.session == nullptr);
+        QVERIFY(restored.errorMessage.contains(QStringLiteral("fingerprint"),
+                                               Qt::CaseInsensitive));
+    }
+
+    void diagnosesMissingAndConflictingExactRuleContent() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("fixture.264"));
+        const QString sessionPath = directory.filePath(QStringLiteral("fixture.svsession"));
+        QVERIFY(writeFile(mediaPath, validAnnexBBytes()));
+        QString errorMessage;
+        auto original = AnalysisSession::openFile(mediaPath, &errorMessage);
+        QVERIFY2(original != nullptr, qPrintable(errorMessage));
+        QVERIFY2(original->saveSession(sessionPath, {}, &errorMessage), qPrintable(errorMessage));
+        original.reset();
+
+        streamview::rules::RulePackageCatalog missingCatalog;
+        const auto missing = AnalysisSession::restoreSession(sessionPath, missingCatalog);
+        QCOMPARE(missing.status, AnalysisSessionRestoreStatus::RuleLookupError);
+        QCOMPARE(missing.ruleStatus,
+                 std::optional(streamview::rules::RuleCatalogLookupStatus::MissingContent));
+
+        auto bundled = streamview::rules::loadH264AnnexBRulePackage();
+        QVERIFY2(bundled.succeeded(), qPrintable(bundled.errorMessage));
+        std::vector<streamview::rules::RulePackageFile> changedFiles = bundled.package->files();
+        auto source = std::find_if(changedFiles.begin(), changedFiles.end(), [](const auto& file) {
+            return file.path == QStringLiteral("src/h264_annex_b.svfmt");
+        });
+        QVERIFY(source != changedFiles.end());
+        source->contents.append('\n');
+        auto changed = streamview::rules::RulePackage::fromFiles(std::move(changedFiles));
+        QVERIFY2(changed.succeeded(), qPrintable(changed.errorMessage));
+        streamview::rules::RulePackageCatalog conflictingCatalog;
+        QVERIFY(conflictingCatalog.registerPackage(std::move(*changed.package)).succeeded());
+
+        const auto conflict = AnalysisSession::restoreSession(sessionPath, conflictingCatalog);
+        QCOMPARE(conflict.status, AnalysisSessionRestoreStatus::RuleLookupError);
+        QCOMPARE(conflict.ruleStatus,
+                 std::optional(streamview::rules::RuleCatalogLookupStatus::VersionConflict));
+    }
+
+    void diagnosesAnExactlyPinnedRuleThatTheCurrentEngineCannotRun() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("fixture.264"));
+        const QString sessionPath = directory.filePath(QStringLiteral("fixture.svsession"));
+        QVERIFY(writeFile(mediaPath, validAnnexBBytes()));
+
+        auto loaded = streamview::rules::loadH264AnnexBRulePackage();
+        QVERIFY2(loaded.succeeded(), qPrintable(loaded.errorMessage));
+        std::vector<streamview::rules::RulePackageFile> files = loaded.package->files();
+        auto manifest = std::find_if(files.begin(), files.end(), [](const auto& file) {
+            return file.path == QStringLiteral("rule.toml");
+        });
+        QVERIFY(manifest != files.end());
+        QVERIFY(manifest->contents.contains(QByteArrayLiteral(">=0.1.0 <0.2.0")));
+        manifest->contents.replace(QByteArrayLiteral(">=0.1.0 <0.2.0"),
+                                   QByteArrayLiteral(">=0.2.0 <0.3.0"));
+        auto incompatible = streamview::rules::RulePackage::fromFiles(std::move(files));
+        QVERIFY2(incompatible.succeeded(), qPrintable(incompatible.errorMessage));
+        auto pin = streamview::rules::RuleEntryPointIdentity::create(
+            incompatible.package->identity(), QStringLiteral("annex-b"));
+        QVERIFY(pin.has_value());
+
+        QString errorMessage;
+        auto source = streamview::core::FileSource::open(mediaPath, &errorMessage);
+        QVERIFY2(source != nullptr, qPrintable(errorMessage));
+        auto fingerprint = source->fingerprint();
+        QVERIFY2(fingerprint.succeeded(), qPrintable(fingerprint.errorMessage));
+        auto document = streamview::app::SessionDocument::create(
+            mediaPath, mediaPath, std::move(*fingerprint.fingerprint), std::move(*pin));
+        QVERIFY(document.has_value());
+        QVERIFY2(document->save(sessionPath, &errorMessage), qPrintable(errorMessage));
+        source.reset();
+
+        streamview::rules::RulePackageCatalog catalog;
+        QVERIFY(catalog.registerPackage(std::move(*incompatible.package)).succeeded());
+        const auto restored = AnalysisSession::restoreSession(sessionPath, catalog);
+
+        QCOMPARE(restored.status, AnalysisSessionRestoreStatus::RuleLookupError);
+        QCOMPARE(restored.ruleStatus,
+                 std::optional(streamview::rules::RuleCatalogLookupStatus::IncompatibleEngine));
+    }
+
+    void refusesToPersistAPathLikeVirtualSourceIdentity() {
+        QString errorMessage;
+        const auto session = AnalysisSession::create(
+            std::make_unique<MemorySource>(validAnnexB(), QStringLiteral("looks-like-a-path.264")),
+            &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+
+        QVERIFY(!session->saveSession(QStringLiteral("unused.svsession"), {}, &errorMessage));
+        QVERIFY(errorMessage.contains(QStringLiteral("local file"), Qt::CaseInsensitive));
     }
 };
 

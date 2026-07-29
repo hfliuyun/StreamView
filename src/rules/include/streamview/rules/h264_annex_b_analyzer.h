@@ -6,6 +6,7 @@
 #include <streamview/rules/dsl_ir.h>
 #include <streamview/rules/h264_ebsp_rbsp_mapper.h>
 #include <streamview/rules/h264_start_code_scanner.h>
+#include <streamview/rules/rule_catalog.h>
 
 #include <QString>
 #include <QtGlobal>
@@ -38,11 +39,18 @@ struct H264AnnexBAnalysisBatch final {
 };
 
 [[nodiscard]] QString h264AnnexBRuleSource(QString* errorMessage = nullptr);
+[[nodiscard]] RulePackageLoadResult loadH264AnnexBRulePackage();
 
 class H264AnnexBAnalyzer final {
 public:
     [[nodiscard]] static std::optional<H264AnnexBAnalyzer>
     create(const core::RandomAccessSource& source,
+           QString* errorMessage = nullptr,
+           std::optional<core::CancellationToken> cancellation = std::nullopt,
+           H264EbspRbspMapLimits mapperLimits = {});
+    [[nodiscard]] static std::optional<H264AnnexBAnalyzer>
+    create(const core::RandomAccessSource& source,
+           const RuleCatalogLookupResult& resolvedRule,
            QString* errorMessage = nullptr,
            std::optional<core::CancellationToken> cancellation = std::nullopt,
            H264EbspRbspMapLimits mapperLimits = {});
@@ -63,6 +71,9 @@ public:
     [[nodiscard]] const core::AnalysisTree& tree() const noexcept { return tree_; }
     [[nodiscard]] bool finished() const noexcept { return terminal_; }
     [[nodiscard]] quint64 scanCursor() const noexcept { return scanner_.cursor(); }
+    [[nodiscard]] const RuleEntryPointIdentity& ruleIdentity() const noexcept {
+        return ruleIdentity_;
+    }
 
 private:
     struct QueuedRecord final {
@@ -80,6 +91,7 @@ private:
     H264AnnexBAnalyzer(const core::RandomAccessSource& source,
                       std::optional<core::CancellationToken> cancellation,
                       H264EbspRbspMapLimits mapperLimits,
+                      RuleEntryPointIdentity ruleIdentity,
                       DslTypedProgram program,
                       quint32 elementStructIndex,
                       core::AnalysisTree tree);
@@ -106,6 +118,7 @@ private:
     H264StartCodeScanner scanner_;
     std::optional<core::CancellationToken> cancellation_;
     H264EbspRbspMapLimits mapperLimits_;
+    RuleEntryPointIdentity ruleIdentity_;
     DslTypedProgram program_;
     quint32 elementStructIndex_ = 0;
     core::AnalysisTree tree_;

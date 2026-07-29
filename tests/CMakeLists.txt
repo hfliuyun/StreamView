@@ -78,6 +78,7 @@ streamview_add_rules_test(
 
 if(TARGET streamview_app)
     streamview_add_app_test(streamview_analysis_session_tests app/analysis_session_test.cpp)
+    streamview_add_app_test(streamview_session_document_tests app/session_document_test.cpp)
     streamview_add_app_test(streamview_analysis_tree_model_tests app/analysis_tree_model_test.cpp)
     streamview_add_app_test(streamview_field_inspector_tests app/field_inspector_test.cpp)
     streamview_add_app_test(streamview_raw_data_model_tests app/raw_data_model_test.cpp)

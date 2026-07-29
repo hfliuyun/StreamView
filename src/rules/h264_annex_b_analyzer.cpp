@@ -2,7 +2,9 @@
 
 #include <streamview/core/bit_reader.h>
 #include <streamview/core/coordinates.h>
+#include <streamview/core/version.h>
 #include <streamview/rules/dsl_executor.h>
+#include <streamview/rules/language_version.h>
 #include <streamview/rules/rule_package.h>
 
 #include <QFile>
@@ -141,52 +143,103 @@ analysisStatus(H264EbspRbspMapStatus status) noexcept {
 
 } // namespace
 
+RulePackageLoadResult loadH264AnnexBRulePackage() {
+    initializeStreamViewOfficialRules();
+    QString errorMessage;
+    const QString root = QStringLiteral(":/streamview/rules/org.streamview.h264/");
+    auto manifest = readBundledPackageFile(root + QStringLiteral("rule.toml"), &errorMessage);
+    auto source = readBundledPackageFile(root + QStringLiteral("src/h264_annex_b.svfmt"),
+                                         &errorMessage);
+    if (!manifest || !source) {
+        return {RulePackageLoadStatus::InvalidTree, std::nullopt, std::move(errorMessage)};
+    }
+    RulePackageLoadResult loaded = RulePackage::fromFiles({
+        {QStringLiteral("rule.toml"), std::move(*manifest)},
+        {QStringLiteral("src/h264_annex_b.svfmt"), std::move(*source)},
+    });
+    if (!loaded.succeeded()) {
+        loaded.errorMessage = QStringLiteral("Bundled H.264 package is invalid: %1")
+                                  .arg(loaded.errorMessage);
+    }
+    return loaded;
+}
+
+namespace {
+
+struct BundledRule final {
+    RuleCatalogLookupResult resolved;
+    QString errorMessage;
+};
+
+[[nodiscard]] const BundledRule& bundledH264AnnexBRule() {
+    static const BundledRule bundled = [] {
+        BundledRule result;
+        RulePackageLoadResult loaded = loadH264AnnexBRulePackage();
+        if (!loaded.succeeded()) {
+            result.errorMessage = std::move(loaded.errorMessage);
+            return result;
+        }
+        const RulePackageIdentity identity = loaded.package->identity();
+        RulePackageCatalog catalog;
+        const RuleCatalogRegistrationResult registered =
+            catalog.registerPackage(std::move(*loaded.package));
+        if (!registered.succeeded()) {
+            result.errorMessage = registered.errorMessage;
+            return result;
+        }
+        result.resolved = catalog.resolve(identity, u"annex-b", languageVersion(),
+                                          core::version());
+        if (!result.resolved.succeeded()) {
+            result.errorMessage = result.resolved.errorMessage;
+        }
+        return result;
+    }();
+    return bundled;
+}
+
+} // namespace
+
 QString h264AnnexBRuleSource(QString* errorMessage) {
+    const BundledRule& bundled = bundledH264AnnexBRule();
+    if (!bundled.resolved.succeeded()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = bundled.errorMessage;
+        }
+        return {};
+    }
+    const QByteArray* contents =
+        bundled.resolved.package->fileContents(bundled.resolved.entryPoint->sourcePath);
+    if (contents == nullptr) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Bundled H.264 package has no Annex B source");
+        }
+        return {};
+    }
     if (errorMessage != nullptr) {
         errorMessage->clear();
     }
-    struct BundledRule final {
-        QString source;
-        QString errorMessage;
-    };
-    static const BundledRule bundled = [] {
-        initializeStreamViewOfficialRules();
-        BundledRule result;
-        const QString root = QStringLiteral(":/streamview/rules/org.streamview.h264/");
-        auto manifest =
-            readBundledPackageFile(root + QStringLiteral("rule.toml"), &result.errorMessage);
-        auto source = readBundledPackageFile(
-            root + QStringLiteral("src/h264_annex_b.svfmt"), &result.errorMessage);
-        if (!manifest || !source) {
-            return result;
-        }
-        RulePackageLoadResult loaded = RulePackage::fromFiles({
-            {QStringLiteral("rule.toml"), std::move(*manifest)},
-            {QStringLiteral("src/h264_annex_b.svfmt"), std::move(*source)},
-        });
-        if (!loaded.succeeded()) {
-            result.errorMessage = QStringLiteral("Bundled H.264 package is invalid: %1")
-                                      .arg(loaded.errorMessage);
-            return result;
-        }
-        const QByteArray* contents =
-            loaded.package->fileContents(QStringLiteral("src/h264_annex_b.svfmt"));
-        if (contents == nullptr) {
-            result.errorMessage =
-                QStringLiteral("Bundled H.264 package has no Annex B source");
-            return result;
-        }
-        result.source = QString::fromUtf8(*contents);
-        return result;
-    }();
-    if (bundled.source.isEmpty() && errorMessage != nullptr) {
-        *errorMessage = bundled.errorMessage;
-    }
-    return bundled.source;
+    return QString::fromUtf8(*contents);
 }
 
 std::optional<H264AnnexBAnalyzer>
 H264AnnexBAnalyzer::create(const core::RandomAccessSource& source,
+                           QString* errorMessage,
+                           std::optional<core::CancellationToken> cancellation,
+                           H264EbspRbspMapLimits mapperLimits) {
+    const BundledRule& bundled = bundledH264AnnexBRule();
+    if (!bundled.resolved.succeeded()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = bundled.errorMessage;
+        }
+        return std::nullopt;
+    }
+    return create(source, bundled.resolved, errorMessage, std::move(cancellation),
+                  mapperLimits);
+}
+
+std::optional<H264AnnexBAnalyzer>
+H264AnnexBAnalyzer::create(const core::RandomAccessSource& source,
+                           const RuleCatalogLookupResult& resolvedRule,
                            QString* errorMessage,
                            std::optional<core::CancellationToken> cancellation,
                            H264EbspRbspMapLimits mapperLimits) {
@@ -202,21 +255,38 @@ H264AnnexBAnalyzer::create(const core::RandomAccessSource& source,
         return std::nullopt;
     }
 
-    QString loadError;
-    const QString ruleSource = h264AnnexBRuleSource(&loadError);
-    if (ruleSource.isEmpty()) {
+    if (!resolvedRule.succeeded()) {
         if (errorMessage != nullptr) {
-            *errorMessage = loadError.isEmpty() ? QStringLiteral("Bundled H.264 rule is empty")
-                                                : loadError;
+            *errorMessage = resolvedRule.errorMessage.isEmpty()
+                                ? QStringLiteral("H.264 rule was not resolved exactly")
+                                : resolvedRule.errorMessage;
         }
         return std::nullopt;
     }
+    const QByteArray* ruleBytes =
+        resolvedRule.package->fileContents(resolvedRule.entryPoint->sourcePath);
+    if (ruleBytes == nullptr || ruleBytes->isEmpty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Resolved H.264 rule source is missing or empty");
+        }
+        return std::nullopt;
+    }
+    QString identityError;
+    auto ruleIdentity = RuleEntryPointIdentity::create(
+        resolvedRule.package->identity(), resolvedRule.entryPoint->id, &identityError);
+    if (!ruleIdentity) {
+        if (errorMessage != nullptr) {
+            *errorMessage = std::move(identityError);
+        }
+        return std::nullopt;
+    }
+    const QString ruleSource = QString::fromUtf8(*ruleBytes);
 
     const DslParseResult parsed = DslParser::parse(ruleSource);
     if (!parsed.succeeded()) {
         if (errorMessage != nullptr) {
             const DslDiagnostic& diagnostic = parsed.diagnostics.front();
-            *errorMessage = QStringLiteral("Bundled H.264 rule is invalid at %1:%2: %3")
+            *errorMessage = QStringLiteral("Resolved H.264 rule is invalid at %1:%2: %3")
                                 .arg(diagnostic.range.start.line)
                                 .arg(diagnostic.range.start.column)
                                 .arg(diagnostic.message);
@@ -228,11 +298,11 @@ H264AnnexBAnalyzer::create(const core::RandomAccessSource& source,
     if (!compiled.succeeded()) {
         if (errorMessage != nullptr) {
             if (compiled.diagnostics.empty()) {
-                *errorMessage = QStringLiteral("Bundled H.264 rule failed static compilation");
+                *errorMessage = QStringLiteral("Resolved H.264 rule failed static compilation");
             } else {
                 const DslDiagnostic& diagnostic = compiled.diagnostics.front();
                 *errorMessage =
-                    QStringLiteral("Bundled H.264 rule failed static compilation at %1:%2: %3")
+                    QStringLiteral("Resolved H.264 rule failed static compilation at %1:%2: %3")
                         .arg(diagnostic.range.start.line)
                         .arg(diagnostic.range.start.column)
                         .arg(diagnostic.message);
@@ -244,7 +314,7 @@ H264AnnexBAnalyzer::create(const core::RandomAccessSource& source,
     if (compiled.program->entry.kind != DslEntryKind::Sequence ||
         compiled.program->entry.targetIndex >= compiled.program->scans.size()) {
         if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("Bundled H.264 rule has no Annex B entry scan");
+            *errorMessage = QStringLiteral("Resolved H.264 rule has no Annex B entry scan");
         }
         return std::nullopt;
     }
@@ -253,7 +323,7 @@ H264AnnexBAnalyzer::create(const core::RandomAccessSource& source,
     if (entryScan.scanner != DslScannerKind::H264StartCode ||
         entryScan.elementStructIndex >= compiled.program->structs.size()) {
         if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("Bundled H.264 rule has no Annex B entry scan");
+            *errorMessage = QStringLiteral("Resolved H.264 rule has no Annex B entry scan");
         }
         return std::nullopt;
     }
@@ -271,6 +341,7 @@ H264AnnexBAnalyzer::create(const core::RandomAccessSource& source,
     H264AnnexBAnalyzer analyzer(source,
                                 std::move(cancellation),
                                 mapperLimits,
+                                std::move(*ruleIdentity),
                                 std::move(*compiled.program),
                                 elementStructIndex,
                                 std::move(*tree));
@@ -280,11 +351,13 @@ H264AnnexBAnalyzer::create(const core::RandomAccessSource& source,
 H264AnnexBAnalyzer::H264AnnexBAnalyzer(const core::RandomAccessSource& source,
                                        std::optional<core::CancellationToken> cancellation,
                                        H264EbspRbspMapLimits mapperLimits,
+                                       RuleEntryPointIdentity ruleIdentity,
                                        DslTypedProgram program,
                                        quint32 elementStructIndex,
                                        core::AnalysisTree tree)
     : source_(&source), scanner_(source, cancellation), cancellation_(std::move(cancellation)),
-      mapperLimits_(mapperLimits), program_(std::move(program)),
+      mapperLimits_(mapperLimits), ruleIdentity_(std::move(ruleIdentity)),
+      program_(std::move(program)),
       elementStructIndex_(elementStructIndex), tree_(std::move(tree)) {}
 
 bool H264AnnexBAnalyzer::resumeAfterCancellation(

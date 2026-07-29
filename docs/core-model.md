@@ -111,6 +111,29 @@ unchanged content does not cause a mismatch. Unsupported metadata and I/O
 errors are explicit. Virtual sources receive no path-identity fallback. See
 [ADR-0031](adr/0031-versioned-file-source-fingerprints.md).
 
+## Persistent Session Documents
+
+`SessionDocument` is the compact, versioned user-state record for one local
+file and one complete rule entry-point identity. Version 1 is a closed UTF-8
+JSON schema containing the source path and descriptive identity, complete
+`SourceFingerprint`, package ID/version/content hash and entry-point ID,
+bookmarks, annotations, expanded analysis paths, and raw/selection view state.
+All 64-bit quantities use canonical decimal strings so JSON binary64 does not
+lose source-coordinate precision. The parser bounds document size, nesting,
+text and collection counts, and rejects duplicate, missing, unknown, mistyped,
+unsupported, malformed, or out-of-source values.
+
+Saving uses `QSaveFile` with direct-write fallback disabled. Restore validates
+the whole document, opens the local file read-only, compares a fresh
+same-handle fingerprint, performs exact compatible catalog lookup, constructs
+the analyzer from that resolved entry, and only then attaches user state. A
+failure returns no replacement session and applies no saved coordinate. The
+bundled H.264 analyzer also retains the complete catalog-resolved identity.
+Path-like identity never authorizes restore, and virtual sources cannot be
+persisted through that fallback. Cache pages and live analyzer state are not
+part of `.svsession`; see [the session format](session-format.md) and
+[ADR-0033](adr/0033-save-exact-analysis-sessions-as-atomic-json.md).
+
 ## Paged Source Access
 
 `SourcePager` exposes a bounded page view over a `RandomAccessSource`. Each page

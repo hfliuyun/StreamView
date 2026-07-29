@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 2
-Last Completed Step: M4 SQLite WAL paged cache store
-Next Action: Define M5 rule manifests, content hashes, and catalog identity
-Last Verification: Local dev/ci/sanitize passed 25/25; hosted run 30372439547 passed on
-  Windows, macOS, and Ubuntu
+Last Completed Step: M5 .svsession v1 exact rule pinning
+Next Action: Define versioned progressive-index and materialized-result owner body serializers
+Last Verification: Current .svsession stage local dev/ci/sanitize passed 29/29; prior
+  cache-identity hosted run 30426917683 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -109,12 +109,14 @@ Blockers: None
 
 - [x] 先固定 TOML manifest、content hash、兼容范围和 rule catalog，再实现目录导入与 `.svrule` deterministic ZIP。
 - [x] 拒绝绝对路径、parent traversal、重复/非规范路径、符号链接和 zip bomb；安装内容按 hash 只读保存。
-- [ ] 统一 source fingerprint、SQLite cache namespace 与 `.svsession` 精确规则 pinning，使用版本化 JSON/QSaveFile 原子保存。
+- [ ] 完成 source fingerprint、SQLite cache namespace、owner payload 与 `.svsession` 的持久身份链和恢复管线。
   - [x] 固定并实现 version 1 本地文件 source fingerprint：小文件全文 SHA-256；大文件绑定
     size、纳秒 mtime 与首/中/尾各 1 MiB SHA-256；计算期间变化显式失败。
   - [x] 固定 durable cache namespace 与 version 1 payload envelope，绑定 source fingerprint、
     完整 rule entry-point identity、SQLite schema、envelope 与两类 payload version。
-  - [ ] 实现 owner payload body serializer 与 `.svsession` 精确规则 pinning。
+  - [ ] 实现 progressive-index 与 materialized-result owner payload body serializer。
+  - [x] 实现 `.svsession` version 1 闭合 JSON、`QSaveFile` 原子保存、同句柄 fingerprint
+    校验与完整 rule entry-point identity 精确恢复；cache page 保持在 session 文件外。
 
 验收：规则版本冲突、源变化和损坏包均显式诊断；旧会话不会静默绑定新源或新规则。
 
@@ -197,12 +199,13 @@ Blockers: None
 
 ## 阶段 6：会话、规则管理和桌面体验
 
-- [ ] 使用版本化 JSON 与 `QSaveFile` 实现 `.svsession` 原子保存。
-- [ ] 保存源身份、规则精确版本/哈希、书签、注释、展开路径和视图状态。
+- [x] 使用版本化 JSON 与 `QSaveFile` 实现 `.svsession` 原子保存。
+- [x] 保存源身份、规则精确版本/哈希、书签、注释、展开路径和视图状态。
 - [x] 大文件指纹使用大小、纳秒 mtime、首/中/尾各 1 MiB SHA-256；小文件全文哈希。
 - [ ] 实现保存/另存为、未保存关闭提示、格式手动覆盖和规则版本管理。
 - [ ] 完成进度、取消、诊断汇总、明暗主题和中英双语切换。
-- [ ] 验证源变化不会误绑定，旧会话继续使用锁定的旧规则。
+- [x] 验证源变化不会误绑定，旧会话按 package ID/version/content hash/entry-point ID
+  精确恢复，且 missing/conflicting/incompatible rule 都显式失败。
 
 ## 阶段 7：安全、性能与发布
 
@@ -321,3 +324,17 @@ Blockers: None
   `ci`、`sanitize` 重新配置、完整构建与 CTest 均为 25/25；hosted run `30372439547`
   在 Windows、macOS、Ubuntu 成功。下一步固定 M5 TOML manifest、content hash、
   compatibility range 与 rule catalog identity。
+- 2026-07-29：M5 rule package、Windows extended directory path、durable source
+  fingerprint 与 cache identity/envelope 已依次完成；`510b78c`、`05f38d8`、`ea1717e`
+  对应 hosted runs `30423302221`、`30425652345`、`30426917683` 均在 Windows、macOS、
+  Ubuntu 成功。
+- 2026-07-29：完成 `.svsession` version 1 exact-pinning 切片：闭合且有界的 UTF-8 JSON
+  保存 source path/identity、完整 fingerprint、package ID/version/content hash/entry point、
+  bookmark、annotation、expanded path 与 view state；64-bit value 使用 canonical decimal
+  string，duplicate/unknown/missing/mistyped/out-of-source value 显式拒绝。保存使用关闭
+  direct-write fallback 的 `QSaveFile`；恢复先比较同一打开 handle 的 fingerprint，再做精确
+  catalog lookup，missing/conflicting/incompatible rule 均不 fallback，最后才绑定 user state。
+  bundled H.264 analyzer 也保留 catalog-resolved identity；cache page 与 live analyzer state
+  仍不进入 session。英文规范、中文伴随说明和 ADR-0033 已同步；本机 `dev`、`ci`、
+  `sanitize` 重新配置、完整构建与 CTest 均为 29/29。下一步提交、推送并验证 hosted matrix，
+  随后实现两类 owner payload body serializer。

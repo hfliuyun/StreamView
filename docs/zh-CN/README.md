@@ -11,6 +11,8 @@ StreamView 的技术规范、ADR、格式语言参考和 API 契约以英文版�
 - [产品需求](product-requirements.md)
 - [核心 Source 与 Bit 模型](core-model.md)
 - [分析节点与诊断模型](analysis-model.md)
+- [规则包格式](rule-packages.md)
+- [保存会话格式](session-format.md)
 - [格式定义语言](format-language/README.md)
 - [格式定义语言英文规范草案](../format-language/README.md)
 - [规范基线](standards.md)
