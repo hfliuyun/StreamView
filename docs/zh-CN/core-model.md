@@ -78,6 +78,22 @@ analysis worker 单写者模型。首个消费该目录的正式格式规则会�
 
 `end-of-source` 可以包含有效的部分字节数，调用方不得解释该长度之后的内容。
 
+## 持久文件 Fingerprint
+
+`FileSource::fingerprint()` 在同一个已经打开的只读 file handle 上计算 version 1 identity；
+类似 path 的 source identity 永远不能充当 durable identity。小于等于 3 MiB 的文件使用
+全文 SHA-256 与 size；更大的文件使用 size、Unix epoch 纳秒 modification time，以及首、
+中、尾三个 1 MiB window 拼接后的 SHA-256。中间 window 从
+`floor((size - 1 MiB) / 2)` 开始。全文 hash 的读取量因此不超过采样模式，两个 mode 都只
+保留 64 KiB 工作 buffer。
+
+实现会在 hash 前后从同一个 OS handle 比较 size 与纳秒 modification time。文件 size 与
+打开 source 时不一致，或计算期间 snapshot 变化时，会显式诊断 changed，不产生 fingerprint。
+小文件 modification time 只用于该一致性检查，不写入 durable value，因此只 touch 未改变的
+content 不会造成 mismatch。不支持的 metadata 与 I/O error 都是显式结果。virtual source
+不会回退使用 path identity。详见
+[ADR-0031](adr/0031-versioned-file-source-fingerprints.md)。
+
 ## 分页 Source 访问
 
 `SourcePager` 在 `RandomAccessSource` 之上提供有界分页视图。每页最多 64 KiB，

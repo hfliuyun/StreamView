@@ -107,9 +107,12 @@ Blockers: None
 
 依赖：M3 的语言/引擎版本契约和 M4 的稳定 source/rule identity。
 
-- [ ] 先固定 TOML manifest、content hash、兼容范围和 rule catalog，再实现目录导入与 `.svrule` deterministic ZIP。
-- [ ] 拒绝绝对路径、parent traversal、重复/非规范路径、符号链接和 zip bomb；安装内容按 hash 只读保存。
+- [x] 先固定 TOML manifest、content hash、兼容范围和 rule catalog，再实现目录导入与 `.svrule` deterministic ZIP。
+- [x] 拒绝绝对路径、parent traversal、重复/非规范路径、符号链接和 zip bomb；安装内容按 hash 只读保存。
 - [ ] 统一 source fingerprint、SQLite cache namespace 与 `.svsession` 精确规则 pinning，使用版本化 JSON/QSaveFile 原子保存。
+  - [x] 固定并实现 version 1 本地文件 source fingerprint：小文件全文 SHA-256；大文件绑定
+    size、纳秒 mtime 与首/中/尾各 1 MiB SHA-256；计算期间变化显式失败。
+  - [ ] 固定 durable cache namespace、版本化 payload 与 `.svsession` 精确规则 pinning。
 
 验收：规则版本冲突、源变化和损坏包均显式诊断；旧会话不会静默绑定新源或新规则。
 
@@ -157,8 +160,8 @@ Blockers: None
 - [x] 完成 SQLite 分页缓存、原子批次提交、schema 版本和崩溃恢复。
 - [ ] 在 M5 固定 source fingerprint、精确 rule identity 与 cache namespace 后，接入
   后台 cache owner 和 versioned index/materialized-result payload。
-- [ ] 完成 TOML 清单、本地规则目录导入、`.svrule` 打包安装、哈希和版本并存。
-- [ ] 防御路径穿越、zip bomb、符号链接和 Unicode 非规范路径。
+- [x] 完成 TOML 清单、本地规则目录导入、`.svrule` 打包安装、哈希和版本并存。
+- [x] 防御路径穿越、zip bomb、符号链接和 Unicode 非规范路径。
 - [ ] 为全部稳定 DSL 功能补齐英文规范、中文说明和正反例。
 - [x] 验证 100 GB 虚拟/稀疏源可快速打开、渐进索引、取消和恢复。（自动化验证
   有界访问和恢复语义；约两秒、RSS 与 p95 性能门禁仍留在阶段 7 实测。）
@@ -194,7 +197,7 @@ Blockers: None
 
 - [ ] 使用版本化 JSON 与 `QSaveFile` 实现 `.svsession` 原子保存。
 - [ ] 保存源身份、规则精确版本/哈希、书签、注释、展开路径和视图状态。
-- [ ] 大文件指纹使用大小、纳秒 mtime、首/中/尾各 1 MiB SHA-256；小文件全文哈希。
+- [x] 大文件指纹使用大小、纳秒 mtime、首/中/尾各 1 MiB SHA-256；小文件全文哈希。
 - [ ] 实现保存/另存为、未保存关闭提示、格式手动覆盖和规则版本管理。
 - [ ] 完成进度、取消、诊断汇总、明暗主题和中英双语切换。
 - [ ] 验证源变化不会误绑定，旧会话继续使用锁定的旧规则。

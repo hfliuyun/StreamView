@@ -5,6 +5,7 @@ add_library(streamview_core STATIC
     coordinates.cpp
     paged_cache.cpp
     source.cpp
+    source_fingerprint.cpp
     source_pager.cpp
     include/streamview/core/analysis_model.h
     include/streamview/core/bit_reader.h
@@ -12,6 +13,7 @@ add_library(streamview_core STATIC
     include/streamview/core/coordinates.h
     include/streamview/core/paged_cache.h
     include/streamview/core/source.h
+    include/streamview/core/source_fingerprint.h
     include/streamview/core/source_pager.h
     include/streamview/core/version.h
     version.cpp

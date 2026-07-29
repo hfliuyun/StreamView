@@ -92,6 +92,25 @@ A read reports one of:
 An end-of-source read may contain a valid partial byte count. Callers must not
 interpret bytes beyond that count.
 
+## Durable File Fingerprints
+
+`FileSource::fingerprint()` computes version 1 identity from the same open,
+read-only file handle; it never treats the path-like source identity as durable.
+Files up to 3 MiB use full-content SHA-256 with size. Larger files use size,
+Unix-epoch nanosecond modification time, and SHA-256 over the concatenated
+first, middle, and last 1 MiB windows. The middle window starts at
+`floor((size - 1 MiB) / 2)`. Full hashing therefore reads no more bytes than
+sampling, and either mode retains only a 64 KiB working buffer.
+
+The implementation compares size and nanosecond modification time from the
+same OS handle before and after hashing. A file whose size differs from the
+open source, or whose snapshot changes during computation, is diagnosed as
+changed rather than given a fingerprint. Small-file modification time is used
+for this consistency check but is not stored in the durable value, so touching
+unchanged content does not cause a mismatch. Unsupported metadata and I/O
+errors are explicit. Virtual sources receive no path-identity fallback. See
+[ADR-0031](adr/0031-versioned-file-source-fingerprints.md).
+
 ## Paged Source Access
 
 `SourcePager` exposes a bounded page view over a `RandomAccessSource`. Each page

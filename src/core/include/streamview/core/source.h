@@ -1,5 +1,7 @@
 #pragma once
 
+#include <streamview/core/source_fingerprint.h>
+
 #include <QFile>
 #include <QMutex>
 #include <QString>
@@ -49,6 +51,7 @@ public:
     [[nodiscard]] QString identity() const override { return path_; }
     [[nodiscard]] SourceReadResult
     readAt(quint64 byteOffset, std::span<std::byte> destination) const override;
+    [[nodiscard]] SourceFingerprintResult fingerprint() const;
 
 private:
     explicit FileSource(QString path);
