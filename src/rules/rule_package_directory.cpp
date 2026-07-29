@@ -154,7 +154,15 @@ class UniqueHandle final {
 }
 
 [[nodiscard]] UniqueHandle openWindowsPath(const QString& path) {
-    const QString nativePath = QDir::toNativeSeparators(path);
+    QString nativePath = QDir::toNativeSeparators(path);
+    if (!nativePath.startsWith(QStringLiteral("\\\\?\\")) &&
+        !nativePath.startsWith(QStringLiteral("\\\\.\\"))) {
+        if (nativePath.startsWith(QStringLiteral("\\\\"))) {
+            nativePath = QStringLiteral("\\\\?\\UNC\\") + nativePath.sliced(2);
+        } else {
+            nativePath.prepend(QStringLiteral("\\\\?\\"));
+        }
+    }
     return UniqueHandle(CreateFileW(reinterpret_cast<LPCWSTR>(nativePath.utf16()), GENERIC_READ,
                                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                     OPEN_EXISTING,

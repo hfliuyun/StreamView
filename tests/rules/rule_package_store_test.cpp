@@ -87,6 +87,46 @@ namespace {
     return true;
 }
 
+#if defined(Q_OS_WIN)
+[[nodiscard]] QString extendedLengthPath(const QString& path) {
+    QString nativePath = QDir::toNativeSeparators(path);
+    if (nativePath.startsWith(QStringLiteral("\\\\"))) {
+        return QStringLiteral("\\\\?\\UNC\\") + nativePath.sliced(2);
+    }
+    nativePath.prepend(QStringLiteral("\\\\?\\"));
+    return nativePath;
+}
+
+[[nodiscard]] DWORD removeWindowsDirectories(const std::vector<QString>& directories) {
+    for (auto iterator = directories.rbegin(); iterator != directories.rend(); ++iterator) {
+        const QString extendedPath = extendedLengthPath(*iterator);
+        if (!RemoveDirectoryW(reinterpret_cast<LPCWSTR>(extendedPath.utf16()))) {
+            return GetLastError();
+        }
+    }
+    return ERROR_SUCCESS;
+}
+
+[[nodiscard]] bool createWindowsDirectoryChain(const QString& rootPath,
+                                               const QStringList& components,
+                                               std::vector<QString>* directories, DWORD* error) {
+    QString currentPath = rootPath;
+    for (const QString& component : components) {
+        currentPath = QDir(currentPath).filePath(component);
+        const QString extendedPath = extendedLengthPath(currentPath);
+        if (!CreateDirectoryW(reinterpret_cast<LPCWSTR>(extendedPath.utf16()), nullptr)) {
+            *error = GetLastError();
+            static_cast<void>(removeWindowsDirectories(*directories));
+            directories->clear();
+            return false;
+        }
+        directories->push_back(currentPath);
+    }
+    *error = ERROR_SUCCESS;
+    return true;
+}
+#endif
+
 [[nodiscard]] std::optional<QByteArray> readFile(const QString& path) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
@@ -397,11 +437,32 @@ class RulePackageStoreTest final : public QObject {
         QVERIFY(longPathDirectory.isValid());
         const QString longPathRoot = realPath(longPathDirectory);
         QVERIFY(writePackageDirectory(longPathRoot));
-        const QString longPath = QStringLiteral("docs/%1/%2/%3")
-                                     .arg(QString(80, u'a'), QString(80, u'b'), QString(80, u'c'));
+        const QStringList components = {QStringLiteral("docs"), QString(80, u'a'),
+                                        QString(80, u'b'), QString(80, u'c')};
+        const QString longPath = components.join(u'/');
+        QVERIFY(longPath.toLatin1().size() > 240);
+#if defined(Q_OS_WIN)
+        QVERIFY(QDir(longPathRoot).filePath(longPath).size() >= MAX_PATH);
+        std::vector<QString> createdDirectories;
+        DWORD fixtureError = ERROR_SUCCESS;
+        QVERIFY2(createWindowsDirectoryChain(longPathRoot, components, &createdDirectories,
+                                             &fixtureError),
+                 qPrintable(QStringLiteral("Unable to create Windows long-path fixture: %1")
+                                .arg(fixtureError)));
+#else
         QVERIFY(QDir(longPathRoot).mkpath(longPath));
-        QCOMPARE(RulePackageStore::importDirectory(longPathRoot).status,
-                 RulePackageImportStatus::InvalidInput);
+#endif
+        const auto imported = RulePackageStore::importDirectory(longPathRoot);
+#if defined(Q_OS_WIN)
+        const DWORD cleanupError = removeWindowsDirectories(createdDirectories);
+        QVERIFY2(cleanupError == ERROR_SUCCESS,
+                 qPrintable(QStringLiteral("Unable to remove Windows long-path fixture: %1")
+                                .arg(cleanupError)));
+#endif
+        QCOMPARE(imported.status, RulePackageImportStatus::InvalidInput);
+        QVERIFY2(imported.errorMessage.contains(
+                     QStringLiteral("Directory contains a noncanonical package path")),
+                 qPrintable(imported.errorMessage));
     }
 
     void rejectsSymbolicLinksAndExecutableFiles() {
