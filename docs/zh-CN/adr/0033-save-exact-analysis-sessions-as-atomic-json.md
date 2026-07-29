@@ -55,8 +55,9 @@ immutable external input，要么是 rebuildable owner data，使用独立 versi
   静默削弱 durability。
 - parser 与 collection bounds 限制 hostile document work；闭合 object 使未来 schema change
   必须显式发生。
-- Save/Save As action、dirty-state prompt、source relocation、rule-management UI、cache owner
-  payload 与 live analyzer restoration 留作后续工作。
+- Save/Save As action、dirty-state prompt、source relocation、rule-management UI、background
+  cache owner 与 live analyzer restoration 留作后续工作；cache owner body format 由
+  ADR-0034 单独规定。
 
 ## 放弃的方案
 

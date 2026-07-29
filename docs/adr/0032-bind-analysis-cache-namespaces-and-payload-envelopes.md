@@ -56,9 +56,10 @@ nonzero reserved fields, invalid lengths, truncation, trailing bytes, and
 payload digest mismatch. `PagedCache` remains unaware of this format and stores
 the complete envelope as opaque bytes.
 
-The envelope versions a payload boundary; it does not claim that analyzer state
-already has a durable body representation. Scanner, mapper, tree, context, and
-identifier serializers plus a background cache owner remain separate work.
+The envelope versions a payload boundary. ADR-0034 subsequently defines stable
+progressive-index and materialized-result bodies, but scanner pending state,
+mapper state, mutable tree/allocator state, context payloads, and a background
+cache owner remain separate work.
 
 ## Consequences
 
@@ -75,8 +76,8 @@ responsibility.
 
 No path-only API is introduced, and an existing opaque namespace supplied
 directly to `PagedCache` still does not authorize cross-session reuse. Persistent
-analyzer recovery remains unavailable until the owner and its versioned body
-serializers are connected.
+analyzer recovery remains unavailable until a background owner is connected and
+every live state required for execution resume has an explicit contract.
 
 ## Considered Options
 

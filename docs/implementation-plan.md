@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 2
-Last Completed Step: M5 .svsession v1 exact rule pinning
-Next Action: Define versioned progressive-index and materialized-result owner body serializers
-Last Verification: Commit 45e6252 local dev/ci/sanitize passed 29/29; hosted run
-  30430443355 passed on Windows, macOS, and Ubuntu
+Last Completed Step: M5 progressive-index and materialized-result owner body serializers
+Next Action: Connect the background cache owner without claiming live analyzer recovery
+Last Verification: Uncommitted M5 owner-payload stage local dev/ci/sanitize passed 30/30;
+  hosted verification pending
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -114,7 +114,7 @@ Blockers: None
     size、纳秒 mtime 与首/中/尾各 1 MiB SHA-256；计算期间变化显式失败。
   - [x] 固定 durable cache namespace 与 version 1 payload envelope，绑定 source fingerprint、
     完整 rule entry-point identity、SQLite schema、envelope 与两类 payload version。
-  - [ ] 实现 progressive-index 与 materialized-result owner payload body serializer。
+  - [x] 实现 progressive-index 与 materialized-result owner payload body serializer。
   - [x] 实现 `.svsession` version 1 闭合 JSON、`QSaveFile` 原子保存、同句柄 fingerprint
     校验与完整 rule entry-point identity 精确恢复；cache page 保持在 session 文件外。
 
@@ -163,7 +163,8 @@ Blockers: None
 - [x] 完成 bytecode 预算和取消：调用/视图深度 64、节点深度 256、单次物化 100,000 节点，每 1,024 指令检查取消。（当前子集没有 runtime call 或 view；对应深度预算已经保留。）
 - [x] 完成 SQLite 分页缓存、原子批次提交、schema 版本和崩溃恢复。
 - [ ] 在 M5 固定 source fingerprint、精确 rule identity 与 cache namespace 后，接入
-  后台 cache owner 和 versioned index/materialized-result payload。
+  后台 cache owner 和 versioned index/materialized-result payload。（versioned body serializer
+  已完成；background owner 尚未接入。）
 - [x] 完成 TOML 清单、本地规则目录导入、`.svrule` 打包安装、哈希和版本并存。
 - [x] 防御路径穿越、zip bomb、符号链接和 Unicode 非规范路径。
 - [ ] 为全部稳定 DSL 功能补齐英文规范、中文说明和正反例。
@@ -339,3 +340,14 @@ Blockers: None
   `sanitize` 重新配置、完整构建与 CTest 均为 29/29。实现提交为 `45e6252`；hosted run
   `30430443355` 在 Windows、macOS、Ubuntu 成功。下一步实现两类 owner payload body
   serializer。
+- 2026-07-29：完成 M5 owner payload body serializer 切片：progressive-index version 1
+  保存 page key、global record index、indexed-through offset、end-of-source 与经过 checked
+  byte/span/order 验证的 H.264 start-code record；materialized-result version 1 保存完整 stable
+  node/parent identity、闭合 `QVariant` value、multi-span location、metadata、specification 与
+  diagnostic，拒绝瞬态 indexing/waiting state。两种 big-endian body 都重复并验证完整 page
+  key、受 envelope 的 65,440-byte body 上限约束，并通过 envelope 与 SQLite `PagedCache`
+  round-trip；固定 binary vector、错误 key/version/magic/reserved/UTF-8/topology、截断、
+  trailing byte 与 size bound 均有回归。该表示不包含 scanner pending prefix、mapper、queue、
+  context、allocator 或 thread ownership，不能恢复 live analyzer。英文规范、中文伴随说明和
+  ADR-0034 已同步；本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 30/30。
+  下一步接入 background cache owner，仍不宣称 live analyzer recovery。

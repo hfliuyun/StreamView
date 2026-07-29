@@ -49,8 +49,9 @@ big-endian header 包含：
 reserved field、非法 length、截断、trailing byte 和 payload digest mismatch。`PagedCache`
 仍不了解该格式，只把完整 envelope 当作 opaque byte 保存。
 
-envelope 版本化的是 payload 边界，不代表 analyzer state 已有 durable body 表示。scanner、
-mapper、tree、context、identifier serializer 与 background cache owner 仍是后续独立工作。
+envelope 版本化的是 payload 边界。后续 ADR-0034 已定义 stable progressive-index 与
+materialized-result body，但 scanner pending state、mapper state、mutable tree/allocator
+state、context payload 与 background cache owner 仍是独立工作。
 
 ## 后果
 
@@ -63,7 +64,8 @@ page owner 在解释自身数据前获得有界的 corruption 与 compatibility 
 framing、namespace association、kind、version、length 与 byte；body 语义仍由 owner 验证。
 
 系统没有引入 path-only API。直接给 `PagedCache` 传 opaque namespace 仍不授权跨 session
-复用。只有连接 owner 与其 versioned body serializer 后，persistent analyzer recovery 才可用。
+复用。只有接入 background owner，并为 execution resume 所需的每项 live state 建立明确契约，
+persistent analyzer recovery 才可用。
 
 ## 考虑过的方案
 

@@ -70,7 +70,8 @@ data and have separate versioning and lifecycle contracts.
 - Parser and collection bounds limit hostile document work, while closed
   objects make future schema changes explicit.
 - Save/Save As actions, dirty-state prompts, source relocation, rule-management
-  UI, cache owner payloads, and live analyzer restoration remain later work.
+  UI, the background cache owner, and live analyzer restoration remain later
+  work. Cache owner body formats are specified separately by ADR-0034.
 
 ## Alternatives Rejected
 

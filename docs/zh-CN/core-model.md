@@ -142,6 +142,14 @@ SHA-256 验证 body。envelope 加 body 仍受 64 KiB page 上限约束。owner 
 mismatch。`PagedCache` 自身仍把完整 envelope 当作 opaque byte。详见
 [ADR-0032](adr/0032-bind-analysis-cache-namespaces-and-payload-envelopes.md)。
 
+version 1 owner body 现在为 completed progressive-index record 与 stable materialized-result
+node 提供确定的 big-endian 表示。两者都会重复完整 stream/page coordinate，并在 envelope
+decode 后与 requested page key 比较。index record 校验 checked byte relationship 与顺序；
+result node 使用闭合 scalar value set，并保留 stable ID、parent ID、state、multi-span
+location、metadata、specification 与 diagnostic。瞬态 indexing/waiting state 不得保存。详见
+[owner payload 规范](analysis-cache-payloads.md)与
+[ADR-0034](adr/0034-cache-stable-analysis-results-not-live-state.md)。
+
 每个 payload 为 1 至 64 KiB。一次原子提交包含 1 至 256 个互异 page key，因此最多
 16 MiB；成功时所有替换一起可见，失败时一个也不可见。page 缺失是正常 cache miss。
 wrong-thread 访问和非法 key 会在接触 storage 前被拒绝。一个 live instance 独占其
@@ -152,8 +160,9 @@ schema version、必需 schema 和 SQLite 完整性。SQLite 回滚中断的 tra
 persistent marker 让下次打开可以显式识别并清理由 process crash 遗留的 batch，清理
 失败则中止打开。在 `synchronous=NORMAL` 下，这不承诺断电后仍持久。cache 只保存
 已经提交的可重建 page，不恢复 live analyzer、scanner、mapper、analysis tree 或
-context directory。只有补齐 owner 的 versioned body serializer 与 background thread
-ownership 后，persistent analyzer recovery 才可用。
+context directory。body serializer 有意省略 scanner pending state、mapper state、queue、
+context payload、identifier allocation 与 thread ownership。persistent analyzer recovery
+仍需要 background cache owner 与任何明确的 live-state checkpoint 契约。
 
 ## Bit Reader
 

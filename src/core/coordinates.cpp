@@ -42,6 +42,25 @@ LogicalRange::create(LogicalBitAddress start, quint64 bitLength) noexcept {
     return LogicalRange(start, bitLength);
 }
 
+std::optional<FieldLocation>
+FieldLocation::create(LogicalRange logicalRange, std::vector<SourceSpan> sourceSpans) {
+    quint64 totalLength = 0;
+    std::optional<SourceBitAddress> previousEnd;
+    for (const SourceSpan& span : sourceSpans) {
+        if (span.bitLength() == 0 || addWouldOverflow(totalLength, span.bitLength()) ||
+            (previousEnd && span.start() <= *previousEnd)) {
+            return std::nullopt;
+        }
+        totalLength += span.bitLength();
+        previousEnd = span.endExclusive();
+    }
+    if (totalLength != logicalRange.bitLength() ||
+        (logicalRange.bitLength() == 0 && !sourceSpans.empty())) {
+        return std::nullopt;
+    }
+    return FieldLocation(std::move(logicalRange), std::move(sourceSpans));
+}
+
 std::optional<SourceMapping>
 SourceMapping::create(LogicalViewId viewId, std::vector<SourceSpan> sourceSpans) {
     quint64 logicalBitLength = 0;

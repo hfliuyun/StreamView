@@ -102,6 +102,9 @@ private:
 
 class FieldLocation final {
 public:
+    [[nodiscard]] static std::optional<FieldLocation>
+    create(LogicalRange logicalRange, std::vector<SourceSpan> sourceSpans);
+
     [[nodiscard]] const LogicalRange& logicalRange() const noexcept { return logicalRange_; }
     [[nodiscard]] const std::vector<SourceSpan>& sourceSpans() const noexcept {
         return sourceSpans_;

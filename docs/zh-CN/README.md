@@ -13,6 +13,7 @@ StreamView 的技术规范、ADR、格式语言参考和 API 契约以英文版�
 - [分析节点与诊断模型](analysis-model.md)
 - [规则包格式](rule-packages.md)
 - [保存会话格式](session-format.md)
+- [Analysis Cache Owner Payloads](analysis-cache-payloads.md)
 - [格式定义语言](format-language/README.md)
 - [格式定义语言英文规范草案](../format-language/README.md)
 - [规范基线](standards.md)

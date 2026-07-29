@@ -173,6 +173,16 @@ truncation, trailing bytes, and digest mismatch before an owner interprets the
 body. `PagedCache` itself still treats the complete envelope as opaque bytes.
 See [ADR-0032](adr/0032-bind-analysis-cache-namespaces-and-payload-envelopes.md).
 
+Version 1 owner bodies now give completed progressive-index records and stable
+materialized-result nodes deterministic big-endian representations. Both repeat
+the complete stream/page coordinates and validate them against the requested
+page key after envelope decode. Index records validate checked byte
+relationships and ordering. Result nodes use a closed scalar value set and
+retain stable IDs, parent IDs, state, multi-span locations, metadata,
+specifications, and diagnostics. Transient indexing/waiting states cannot be
+stored. See [the owner payload specification](analysis-cache-payloads.md) and
+[ADR-0034](adr/0034-cache-stable-analysis-results-not-live-state.md).
+
 Each payload contains 1 through 64 KiB. One atomic commit contains 1 through
 256 unique page keys and therefore at most 16 MiB. A successful commit exposes
 every replacement together; a failed commit exposes none. Missing pages are
@@ -187,8 +197,10 @@ open identify and remove batches abandoned by a process crash. Marker-cleanup
 failure aborts open. With `synchronous=NORMAL`, this is not a power-loss
 durability promise. The cache stores committed rebuildable pages only; it does
 not restore a live analyzer, scanner, mapper, analysis tree, or context
-directory. Those owners still need versioned body serializers and background
-thread ownership before persistent analyzer recovery is available.
+directory. The body serializers intentionally omit scanner pending state,
+mapper state, queues, context payloads, identifier allocation, and thread
+ownership. A background cache owner and any explicit live-state checkpoint
+contracts are still required before persistent analyzer recovery is available.
 
 ## Bit Reader
 

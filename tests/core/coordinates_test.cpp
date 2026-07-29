@@ -8,6 +8,7 @@
 using streamview::core::LogicalBitAddress;
 using streamview::core::LogicalRange;
 using streamview::core::LogicalViewId;
+using streamview::core::FieldLocation;
 using streamview::core::SourceBitAddress;
 using streamview::core::SourceMapping;
 using streamview::core::SourceSpan;
@@ -105,6 +106,34 @@ private slots:
         QVERIFY(outside.has_value());
         QVERIFY(!mapping->locate(*wrongView).has_value());
         QVERIFY(!mapping->locate(*outside).has_value());
+    }
+
+    void createsValidatedStandaloneFieldLocations() {
+        const auto range =
+            LogicalRange::create(LogicalBitAddress(LogicalViewId(9), 40), 16);
+        const auto first = SourceSpan::create(SourceBitAddress(80), 8);
+        const auto second = SourceSpan::create(SourceBitAddress(96), 8);
+        QVERIFY(range.has_value());
+        QVERIFY(first.has_value());
+        QVERIFY(second.has_value());
+
+        const auto location = FieldLocation::create(*range, {*first, *second});
+
+        QVERIFY(location.has_value());
+        QCOMPARE(location->logicalRange().start().viewId(), LogicalViewId(9));
+        QCOMPARE(location->logicalRange().start().bitOffset(), quint64{40});
+        QCOMPARE(location->sourceSpans().size(), std::size_t{2});
+        QVERIFY(!FieldLocation::create(*range, {*second, *first}).has_value());
+        QVERIFY(!FieldLocation::create(*range, {*first}).has_value());
+        const auto adjacent = SourceSpan::create(SourceBitAddress(88), 8);
+        QVERIFY(adjacent.has_value());
+        QVERIFY(!FieldLocation::create(*range, {*first, *adjacent}).has_value());
+
+        const auto emptyRange =
+            LogicalRange::create(LogicalBitAddress(LogicalViewId(9), 56), 0);
+        QVERIFY(emptyRange.has_value());
+        QVERIFY(FieldLocation::create(*emptyRange, {}).has_value());
+        QVERIFY(!FieldLocation::create(*emptyRange, {*first}).has_value());
     }
 };
 

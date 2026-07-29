@@ -15,6 +15,7 @@ English is the normative language for technical specifications, ADRs, the format
 - [Analysis node and diagnostic model](analysis-model.md)
 - [Rule package format](rule-packages.md)
 - [Saved session format](session-format.md)
+- [Analysis cache owner payloads](analysis-cache-payloads.md)
 - [Format Definition Language](format-language/README.md)
 - [Normative references](standards.md)
 - [Implementation plan and progress](implementation-plan.md)
