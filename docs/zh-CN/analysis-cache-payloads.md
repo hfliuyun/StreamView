@@ -148,7 +148,22 @@ node ID 非零且在一页内连续。root 只能是 node 1，且没有 parent�
 body 只保存稳定 result record，不序列化 child vector、mutable `AnalysisTree`、next-node
 allocator、scanner/mapper state、deferred result queue、cancellation state、context-directory
 payload 或 cache-thread ownership。consumer 可以从经过验证的 page 重建 presentation snapshot，
-但不能据此恢复 live analyzer。
+但前提是另行取得并验证了完整 key set；不能据此恢复 live analyzer。
+
+## Background Owner Stack
+
+`AnalysisCacheOwner` 为一个经过验证的 namespace 接受 typed page。write submission 在保留
+request 前完成 body encoding、envelope encoding、full-key check、duplicate check 与 256-page
+batch bound。dedicated worker 只提交这些有界 encoded page。read submission 接受一个 exact full
+key；worker 先读取它、按该 namespace/kind 验证 envelope，再按同一个 key decode body。
+
+storage 中不存在数据时 owner 返回 missing；任何 envelope/body failure 返回 corrupt。两种 outcome
+都不会返回 partial typed page。queue pressure、shutdown 与 storage error 是彼此独立的显式
+outcome；caller 应 rebuild 或禁用 optional cache，而不改变有效 live analysis。
+
+该 exact-page stack 不定义 page discovery。特别是，missing version 1 materialized page 不是
+final-page marker。consumer 必须先拥有另行验证过的完整 key set，才能执行 cross-page
+reachability validation 或发布 presentation snapshot。
 
 ## 失败处理
 
@@ -157,4 +172,5 @@ body、重复 page key mismatch、不支持的 body version 与不支持的闭�
 整页结果。调用方应从 immutable source 与 exact rule identity 重建，不能局部绑定已解码 node，
 也不能静默重解释 byte。
 
-详见 [ADR-0034](adr/0034-cache-stable-analysis-results-not-live-state.md)。
+详见 [ADR-0034](adr/0034-cache-stable-analysis-results-not-live-state.md)与
+[ADR-0035](adr/0035-own-analysis-cache-on-a-bounded-background-queue.md)。

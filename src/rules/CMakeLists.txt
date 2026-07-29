@@ -1,5 +1,6 @@
 add_library(streamview_rules STATIC
     analysis_cache.cpp
+    analysis_cache_owner.cpp
     analysis_cache_payload.cpp
     dsl.cpp
     dsl_ir.cpp
@@ -16,6 +17,7 @@ add_library(streamview_rules STATIC
     rule_package_store.cpp
     rule_package.cpp
     include/streamview/rules/analysis_cache.h
+    include/streamview/rules/analysis_cache_owner.h
     include/streamview/rules/analysis_cache_payload.h
     include/streamview/rules/dsl.h
     include/streamview/rules/dsl_ir.h

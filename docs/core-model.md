@@ -199,8 +199,23 @@ durability promise. The cache stores committed rebuildable pages only; it does
 not restore a live analyzer, scanner, mapper, analysis tree, or context
 directory. The body serializers intentionally omit scanner pending state,
 mapper state, queues, context payloads, identifier allocation, and thread
-ownership. A background cache owner and any explicit live-state checkpoint
-contracts are still required before persistent analyzer recovery is available.
+ownership.
+
+`AnalysisCacheOwner` now opens, uses, and destroys one `PagedCache` on a
+dedicated worker thread. Typed writes are body- and envelope-validated before
+entering a queue bounded to 64 outstanding requests and 16 MiB of retained
+encoded write bytes by default. Exact-key reads reverse the complete storage
+stack on the worker and distinguish missing, corrupt, invalid, and storage
+outcomes. `flush` waits for previously accepted requests; draining shutdown
+rejects new work, completes accepted work, destroys the cache on its owner
+thread, and joins it. Cache failure remains an optional-acceleration failure.
+See [ADR-0035](adr/0035-own-analysis-cache-on-a-bounded-background-queue.md).
+
+This owner does not make persistent analyzer recovery available. Version 1
+materialized pages have no manifest, total-page count, or final-page marker, so
+they cannot yet be discovered and published as a provably complete cached
+presentation snapshot. Live recovery additionally requires explicit contracts
+for every omitted analyzer-state component.
 
 ## Bit Reader
 

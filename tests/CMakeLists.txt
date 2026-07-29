@@ -41,6 +41,11 @@ streamview_add_rules_test(streamview_dsl_executor_tests rules/dsl_executor_test.
 streamview_add_rules_test(streamview_rule_package_tests rules/rule_package_test.cpp)
 streamview_add_rules_test(streamview_analysis_cache_tests rules/analysis_cache_test.cpp)
 streamview_add_rules_test(
+    streamview_analysis_cache_owner_tests
+    rules/analysis_cache_owner_test.cpp
+)
+target_link_libraries(streamview_analysis_cache_owner_tests PRIVATE Qt6::Sql)
+streamview_add_rules_test(
     streamview_analysis_cache_payload_tests
     rules/analysis_cache_payload_test.cpp
 )

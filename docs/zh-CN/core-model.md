@@ -161,8 +161,19 @@ persistent marker 让下次打开可以显式识别并清理由 process crash �
 失败则中止打开。在 `synchronous=NORMAL` 下，这不承诺断电后仍持久。cache 只保存
 已经提交的可重建 page，不恢复 live analyzer、scanner、mapper、analysis tree 或
 context directory。body serializer 有意省略 scanner pending state、mapper state、queue、
-context payload、identifier allocation 与 thread ownership。persistent analyzer recovery
-仍需要 background cache owner 与任何明确的 live-state checkpoint 契约。
+context payload、identifier allocation 与 thread ownership。
+
+`AnalysisCacheOwner` 现在会在 dedicated worker thread 上打开、使用并销毁一个
+`PagedCache`。typed write 在入队前完成 body/envelope validation；queue 默认同时受 64 个
+outstanding request 与 16 MiB retained encoded write byte 约束。exact-key read 在 worker 上反向
+执行完整 storage stack，并区分 missing、corrupt、invalid 与 storage outcome。`flush` 等待此前
+accepted 的 request；draining shutdown 拒绝新 work、完成 accepted work、在 owner thread 销毁
+cache 并 join。cache failure 仍只属于 optional-acceleration failure。详见
+[ADR-0035](adr/0035-own-analysis-cache-on-a-bounded-background-queue.md)。
+
+该 owner 不会使 persistent analyzer recovery 可用。version 1 materialized page 没有 manifest、
+total-page count 或 final-page marker，因此尚不能被发现并发布成可证明完整的 cached presentation
+snapshot。live recovery 还需要为每个被省略的 analyzer-state component 建立明确契约。
 
 ## Bit Reader
 

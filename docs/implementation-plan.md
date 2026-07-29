@@ -2,10 +2,9 @@
 
 Status: In Progress
 Current Phase: 2
-Last Completed Step: M5 progressive-index and materialized-result owner body serializers
-Next Action: Connect the background cache owner without claiming live analyzer recovery
-Last Verification: Commit 3c54716 local dev/ci/sanitize passed 30/30; hosted run
-  30452836151 passed on Windows, macOS, and Ubuntu
+Last Completed Step: M5 typed background analysis cache owner runtime
+Next Action: Connect cache writes to AnalysisSession without claiming cached snapshot or live recovery
+Last Verification: Uncommitted owner runtime local dev/ci/sanitize passed 31/31; hosted verification pending
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -115,8 +114,12 @@ Blockers: None
   - [x] 固定 durable cache namespace 与 version 1 payload envelope，绑定 source fingerprint、
     完整 rule entry-point identity、SQLite schema、envelope 与两类 payload version。
   - [x] 实现 progressive-index 与 materialized-result owner payload body serializer。
+  - [x] 实现 typed background cache owner：dedicated owner thread、有界 request/byte queue、
+    exact-key read stack、atomic write batch、flush 与 draining shutdown。
   - [x] 实现 `.svsession` version 1 闭合 JSON、`QSaveFile` 原子保存、同句柄 fingerprint
     校验与完整 rule entry-point identity 精确恢复；cache page 保持在 session 文件外。
+  - [ ] 从 `AnalysisSession` 派生同句柄 namespace 并提交 stable progressive/materialized page；
+    cache failure 只关闭可选加速，不替换有效 session。
 
 验收：规则版本冲突、源变化和损坏包均显式诊断；旧会话不会静默绑定新源或新规则。
 
@@ -163,8 +166,8 @@ Blockers: None
 - [x] 完成 bytecode 预算和取消：调用/视图深度 64、节点深度 256、单次物化 100,000 节点，每 1,024 指令检查取消。（当前子集没有 runtime call 或 view；对应深度预算已经保留。）
 - [x] 完成 SQLite 分页缓存、原子批次提交、schema 版本和崩溃恢复。
 - [ ] 在 M5 固定 source fingerprint、精确 rule identity 与 cache namespace 后，接入
-  后台 cache owner 和 versioned index/materialized-result payload。（versioned body serializer
-  已完成；background owner 尚未接入。）
+  后台 cache owner 和 versioned index/materialized-result payload。（typed background owner 与
+  versioned body 已完成；`AnalysisSession` write path 尚未接入。）
 - [x] 完成 TOML 清单、本地规则目录导入、`.svrule` 打包安装、哈希和版本并存。
 - [x] 防御路径穿越、zip bomb、符号链接和 Unicode 非规范路径。
 - [ ] 为全部稳定 DSL 功能补齐英文规范、中文说明和正反例。
@@ -352,3 +355,14 @@ Blockers: None
   ADR-0034 已同步；本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 30/30。
   实现提交为 `3c54716`；hosted run `30452836151` 在 Windows、macOS、Ubuntu 成功。
   下一步接入 background cache owner，仍不宣称 live analyzer recovery。
+- 2026-07-29：完成 M5 typed background cache owner runtime 切片：`AnalysisCacheOwner` 在
+  dedicated worker thread 打开、读写并销毁唯一 `PagedCache`；write submission 在入队前执行
+  body/envelope/full-key preflight，queue 同时限制 outstanding request 与 retained encoded byte，
+  exact-key read 区分 missing、corrupt、invalid 与 storage failure。`flush` 等待此前 accepted work；
+  draining shutdown 停止 admission、完成已接收请求、在 owner thread 销毁 cache 并 join。
+  回归覆盖 caller-thread typed round-trip、count/byte queue pressure、future/flush ordering、atomic
+  storage failure 后继续、错误 full-key copied page、open failure 与 lock release。ADR-0035、英文
+  core/payload 规范和中文伴随文档已同步；version 1 materialized page 没有 complete-page manifest，
+  因而仍不宣称 cached presentation snapshot 或 live analyzer recovery。本机 `dev`、`ci`、
+  `sanitize` 重新配置、完整构建与 CTest 均为 31/31。提交与 hosted matrix 待执行；下一步把
+  stable write path 接入 `AnalysisSession`。

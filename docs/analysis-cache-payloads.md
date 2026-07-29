@@ -168,7 +168,27 @@ The body preserves stable result records only. It does not serialize child
 vectors, a mutable `AnalysisTree`, the next-node allocator, scanner or mapper
 state, deferred result queues, cancellation state, context-directory payloads,
 or cache-thread ownership. A consumer may rebuild a presentation snapshot from
-validated pages, but cannot resume a live analyzer from them.
+a separately complete, validated key set, but cannot resume a live analyzer
+from it.
+
+## Background Owner Stack
+
+`AnalysisCacheOwner` accepts typed pages for one validated namespace. Write
+submission performs body encoding, envelope encoding, full-key checks, duplicate
+checks, and the 256-page batch bound before retaining a request. The dedicated
+worker commits only those bounded encoded pages. Read submission accepts one
+exact full key; the worker reads it, validates the envelope for that namespace
+and kind, then decodes the body against the same key.
+
+The owner returns missing for absent storage and corrupt for any envelope or
+body failure. Neither outcome returns a partial typed page. Queue pressure,
+shutdown, and storage errors are separate explicit outcomes, and callers rebuild
+or disable the optional cache without changing a valid live analysis.
+
+This exact-page stack does not define page discovery. In particular, a missing
+version 1 materialized page is not a final-page marker. A consumer must already
+have a separately validated complete key set before performing cross-page
+reachability validation or publishing a presentation snapshot.
 
 ## Failure Handling
 
@@ -179,4 +199,5 @@ failure discards the entire page result. Callers treat it as unusable cache data
 and rebuild from the immutable source and exact rule identity; they must not
 partially attach decoded nodes or silently reinterpret the bytes.
 
-See [ADR-0034](adr/0034-cache-stable-analysis-results-not-live-state.md).
+See [ADR-0034](adr/0034-cache-stable-analysis-results-not-live-state.md) and
+[ADR-0035](adr/0035-own-analysis-cache-on-a-bounded-background-queue.md).
