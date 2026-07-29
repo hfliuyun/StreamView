@@ -111,9 +111,18 @@ buffer 中未写入的部分。超出范围的 page 是空的 end-of-source 结�
 `PagedCache` 使用 SQLite WAL 把可重建的 progressive-index 与 materialized-result
 数据保存为不透明 page；它不会缓存媒体 source byte，也不解释 payload 编码。调用方
 以数据库路径和不透明 namespace 打开一个 thread-affine cache instance，然后按精确
-page key 读取，或一次提交完整 batch。在 M5 用 source fingerprint、精确 rule-package
-identity 与 content hash、schema/cache namespace 以及 payload-format version 绑定之前，
-namespace 只负责分区；仅凭 path-like source identity 不得跨 session 复用。
+page key 读取，或一次提交完整 batch。任意 namespace 仍只负责分区，不授权跨 session
+复用。production reuse 使用 `AnalysisCacheNamespace`：对经过验证的 source
+fingerprint、完整 package ID/version/content hash 与 entry-point ID、SQLite schema、
+namespace-format version 和两种 payload-format version 进行 domain-separated SHA-256。
+payload-envelope format version 也包含在内；类似 path 的 source identity 不是输入。
+
+owner data 存储前会包装在 version 1 `AnalysisCachePayloadEnvelope` 中。固定 header
+绑定 namespace digest、封闭 page kind、该 kind 的 payload version 与 payload length，并用
+SHA-256 验证 body。envelope 加 body 仍受 64 KiB page 上限约束。owner 解释 body 前，decode
+会拒绝错误 namespace/kind、未知 version、非法 framing、截断、trailing byte 和 digest
+mismatch。`PagedCache` 自身仍把完整 envelope 当作 opaque byte。详见
+[ADR-0032](adr/0032-bind-analysis-cache-namespaces-and-payload-envelopes.md)。
 
 每个 payload 为 1 至 64 KiB。一次原子提交包含 1 至 256 个互异 page key，因此最多
 16 MiB；成功时所有替换一起可见，失败时一个也不可见。page 缺失是正常 cache miss。
@@ -125,7 +134,8 @@ schema version、必需 schema 和 SQLite 完整性。SQLite 回滚中断的 tra
 persistent marker 让下次打开可以显式识别并清理由 process crash 遗留的 batch，清理
 失败则中止打开。在 `synchronous=NORMAL` 下，这不承诺断电后仍持久。cache 只保存
 已经提交的可重建 page，不恢复 live analyzer、scanner、mapper、analysis tree 或
-context directory。
+context directory。只有补齐 owner 的 versioned body serializer 与 background thread
+ownership 后，persistent analyzer recovery 才可用。
 
 ## Bit Reader
 

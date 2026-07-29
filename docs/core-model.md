@@ -133,10 +133,22 @@ error.
 as opaque pages in SQLite WAL. It does not cache media-source bytes or interpret
 the payload encoding. A caller opens one thread-affine cache instance with a
 database path and an opaque namespace, then reads exact page keys or commits a
-complete batch. The namespace is only a partition until M5 binds it to a source
-fingerprint, exact rule-package identity and content hash, schema/cache
-namespace, and payload-format versions; path-like source identity alone must
-never authorize cross-session reuse.
+complete batch. An arbitrary namespace remains only a partition and never
+authorizes cross-session reuse. Production reuse uses
+`AnalysisCacheNamespace`, a domain-separated SHA-256 over the validated source
+fingerprint, complete package ID/version/content hash and entry-point ID,
+SQLite schema, namespace-format version, and both payload-format versions.
+The payload-envelope format version is also bound. Path-like source identity is
+not an input.
+
+Owner data is wrapped in a version 1 `AnalysisCachePayloadEnvelope` before
+storage. Its fixed header binds the namespace digest, closed page kind, that
+kind's payload version and payload length, then checks body integrity with
+SHA-256. The envelope plus body remains within the 64 KiB page limit. Decode
+rejects wrong namespace or kind, unknown versions, malformed framing,
+truncation, trailing bytes, and digest mismatch before an owner interprets the
+body. `PagedCache` itself still treats the complete envelope as opaque bytes.
+See [ADR-0032](adr/0032-bind-analysis-cache-namespaces-and-payload-envelopes.md).
 
 Each payload contains 1 through 64 KiB. One atomic commit contains 1 through
 256 unique page keys and therefore at most 16 MiB. A successful commit exposes
@@ -152,7 +164,8 @@ open identify and remove batches abandoned by a process crash. Marker-cleanup
 failure aborts open. With `synchronous=NORMAL`, this is not a power-loss
 durability promise. The cache stores committed rebuildable pages only; it does
 not restore a live analyzer, scanner, mapper, analysis tree, or context
-directory.
+directory. Those owners still need versioned body serializers and background
+thread ownership before persistent analyzer recovery is available.
 
 ## Bit Reader
 

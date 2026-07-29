@@ -669,6 +669,27 @@ QString RulePackageIdentity::toString() const {
     return QStringLiteral("%1@%2#%3").arg(packageId_, packageVersion_, contentHashText());
 }
 
+std::optional<RuleEntryPointIdentity>
+RuleEntryPointIdentity::create(RulePackageIdentity packageIdentity, QString entryPointId,
+                               QString* errorMessage) {
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    if (!isEntryToken(entryPointId)) {
+        setError(errorMessage, QStringLiteral("Rule entry-point identity has an invalid ID"));
+        return std::nullopt;
+    }
+    return RuleEntryPointIdentity(std::move(packageIdentity), std::move(entryPointId));
+}
+
+RuleEntryPointIdentity::RuleEntryPointIdentity(RulePackageIdentity packageIdentity,
+                                               QString entryPointId)
+    : packageIdentity_(std::move(packageIdentity)), entryPointId_(std::move(entryPointId)) {}
+
+QString RuleEntryPointIdentity::toString() const {
+    return QStringLiteral("%1!%2").arg(packageIdentity_.toString(), entryPointId_);
+}
+
 RulePackage::RulePackage(RulePackageManifest manifest,
                          RulePackageIdentity identity,
                          std::vector<RulePackageFile> files)

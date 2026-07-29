@@ -39,6 +39,7 @@ streamview_add_rules_test(streamview_dsl_tests rules/dsl_test.cpp)
 streamview_add_rules_test(streamview_dsl_ir_tests rules/dsl_ir_test.cpp)
 streamview_add_rules_test(streamview_dsl_executor_tests rules/dsl_executor_test.cpp)
 streamview_add_rules_test(streamview_rule_package_tests rules/rule_package_test.cpp)
+streamview_add_rules_test(streamview_analysis_cache_tests rules/analysis_cache_test.cpp)
 streamview_add_rules_test(
     streamview_rule_package_store_tests
     rules/rule_package_store_test.cpp

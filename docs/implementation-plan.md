@@ -112,7 +112,9 @@ Blockers: None
 - [ ] 统一 source fingerprint、SQLite cache namespace 与 `.svsession` 精确规则 pinning，使用版本化 JSON/QSaveFile 原子保存。
   - [x] 固定并实现 version 1 本地文件 source fingerprint：小文件全文 SHA-256；大文件绑定
     size、纳秒 mtime 与首/中/尾各 1 MiB SHA-256；计算期间变化显式失败。
-  - [ ] 固定 durable cache namespace、版本化 payload 与 `.svsession` 精确规则 pinning。
+  - [x] 固定 durable cache namespace 与 version 1 payload envelope，绑定 source fingerprint、
+    完整 rule entry-point identity、SQLite schema、envelope 与两类 payload version。
+  - [ ] 实现 owner payload body serializer 与 `.svsession` 精确规则 pinning。
 
 验收：规则版本冲突、源变化和损坏包均显式诊断；旧会话不会静默绑定新源或新规则。
 

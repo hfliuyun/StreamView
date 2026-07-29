@@ -117,6 +117,27 @@ private:
     friend class RulePackage;
 };
 
+class RuleEntryPointIdentity final {
+public:
+    [[nodiscard]] static std::optional<RuleEntryPointIdentity>
+    create(RulePackageIdentity packageIdentity, QString entryPointId,
+           QString* errorMessage = nullptr);
+
+    [[nodiscard]] const RulePackageIdentity& packageIdentity() const noexcept {
+        return packageIdentity_;
+    }
+    [[nodiscard]] const QString& entryPointId() const noexcept { return entryPointId_; }
+    [[nodiscard]] QString toString() const;
+
+    [[nodiscard]] bool operator==(const RuleEntryPointIdentity&) const = default;
+
+private:
+    RuleEntryPointIdentity(RulePackageIdentity packageIdentity, QString entryPointId);
+
+    RulePackageIdentity packageIdentity_;
+    QString entryPointId_;
+};
+
 enum class RulePackageLoadStatus {
     Loaded,
     InvalidTree,
