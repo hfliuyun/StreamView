@@ -80,6 +80,25 @@ struct MaterializedResultCacheDecodeResult final {
     }
 };
 
+enum class MaterializedResultCacheExportStatus : quint8 {
+    Exported,
+    InvalidTree,
+    UnsupportedValue,
+    PayloadTooLarge,
+    TooManyPages,
+};
+
+struct MaterializedResultCacheExportResult final {
+    MaterializedResultCacheExportStatus status =
+        MaterializedResultCacheExportStatus::InvalidTree;
+    std::vector<MaterializedResultCachePage> pages;
+    QString errorMessage;
+
+    [[nodiscard]] bool succeeded() const noexcept {
+        return status == MaterializedResultCacheExportStatus::Exported && !pages.empty();
+    }
+};
+
 class AnalysisCachePageBodyCodec final {
 public:
     [[nodiscard]] static constexpr quint32 progressiveIndexFormatVersion() noexcept {
@@ -101,5 +120,10 @@ public:
     decodeMaterializedResult(const core::PagedCachePageKey& expectedKey,
                              std::span<const std::byte> bytes);
 };
+
+[[nodiscard]] MaterializedResultCacheExportResult
+exportMaterializedResultCachePages(const core::AnalysisTree& tree,
+                                   quint64 streamId,
+                                   quint64 firstPageIndex = 0);
 
 } // namespace streamview::rules

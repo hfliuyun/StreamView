@@ -1,16 +1,24 @@
 #include "analysis_session.h"
 
+#include <streamview/core/paged_cache.h>
 #include <streamview/core/source.h>
 #include <streamview/core/source_pager.h>
+#include <streamview/rules/analysis_cache.h>
+#include <streamview/rules/analysis_cache_owner.h>
 #include <streamview/rules/h264_annex_b_detector.h>
 #include <streamview/rules/rule_catalog.h>
 #include <streamview/rules/rule_package.h>
 
 #include <QFile>
+#include <QSqlDatabase>
+#include <QSqlError>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QUuid>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <limits>
 #include <memory>
@@ -18,17 +26,58 @@
 #include <vector>
 
 using streamview::app::AnalysisSession;
+using streamview::app::AnalysisSessionCacheOptions;
+using streamview::app::AnalysisSessionCacheStatus;
 using streamview::app::AnalysisSessionRestoreStatus;
 using streamview::app::RawDisplayMode;
 using streamview::app::SessionAnnotation;
 using streamview::app::SessionBookmark;
 using streamview::app::SessionUserState;
 using streamview::core::MaterializationState;
+using streamview::core::PagedCachePageKind;
 using streamview::core::RandomAccessSource;
 using streamview::core::SourceReadResult;
 using streamview::core::SourceReadStatus;
 
 namespace {
+
+class DirectSqliteConnection final {
+public:
+    explicit DirectSqliteConnection(const QString& path)
+        : name_(QStringLiteral("streamview-analysis-session-test-%1")
+                    .arg(QUuid::createUuid().toString(QUuid::WithoutBraces))),
+          database_(QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name_)) {
+        database_.setDatabaseName(path);
+        database_.open();
+    }
+
+    ~DirectSqliteConnection() {
+        database_.close();
+        database_ = QSqlDatabase();
+        QSqlDatabase::removeDatabase(name_);
+    }
+
+    DirectSqliteConnection(const DirectSqliteConnection&) = delete;
+    DirectSqliteConnection& operator=(const DirectSqliteConnection&) = delete;
+
+    [[nodiscard]] bool isOpen() const noexcept { return database_.isOpen(); }
+    [[nodiscard]] QString errorMessage() const { return database_.lastError().text(); }
+
+    [[nodiscard]] bool execute(const QString& statement, QString* errorMessage = nullptr) {
+        QSqlQuery query(database_);
+        if (query.exec(statement)) {
+            return true;
+        }
+        if (errorMessage != nullptr) {
+            *errorMessage = query.lastError().text();
+        }
+        return false;
+    }
+
+private:
+    QString name_;
+    QSqlDatabase database_;
+};
 
 class MemorySource final : public RandomAccessSource {
 public:
@@ -177,6 +226,7 @@ private slots:
             &errorMessage);
 
         QVERIFY2(session != nullptr, qPrintable(errorMessage));
+        QCOMPARE(session->cacheStatus(), AnalysisSessionCacheStatus::Disabled);
         QCOMPARE(session->identity(), QStringLiteral("fixture.264"));
         QCOMPARE(session->ruleIdentity().packageIdentity().packageId(),
                  QStringLiteral("org.streamview.h264"));
@@ -313,9 +363,14 @@ private slots:
         streamview::rules::RulePackageCatalog catalog;
         QVERIFY(catalog.registerPackage(std::move(*package.package)).succeeded());
 
-        auto restored = AnalysisSession::restoreSession(sessionPath, catalog);
+        AnalysisSessionCacheOptions cacheOptions;
+        cacheOptions.databasePath =
+            directory.filePath(QStringLiteral("restored-analysis-cache.sqlite"));
+        auto restored =
+            AnalysisSession::restoreSession(sessionPath, catalog, std::move(cacheOptions));
 
         QVERIFY2(restored.succeeded(), qPrintable(restored.errorMessage));
+        QCOMPARE(restored.session->cacheStatus(), AnalysisSessionCacheStatus::Active);
         QCOMPARE(restored.session->ruleIdentity(), expectedRule);
         QVERIFY(restored.session->userState() == state);
         QCOMPARE(restored.ruleStatus,
@@ -433,6 +488,165 @@ private slots:
 
         QVERIFY(!session->saveSession(QStringLiteral("unused.svsession"), {}, &errorMessage));
         QVERIFY(errorMessage.contains(QStringLiteral("local file"), Qt::CaseInsensitive));
+    }
+
+    void writesStableProgressiveAndMaterializedPagesForLocalFiles() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("fixture.264"));
+        const QString cachePath = directory.filePath(QStringLiteral("analysis-cache.sqlite"));
+        QVERIFY(writeFile(mediaPath, validAnnexBBytes()));
+
+        AnalysisSessionCacheOptions cacheOptions;
+        cacheOptions.databasePath = cachePath;
+        QString errorMessage;
+        auto session = AnalysisSession::openFile(mediaPath, cacheOptions, &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+        QCOMPARE(session->cacheStatus(), AnalysisSessionCacheStatus::Active);
+        const auto ruleIdentity = session->ruleIdentity();
+        const std::size_t expectedNodeCountBeforeDestruction = [&] {
+            while (!session->finished()) {
+                (void)session->analyzeBatch();
+            }
+            return session->tree().nodeCount();
+        }();
+        session.reset();
+
+        auto source = streamview::core::FileSource::open(mediaPath, &errorMessage);
+        QVERIFY2(source != nullptr, qPrintable(errorMessage));
+        auto fingerprint = source->fingerprint();
+        QVERIFY2(fingerprint.succeeded(), qPrintable(fingerprint.errorMessage));
+        auto cacheNamespace = streamview::rules::AnalysisCacheNamespace::create(
+            *fingerprint.fingerprint, ruleIdentity, {}, &errorMessage);
+        QVERIFY2(cacheNamespace.has_value(), qPrintable(errorMessage));
+        auto owner = streamview::rules::AnalysisCacheOwner::start(
+            cachePath, std::move(*cacheNamespace));
+        QVERIFY2(owner.succeeded(), qPrintable(owner.errorMessage));
+
+        auto progressive = owner.owner->readProgressiveIndex(
+            {PagedCachePageKind::ProgressiveIndex, 0, 0});
+        QVERIFY(progressive.accepted());
+        QVERIFY(progressive.completion.wait_for(std::chrono::seconds(10)) ==
+                std::future_status::ready);
+        const auto progressiveResult = progressive.completion.get();
+        QVERIFY2(progressiveResult.found(), qPrintable(progressiveResult.errorMessage));
+        QCOMPARE(progressiveResult.page->firstRecordIndex, quint64{0});
+        QCOMPARE(progressiveResult.page->indexedThroughByteOffset, quint64{4});
+        QCOMPARE(progressiveResult.page->records.size(), std::size_t{1});
+        QVERIFY(progressiveResult.page->endOfSource);
+
+        auto materialized = owner.owner->readMaterializedResult(
+            {PagedCachePageKind::MaterializedResult, 0, 0});
+        QVERIFY(materialized.accepted());
+        QVERIFY(materialized.completion.wait_for(std::chrono::seconds(10)) ==
+                std::future_status::ready);
+        const auto materializedResult = materialized.completion.get();
+        QVERIFY2(materializedResult.found(), qPrintable(materializedResult.errorMessage));
+        QCOMPARE(materializedResult.page->nodes.size(), expectedNodeCountBeforeDestruction);
+        QCOMPARE(materializedResult.page->nodes.front().id,
+                 streamview::core::AnalysisNodeId(1));
+    }
+
+    void cacheSetupAndQueueFailuresDoNotInvalidateTheLiveSession() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("fixture.264"));
+        QVERIFY(writeFile(mediaPath, validAnnexBBytes()));
+
+        AnalysisSessionCacheOptions openFailureOptions;
+        openFailureOptions.databasePath = directory.path();
+        QString errorMessage;
+        auto openFailure =
+            AnalysisSession::openFile(mediaPath, openFailureOptions, &errorMessage);
+        QVERIFY2(openFailure != nullptr, qPrintable(errorMessage));
+        QCOMPARE(openFailure->cacheStatus(), AnalysisSessionCacheStatus::Failed);
+        QVERIFY(!openFailure->cacheErrorMessage().isEmpty());
+        const auto openFailureBatch = openFailure->analyzeBatch();
+        QCOMPARE(openFailureBatch.status,
+                 streamview::rules::H264AnnexBAnalysisStatus::Complete);
+
+        AnalysisSessionCacheOptions queueFailureOptions;
+        queueFailureOptions.databasePath =
+            directory.filePath(QStringLiteral("small-queue-cache.sqlite"));
+        queueFailureOptions.ownerOptions.maximumRetainedWriteBytes = 1;
+        auto queueFailure =
+            AnalysisSession::openFile(mediaPath, queueFailureOptions, &errorMessage);
+        QVERIFY2(queueFailure != nullptr, qPrintable(errorMessage));
+        QCOMPARE(queueFailure->cacheStatus(), AnalysisSessionCacheStatus::Active);
+        const auto queueFailureBatch = queueFailure->analyzeBatch();
+        QCOMPARE(queueFailureBatch.status,
+                 streamview::rules::H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(queueFailure->cacheStatus(), AnalysisSessionCacheStatus::Failed);
+        QVERIFY(queueFailure->tree().nodeCount() > 1U);
+    }
+
+    void enablesTheCandidateCacheAfterThePreviousPathOwnerIsReleased() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString firstPath = directory.filePath(QStringLiteral("first.264"));
+        const QString secondPath = directory.filePath(QStringLiteral("second.264"));
+        const QString cachePath = directory.filePath(QStringLiteral("analysis-cache.sqlite"));
+        QVERIFY(writeFile(firstPath, validAnnexBBytes()));
+        QVERIFY(writeFile(secondPath, QByteArray::fromHex("00000141")));
+
+        AnalysisSessionCacheOptions cacheOptions;
+        cacheOptions.databasePath = cachePath;
+        QString errorMessage;
+        auto first = AnalysisSession::openFile(firstPath, cacheOptions, &errorMessage);
+        QVERIFY2(first != nullptr, qPrintable(errorMessage));
+        QCOMPARE(first->cacheStatus(), AnalysisSessionCacheStatus::Active);
+
+        auto candidate = AnalysisSession::openFile(secondPath, &errorMessage);
+        QVERIFY2(candidate != nullptr, qPrintable(errorMessage));
+        candidate->enableCache(cacheOptions);
+        QCOMPARE(candidate->cacheStatus(), AnalysisSessionCacheStatus::Failed);
+
+        first.reset();
+        candidate->enableCache(cacheOptions);
+        QCOMPARE(candidate->cacheStatus(), AnalysisSessionCacheStatus::Active);
+    }
+
+    void pollsAcceptedStorageFailuresWithoutInvalidatingAnalysis() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("fixture.264"));
+        const QString cachePath = directory.filePath(QStringLiteral("analysis-cache.sqlite"));
+        QVERIFY(writeFile(mediaPath, validAnnexBBytes()));
+
+        AnalysisSessionCacheOptions cacheOptions;
+        cacheOptions.databasePath = cachePath;
+        QString errorMessage;
+        auto session = AnalysisSession::openFile(mediaPath, cacheOptions, &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+        QCOMPARE(session->cacheStatus(), AnalysisSessionCacheStatus::Active);
+
+        DirectSqliteConnection injector(cachePath);
+        QVERIFY2(injector.isOpen(), qPrintable(injector.errorMessage()));
+        QVERIFY2(injector.execute(
+                     QStringLiteral(
+                         "CREATE TRIGGER fail_session_cache BEFORE INSERT ON cache_pages "
+                         "BEGIN SELECT RAISE(ABORT, 'forced session cache failure'); END"),
+                     &errorMessage),
+                 qPrintable(errorMessage));
+
+        const auto batch = session->analyzeBatch();
+        QCOMPARE(batch.status, streamview::rules::H264AnnexBAnalysisStatus::Complete);
+        QVERIFY(session->tree().nodeCount() > 1U);
+        QTRY_VERIFY_WITH_TIMEOUT(([&session] {
+                                     session->pollCacheWrites();
+                                     return !session->cacheWritesPending();
+                                 }()),
+                                 10000);
+        QCOMPARE(session->cacheStatus(), AnalysisSessionCacheStatus::Failed);
+        QVERIFY(!session->cacheErrorMessage().isEmpty());
+
+        QVERIFY2(injector.execute(QStringLiteral("DROP TRIGGER fail_session_cache"),
+                                  &errorMessage),
+                 qPrintable(errorMessage));
+        session->enableCache(cacheOptions);
+        QCOMPARE(session->cacheStatus(), AnalysisSessionCacheStatus::Failed);
+        QVERIFY(session->cacheErrorMessage().contains(QStringLiteral("after analysis")));
+        QVERIFY(!session->cacheWritesPending());
     }
 };
 

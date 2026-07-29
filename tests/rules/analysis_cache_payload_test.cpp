@@ -18,6 +18,7 @@
 
 using streamview::core::AnalysisNodeId;
 using streamview::core::AnalysisNodeKind;
+using streamview::core::AnalysisTree;
 using streamview::core::DiagnosticCode;
 using streamview::core::DiagnosticSeverity;
 using streamview::core::FieldLocation;
@@ -42,8 +43,10 @@ using streamview::rules::H264ProgressiveIndexCachePage;
 using streamview::rules::H264StartCodeRecord;
 using streamview::rules::MaterializedResultCacheNode;
 using streamview::rules::MaterializedResultCachePage;
+using streamview::rules::MaterializedResultCacheExportStatus;
 using streamview::rules::RuleEntryPointIdentity;
 using streamview::rules::RulePackageIdentity;
+using streamview::rules::exportMaterializedResultCachePages;
 
 namespace {
 
@@ -168,6 +171,30 @@ namespace {
     auto result = AnalysisCacheNamespace::create(*source, *rule);
     Q_ASSERT(result.has_value());
     return *result;
+}
+
+[[nodiscard]] std::optional<AnalysisTree> oneNodePerCachePageTree(std::size_t nodeCount) {
+    if (nodeCount == 0U) {
+        return std::nullopt;
+    }
+    const QString name(32U * 1024U, u'x');
+    auto tree = AnalysisTree::create(name);
+    if (!tree) {
+        return std::nullopt;
+    }
+    for (std::size_t index = 1; index < nodeCount; ++index) {
+        streamview::core::AnalysisNodeSpec spec;
+        spec.kind = AnalysisNodeKind::Structure;
+        spec.name = name;
+        spec.state = MaterializationState::Materialized;
+        if (!tree->appendChild(tree->rootId(), std::move(spec))) {
+            return std::nullopt;
+        }
+    }
+    if (!tree->transition(tree->rootId(), MaterializationState::Materialized)) {
+        return std::nullopt;
+    }
+    return tree;
 }
 
 [[nodiscard]] QByteArray byteArray(std::span<const std::byte> bytes) {
@@ -380,6 +407,107 @@ private slots:
         QVERIFY(unwrapped.succeeded());
         QVERIFY(AnalysisCachePageBodyCodec::decodeMaterializedResult(page.key, unwrapped.payload)
                     .succeeded());
+    }
+
+    void exportsStableTreesAsDeterministicConsecutivePages() {
+        auto tree = AnalysisTree::create(QStringLiteral("root"));
+        QVERIFY(tree.has_value());
+        for (std::size_t index = 0; index < 1500U; ++index) {
+            streamview::core::AnalysisNodeSpec spec;
+            spec.kind = AnalysisNodeKind::Structure;
+            spec.name = QStringLiteral("node-%1-").arg(index) + QString(96, u'x');
+            spec.state = MaterializationState::Materialized;
+            if (index == 0U) {
+                spec.kind = AnalysisNodeKind::SyntaxField;
+                spec.value = QVariant::fromValue<qulonglong>(17);
+                spec.location = location(LogicalViewId(9), 16, {span(32, 8), span(56, 8)});
+                spec.metadata.typeName = QStringLiteral("u16");
+                spec.metadata.description = QStringLiteral("Export fidelity field");
+                spec.metadata.specification = streamview::core::AnalysisSpecification{
+                    QStringLiteral("Example"), QStringLiteral("1.2")};
+            }
+            const auto child = tree->appendChild(tree->rootId(), std::move(spec));
+            QVERIFY(child.has_value());
+            if (index == 0U) {
+                streamview::core::ParseDiagnostic diagnostic;
+                diagnostic.code = DiagnosticCode::InvalidSyntax;
+                diagnostic.severity = DiagnosticSeverity::Warning;
+                diagnostic.message = QStringLiteral("Export fidelity diagnostic");
+                diagnostic.fieldPath = QStringLiteral("root.node-0");
+                diagnostic.location = location(LogicalViewId(9), 16,
+                                               {span(32, 8), span(56, 8)});
+                QVERIFY(tree->addDiagnostic(*child, std::move(diagnostic)));
+            }
+        }
+        QVERIFY(tree->transition(tree->rootId(), MaterializationState::Materialized));
+
+        const auto exported = exportMaterializedResultCachePages(*tree, 3, 7);
+
+        QVERIFY2(exported.succeeded(), qPrintable(exported.errorMessage));
+        QVERIFY(exported.pages.size() > 1U);
+        const auto fidelitySource = tree->node(AnalysisNodeId(2));
+        QVERIFY(fidelitySource.has_value());
+        quint64 expectedNodeId = 1;
+        for (std::size_t pageIndex = 0; pageIndex < exported.pages.size(); ++pageIndex) {
+            const auto& page = exported.pages[pageIndex];
+            QCOMPARE(page.key,
+                     PagedCachePageKey(PagedCachePageKind::MaterializedResult, 3,
+                                       7 + static_cast<quint64>(pageIndex)));
+            const auto encoded = AnalysisCachePageBodyCodec::encodeMaterializedResult(page);
+            QVERIFY2(encoded.succeeded(), qPrintable(encoded.errorMessage));
+            const auto decoded =
+                AnalysisCachePageBodyCodec::decodeMaterializedResult(page.key, encoded.bytes);
+            QVERIFY2(decoded.succeeded(), qPrintable(decoded.errorMessage));
+            for (const auto& node : decoded.page->nodes) {
+                QCOMPARE(node.id, AnalysisNodeId(expectedNodeId));
+                if (node.id == AnalysisNodeId(2)) {
+                    QCOMPARE(node.parentId, fidelitySource->parentId());
+                    QCOMPARE(node.spec.value, fidelitySource->value());
+                    QCOMPARE(node.spec.location->logicalRange().start().viewId(),
+                             LogicalViewId(9));
+                    QCOMPARE(node.spec.location->sourceSpans().size(), std::size_t{2});
+                    QCOMPARE(node.spec.metadata.typeName,
+                             fidelitySource->metadata().typeName);
+                    QCOMPARE(node.spec.metadata.description,
+                             fidelitySource->metadata().description);
+                    QCOMPARE(node.spec.metadata.specification->standard,
+                             fidelitySource->metadata().specification->standard);
+                    QCOMPARE(node.diagnostics.size(), std::size_t{1});
+                    QCOMPARE(node.diagnostics.front().message,
+                             fidelitySource->diagnostics().front().message);
+                }
+                ++expectedNodeId;
+            }
+        }
+        QCOMPARE(expectedNodeId, static_cast<quint64>(tree->nodeCount()) + 1U);
+    }
+
+    void enforcesTheAtomicMaterializedExportPageLimit() {
+        auto maximum = oneNodePerCachePageTree(PagedCache::maximumBatchPages());
+        QVERIFY(maximum.has_value());
+        const auto accepted = exportMaterializedResultCachePages(*maximum, 0);
+        QVERIFY2(accepted.succeeded(), qPrintable(accepted.errorMessage));
+        QCOMPARE(accepted.pages.size(), PagedCache::maximumBatchPages());
+
+        auto oversized = oneNodePerCachePageTree(PagedCache::maximumBatchPages() + 1U);
+        QVERIFY(oversized.has_value());
+        const auto rejected = exportMaterializedResultCachePages(*oversized, 0);
+        QCOMPARE(rejected.status, MaterializedResultCacheExportStatus::TooManyPages);
+        QVERIFY(rejected.pages.empty());
+    }
+
+    void rejectsTransientAndIndividuallyOversizedTreeExports() {
+        auto transient = AnalysisTree::create(QStringLiteral("root"));
+        QVERIFY(transient.has_value());
+        QCOMPARE(exportMaterializedResultCachePages(*transient, 0).status,
+                 MaterializedResultCacheExportStatus::InvalidTree);
+
+        auto oversized = AnalysisTree::create(QString(32U * 1024U + 1U, u'x'));
+        QVERIFY(oversized.has_value());
+        QVERIFY(oversized->transition(oversized->rootId(),
+                                      MaterializationState::Materialized));
+        QCOMPARE(exportMaterializedResultCachePages(*oversized, 0).status,
+                 MaterializedResultCacheExportStatus::PayloadTooLarge);
     }
 
     void rejectsUnsupportedAndInvalidMaterializedInput() {

@@ -316,6 +316,11 @@ private slots:
         const auto firstBatch = analyzer->analyzeBatch(1);
         QCOMPARE(firstBatch.status, H264AnnexBAnalysisStatus::InProgress);
         QCOMPARE(firstBatch.nalUnitNodes.size(), std::size_t(1));
+        QVERIFY(firstBatch.progressiveIndexUpdate.has_value());
+        QCOMPARE(firstBatch.progressiveIndexUpdate->firstRecordIndex, quint64{0});
+        QCOMPARE(firstBatch.progressiveIndexUpdate->records.size(), std::size_t{1});
+        QCOMPARE(firstBatch.progressiveIndexUpdate->indexedThroughByteOffset, quint64{5});
+        QVERIFY(!firstBatch.progressiveIndexUpdate->endOfSource);
 
         const auto firstNal = analyzer->tree().node(firstBatch.nalUnitNodes.front());
         QVERIFY(firstNal.has_value());
@@ -370,6 +375,11 @@ private slots:
         const auto secondBatch = analyzer->analyzeBatch(1);
         QCOMPARE(secondBatch.status, H264AnnexBAnalysisStatus::Complete);
         QCOMPARE(secondBatch.nalUnitNodes.size(), std::size_t(1));
+        QVERIFY(secondBatch.progressiveIndexUpdate.has_value());
+        QCOMPARE(secondBatch.progressiveIndexUpdate->firstRecordIndex, quint64{1});
+        QCOMPARE(secondBatch.progressiveIndexUpdate->records.size(), std::size_t{1});
+        QCOMPARE(secondBatch.progressiveIndexUpdate->indexedThroughByteOffset, quint64{10});
+        QVERIFY(secondBatch.progressiveIndexUpdate->endOfSource);
         const auto secondNal = analyzer->tree().node(secondBatch.nalUnitNodes.front());
         QVERIFY(secondNal.has_value());
         const auto secondStartCode = analyzer->tree().node(secondNal->children().at(0));
@@ -629,12 +639,19 @@ private slots:
         const auto first = analyzer->analyzeBatch(1, 8);
         QCOMPARE(first.status, H264AnnexBAnalysisStatus::InProgress);
         QCOMPARE(analyzer->scanCursor(), quint64(8));
+        QVERIFY(!first.progressiveIndexUpdate.has_value());
         const auto second = analyzer->analyzeBatch(1, 8);
         QCOMPARE(second.status, H264AnnexBAnalysisStatus::InProgress);
         QCOMPARE(analyzer->scanCursor(), quint64(16));
+        QVERIFY(!second.progressiveIndexUpdate.has_value());
         const auto third = analyzer->analyzeBatch(1, 8);
         QCOMPARE(third.status, H264AnnexBAnalysisStatus::Complete);
         QCOMPARE(analyzer->scanCursor(), quint64(20));
+        QVERIFY(third.progressiveIndexUpdate.has_value());
+        QCOMPARE(third.progressiveIndexUpdate->firstRecordIndex, quint64{0});
+        QCOMPARE(third.progressiveIndexUpdate->indexedThroughByteOffset, quint64{20});
+        QVERIFY(third.progressiveIndexUpdate->records.empty());
+        QVERIFY(third.progressiveIndexUpdate->endOfSource);
     }
 
     void retainsTheInvalidForbiddenBitAsAPartialResult() {

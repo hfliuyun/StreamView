@@ -165,6 +165,14 @@ outcome；caller 应 rebuild 或禁用 optional cache，而不改变有效 live 
 final-page marker。consumer 必须先拥有另行验证过的完整 key set，才能执行 cross-page
 reachability validation 或发布 presentation snapshot。
 
+production H.264 session 可以通过该 stack 发布 version 1 page。每个实际 scanner batch 最多暴露
+一个 stable progressive-index update；exclusive frontier 是 completed record 的最大末端，仅在 scan
+complete 时推进到 source size。stream 与初始 page index 均为 0。terminal stable tree 按 node ID
+顺序导出为 codec 接受的最大连续 prefix，不产生 empty page，并作为一个最多 256 page 的 batch
+提交。该 producer 行为只写不读：不提供 complete-key manifest，也不恢复 cached snapshot 或 live
+analyzer。详见
+[ADR-0036](adr/0036-publish-stable-session-cache-pages-without-restoring-execution.md)。
+
 ## 失败处理
 
 encode 会区分非法语义输入、不支持的闭合 value 与 page/text overflow。decode 会区分 malformed

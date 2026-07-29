@@ -17,6 +17,8 @@
 #include <QTimer>
 #include <QTreeView>
 
+#include <utility>
+
 namespace streamview::app {
 
 namespace {
@@ -26,7 +28,10 @@ constexpr quint64 kAnalysisWorkBudget = 64U * 1024U;
 
 } // namespace
 
-MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
+MainWindow::MainWindow(QWidget* parent) : MainWindow({}, parent) {}
+
+MainWindow::MainWindow(AnalysisSessionCacheOptions cacheOptions, QWidget* parent)
+    : QMainWindow(parent), cacheOptions_(std::move(cacheOptions)) {
     setWindowTitle(tr("StreamView"));
     resize(1280, 800);
 
@@ -113,6 +118,8 @@ bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
     fieldInspector_->clear();
     rawDataView_->clear();
     analysisModel_->clear();
+    session_.reset();
+    candidate->enableCache(cacheOptions_);
     session_ = std::move(candidate);
 
     rawError_.clear();
@@ -152,6 +159,9 @@ void MainWindow::advanceAnalysis(quint64 generation) {
         return;
     }
     analysisModel_->updateFromTree(session_->tree());
+    if (session_->finished() && session_->cacheWritesPending()) {
+        QTimer::singleShot(0, this, [this, generation] { pollAnalysisCache(generation); });
+    }
 
     const QModelIndex currentIndex = analysisTreeView_->currentIndex();
     if (currentIndex.isValid()) {
@@ -189,6 +199,16 @@ void MainWindow::advanceAnalysis(quint64 generation) {
     }
 
     publishAnalysisStatus(batch.status, batch.errorMessage);
+}
+
+void MainWindow::pollAnalysisCache(quint64 generation) {
+    if (generation != analysisGeneration_ || !session_) {
+        return;
+    }
+    session_->pollCacheWrites();
+    if (session_->cacheWritesPending()) {
+        QTimer::singleShot(1, this, [this, generation] { pollAnalysisCache(generation); });
+    }
 }
 
 void MainWindow::publishAnalysisStatus(rules::H264AnnexBAnalysisStatus status,

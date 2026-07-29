@@ -2,7 +2,11 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QDir>
+#include <QStandardPaths>
 #include <QTextStream>
+
+#include <utility>
 
 int main(int argc, char* argv[]) {
     QApplication application(argc, argv);
@@ -16,7 +20,14 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    streamview::app::MainWindow window;
+    streamview::app::AnalysisSessionCacheOptions cacheOptions;
+    const QString cacheLocation =
+        QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (!cacheLocation.isEmpty()) {
+        cacheOptions.databasePath =
+            QDir(cacheLocation).filePath(QStringLiteral("analysis-cache.sqlite"));
+    }
+    streamview::app::MainWindow window(std::move(cacheOptions));
     window.show();
     return application.exec();
 }

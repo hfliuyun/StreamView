@@ -121,3 +121,5 @@ selected analysis path 若存在，必须非空且最多 16 KiB UTF-8。selectio
 任一较早步骤失败都不会构造 replacement session，也不会应用任何 saved user coordinate。
 cache lookup、cache payload restoration、Save As UI、dirty-state prompt 与 source relocation 属于
 独立契约。
+restore 成功后，caller 可以复用已经验证过的 fingerprint 启用只写 analysis cache；这不会把 cache
+data 加入 session document，也不会执行 cache lookup 或 restoration。

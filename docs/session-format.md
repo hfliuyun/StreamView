@@ -140,3 +140,6 @@ session:
 Failure at any earlier step constructs no replacement session and applies no
 saved user coordinate. Cache lookup, cache payload restoration, Save As UI,
 dirty-state prompts, and source relocation are separate contracts.
+After a successful restore, a caller may enable the write-only analysis cache
+with the already verified fingerprint; this does not add cache data to the
+session document and does not perform cache lookup or restoration.

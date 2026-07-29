@@ -21,6 +21,8 @@ class MainWindow final : public QMainWindow {
 
 public:
     explicit MainWindow(QWidget* parent = nullptr);
+    explicit MainWindow(AnalysisSessionCacheOptions cacheOptions,
+                        QWidget* parent = nullptr);
 
     [[nodiscard]] bool openMediaSource(const QString& path,
                                        QString* errorMessage = nullptr);
@@ -37,6 +39,7 @@ private:
     void setSourceSelection(SourceSelection selection);
     void clearSourceSelection();
     void advanceAnalysis(quint64 generation);
+    void pollAnalysisCache(quint64 generation);
     void publishAnalysisStatus(rules::H264AnnexBAnalysisStatus status,
                                const QString& errorMessage);
     QTreeView* analysisTreeView_ = nullptr;
@@ -46,6 +49,7 @@ private:
     SourceSelection sourceSelection_;
 
     std::unique_ptr<AnalysisSession> session_;
+    AnalysisSessionCacheOptions cacheOptions_;
     quint64 analysisGeneration_ = 0;
     bool rawLoaded_ = true;
     QString rawError_;

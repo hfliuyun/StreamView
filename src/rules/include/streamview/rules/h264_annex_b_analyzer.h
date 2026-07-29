@@ -28,9 +28,17 @@ enum class H264AnnexBAnalysisStatus : quint8 {
     InvalidRule,
 };
 
+struct H264ProgressiveIndexUpdate final {
+    quint64 firstRecordIndex = 0;
+    quint64 indexedThroughByteOffset = 0;
+    bool endOfSource = false;
+    std::vector<H264StartCodeRecord> records;
+};
+
 struct H264AnnexBAnalysisBatch final {
     H264AnnexBAnalysisStatus status = H264AnnexBAnalysisStatus::InProgress;
     std::vector<core::AnalysisNodeId> nalUnitNodes;
+    std::optional<H264ProgressiveIndexUpdate> progressiveIndexUpdate;
     QString errorMessage;
 
     [[nodiscard]] bool complete() const noexcept {
@@ -128,6 +136,8 @@ private:
     QString deferredScanErrorMessage_;
     quint64 nextViewId_ = 1;
     quint64 nextNalUnitIndex_ = 0;
+    quint64 nextStableRecordIndex_ = 0;
+    quint64 stableIndexedThroughByteOffset_ = 0;
     bool terminal_ = false;
     H264AnnexBAnalysisStatus terminalStatus_ = H264AnnexBAnalysisStatus::InProgress;
     QString terminalErrorMessage_;

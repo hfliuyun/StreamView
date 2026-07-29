@@ -171,6 +171,16 @@ accepted 的 request；draining shutdown 拒绝新 work、完成 accepted work�
 cache 并 join。cache failure 仍只属于 optional-acceleration failure。详见
 [ADR-0035](adr/0035-own-analysis-cache-on-a-bounded-background-queue.md)。
 
+production local-file `AnalysisSession` 可以在首个 analyzer batch 之前显式启用该 owner。session 从
+同一个已打开 `FileSource` handle 的 fingerprint 与 analyzer exact rule identity 派生 namespace，
+然后把 stable H.264 progressive-index update 写到 stream 0，并把 terminal materialized-result tree
+写到 stream 0。progressive page index 只在 queue admission 成功后推进；terminal tree 按 stable node
+ID 确定性分页，并以一个最多 256 page 的 atomic batch 提交。fingerprint、namespace、open、
+preflight、queue 或已完成 storage write 的失败都只禁用 optional acceleration，不改变有效 source、
+analyzer batch 或 analysis tree。accepted future 只用 nonblocking 方式 poll，terminal batch 后也由
+application event loop 继续收割。详见
+[ADR-0036](adr/0036-publish-stable-session-cache-pages-without-restoring-execution.md)。
+
 该 owner 不会使 persistent analyzer recovery 可用。version 1 materialized page 没有 manifest、
 total-page count 或 final-page marker，因此尚不能被发现并发布成可证明完整的 cached presentation
 snapshot。live recovery 还需要为每个被省略的 analyzer-state component 建立明确契约。

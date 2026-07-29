@@ -10,6 +10,7 @@
 #include <QFile>
 #include <QIODevice>
 
+#include <algorithm>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -916,13 +917,44 @@ H264AnnexBAnalysisBatch H264AnnexBAnalyzer::analyzeBatch(
     if (!deferredScanStatus_) {
         const bool cancellationRequestedBeforeScan =
             cancellation_ && cancellation_->isCancellationRequested();
-        const StartCodeScanBatch scanBatch =
+        StartCodeScanBatch scanBatch =
             scanner_.scanBatch(maximumRecords, maximumInspectedPositions);
         const bool cancellationRequestedAfterScan =
             cancellation_ && cancellation_->isCancellationRequested();
         const bool allowExecutionCancellation =
             cancellation_.has_value() && !cancellationRequestedBeforeScan &&
             !cancellationRequestedAfterScan;
+        const quint64 recordCount = static_cast<quint64>(scanBatch.records.size());
+        if (nextStableRecordIndex_ > std::numeric_limits<quint64>::max() - recordCount) {
+            terminalizeFailure(
+                H264AnnexBAnalysisStatus::ResourceLimit,
+                QStringLiteral("H.264 progressive-index record count exceeds 64-bit limits"));
+            return result;
+        }
+        for (const H264StartCodeRecord& record : scanBatch.records) {
+            if (record.trailingZero8BitsOffset >
+                std::numeric_limits<quint64>::max() - record.trailingZero8BitsLength) {
+                terminalizeFailure(
+                    H264AnnexBAnalysisStatus::InvalidRule,
+                    QStringLiteral("H.264 scanner returned an overflowing stable record"));
+                return result;
+            }
+            stableIndexedThroughByteOffset_ =
+                std::max(stableIndexedThroughByteOffset_,
+                         record.trailingZero8BitsOffset + record.trailingZero8BitsLength);
+        }
+        if (scanBatch.status == StartCodeScanStatus::Complete) {
+            stableIndexedThroughByteOffset_ = source_->sizeBytes();
+        }
+        if (!scanBatch.records.empty() || scanBatch.status == StartCodeScanStatus::Complete) {
+            H264ProgressiveIndexUpdate update;
+            update.firstRecordIndex = nextStableRecordIndex_;
+            update.indexedThroughByteOffset = stableIndexedThroughByteOffset_;
+            update.endOfSource = scanBatch.status == StartCodeScanStatus::Complete;
+            update.records = scanBatch.records;
+            result.progressiveIndexUpdate = std::move(update);
+        }
+        nextStableRecordIndex_ += recordCount;
         for (const H264StartCodeRecord& record : scanBatch.records) {
             queuedRecords_.push_back({record, allowExecutionCancellation});
         }

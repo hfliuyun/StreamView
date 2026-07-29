@@ -211,6 +211,19 @@ rejects new work, completes accepted work, destroys the cache on its owner
 thread, and joins it. Cache failure remains an optional-acceleration failure.
 See [ADR-0035](adr/0035-own-analysis-cache-on-a-bounded-background-queue.md).
 
+Production local-file `AnalysisSession` instances can opt into this owner before
+the first analyzer batch. They derive the namespace from the fingerprint of the
+same open `FileSource` handle and the analyzer's exact rule identity, then submit
+stable H.264 progressive-index updates under stream 0 and a terminal
+materialized-result tree under stream 0. Progressive page indexes advance only
+after queue admission. The terminal tree is partitioned deterministically by
+stable node ID and submitted as one atomic batch of at most 256 pages.
+Fingerprint, namespace, open, preflight, queue, and completed storage failures
+disable this optional acceleration without changing the valid source, analyzer
+batch, or analysis tree. Accepted futures are polled without blocking, including
+from the application event loop after the terminal batch. See
+[ADR-0036](adr/0036-publish-stable-session-cache-pages-without-restoring-execution.md).
+
 This owner does not make persistent analyzer recovery available. Version 1
 materialized pages have no manifest, total-page count, or final-page marker, so
 they cannot yet be discovered and published as a provably complete cached

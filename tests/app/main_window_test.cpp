@@ -4,19 +4,67 @@
 
 #include <QFile>
 #include <QLabel>
+#include <QSqlDatabase>
+#include <QSqlError>
+#include <QSqlQuery>
 #include <QStatusBar>
 #include <QTableView>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolButton>
 #include <QTreeView>
+#include <QUuid>
 
+#include <optional>
+
+using streamview::app::AnalysisSessionCacheOptions;
 using streamview::app::MainWindow;
 using streamview::app::RawDataModel;
 using streamview::app::RawDataView;
 using streamview::app::RawDisplayMode;
 
 namespace {
+
+class DirectSqliteConnection final {
+public:
+    explicit DirectSqliteConnection(const QString& path)
+        : name_(QStringLiteral("streamview-main-window-test-%1")
+                    .arg(QUuid::createUuid().toString(QUuid::WithoutBraces))),
+          database_(QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name_)) {
+        database_.setDatabaseName(path);
+        database_.open();
+    }
+
+    ~DirectSqliteConnection() {
+        database_.close();
+        database_ = QSqlDatabase();
+        QSqlDatabase::removeDatabase(name_);
+    }
+
+    DirectSqliteConnection(const DirectSqliteConnection&) = delete;
+    DirectSqliteConnection& operator=(const DirectSqliteConnection&) = delete;
+
+    [[nodiscard]] bool isOpen() const noexcept { return database_.isOpen(); }
+    [[nodiscard]] QString errorMessage() const { return database_.lastError().text(); }
+
+    [[nodiscard]] std::optional<qlonglong> queryInteger(const QString& statement,
+                                                        QString* errorMessage = nullptr) {
+        QSqlQuery query(database_);
+        if (!query.exec(statement) || !query.next()) {
+            if (errorMessage != nullptr) {
+                *errorMessage = query.lastError().text();
+            }
+            return std::nullopt;
+        }
+        bool converted = false;
+        const qlonglong value = query.value(0).toLongLong(&converted);
+        return converted ? std::optional<qlonglong>(value) : std::nullopt;
+    }
+
+private:
+    QString name_;
+    QSqlDatabase database_;
+};
 
 QString writeFixture(QTemporaryDir& directory, const QString& name, const QByteArray& bytes) {
     const QString path = directory.filePath(name);
@@ -365,6 +413,35 @@ private slots:
         QVERIFY(inspector != nullptr);
         QCOMPARE(inspector->findChild<QLabel*>(QStringLiteral("fieldInspectorValue"))->text(),
                  QStringLiteral("-"));
+    }
+
+    void replacesTheProductionCacheOwnerBeforeEnablingTheNextSession() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString firstPath = writeFixture(
+            directory, QStringLiteral("first-cache.264"), QByteArray::fromHex("00000165"));
+        const QString secondPath = writeFixture(
+            directory, QStringLiteral("second-cache.264"), QByteArray::fromHex("00000141"));
+        const QString cachePath = directory.filePath(QStringLiteral("analysis-cache.sqlite"));
+        QVERIFY(!firstPath.isEmpty());
+        QVERIFY(!secondPath.isEmpty());
+
+        AnalysisSessionCacheOptions cacheOptions;
+        cacheOptions.databasePath = cachePath;
+        QString errorMessage;
+        {
+            MainWindow window(cacheOptions);
+            QVERIFY2(window.openMediaSource(firstPath, &errorMessage), qPrintable(errorMessage));
+            QVERIFY2(window.openMediaSource(secondPath, &errorMessage), qPrintable(errorMessage));
+            QCOMPARE(window.currentSourceIdentity(), secondPath);
+        }
+
+        DirectSqliteConnection database(cachePath);
+        QVERIFY2(database.isOpen(), qPrintable(database.errorMessage()));
+        const auto namespaceCount = database.queryInteger(
+            QStringLiteral("SELECT COUNT(*) FROM cache_namespaces"), &errorMessage);
+        QVERIFY2(namespaceCount.has_value(), qPrintable(errorMessage));
+        QCOMPARE(*namespaceCount, qlonglong{2});
     }
 
     void keepsRawBytesVisibleForATruncatedNalUnit() {

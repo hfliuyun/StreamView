@@ -640,10 +640,14 @@ AnalysisCacheBodyEncodeResult AnalysisCachePageBodyCodec::encodeMaterializedResu
     }
     for (std::size_t index = 0; index < page.nodes.size(); ++index) {
         const MaterializedResultCacheNode& node = page.nodes[index];
+        if (node.spec.state == core::MaterializationState::Indexing ||
+            node.spec.state == core::MaterializationState::WaitingDependency) {
+            return invalidEncode(
+                AnalysisCacheBodyEncodeStatus::InvalidArgument,
+                QStringLiteral("Materialized-result cache node is transient"));
+        }
         if (!nodeKindCode(node.spec.kind) || !storedValueKind(node.spec.value) ||
-            (!stateCode(node.spec.state) &&
-             node.spec.state != core::MaterializationState::Indexing &&
-             node.spec.state != core::MaterializationState::WaitingDependency) ||
+            !stateCode(node.spec.state) ||
             !std::ranges::all_of(node.diagnostics, [](const core::ParseDiagnostic& diagnostic) {
                 return diagnosticCode(diagnostic.code).has_value() &&
                        severityCode(diagnostic.severity).has_value();
@@ -912,6 +916,106 @@ MaterializedResultCacheDecodeResult AnalysisCachePageBodyCodec::decodeMaterializ
             QStringLiteral("Materialized-result body has trailing bytes"));
     }
     return {AnalysisCacheBodyDecodeStatus::Decoded, std::move(page), {}};
+}
+
+MaterializedResultCacheExportResult exportMaterializedResultCachePages(
+    const core::AnalysisTree& tree, quint64 streamId, quint64 firstPageIndex) {
+    constexpr quint64 maximumCoordinate =
+        static_cast<quint64>(std::numeric_limits<qlonglong>::max());
+    if (tree.nodeCount() == 0U || streamId > maximumCoordinate ||
+        firstPageIndex > maximumCoordinate) {
+        return {MaterializedResultCacheExportStatus::InvalidTree, {},
+                QStringLiteral("Materialized-result cache export metadata is invalid")};
+    }
+
+    std::vector<MaterializedResultCacheNode> nodes;
+    nodes.reserve(tree.nodeCount());
+    for (std::size_t index = 0; index < tree.nodeCount(); ++index) {
+        const quint64 idValue = static_cast<quint64>(index) + 1U;
+        const auto source = tree.node(core::AnalysisNodeId(idValue));
+        if (!source) {
+            return {MaterializedResultCacheExportStatus::InvalidTree, {},
+                    QStringLiteral("Materialized-result cache export tree has a missing node")};
+        }
+        MaterializedResultCacheNode node;
+        node.id = source->id();
+        node.parentId = source->parentId();
+        node.spec.kind = source->kind();
+        node.spec.name = source->name();
+        node.spec.state = source->state();
+        node.spec.value = source->value();
+        node.spec.location = source->location();
+        node.spec.metadata = source->metadata();
+        node.diagnostics = source->diagnostics();
+        nodes.push_back(std::move(node));
+    }
+
+    const auto encodePrefix = [&](std::size_t offset, std::size_t count, quint64 pageIndex) {
+        MaterializedResultCachePage candidate;
+        candidate.key = {core::PagedCachePageKind::MaterializedResult, streamId, pageIndex};
+        candidate.nodes.insert(
+            candidate.nodes.end(), nodes.begin() + static_cast<std::ptrdiff_t>(offset),
+            nodes.begin() + static_cast<std::ptrdiff_t>(offset + count));
+        return AnalysisCachePageBodyCodec::encodeMaterializedResult(candidate);
+    };
+
+    MaterializedResultCacheExportResult result;
+    result.status = MaterializedResultCacheExportStatus::Exported;
+    std::size_t offset = 0;
+    while (offset < nodes.size()) {
+        if (result.pages.size() >= core::PagedCache::maximumBatchPages() ||
+            firstPageIndex > maximumCoordinate - static_cast<quint64>(result.pages.size())) {
+            return {MaterializedResultCacheExportStatus::TooManyPages, {},
+                    QStringLiteral("Materialized-result cache export exceeds one atomic batch")};
+        }
+        const quint64 pageIndex = firstPageIndex + static_cast<quint64>(result.pages.size());
+        const std::size_t maximumCount =
+            std::min(maximumMaterializedNodes, nodes.size() - offset);
+        AnalysisCacheBodyEncodeResult encoded =
+            encodePrefix(offset, maximumCount, pageIndex);
+        std::size_t selectedCount = 0;
+        if (encoded.succeeded()) {
+            selectedCount = maximumCount;
+        } else if (encoded.status != AnalysisCacheBodyEncodeStatus::PayloadTooLarge) {
+            const auto status = encoded.status == AnalysisCacheBodyEncodeStatus::UnsupportedValue
+                                    ? MaterializedResultCacheExportStatus::UnsupportedValue
+                                    : MaterializedResultCacheExportStatus::InvalidTree;
+            return {status, {}, std::move(encoded.errorMessage)};
+        } else {
+            std::size_t lower = 1;
+            std::size_t upper = maximumCount;
+            while (lower <= upper) {
+                const std::size_t middle = lower + ((upper - lower) / 2U);
+                AnalysisCacheBodyEncodeResult prefix = encodePrefix(offset, middle, pageIndex);
+                if (prefix.succeeded()) {
+                    selectedCount = middle;
+                    lower = middle + 1U;
+                } else if (prefix.status == AnalysisCacheBodyEncodeStatus::PayloadTooLarge) {
+                    upper = middle - 1U;
+                } else {
+                    const auto status =
+                        prefix.status == AnalysisCacheBodyEncodeStatus::UnsupportedValue
+                            ? MaterializedResultCacheExportStatus::UnsupportedValue
+                            : MaterializedResultCacheExportStatus::InvalidTree;
+                    return {status, {}, std::move(prefix.errorMessage)};
+                }
+            }
+            if (selectedCount == 0U) {
+                return {MaterializedResultCacheExportStatus::PayloadTooLarge, {},
+                        QStringLiteral("One materialized-result node exceeds a cache page")};
+            }
+        }
+
+        MaterializedResultCachePage page;
+        page.key = {core::PagedCachePageKind::MaterializedResult, streamId, pageIndex};
+        page.nodes.reserve(selectedCount);
+        for (std::size_t index = 0; index < selectedCount; ++index) {
+            page.nodes.push_back(std::move(nodes[offset + index]));
+        }
+        result.pages.push_back(std::move(page));
+        offset += selectedCount;
+    }
+    return result;
 }
 
 } // namespace streamview::rules

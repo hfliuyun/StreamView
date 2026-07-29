@@ -1,8 +1,11 @@
 #include "analysis_session.h"
 
 #include <streamview/core/version.h>
+#include <streamview/rules/analysis_cache.h>
+#include <streamview/rules/analysis_cache_payload.h>
 #include <streamview/rules/language_version.h>
 
+#include <chrono>
 #include <utility>
 
 namespace streamview::app {
@@ -10,29 +13,97 @@ namespace streamview::app {
 static_assert(core::SourcePager::pageSizeBytes() ==
               rules::h264AnnexBDetectionProbeSizeBytes());
 
+namespace {
+
+struct SessionCacheSetup final {
+    std::unique_ptr<rules::AnalysisCacheOwner> owner;
+    AnalysisSessionCacheStatus status = AnalysisSessionCacheStatus::Disabled;
+    QString errorMessage;
+};
+
+[[nodiscard]] SessionCacheSetup setupSessionCache(
+    const core::RandomAccessSource& source,
+    const rules::RuleEntryPointIdentity& ruleIdentity,
+    AnalysisSessionCacheOptions cacheOptions,
+    std::optional<core::SourceFingerprint> verifiedFingerprint) {
+    if (!cacheOptions.enabled()) {
+        return {};
+    }
+
+    SessionCacheSetup result;
+    result.status = AnalysisSessionCacheStatus::Failed;
+    if (!verifiedFingerprint) {
+        const auto* fileSource = dynamic_cast<const core::FileSource*>(&source);
+        if (fileSource == nullptr) {
+            result.errorMessage =
+                QStringLiteral("Only local file sessions can use the persistent cache");
+            return result;
+        }
+        core::SourceFingerprintResult fingerprint = fileSource->fingerprint();
+        if (!fingerprint.succeeded()) {
+            result.errorMessage = fingerprint.errorMessage.isEmpty()
+                                      ? QStringLiteral("Unable to fingerprint cache source")
+                                      : std::move(fingerprint.errorMessage);
+            return result;
+        }
+        verifiedFingerprint = std::move(fingerprint.fingerprint);
+    }
+
+    auto cacheNamespace = rules::AnalysisCacheNamespace::create(
+        *verifiedFingerprint, ruleIdentity, {}, &result.errorMessage);
+    if (!cacheNamespace) {
+        return result;
+    }
+    auto started = rules::AnalysisCacheOwner::start(
+        cacheOptions.databasePath, std::move(*cacheNamespace), cacheOptions.ownerOptions);
+    if (!started.succeeded()) {
+        result.errorMessage = std::move(started.errorMessage);
+        return result;
+    }
+    result.owner = std::move(started.owner);
+    result.status = AnalysisSessionCacheStatus::Active;
+    return result;
+}
+
+} // namespace
+
 AnalysisSession::AnalysisSession(std::unique_ptr<core::RandomAccessSource> source,
                                  QString sourcePath,
                                  core::SourcePage initialPage,
                                  rules::H264AnnexBDetectionResult formatDetection,
                                  rules::H264AnnexBAnalyzer analyzer,
-                                 SessionUserState userState)
+                                 SessionUserState userState,
+                                 std::unique_ptr<rules::AnalysisCacheOwner> cacheOwner,
+                                 AnalysisSessionCacheStatus cacheStatus,
+                                 QString cacheErrorMessage)
     : source_(std::move(source)), sourcePath_(std::move(sourcePath)),
       initialPage_(std::move(initialPage)), formatDetection_(std::move(formatDetection)),
-      analyzer_(std::move(analyzer)), userState_(std::move(userState)) {}
+      analyzer_(std::move(analyzer)), userState_(std::move(userState)),
+      cacheOwner_(std::move(cacheOwner)), cacheStatus_(cacheStatus),
+      cacheErrorMessage_(std::move(cacheErrorMessage)) {}
 
 std::unique_ptr<AnalysisSession> AnalysisSession::openFile(const QString& path,
                                                            QString* errorMessage) {
+    return openFile(path, {}, errorMessage);
+}
+
+std::unique_ptr<AnalysisSession>
+AnalysisSession::openFile(const QString& path,
+                          AnalysisSessionCacheOptions cacheOptions,
+                          QString* errorMessage) {
     auto source = core::FileSource::open(path, errorMessage);
     if (!source) {
         return nullptr;
     }
-    return createPrepared(std::move(source), path, nullptr, {}, errorMessage);
+    return createPrepared(std::move(source), path, nullptr, {}, std::move(cacheOptions),
+                          std::nullopt, errorMessage);
 }
 
 std::unique_ptr<AnalysisSession>
 AnalysisSession::create(std::unique_ptr<core::RandomAccessSource> source,
                         QString* errorMessage) {
-    return createPrepared(std::move(source), {}, nullptr, {}, errorMessage);
+    return createPrepared(std::move(source), {}, nullptr, {}, {}, std::nullopt,
+                          errorMessage);
 }
 
 std::unique_ptr<AnalysisSession>
@@ -40,6 +111,8 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
                                 QString sourcePath,
                                 const rules::RuleCatalogLookupResult* resolvedRule,
                                 SessionUserState userState,
+                                AnalysisSessionCacheOptions cacheOptions,
+                                std::optional<core::SourceFingerprint> verifiedFingerprint,
                                 QString* errorMessage) {
     if (!source) {
         if (errorMessage != nullptr) {
@@ -76,18 +149,30 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
         return nullptr;
     }
 
+    SessionCacheSetup cacheSetup =
+        setupSessionCache(*source, analyzer->ruleIdentity(), std::move(cacheOptions),
+                          std::move(verifiedFingerprint));
+
     if (errorMessage != nullptr) {
         errorMessage->clear();
     }
     return std::unique_ptr<AnalysisSession>(
         new AnalysisSession(std::move(source), std::move(sourcePath), std::move(initialPage),
                             std::move(formatDetection), std::move(*analyzer),
-                            std::move(userState)));
+                            std::move(userState), std::move(cacheSetup.owner),
+                            cacheSetup.status, std::move(cacheSetup.errorMessage)));
 }
 
 AnalysisSessionRestoreResult
 AnalysisSession::restoreSession(const QString& sessionPath,
                                 const rules::RulePackageCatalog& catalog) {
+    return restoreSession(sessionPath, catalog, {});
+}
+
+AnalysisSessionRestoreResult AnalysisSession::restoreSession(
+    const QString& sessionPath,
+    const rules::RulePackageCatalog& catalog,
+    AnalysisSessionCacheOptions cacheOptions) {
     SessionDocumentLoadResult loaded = SessionDocument::load(sessionPath);
     if (!loaded.succeeded()) {
         return {AnalysisSessionRestoreStatus::SessionDocumentError,
@@ -101,7 +186,7 @@ AnalysisSession::restoreSession(const QString& sessionPath,
         return {AnalysisSessionRestoreStatus::SourceOpenError,
                 {}, std::nullopt, std::nullopt, std::move(errorMessage)};
     }
-    const core::SourceFingerprintResult fingerprint = source->fingerprint();
+    core::SourceFingerprintResult fingerprint = source->fingerprint();
     if (!fingerprint.succeeded()) {
         return {AnalysisSessionRestoreStatus::SourceFingerprintError,
                 {}, std::nullopt, std::nullopt,
@@ -125,13 +210,33 @@ AnalysisSession::restoreSession(const QString& sessionPath,
     }
 
     auto session = createPrepared(std::move(source), document.sourcePath(), &resolved,
-                                  document.userState(), &errorMessage);
+                                  document.userState(), std::move(cacheOptions),
+                                  std::move(fingerprint.fingerprint), &errorMessage);
     if (!session) {
         return {AnalysisSessionRestoreStatus::AnalyzerError,
                 {}, std::nullopt, resolved.status, std::move(errorMessage)};
     }
     return {AnalysisSessionRestoreStatus::Restored, std::move(session), std::nullopt,
             resolved.status, {}};
+}
+
+void AnalysisSession::enableCache(AnalysisSessionCacheOptions cacheOptions) {
+    if (!cacheOptions.enabled() || cacheStatus_ == AnalysisSessionCacheStatus::Active) {
+        return;
+    }
+    if (analysisStarted_) {
+        disableCache(QStringLiteral(
+            "Analysis cache cannot be enabled after analysis has started"));
+        return;
+    }
+
+    cacheOwner_.reset();
+    pendingCacheWrites_.clear();
+    SessionCacheSetup setup =
+        setupSessionCache(*source_, ruleIdentity(), std::move(cacheOptions), std::nullopt);
+    cacheOwner_ = std::move(setup.owner);
+    cacheStatus_ = setup.status;
+    cacheErrorMessage_ = std::move(setup.errorMessage);
 }
 
 bool AnalysisSession::saveSession(const QString& sessionPath,
@@ -162,7 +267,77 @@ bool AnalysisSession::saveSession(const QString& sessionPath,
 
 rules::H264AnnexBAnalysisBatch AnalysisSession::analyzeBatch(
     std::size_t maximumRecords, quint64 maximumInspectedPositions) {
-    return analyzer_.analyzeBatch(maximumRecords, maximumInspectedPositions);
+    analysisStarted_ = true;
+    pollCacheWrites();
+    rules::H264AnnexBAnalysisBatch batch =
+        analyzer_.analyzeBatch(maximumRecords, maximumInspectedPositions);
+    publishCachePages(batch);
+    return batch;
+}
+
+void AnalysisSession::pollCacheWrites() {
+    for (auto iterator = pendingCacheWrites_.begin(); iterator != pendingCacheWrites_.end();) {
+        if (iterator->wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            ++iterator;
+            continue;
+        }
+        rules::AnalysisCacheOwnerWriteResult completed = iterator->get();
+        iterator = pendingCacheWrites_.erase(iterator);
+        if (!completed.succeeded() && cacheStatus_ == AnalysisSessionCacheStatus::Active) {
+            disableCache(completed.errorMessage.isEmpty()
+                             ? QStringLiteral("Analysis cache write failed")
+                             : std::move(completed.errorMessage));
+        }
+    }
+}
+
+void AnalysisSession::disableCache(QString errorMessage) {
+    cacheStatus_ = AnalysisSessionCacheStatus::Failed;
+    cacheErrorMessage_ = errorMessage.isEmpty() ? QStringLiteral("Analysis cache is unavailable")
+                                                : std::move(errorMessage);
+}
+
+void AnalysisSession::acceptCacheWrite(
+    rules::AnalysisCacheOwnerWriteSubmission submission) {
+    if (!submission.accepted()) {
+        disableCache(submission.errorMessage);
+        return;
+    }
+    pendingCacheWrites_.push_back(std::move(submission.completion));
+}
+
+void AnalysisSession::publishCachePages(const rules::H264AnnexBAnalysisBatch& batch) {
+    if (cacheStatus_ != AnalysisSessionCacheStatus::Active || !cacheOwner_) {
+        return;
+    }
+    if (batch.progressiveIndexUpdate) {
+        rules::H264ProgressiveIndexCachePage page;
+        page.key = {core::PagedCachePageKind::ProgressiveIndex, 0,
+                    nextProgressiveCachePageIndex_};
+        page.firstRecordIndex = batch.progressiveIndexUpdate->firstRecordIndex;
+        page.indexedThroughByteOffset =
+            batch.progressiveIndexUpdate->indexedThroughByteOffset;
+        page.endOfSource = batch.progressiveIndexUpdate->endOfSource;
+        page.records = batch.progressiveIndexUpdate->records;
+        auto submitted = cacheOwner_->writeProgressiveIndex({std::move(page)});
+        if (submitted.accepted()) {
+            ++nextProgressiveCachePageIndex_;
+        }
+        acceptCacheWrite(std::move(submitted));
+    }
+    if (cacheStatus_ != AnalysisSessionCacheStatus::Active || !analyzer_.finished() ||
+        materializedCacheSubmitted_) {
+        return;
+    }
+
+    materializedCacheSubmitted_ = true;
+    rules::MaterializedResultCacheExportResult exported =
+        rules::exportMaterializedResultCachePages(analyzer_.tree(), 0);
+    if (!exported.succeeded()) {
+        disableCache(exported.errorMessage);
+        return;
+    }
+    acceptCacheWrite(cacheOwner_->writeMaterializedResult(std::move(exported.pages)));
 }
 
 } // namespace streamview::app

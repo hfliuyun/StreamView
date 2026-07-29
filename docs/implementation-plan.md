@@ -2,10 +2,9 @@
 
 Status: In Progress
 Current Phase: 2
-Last Completed Step: M5 typed background analysis cache owner runtime
-Next Action: Connect cache writes to AnalysisSession without claiming cached snapshot or live recovery
-Last Verification: Commit 60b76f8 local dev/ci/sanitize passed 31/31; hosted run
-  30456734552 passed on Windows, macOS, and Ubuntu
+Last Completed Step: M5 stable AnalysisSession cache write path implementation and targeted tests
+Next Action: Commit and push ADR-0036, then verify hosted Windows/macOS/Ubuntu CI
+Last Verification: ADR-0036 local dev/ci/sanitize configure, build, and CTest passed 31/31
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -109,7 +108,7 @@ Blockers: None
 
 - [x] 先固定 TOML manifest、content hash、兼容范围和 rule catalog，再实现目录导入与 `.svrule` deterministic ZIP。
 - [x] 拒绝绝对路径、parent traversal、重复/非规范路径、符号链接和 zip bomb；安装内容按 hash 只读保存。
-- [ ] 完成 source fingerprint、SQLite cache namespace、owner payload 与 `.svsession` 的持久身份链和恢复管线。
+- [x] 完成 source fingerprint、SQLite cache namespace、owner payload 与 `.svsession` 的持久身份链和恢复管线。
   - [x] 固定并实现 version 1 本地文件 source fingerprint：小文件全文 SHA-256；大文件绑定
     size、纳秒 mtime 与首/中/尾各 1 MiB SHA-256；计算期间变化显式失败。
   - [x] 固定 durable cache namespace 与 version 1 payload envelope，绑定 source fingerprint、
@@ -119,7 +118,7 @@ Blockers: None
     exact-key read stack、atomic write batch、flush 与 draining shutdown。
   - [x] 实现 `.svsession` version 1 闭合 JSON、`QSaveFile` 原子保存、同句柄 fingerprint
     校验与完整 rule entry-point identity 精确恢复；cache page 保持在 session 文件外。
-  - [ ] 从 `AnalysisSession` 派生同句柄 namespace 并提交 stable progressive/materialized page；
+  - [x] 从 `AnalysisSession` 派生同句柄 namespace 并提交 stable progressive/materialized page；
     cache failure 只关闭可选加速，不替换有效 session。
 
 验收：规则版本冲突、源变化和损坏包均显式诊断；旧会话不会静默绑定新源或新规则。
@@ -166,9 +165,10 @@ Blockers: None
   （四项均已完成。）
 - [x] 完成 bytecode 预算和取消：调用/视图深度 64、节点深度 256、单次物化 100,000 节点，每 1,024 指令检查取消。（当前子集没有 runtime call 或 view；对应深度预算已经保留。）
 - [x] 完成 SQLite 分页缓存、原子批次提交、schema 版本和崩溃恢复。
-- [ ] 在 M5 固定 source fingerprint、精确 rule identity 与 cache namespace 后，接入
+- [x] 在 M5 固定 source fingerprint、精确 rule identity 与 cache namespace 后，接入
   后台 cache owner 和 versioned index/materialized-result payload。（typed background owner 与
-  versioned body 已完成；`AnalysisSession` write path 尚未接入。）
+  versioned body、`AnalysisSession` stable write path 均已完成；cached snapshot 与 live analyzer
+  recovery 未实现。）
 - [x] 完成 TOML 清单、本地规则目录导入、`.svrule` 打包安装、哈希和版本并存。
 - [x] 防御路径穿越、zip bomb、符号链接和 Unicode 非规范路径。
 - [ ] 为全部稳定 DSL 功能补齐英文规范、中文说明和正反例。
@@ -368,3 +368,17 @@ Blockers: None
   `sanitize` 重新配置、完整构建与 CTest 均为 31/31。实现提交为 `60b76f8`；hosted run
   `30456734552` 在 Windows、macOS、Ubuntu 成功。下一步把 stable write path 接入
   `AnalysisSession`。
+- 2026-07-29：完成 M5 stable session cache write 切片：production local-file session 从同一
+  `FileSource` handle 的 fingerprint 与 exact rule identity 派生 namespace；H.264 analyzer 每个
+  scanner batch 暴露至多一个 stable progressive update，frontier 只推进到 completed record 末端，
+  scan complete 时才推进到 source size。session 在 stream 0 提交 progressive page，并按 stable
+  node ID 把 terminal tree 确定性分页成一个最多 256 page 的 atomic materialized batch。cache 默认
+  关闭，仅 production executable 使用 `QStandardPaths::CacheLocation` 显式启用；virtual source、
+  fingerprint/open/preflight/queue/storage failure 都不影响有效 session/tree。accepted future 只被
+  nonblocking poll，terminal 后由 event loop 继续收割；换源时先释放旧 path owner，再启用尚未
+  analysis 的 candidate。version 1 仍只写不读，不发现 complete page set、不发布 cached snapshot、
+  不恢复 live analyzer，cache page 也不进入 `.svsession`。ADR-0036、英文 core/payload/session 规范
+  与中文伴随文档已同步；回归覆盖 stable frontier/index、deterministic export 与字段保真、256/257
+  page 边界、local/restore namespace、queue/open/accepted storage failure、换源 owner release 与
+  析构 drain。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 31/31。等待提交、
+  push 与 hosted matrix 验证。

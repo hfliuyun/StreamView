@@ -190,6 +190,16 @@ version 1 materialized page is not a final-page marker. A consumer must already
 have a separately validated complete key set before performing cross-page
 reachability validation or publishing a presentation snapshot.
 
+Production H.264 sessions may publish version 1 pages through this stack. Each
+actual scanner batch exposes at most one stable progressive-index update; the
+exclusive frontier is the greatest completed record end, or source size only
+when scanning is complete. Stream and initial page indexes are zero. A terminal
+stable tree is exported in node-ID order into the largest consecutive prefixes
+accepted by this codec, with no empty pages, then submitted as one batch of at
+most 256 pages. This producer behavior is write-only: it supplies neither a
+complete-key manifest nor cached snapshot or live analyzer recovery. See
+[ADR-0036](adr/0036-publish-stable-session-cache-pages-without-restoring-execution.md).
+
 ## Failure Handling
 
 Encoding distinguishes invalid semantic input, unsupported closed values, and
