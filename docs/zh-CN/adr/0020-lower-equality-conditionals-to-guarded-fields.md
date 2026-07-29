@@ -16,6 +16,12 @@
 都必定已经物化。数组、`ue`/`se`、一般表达式，以及当前路径不能保证存在的 branch-local 值
 都会被拒绝。字段名在整个结构的全部分支中仍必须唯一，两个分支也都会执行静态检查。
 
+[ADR-0023](0023-inline-pure-scalar-functions-into-computed-fields.md) 后续把等值 controller 扩展为
+此前且路径上保证存在的 `computed<u64>` 字段，并为此前且路径上保证存在的 `computed<bool>`
+字段增加了 `if (computed_bool)` 简写。现行规范规则见
+[英文 format-language 规范](../../format-language/README.md)，中文伴随说明见
+[格式语言说明](../format-language/README.md)。
+
 compiler 把条件 block 降低为按声明顺序排列、携带已解析 presence guard 的 typed field，
 不新增通用 jump bytecode。VM 在读取字段前验证并计算 guard：不存在的字段不消耗 source bit、
 不创建 analysis node，也不执行 enum 或 equality 数值检查；它的 read 和可选 assertion

@@ -71,8 +71,9 @@ array value, container node, or array-specific opcode.
 
 The accepted conditional slice adds nested
 `if (previous_field == integer) { ... } else { ... }` blocks. `else` is
-optional. The comparison is a restricted presence decision over a previous
-scalar fixed-width value, not a general expression.
+optional. Equality accepts an earlier guaranteed scalar `bits`, enum, or
+`computed<u64>` controller; the Boolean shorthand accepts an earlier guaranteed
+`computed<bool>`. Neither form is a general conditional expression.
 
 The accepted switch slice adds nested
 `switch (previous_field) { case integer: { ... } default: { ... } }` blocks.
@@ -766,7 +767,8 @@ not fit its fixed-width controller, a count or maximum expression, an empty
 repeat body, an annotation before `repeat`, a repeat projection above 99,999
 fields, a repeat-local controller used by another iteration or after the
 repeat, a little-endian field after a repeat, `scan(other_scanner)`, two
-declarations with the same name, or a program with no `entry`.
+declarations with the same name, a program with no `entry`, or multiple `entry`
+declarations.
 
 Invalid pure-function and computed-field examples include an annotated pure
 function, more than 16 parameters, duplicate parameter or function names, an

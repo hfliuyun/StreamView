@@ -22,6 +22,12 @@ fixed-width controller when one is used, and statically bounds the complete
 body projection. A repeat body must contain at least one field and may contain
 fields, equality conditionals, equality switches, and nested repeats.
 
+[ADR-0023](0023-inline-pure-scalar-functions-into-computed-fields.md) later
+allowed earlier guaranteed `computed<u64>` controllers and computed body items;
+[ADR-0026](0026-register-checked-lazy-byte-regions.md) later allowed lazy byte
+regions as body items. The current normative rules live in the
+[format-language reference](../format-language/README.md).
+
 The compiler projects the body `maximum` times into the existing linear typed
 field stream. Fields in iteration `i` receive a positive `count_field > i`
 presence guard in addition to their enclosing guards. Materialized names append

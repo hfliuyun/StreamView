@@ -18,6 +18,12 @@
 完整 body 投影。repeat body 必须至少包含一个字段，并可包含字段、等值条件、等值
 switch 和嵌套 repeat。
 
+[ADR-0023](0023-inline-pure-scalar-functions-into-computed-fields.md) 后续允许此前且路径上保证存在的
+`computed<u64>` controller 和 computed body item；
+[ADR-0026](0026-register-checked-lazy-byte-regions.md) 后续允许 lazy byte region 作为 body item。
+现行规范规则见[英文 format-language 规范](../../format-language/README.md)，中文伴随说明见
+[格式语言说明](../format-language/README.md)。
+
 编译器把 body 按 `maximum` 次投影到现有线性 typed-field 流。第 `i` 次迭代中的
 字段除继承外层 guard 外，还带有正向 `count_field > i` presence guard。物化名称先
 追加各层 repeat 索引，再追加可选的固定数组索引：标量命名为 `value[i]`，数组元素

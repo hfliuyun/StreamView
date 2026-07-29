@@ -788,14 +788,19 @@ private slots:
         QVERIFY(hasDiagnostic(badDescription, DslDiagnosticCode::InvalidAnnotation));
     }
 
-    void rejectsMissingOrUnknownEntry() {
+    void rejectsInvalidEntryDeclarations() {
         const auto missing =
             DslParser::parse(QStringLiteral("struct Header { bits<1> value; }"));
         const auto unknown = DslParser::parse(QStringLiteral(
             "struct Header { bits<1> value; } entry Missing;"));
+        const auto duplicate = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value; }\n"
+            "entry Header;\n"
+            "entry Header;"));
 
         QVERIFY(hasDiagnostic(missing, DslDiagnosticCode::MissingEntry));
         QVERIFY(hasDiagnostic(unknown, DslDiagnosticCode::UnknownReference));
+        QVERIFY(hasDiagnostic(duplicate, DslDiagnosticCode::DuplicateName));
     }
 
     void rejectsDuplicateNamesAndUnsupportedScans() {

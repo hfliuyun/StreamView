@@ -20,6 +20,12 @@ condition. Arrays, `ue`/`se`, general expressions, and branch-local values that
 are not guaranteed on the current path are rejected. Field names remain unique
 across the complete structure, and both branches are statically validated.
 
+[ADR-0023](0023-inline-pure-scalar-functions-into-computed-fields.md) later
+extended equality controllers to earlier guaranteed `computed<u64>` fields and
+added `if (computed_bool)` shorthand for earlier guaranteed `computed<bool>`
+fields. The current normative rules live in the
+[format-language reference](../format-language/README.md).
+
 The compiler will lower conditional blocks into declaration-order typed fields
 carrying resolved presence guards. It will not add general jump bytecode. The
 VM validates and evaluates those guards before a field read: an absent field

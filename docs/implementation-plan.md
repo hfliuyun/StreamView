@@ -2,10 +2,9 @@
 
 Status: In Progress
 Current Phase: 2
-Last Completed Step: M5 stable AnalysisSession cache write path
-Next Action: Audit the remaining stable DSL documentation/examples before entering M6 H.264
-Last Verification: Commit 35b2739 local dev/ci/sanitize passed 31/31; hosted run
-  30463839242 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Stable DSL bilingual documentation and example audit
+Next Action: Define the first M6 H.264 formal-structure slice and record any new design decision
+Last Verification: DSL target and local dev/ci/sanitize passed 31/31; hosted verification pending
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -172,7 +171,7 @@ Blockers: None
   recovery 未实现。）
 - [x] 完成 TOML 清单、本地规则目录导入、`.svrule` 打包安装、哈希和版本并存。
 - [x] 防御路径穿越、zip bomb、符号链接和 Unicode 非规范路径。
-- [ ] 为全部稳定 DSL 功能补齐英文规范、中文说明和正反例。
+- [x] 为全部稳定 DSL 功能补齐英文规范、中文说明和正反例。
 - [x] 验证 100 GB 虚拟/稀疏源可快速打开、渐进索引、取消和恢复。（自动化验证
   有界访问和恢复语义；约两秒、RSS 与 p95 性能门禁仍留在阶段 7 实测。）
 
@@ -385,3 +384,12 @@ Blockers: None
   `35b2739`；hosted run `30463839242` 在 Windows 2022 / Qt 6.10.1、macOS 15 / Qt 6.11.1
   与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、Install、Upload 均成功。下一步审计
   全部稳定 DSL 功能的英文规范、中文说明与正反例，然后进入 M6 H.264 正式格式增量。
+- 2026-07-29：完成稳定 DSL 文档与示例审计：英文 format-language 规范和中文伴随说明已经覆盖
+  enum/endian、Exp-Golomb、固定数组、等值条件与 switch、有界 repeat、pure/computed、lazy
+  boundary 和 progressive-index recovery 的 grammar、静态规则、lowering/runtime、source
+  coordinate、诊断恢复、资源/取消行为与正反例。修正条件摘要中已经落后的 fixed-width-only
+  表述，并在 ADR-0020、ADR-0022 的英中版本中记录 computed 与 lazy 后续切片的历史扩展，
+  避免改写首个切片的原始决策。非法示例明确加入多个 `entry` 声明，parser 回归锁定第二个
+  `entry` 的 `DuplicateName` 诊断。重新编译后的定向 DSL 测试通过；本机 `dev`、`ci`、
+  `sanitize` 重新配置、完整构建与 CTest 均为 31/31。hosted 三平台结果在实现提交后记录。
+  下一步界定并实现首个 M6 H.264 正式结构切片。

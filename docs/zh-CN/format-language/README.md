@@ -62,7 +62,8 @@ location 覆盖完整编码码字，而不是固定 bit 数。
 
 当前接受的条件切片新增了可嵌套的
 `if (previous_field == integer) { ... } else { ... }` block，`else` 可以省略。
-这个比较只是基于此前 scalar 定宽值的受限 presence 判断，不是一般表达式。
+等值形式接受此前且路径上保证存在的 scalar `bits`、enum 或 `computed<u64>` controller；
+Boolean 简写接受此前且路径上保证存在的 `computed<bool>`。两种形式都不是一般条件表达式。
 
 当前接受的 switch 切片新增了可嵌套的
 `switch (previous_field) { case integer: { ... } default: { ... } }` block。
@@ -607,7 +608,7 @@ case 值、没有 case 的 switch、重复或不位于最后的 default、缺少
 `repeat (count, 0)`、不能由定宽 controller 表示的 maximum、计数或 maximum 表达式、空
 repeat body、repeat 前的 annotation、投影后超过 99,999 字段、在其他迭代或 repeat 之后
 使用 repeat-local controller、repeat 之后的小端字段、`scan(other_scanner)`、重复声明同名，
-以及没有 `entry` 的程序。
+以及没有 `entry` 或包含多个 `entry` 声明的程序。
 
 纯函数与计算字段的非法示例包括：带 annotation 的纯函数、超过 16 个参数、重复参数名或
 函数名、overload 或顶层名称冲突、纯函数体调用后声明的函数或发生递归、在纯函数体内引用
