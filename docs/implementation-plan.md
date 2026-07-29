@@ -4,8 +4,8 @@ Status: In Progress
 Current Phase: 2
 Last Completed Step: M5 .svsession v1 exact rule pinning
 Next Action: Define versioned progressive-index and materialized-result owner body serializers
-Last Verification: Current .svsession stage local dev/ci/sanitize passed 29/29; prior
-  cache-identity hosted run 30426917683 passed on Windows, macOS, and Ubuntu
+Last Verification: Commit 45e6252 local dev/ci/sanitize passed 29/29; hosted run
+  30430443355 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -336,5 +336,6 @@ Blockers: None
   catalog lookup，missing/conflicting/incompatible rule 均不 fallback，最后才绑定 user state。
   bundled H.264 analyzer 也保留 catalog-resolved identity；cache page 与 live analyzer state
   仍不进入 session。英文规范、中文伴随说明和 ADR-0033 已同步；本机 `dev`、`ci`、
-  `sanitize` 重新配置、完整构建与 CTest 均为 29/29。下一步提交、推送并验证 hosted matrix，
-  随后实现两类 owner payload body serializer。
+  `sanitize` 重新配置、完整构建与 CTest 均为 29/29。实现提交为 `45e6252`；hosted run
+  `30430443355` 在 Windows、macOS、Ubuntu 成功。下一步实现两类 owner payload body
+  serializer。
