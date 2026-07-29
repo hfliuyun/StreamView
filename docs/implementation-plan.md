@@ -4,7 +4,8 @@ Status: In Progress
 Current Phase: 2
 Last Completed Step: Stable DSL bilingual documentation and example audit
 Next Action: Define the first M6 H.264 formal-structure slice and record any new design decision
-Last Verification: DSL target and local dev/ci/sanitize passed 31/31; hosted verification pending
+Last Verification: Commit 4b54808 local dev/ci/sanitize passed 31/31; hosted run
+  30467004306 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -391,5 +392,7 @@ Blockers: None
   表述，并在 ADR-0020、ADR-0022 的英中版本中记录 computed 与 lazy 后续切片的历史扩展，
   避免改写首个切片的原始决策。非法示例明确加入多个 `entry` 声明，parser 回归锁定第二个
   `entry` 的 `DuplicateName` 诊断。重新编译后的定向 DSL 测试通过；本机 `dev`、`ci`、
-  `sanitize` 重新配置、完整构建与 CTest 均为 31/31。hosted 三平台结果在实现提交后记录。
-  下一步界定并实现首个 M6 H.264 正式结构切片。
+  `sanitize` 重新配置、完整构建与 CTest 均为 31/31。实现提交为 `4b54808`；hosted run
+  `30467004306` 在 Windows 2022 / Qt 6.10.1、macOS 15 / Qt 6.11.1 与 Ubuntu 24.04 /
+  Qt 6.11.1 的 Configure、Build、Test、Install、Upload 均成功。下一步界定并实现首个 M6
+  H.264 正式结构切片。
