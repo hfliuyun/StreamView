@@ -2,9 +2,10 @@
 
 Status: In Progress
 Current Phase: 2
-Last Completed Step: M5 stable AnalysisSession cache write path implementation and targeted tests
-Next Action: Commit and push ADR-0036, then verify hosted Windows/macOS/Ubuntu CI
-Last Verification: ADR-0036 local dev/ci/sanitize configure, build, and CTest passed 31/31
+Last Completed Step: M5 stable AnalysisSession cache write path
+Next Action: Audit the remaining stable DSL documentation/examples before entering M6 H.264
+Last Verification: Commit 35b2739 local dev/ci/sanitize passed 31/31; hosted run
+  30463839242 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -380,5 +381,7 @@ Blockers: None
   不恢复 live analyzer，cache page 也不进入 `.svsession`。ADR-0036、英文 core/payload/session 规范
   与中文伴随文档已同步；回归覆盖 stable frontier/index、deterministic export 与字段保真、256/257
   page 边界、local/restore namespace、queue/open/accepted storage failure、换源 owner release 与
-  析构 drain。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 31/31。等待提交、
-  push 与 hosted matrix 验证。
+  析构 drain。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 31/31。实现提交为
+  `35b2739`；hosted run `30463839242` 在 Windows 2022 / Qt 6.10.1、macOS 15 / Qt 6.11.1
+  与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、Install、Upload 均成功。下一步审计
+  全部稳定 DSL 功能的英文规范、中文说明与正反例，然后进入 M6 H.264 正式格式增量。
