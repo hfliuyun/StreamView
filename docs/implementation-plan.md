@@ -4,8 +4,8 @@ Status: In Progress
 Current Phase: 2
 Last Completed Step: M5 progressive-index and materialized-result owner body serializers
 Next Action: Connect the background cache owner without claiming live analyzer recovery
-Last Verification: Uncommitted M5 owner-payload stage local dev/ci/sanitize passed 30/30;
-  hosted verification pending
+Last Verification: Commit 3c54716 local dev/ci/sanitize passed 30/30; hosted run
+  30452836151 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -350,4 +350,5 @@ Blockers: None
   trailing byte 与 size bound 均有回归。该表示不包含 scanner pending prefix、mapper、queue、
   context、allocator 或 thread ownership，不能恢复 live analyzer。英文规范、中文伴随说明和
   ADR-0034 已同步；本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 30/30。
+  实现提交为 `3c54716`；hosted run `30452836151` 在 Windows、macOS、Ubuntu 成功。
   下一步接入 background cache owner，仍不宣称 live analyzer recovery。
