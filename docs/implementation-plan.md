@@ -4,7 +4,8 @@ Status: In Progress
 Current Phase: 2
 Last Completed Step: M5 typed background analysis cache owner runtime
 Next Action: Connect cache writes to AnalysisSession without claiming cached snapshot or live recovery
-Last Verification: Uncommitted owner runtime local dev/ci/sanitize passed 31/31; hosted verification pending
+Last Verification: Commit 60b76f8 local dev/ci/sanitize passed 31/31; hosted run
+  30456734552 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -364,5 +365,6 @@ Blockers: None
   storage failure 后继续、错误 full-key copied page、open failure 与 lock release。ADR-0035、英文
   core/payload 规范和中文伴随文档已同步；version 1 materialized page 没有 complete-page manifest，
   因而仍不宣称 cached presentation snapshot 或 live analyzer recovery。本机 `dev`、`ci`、
-  `sanitize` 重新配置、完整构建与 CTest 均为 31/31。提交与 hosted matrix 待执行；下一步把
-  stable write path 接入 `AnalysisSession`。
+  `sanitize` 重新配置、完整构建与 CTest 均为 31/31。实现提交为 `60b76f8`；hosted run
+  `30456734552` 在 Windows、macOS、Ubuntu 成功。下一步把 stable write path 接入
+  `AnalysisSession`。
