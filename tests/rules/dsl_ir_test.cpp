@@ -194,6 +194,43 @@ private slots:
         }
     }
 
+    void compilesUnsignedExpGolombEqualsAndConditionIntoTypedIr() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Sps { ue pic_order_cnt_type @equals(0); "
+            "ue log2_max_pic_order_cnt_lsb_minus4; } entry Sps;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& fields = compiled.program->structs.front().fields;
+        QCOMPARE(fields.at(0).equalsConstraint, std::optional<quint64>(0));
+        QVERIFY(fields.at(1).conditions.empty());
+        const std::vector<DslOpcode> expected{
+            DslOpcode::BeginStructure,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::AssertEquals,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::EndStructure,
+        };
+        QCOMPARE(compiled.program->bytecode.size(), expected.size());
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            QCOMPARE(compiled.program->bytecode.at(index).opcode, expected.at(index));
+        }
+    }
+
+    void rejectsAnUnsignedExpGolombEqualsValueOutsideItsEncodingRange() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { ue value @equals(18446744073709551615); } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(!compiled.succeeded());
+        QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::ConstraintOutOfRange));
+    }
+
     void inlinesPureCallsIntoDeterministicComputedExpressions() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             pure u64 add(u64 left, u64 right) { return left + right; }
@@ -1218,7 +1255,7 @@ private slots:
 
     void rejectsExpGolombAnnotationsAndUnknownLittleEndianAlignmentInCompiler() {
         const auto parsed = DslParser::parse(QStringLiteral(
-            "struct Header { ue prefix @equals(0); bits<16, little> value; } entry Header;"));
+            "struct Header { se prefix @equals(0); bits<16, little> value; } entry Header;"));
         QVERIFY(!parsed.succeeded());
 
         const auto compiled = DslCompiler::compile(parsed.program);

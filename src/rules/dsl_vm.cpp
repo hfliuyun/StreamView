@@ -9,6 +9,8 @@ namespace streamview::rules {
 
 namespace {
 
+constexpr quint64 maximumUnsignedExpGolombValue = std::numeric_limits<quint64>::max() - 1;
+
 [[nodiscard]] bool addWouldOverflow(quint64 left, quint64 right) noexcept {
     return right > std::numeric_limits<quint64>::max() - left;
 }
@@ -636,7 +638,7 @@ DslExecutionResult DslVirtualMachine::execute(
         return controller.kind == DslTypedFieldKind::Declared &&
                controller.type.kind == DslValueTypeKind::UnsignedExpGolomb &&
                controller.type.bitWidth == 0 && controller.type.endian == DslEndian::Big &&
-               !controller.type.enumIndex && !controller.equalsConstraint;
+               !controller.type.enumIndex;
     };
     const auto validComputedController = [](const DslTypedField& controller,
                                             DslValueTypeKind expectedKind) {
@@ -767,6 +769,14 @@ DslExecutionResult DslVirtualMachine::execute(
             if (field.computedExpression) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Source-backed typed field has a computed expression"),
+                            &field);
+                return result;
+            }
+            if (field.type.kind == DslValueTypeKind::UnsignedExpGolomb &&
+                field.equalsConstraint &&
+                *field.equalsConstraint > maximumUnsignedExpGolombValue) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed ue equality constraint is out of range"),
                             &field);
                 return result;
             }
@@ -1041,7 +1051,7 @@ DslExecutionResult DslVirtualMachine::execute(
                                            : DslValueTypeKind::SignedExpGolomb;
                 if (field.type.kind != expectedKind || field.type.bitWidth != 0 ||
                     field.type.endian != DslEndian::Big || field.type.enumIndex ||
-                    field.equalsConstraint) {
+                    (!readsUnsignedExpGolomb && field.equalsConstraint)) {
                     markFailure(DslExecutionStatus::InvalidDefinition,
                                 QStringLiteral("Typed Exp-Golomb field definition is invalid"),
                                 &field);
@@ -1174,7 +1184,9 @@ DslExecutionResult DslVirtualMachine::execute(
             fieldRanges.at(instruction.operand) =
                 MaterializedFieldRange{fieldStart, consumedBits};
             lastField = instruction.operand;
-            lastValue = readsFixedBits ? std::optional<quint64>(unsignedValue) : std::nullopt;
+            lastValue = readsFixedBits || readsUnsignedExpGolomb
+                             ? std::optional<quint64>(unsignedValue)
+                             : std::nullopt;
             lastFieldSkipped = false;
             ++nextFieldIndex;
             if (enumeration != nullptr && !enumContains(*enumeration, unsignedValue)) {
@@ -1596,11 +1608,18 @@ DslExecutionResult DslVirtualMachine::execute(
             diagnostic.severity = core::DiagnosticSeverity::Error;
             diagnostic.message = result.errorMessage;
             diagnostic.fieldPath = structure.name + QLatin1Char('.') + field->name;
+            const auto range = fieldRanges.at(instruction.operand);
+            if (!range) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR equality field range is unavailable"),
+                            field);
+                return result;
+            }
             diagnostic.location = locationAt(mapping,
                                              logicalStart,
-                                             reader.position() - field->type.bitWidth,
-                                             field->type.bitWidth,
-                                             field->type.bitWidth);
+                                             range->start,
+                                             range->bitCount,
+                                             range->bitCount);
             (void)tree.markPartial(*result.structureNode,
                                    core::MaterializationState::Invalid,
                                    std::move(diagnostic));

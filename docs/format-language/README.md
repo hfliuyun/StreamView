@@ -205,6 +205,8 @@ The static rules for this subset are:
   endian argument and always consume the encoded codeword most-significant bit
   first. Because their width is not statically known, a later little-endian
   field is rejected unless a future language feature can prove its alignment.
+  An unsigned `ue` field may use one `@equals(integer)` constraint; a signed
+  `se` field cannot.
 - A scalar field may have one fixed array suffix `[count]`. `count` is an
   unsigned integer literal greater than zero; expressions, additional array
   dimensions, structure arrays, and runtime-sized arrays are not accepted.
@@ -346,12 +348,14 @@ The static rules for this subset are:
   no `default` arm; an unlisted controller value keeps the uninterpreted
   payload behavior.
 - An `@equals(integer)` field annotation is a checked constraint and may appear
-  at most once on a `bits` field. Its value must fit the field's unsigned bit
-  width. An `@enum(Type)` annotation may appear at most once on a `bits` field
-  and requires a declared enum type. Every declared member value must fit the
+  at most once on a `bits` or `ue` field. Its value must fit a `bits` field's
+  unsigned bit width; a `ue` accepts `0..2^64 - 2`, its complete supported
+  unsigned range.
+  An `@enum(Type)` annotation may appear at most once on a `bits` field and
+  requires a declared enum type. Every declared member value must fit the
   field's bit width. Enum values are still decoded as unsigned integers; the
-  enum supplies names and validation for the decoded value. `ue` and `se`
-  reject both annotations.
+  enum supplies names and validation for the decoded value. `se` rejects both
+  annotations and `ue` rejects `@enum`.
   `@description("text")` supplies project-authored presentation text, and
   `@spec("standard", "clause")` supplies a specification reference. Fields
   inherit their structure's specification unless they provide their own. An
@@ -612,8 +616,8 @@ coalesced into source spans. The NAL children appear in this order:
 headers that this profile does not yet parse, so their bytes after the direct
 header remain uninterpreted, are not passed to the mapper, and cannot dispatch.
 
-The bundled rule declares a payload dispatch for `nal_unit_type` values `9`,
-`10`, and `11`. A dispatched type is always mapped, even when its payload is
+The bundled rule declares a payload dispatch for `nal_unit_type` values `7`,
+`9`, `10`, and `11`. A dispatched type is always mapped, even when its payload is
 empty, so `rbsp_payload` is present for every dispatched NAL. Type `9` decodes
 `AccessUnitDelimiterRbsp` as a child of `rbsp_payload`, exposing
 `primary_pic_type`, `rbsp_stop_one_bit`, and `rbsp_alignment_zero_bit[0]`
@@ -622,7 +626,14 @@ through `rbsp_alignment_zero_bit[3]` from its terminal
 and require a zero-length RBSP. A one-byte access unit delimiter is therefore
 fully decoded, a header-only access unit delimiter is `truncated-source`, a
 header-only end of sequence or end of stream is materialized, and either of
-those types carrying RBSP bytes is `invalid-syntax`. Every other type keeps the
+those types carrying RBSP bytes is `invalid-syntax`. Type `7` decodes the
+8-bit Baseline/Main/Extended SPS core and the constrained High subset with 4:2:0 chroma,
+eight-bit luma/chroma, transform bypass disabled, no scaling matrix,
+`pic_order_cnt_type == 0`, and no VUI. A present unsupported feature retains
+the decoded prefix and is `invalid-syntax`. This first structural slice does
+not yet enforce the H.264 `0..12` bounds on the two `log2_*_minus4` fields;
+materialization means exact declared-structure consumption rather than full
+semantic conformance. Every other type keeps the
 uninterpreted `rbsp_payload` region unchanged.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
@@ -843,7 +854,7 @@ entry nal_units;
 
 Invalid minimum examples include `bits<0> flag;`, `bits<65> flag;`,
 `bits<12, little> value;`, a little-endian field after an unaligned field,
-`ue value @equals(0);`, `se value @enum(Type);`, a little-endian field after a
+`se value @equals(0);`, `se value @enum(Type);`, a little-endian field after a
 variable-length field, `bits<1> flags[0];`, `bits<1> flags[];`, an expression or
 second dimension in an array length, a structure projection above 99,999
 fields, a truncated array element, a truncated Exp-Golomb codeword, 64 leading

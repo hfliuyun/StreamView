@@ -2069,10 +2069,11 @@ private:
                              annotation.range});
                     }
                     equalsSeen = true;
-                    if (field.encoding != DslFieldEncoding::Bits) {
+                    if (field.encoding != DslFieldEncoding::Bits &&
+                        field.encoding != DslFieldEncoding::UnsignedExpGolomb) {
                         result_.diagnostics.push_back(
                             {DslDiagnosticCode::InvalidAnnotation,
-                             QStringLiteral("@equals is only supported on bits fields"),
+                             QStringLiteral("@equals is only supported on bits and ue fields"),
                              annotation.range});
                         continue;
                     }

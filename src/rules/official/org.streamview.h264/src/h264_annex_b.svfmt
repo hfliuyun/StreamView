@@ -17,12 +17,66 @@ struct AccessUnitDelimiterRbsp {
     rbsp_trailing_bits;
 }
 
+enum SpsProfileIdc {
+    baseline = 66;
+    main = 77;
+    extended = 88;
+    high = 100;
+}
+
+@spec("ITU-T H.264", "7.3.2.1.1")
+@description("The supported 8-bit 4:2:0 sequence parameter set core.")
+struct SequenceParameterSetRbsp {
+    bits<8> profile_idc @enum(SpsProfileIdc)
+        @description("Identifies the supported H.264 profile.");
+    bits<1> constraint_set0_flag;
+    bits<1> constraint_set1_flag;
+    bits<1> constraint_set2_flag;
+    bits<1> constraint_set3_flag;
+    bits<1> constraint_set4_flag;
+    bits<1> constraint_set5_flag;
+    bits<2> reserved_zero_2bits @equals(0);
+    bits<8> level_idc
+        @description("Identifies the H.264 level.");
+    ue seq_parameter_set_id
+        @description("Identifies this sequence parameter set.");
+    if (profile_idc == 100) {
+        ue chroma_format_idc @equals(1);
+        ue bit_depth_luma_minus8 @equals(0);
+        ue bit_depth_chroma_minus8 @equals(0);
+        bits<1> qpprime_y_zero_transform_bypass_flag @equals(0);
+        bits<1> seq_scaling_matrix_present_flag @equals(0);
+    }
+    ue log2_max_frame_num_minus4;
+    ue pic_order_cnt_type @equals(0);
+    ue log2_max_pic_order_cnt_lsb_minus4;
+    ue max_num_ref_frames;
+    bits<1> gaps_in_frame_num_value_allowed_flag;
+    ue pic_width_in_mbs_minus1;
+    ue pic_height_in_map_units_minus1;
+    bits<1> frame_mbs_only_flag;
+    if (frame_mbs_only_flag == 0) {
+        bits<1> mb_adaptive_frame_field_flag;
+    }
+    bits<1> direct_8x8_inference_flag;
+    bits<1> frame_cropping_flag;
+    if (frame_cropping_flag == 1) {
+        ue frame_crop_left_offset;
+        ue frame_crop_right_offset;
+        ue frame_crop_top_offset;
+        ue frame_crop_bottom_offset;
+    }
+    bits<1> vui_parameters_present_flag @equals(0);
+    rbsp_trailing_bits;
+}
+
 @index(progressive)
 sequence<NalUnitHeader> nal_units = scan(h264_start_code);
 
 @spec("ITU-T H.264", "7.3.1")
 @description("Selects the payload syntax carried by each NAL unit type.")
 payload<rbsp> nal_units switch (nal_unit_type) {
+    case 7: SequenceParameterSetRbsp;
     case 9: AccessUnitDelimiterRbsp;
     case 10: empty;
     case 11: empty;

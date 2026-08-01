@@ -176,7 +176,8 @@ primary       := integer | "true" | "false" | identifier
   字节的数值权重，不改变实际消耗的 bit 顺序。
 - `ue` 和 `se` 是变长 Exp-Golomb 字段，不接受宽度或 endian 参数，并始终按
   MSB-first 消耗编码码字。由于宽度不能静态确定，变长字段之后的小端字段会被拒绝，除非
-  后续语言功能能够证明其对齐。
+  后续语言功能能够证明其对齐。无符号 `ue` 字段可以带一个 `@equals(integer)` constraint；
+  有符号 `se` 字段不可以。
 - scalar 字段可以带一个 `[count]` 固定数组后缀。`count` 必须是大于零的无符号整数字面量；
   不接受表达式、额外维度、结构数组或运行时长度。重复名称检查仍使用声明的基础字段名。
   一个结构展开后最多投影 99,999 个 scalar 字段，从而在默认 100,000 个物化节点预算内
@@ -270,11 +271,12 @@ primary       := integer | "true" | "false" | identifier
   controller 的声明宽度表示。每个 case 目标要么是已声明结构（且不得是 element structure
   本身），要么是 `empty`。不存在 `default` arm；未列出的 controller 值保持未解释 payload
   行为。
-- `@equals(integer)` 字段注解是会执行检查的约束，在一个 `bits` 字段上最多出现一次，且
-  参数值必须能由该字段的无符号 bit 宽度表示；`@enum(Type)` 只能出现在 `bits` 字段上，
-  最多出现一次，参数必须是已声明 enum 类型，并且它的每个 member 值都必须能由字段宽度
-  表示。enum 字段仍解码为无符号整数，enum 为该数值提供名称和有效值检查。`ue` 和 `se`
-  拒绝这两个注解。`@description("text")` 提供项目编写的
+- `@equals(integer)` 字段注解是会执行检查的约束，在一个 `bits` 或 `ue` 字段上最多出现一次。
+  `bits` 字段的参数值必须能由其无符号 bit 宽度表示；`ue` 接受完整的受支持无符号范围
+  `0..2^64 - 2`。
+  `@enum(Type)` 只能出现在 `bits` 字段上，最多出现一次，参数必须是已声明 enum 类型，并且
+  它的每个 member 值都必须能由字段宽度表示。enum 字段仍解码为无符号整数，enum 为该数值
+  提供名称和有效值检查。`se` 拒绝这两个注解，`ue` 拒绝 `@enum`。`@description("text")` 提供项目编写的
   展示说明，`@spec("standard", "clause")` 提供规范引用。字段默认继承所属结构的规范
   引用，也可以用自己的注解覆盖。数组声明解析出的类型、注解、metadata 和约束会分别
   应用到每个展开元素。计算字段可在声明前或表达式后使用 `@description` 和 `@spec`，但
@@ -457,14 +459,19 @@ view。每个完整的 `00 00 03` 都会排除其中的 `03`，并把它呈现�
 `trailing_zero_8bits`。NAL unit type `14`、`20`、`21` 需要当前 profile 尚未解析的 extension
 header，因此 direct header 之后的字节仍保持 uninterpreted，不会传给 mapper，也无法派发。
 
-内置规则为 `nal_unit_type` 值 `9`、`10`、`11` 声明了 payload 派发。被派发的 type 一定会经过
+内置规则为 `nal_unit_type` 值 `7`、`9`、`10`、`11` 声明了 payload 派发。被派发的 type 一定会经过
 映射，payload 为空时也不例外，因此每个被派发的 NAL 都存在 `rbsp_payload`。type `9` 把
 `AccessUnitDelimiterRbsp` 解码为 `rbsp_payload` 的子节点，公开 `primary_pic_type`、
 `rbsp_stop_one_bit` 以及 `rbsp_alignment_zero_bit[0]` 到 `rbsp_alignment_zero_bit[3]`。
 这些字段由它的终结 `rbsp_trailing_bits;` item 生成。type `10` 与 `11` 声明为 `empty`，要求 RBSP 长度为零。因此一字节的 access unit delimiter
 可以完整解码；只有 header 的 access unit delimiter 是 `truncated-source`；只有 header 的
 end of sequence 或 end of stream 是物化；而这两种 type 一旦携带 RBSP 字节即为
-`invalid-syntax`。其余所有 type 的 `rbsp_payload` region 保持原样。
+`invalid-syntax`。type `7` 解码 8-bit Baseline/Main/Extended SPS 核心，以及受限的 High 子集：
+4:2:0 chroma、eight-bit luma/chroma、关闭 transform bypass、无 scaling matrix、
+`pic_order_cnt_type == 0` 且没有 VUI。出现未支持 feature 时会保留已解码前缀并成为
+`invalid-syntax`。首个结构切片尚不强制两个 `log2_*_minus4` 字段的 H.264 `0..12` 范围；
+materialized 表示精确消费已声明结构，而不是完整语义 conformance。其余所有 type 的
+`rbsp_payload` region 保持原样。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
 的 mapped-byte budget；默认每次最多处理 64 KiB EBSP source byte。预算耗尽时返回
@@ -671,7 +678,7 @@ entry nal_units;
 ```
 
 最小非法示例包括 `bits<0> flag;`、`bits<65> flag;`、`bits<12, little> value;`、
-位于未对齐字段之后的小端字段、`ue value @equals(0);`、`se value @enum(Type);`、
+位于未对齐字段之后的小端字段、`se value @equals(0);`、`se value @enum(Type);`、
 变长字段之后的小端字段、`bits<1> flags[0];`、`bits<1> flags[];`、数组长度表达式或第二
 维、展开后超过 99,999 字段的结构、截断的数组元素、截断的 Exp-Golomb 码字、64 个前导零、`@enum(Missing)`、
 无法放入字段宽度的 enum member 值、重复 enum member 名、缺少 `@index(progressive)` 的

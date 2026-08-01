@@ -12,6 +12,7 @@ namespace {
 
 constexpr quint64 maximumExpandedFieldsPerStructure = 99'999;
 constexpr std::size_t maximumExpressionExpansionWork = 16 * 256;
+constexpr quint64 maximumUnsignedExpGolombValue = std::numeric_limits<quint64>::max() - 1;
 
 [[nodiscard]] bool validScalarType(DslScalarType type) noexcept {
     return type == DslScalarType::Bool || type == DslScalarType::U64;
@@ -999,10 +1000,10 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                               QStringLiteral("@enum is only supported on bits fields"),
                               field.range);
             }
-            if (!isBits && hasAnnotation(QStringLiteral("equals"))) {
+            if (isSignedExpGolomb && hasAnnotation(QStringLiteral("equals"))) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidAnnotation,
-                              QStringLiteral("@equals is only supported on bits fields"),
+                              QStringLiteral("@equals is only supported on bits and ue fields"),
                               field.range);
             }
             const std::optional<QString> enumName =
@@ -1035,12 +1036,28 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 }
             }
             typedField.equalsConstraint =
-                isBits ? equalsConstraint(field, result.diagnostics) : std::nullopt;
-            if (typedField.equalsConstraint && field.width < 64 &&
+                (isBits || isUnsignedExpGolomb)
+                    ? equalsConstraint(field, result.diagnostics)
+                    : std::nullopt;
+            if (isBits && typedField.equalsConstraint && field.width < 64 &&
                 *typedField.equalsConstraint >= (quint64{1} << field.width)) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::ConstraintOutOfRange,
                               QStringLiteral("@equals value does not fit the field width"),
+                              [&field]() {
+                                  for (const DslAnnotation& annotation : field.annotations) {
+                                      if (annotation.name == QStringLiteral("equals")) {
+                                          return annotation.range;
+                                      }
+                                  }
+                                  return field.range;
+                              }());
+            }
+            if (isUnsignedExpGolomb && typedField.equalsConstraint &&
+                *typedField.equalsConstraint > maximumUnsignedExpGolombValue) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::ConstraintOutOfRange,
+                              QStringLiteral("@equals value exceeds the largest supported ue value"),
                               [&field]() {
                                   for (const DslAnnotation& annotation : field.annotations) {
                                       if (annotation.name == QStringLiteral("equals")) {

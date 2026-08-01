@@ -188,12 +188,24 @@ private slots:
     void rejectsFixedWidthAnnotationsAndAlignmentAfterExpGolombFields() {
         const auto annotations = DslParser::parse(QStringLiteral(
             "enum Type { value = 1; } struct Header { "
-            "ue first @equals(0); se second @enum(Type); } entry Header;"));
+            "se first @equals(0); se second @enum(Type); } entry Header;"));
         const auto alignment = DslParser::parse(QStringLiteral(
             "struct Header { ue prefix; bits<16, little> value; } entry Header;"));
 
         QVERIFY(hasDiagnostic(annotations, DslDiagnosticCode::InvalidAnnotation));
         QVERIFY(hasDiagnostic(alignment, DslDiagnosticCode::InvalidEndian));
+    }
+
+    void acceptsEqualsOnUnsignedExpGolombFields() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct Header { ue pic_order_cnt_type @equals(0); } entry Header;"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        QCOMPARE(result.program.structs.front().items.front().field.annotations.front().name,
+                 QStringLiteral("equals"));
     }
 
     void parsesFixedLengthArraysForAllScalarFieldEncodings() {
