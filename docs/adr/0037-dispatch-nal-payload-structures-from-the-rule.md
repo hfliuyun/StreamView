@@ -190,3 +190,10 @@ has reserved but not implemented.
   position-dependent alignment loop, which the current expression and repeat
   grammar cannot express. The fixed four-element array is exact for this
   payload and does not pretend to be the general form.
+
+## Amendment (2026-08-01)
+
+ADR-0038 supersedes this ADR's fixed-array rule-asset detail and its rejected
+shared-structure option. The official AUD rule now uses the bounded terminal
+`rbsp_trailing_bits;`; all payload-dispatch decisions in this ADR remain
+unchanged.

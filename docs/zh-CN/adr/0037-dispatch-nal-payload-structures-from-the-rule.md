@@ -149,3 +149,8 @@ NAL unit 现在会被报告，而不再被静默接受。
   一致性数据通过。
 - 把 `rbsp_trailing_bits` 声明为共享结构：它需要依赖当前位置的对齐循环，现有 expression 与
   repeat 语法无法表达。固定四元素数组对该 payload 是精确的，也不假装自己是通用形式。
+
+## 修订（2026-08-01）
+
+ADR-0038 取代了本文 ADR 中固定数组的规则资产细节，以及被拒绝的共享结构方案。官方 AUD
+规则现在使用有界终结项 `rbsp_trailing_bits;`；本文 ADR 的其余 payload-dispatch 决策保持不变。

@@ -156,6 +156,13 @@ This slice does not accept the provisional general-purpose `view`, `forward`,
 SPS/PPS or slice parsing, extension-header parsing, lazy payload boundaries, or
 progressive persistence.
 
+## Amendment (2026-08-01)
+
+ADR-0038 adds the bounded `rbsp_trailing_bits;` DSL terminal and moves that
+specific deferred responsibility into formal RBSP parsing. This ADR continues
+to own only the EBSP-to-RBSP mapping and excluded-span contract; it does not
+add a general view, forwarding, slicing, or alignment language feature.
+
 ## Consequences
 
 H.264 syntax can consume a logical RBSP directly from the unchanged source and

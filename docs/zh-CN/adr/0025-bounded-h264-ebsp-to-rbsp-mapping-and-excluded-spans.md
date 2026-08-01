@@ -123,6 +123,12 @@ RBSP mapping 解析的 field 或 diagnostic 中。选择未来跨越 excluded by
 trailing-bit syntax、SPS/PPS 或 slice parsing、extension-header parsing、lazy payload
 boundary 或 progressive persistence。
 
+## 修订（2026-08-01）
+
+ADR-0038 新增了有界的 `rbsp_trailing_bits;` DSL 终结项，使这一项原先延后的职责进入正式
+RBSP parsing。本文 ADR 仍只负责 EBSP-to-RBSP mapping 与 excluded-span 契约；它不新增通用
+view、forward、slice 或 alignment 语言能力。
+
 ## 影响
 
 H.264 syntax 可以直接从未修改 source 的 logical RBSP 读取，并跨越任意数量但受预算限制的
