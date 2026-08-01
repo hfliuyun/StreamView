@@ -1,11 +1,11 @@
 # StreamView v0.1 分阶段实施计划
 
 Status: In Progress
-Current Phase: 2
-Last Completed Step: Stable DSL bilingual documentation and example audit
-Next Action: Define the first M6 H.264 formal-structure slice and record any new design decision
-Last Verification: Commit 4b54808 local dev/ci/sanitize passed 31/31; hosted run
-  30467004306 passed on Windows, macOS, and Ubuntu
+Current Phase: 3
+Last Completed Step: DSL payload dispatch and the first H.264 formal-structure slice
+Next Action: Define the next M6 H.264 slice, beginning with the sequence parameter set
+Last Verification: Commit b59f250 local dev/ci/sanitize passed 31/31; hosted run
+  30699364480 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -179,6 +179,8 @@ Blockers: None
 ## 阶段 3：H.264 正式结构支持
 
 - [ ] 完成 Annex B、EBSP→RBSP、trailing bits、SPS、PPS、VUI/HRD。
+  - [x] payload 派发与 access unit delimiter、end of sequence、end of stream 的
+    RBSP 与 trailing bits。
 - [ ] 完成 Baseline/Main/High 8-bit 4:2:0 slice header；slice data 标记为压缩载荷。
 - [ ] 所有 SEI 解析 payloadType/payloadSize。
 - [ ] 深入解析 buffering period、pic timing、用户数据、recovery point、frame packing 和 display orientation。
@@ -396,3 +398,25 @@ Blockers: None
   `30467004306` 在 Windows 2022 / Qt 6.10.1、macOS 15 / Qt 6.11.1 与 Ubuntu 24.04 /
   Qt 6.11.1 的 Configure、Build、Test、Install、Upload 均成功。下一步界定并实现首个 M6
   H.264 正式结构切片。
+- 2026-08-01：完成首个 M6 H.264 正式结构切片，并为它新增 DSL payload 派发。`65044a2`
+  以 ADR-0037 固化决策：`nal_unit_type` 到结构的映射必须由规则声明，不能写进分析核心；
+  唯一接受的 view kind 是 `rbsp`；一个程序至多一个顶层 `payload<rbsp> sequence
+  switch (controller) { case integer: Structure | empty; }`；没有 `default` arm，未列出的
+  type 保持既有未解释 payload 行为。`b59f250` 实现语言与运行时：`payload` 和 `empty` 仍是
+  上下文标识符，parser 拒绝不支持的 view kind、第二个派发、未知 sequence/controller/target、
+  非顶层无条件无符号 scalar `bits` 的 controller、重复或超出宽度的 case 值、没有 case 的
+  派发、等于 element structure 的 case 目标、`default` arm，以及缺少对应 entry 的 sequence；
+  typed program 只保存已解析 case，不新增 opcode，选中的结构复用既有 `begin-structure` 到
+  `end-structure` bytecode。Annex B runner 从已发布 header 读取 controller，只要命中 case 就
+  一定派生 RBSP view，零长度 payload 也不例外，因此决定 view 是否存在的是 case 而非 payload
+  长度；结构 case 在 `rbsp_payload` 下解码并且必须精确消费完整 RBSP，剩余 bit 为
+  `invalid-syntax`，`empty` case 要求零长度 RBSP，未派发 type 行为完全不变。内置规则新增
+  `AccessUnitDelimiterRbsp`（逐 bit 的 `rbsp_alignment_zero_bit[0..3]`）并派发 type 9、10、11。
+  因此一字节 AUD 可完整解码、只有 header 的 AUD 是 `truncated-source`、只有 header 的 end of
+  sequence/stream 物化，而这两种 type 携带 RBSP 字节即 `invalid-syntax`，并且失败 payload 不
+  终止 scan。回归覆盖 parser 静态规则与恢复、typed IR 降低、AUD 逐 bit source span、截断、
+  非法 stop bit、未声明尾随 bit、空 RBSP 正反例和未派发 type 的向后兼容。英文规范、中文
+  伴随说明和 ADR-0037 双语版本已同步；本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与
+  CTest 均为 31/31。hosted run `30699364480` 在 Windows 2022 / Qt 6.10.1、macOS 15 /
+  Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、Install、Upload 均成功。
+  下一步界定并实现 sequence parameter set 切片。
