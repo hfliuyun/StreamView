@@ -619,10 +619,10 @@ DslExecutionResult DslVirtualMachine::execute(
     }
 
     const auto validFixedController = [&program](const DslTypedField& controller) {
-        const bool validUnsignedController =
+        const bool validUnsignedController = controller.kind == DslTypedFieldKind::Declared &&
             controller.type.kind == DslValueTypeKind::UnsignedBits &&
             !controller.type.enumIndex;
-        const bool validEnumController =
+        const bool validEnumController = controller.kind == DslTypedFieldKind::Declared &&
             controller.type.kind == DslValueTypeKind::Enum && controller.type.enumIndex &&
             *controller.type.enumIndex < program.enums.size();
         const bool validEndian = controller.type.endian == DslEndian::Big ||
@@ -633,13 +633,15 @@ DslExecutionResult DslVirtualMachine::execute(
                 controller.type.bitWidth % 8 == 0);
     };
     const auto validUnsignedExpGolombController = [](const DslTypedField& controller) {
-        return controller.type.kind == DslValueTypeKind::UnsignedExpGolomb &&
+        return controller.kind == DslTypedFieldKind::Declared &&
+               controller.type.kind == DslValueTypeKind::UnsignedExpGolomb &&
                controller.type.bitWidth == 0 && controller.type.endian == DslEndian::Big &&
                !controller.type.enumIndex && !controller.equalsConstraint;
     };
     const auto validComputedController = [](const DslTypedField& controller,
                                             DslValueTypeKind expectedKind) {
-        return controller.type.kind == expectedKind && controller.type.bitWidth == 0 &&
+        return controller.kind == DslTypedFieldKind::Declared &&
+               controller.type.kind == expectedKind && controller.type.bitWidth == 0 &&
                controller.type.endian == DslEndian::Big && !controller.type.enumIndex &&
                !controller.equalsConstraint && controller.computedExpression.has_value();
     };
@@ -967,6 +969,12 @@ DslExecutionResult DslVirtualMachine::execute(
                 return result;
             }
             const DslTypedField& field = structure.fields.at(instruction.operand);
+            if (field.kind != DslTypedFieldKind::Declared) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR field instruction uses a generated field"),
+                            &field);
+                return result;
+            }
             const bool readsFixedBits = instruction.opcode == DslOpcode::ReadUnsignedBits;
             const bool readsUnsignedExpGolomb =
                 instruction.opcode == DslOpcode::ReadUnsignedExpGolomb;
@@ -1190,6 +1198,130 @@ DslExecutionResult DslVirtualMachine::execute(
             }
             break;
         }
+        case DslOpcode::ReadRbspTrailingBits: {
+            constexpr quint32 reservedFieldCount = 8;
+            if (!result.structureNode || instruction.operand != nextFieldIndex ||
+                instruction.immediate != 0 || structure.fields.size() < reservedFieldCount ||
+                instruction.operand != structure.fields.size() - reservedFieldCount) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR rbsp trailing-bits instruction is invalid"),
+                            nullptr);
+                return result;
+            }
+
+            const auto validGeneratedField = [&](const DslTypedField& field,
+                                                 DslTypedFieldKind expectedKind,
+                                                 quint32 index) {
+                const QString expectedName =
+                    index == 0 ? QStringLiteral("rbsp_stop_one_bit")
+                               : QStringLiteral("rbsp_alignment_zero_bit[%1]").arg(index - 1);
+                return field.kind == expectedKind && field.name == expectedName &&
+                       field.type.kind == DslValueTypeKind::UnsignedBits &&
+                       field.type.bitWidth == 1 && field.type.endian == DslEndian::Big &&
+                       !field.type.enumIndex &&
+                       field.equalsConstraint == std::optional<quint64>(index == 0 ? 1 : 0) &&
+                       !field.computedExpression && !field.lazyByteCountExpression &&
+                       field.conditions.empty() && field.metadata.typeName == QStringLiteral("bits") &&
+                       field.metadata.specification &&
+                       field.metadata.specification->standard == QStringLiteral("ITU-T H.264") &&
+                       field.metadata.specification->clause == QStringLiteral("7.3.2.11");
+            };
+            for (quint32 index = 0; index < reservedFieldCount; ++index) {
+                const DslTypedField& field = structure.fields.at(instruction.operand + index);
+                const DslTypedFieldKind expectedKind =
+                    index == 0 ? DslTypedFieldKind::RbspStopOneBit
+                               : DslTypedFieldKind::RbspAlignmentZeroBit;
+                if (!validGeneratedField(field, expectedKind, index)) {
+                    markFailure(DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Typed IR rbsp trailing-bits fields are invalid"),
+                                &field);
+                    return result;
+                }
+            }
+
+            const quint32 structureDepth = parentDepth + 1U;
+            if (structureDepth >= options.limits.maximumNodeDepth) {
+                markFailure(DslExecutionStatus::ResourceLimit,
+                            QStringLiteral("DSL analysis node depth limit exceeded"),
+                            &structure.fields.at(instruction.operand));
+                return result;
+            }
+
+            quint32 fieldsToRead = 1;
+            for (quint32 fieldCount = 0; fieldCount < fieldsToRead; ++fieldCount) {
+                const DslTypedField& field = structure.fields.at(instruction.operand + fieldCount);
+                if (result.nodesCreated >= options.limits.maximumMaterializedNodes) {
+                    markFailure(DslExecutionStatus::ResourceLimit,
+                                QStringLiteral("DSL materialized-node budget exceeded"),
+                                &field);
+                    return result;
+                }
+                const quint64 fieldStart = reader.position();
+                const core::BitReadResult readResult = reader.readBits(1);
+                result.bitsConsumed = reader.position();
+                if (!readResult.complete()) {
+                    markFailure(statusForRead(readResult.status),
+                                readResult.errorMessage.isEmpty()
+                                    ? QStringLiteral("Unable to read complete rbsp trailing bit")
+                                    : readResult.errorMessage,
+                                &field,
+                                fieldStart);
+                    return result;
+                }
+                const auto location = locationAt(mapping, logicalStart, fieldStart, 1, 1);
+                if (!location) {
+                    markFailure(DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Unable to map rbsp trailing-bit location"),
+                                &field);
+                    return result;
+                }
+                core::AnalysisNodeSpec fieldSpec;
+                fieldSpec.kind = core::AnalysisNodeKind::SyntaxField;
+                fieldSpec.name = field.name;
+                fieldSpec.state = core::MaterializationState::Materialized;
+                fieldSpec.value = QVariant::fromValue<qulonglong>(readResult.value);
+                fieldSpec.location = *location;
+                fieldSpec.metadata = field.metadata;
+                if (!tree.appendChild(*result.structureNode, std::move(fieldSpec))) {
+                    markFailure(DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Unable to append rbsp trailing-bit node"),
+                                &field);
+                    return result;
+                }
+                ++result.nodesCreated;
+                fieldValues.at(instruction.operand + fieldCount) = readResult.value;
+                fieldRanges.at(instruction.operand + fieldCount) =
+                    MaterializedFieldRange{fieldStart, 1};
+                lastField = instruction.operand + fieldCount;
+                lastValue = readResult.value;
+                lastFieldSkipped = false;
+                if (readResult.value != *field.equalsConstraint) {
+                    markFailure(DslExecutionStatus::InvalidSyntax,
+                                QStringLiteral("Field value violates rbsp trailing-bits constraint"),
+                                &field,
+                                fieldStart,
+                                1);
+                    return result;
+                }
+                if (fieldCount == 0) {
+                    if (addWouldOverflow(logicalStart, reader.position())) {
+                        markFailure(DslExecutionStatus::InvalidDefinition,
+                                    QStringLiteral("Logical rbsp trailing-bit offset overflow"),
+                                    &field);
+                        return result;
+                    }
+                    const quint64 paddingCount =
+                        (8U - ((logicalStart + reader.position()) % 8U)) % 8U;
+                    fieldsToRead += static_cast<quint32>(paddingCount);
+                }
+            }
+            for (quint32 skipped = fieldsToRead; skipped < reservedFieldCount; ++skipped) {
+                fieldValues.at(instruction.operand + skipped).reset();
+                fieldRanges.at(instruction.operand + skipped).reset();
+            }
+            nextFieldIndex += reservedFieldCount;
+            break;
+        }
         case DslOpcode::EvaluateComputed: {
             if (!result.structureNode || instruction.operand != nextFieldIndex ||
                 instruction.operand >= structure.fields.size()) {
@@ -1199,6 +1331,15 @@ DslExecutionResult DslVirtualMachine::execute(
                 return result;
             }
             const DslTypedField& field = structure.fields.at(instruction.operand);
+            if (field.kind != DslTypedFieldKind::Declared) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR computed instruction uses a generated field"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
             const bool computedBoolean =
                 field.type.kind == DslValueTypeKind::ComputedBool;
             const bool computedUnsigned =
@@ -1292,6 +1433,15 @@ DslExecutionResult DslVirtualMachine::execute(
                 return result;
             }
             const DslTypedField& field = structure.fields.at(instruction.operand);
+            if (field.kind != DslTypedFieldKind::Declared) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR lazy instruction uses a generated field"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
             if (field.type.kind != DslValueTypeKind::LazyBytes ||
                 !field.lazyByteCountExpression) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
@@ -1425,6 +1575,7 @@ DslExecutionResult DslVirtualMachine::execute(
                                              : nullptr;
             if (!result.structureNode || !lastField || *lastField != instruction.operand ||
                 field == nullptr || !field->equalsConstraint ||
+                field->kind != DslTypedFieldKind::Declared ||
                 *field->equalsConstraint != instruction.immediate ||
                 (lastFieldSkipped ? lastValue.has_value() : !lastValue.has_value())) {
                 markFailure(DslExecutionStatus::InvalidDefinition,

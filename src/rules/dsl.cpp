@@ -1249,10 +1249,30 @@ private:
         items.push_back(std::move(item));
     }
 
+    void parseRbspTrailingBits(std::vector<DslStructItem>& items,
+                               const std::vector<DslAnnotation>& annotations) {
+        const DslSourcePosition start = consume().range.start;
+        if (!annotations.empty()) {
+            result_.diagnostics.push_back(
+                {DslDiagnosticCode::InvalidAnnotation,
+                 QStringLiteral("rbsp_trailing_bits does not accept annotations"),
+                 annotations.front().range});
+        }
+        DslStructItem item;
+        item.kind = DslStructItemKind::RbspTrailingBits;
+        item.rbspTrailingBits.annotations = annotations;
+        expect(DslTokenKind::Semicolon, QStringLiteral("';' after rbsp_trailing_bits"));
+        item.range = {start, lexResult_.tokens.at(index_ - 1).range.end};
+        item.rbspTrailingBits.range = item.range;
+        items.push_back(std::move(item));
+    }
+
     void parseStructItems(std::vector<DslStructItem>& items) {
         while (!at(DslTokenKind::RightBrace) && !at(DslTokenKind::EndOfFile)) {
             const std::vector<DslAnnotation> annotations = parseAnnotations(true);
-            if (isLazyRegionIntroducer()) {
+            if (isIdentifier(QStringLiteral("rbsp_trailing_bits"))) {
+                parseRbspTrailingBits(items, annotations);
+            } else if (isLazyRegionIntroducer()) {
                 if (!annotations.empty()) {
                     result_.diagnostics.push_back(
                         {DslDiagnosticCode::InvalidAnnotation,
@@ -1313,6 +1333,48 @@ private:
         const bool closed = expect(DslTokenKind::RightBrace, QStringLiteral("'}' after fields"));
         match(DslTokenKind::Semicolon);
         structure.range = {start, lexResult_.tokens.at(index_ - 1).range.end};
+        quint32 trailingBitsCount = 0;
+        const auto validateTrailingBits = [&](const auto& self,
+                                              const std::vector<DslStructItem>& items,
+                                              bool topLevel) -> void {
+            for (std::size_t itemIndex = 0; itemIndex < items.size(); ++itemIndex) {
+                const DslStructItem& item = items.at(itemIndex);
+                if (item.kind == DslStructItemKind::RbspTrailingBits) {
+                    ++trailingBitsCount;
+                    if (!topLevel || itemIndex + 1 != items.size() || trailingBitsCount > 1) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidRbspTrailingBits,
+                             QStringLiteral(
+                                 "rbsp_trailing_bits must occur once as the final top-level item"),
+                             item.range});
+                    }
+                    continue;
+                }
+                if (item.kind == DslStructItemKind::Conditional) {
+                    self(self, item.thenItems, false);
+                    self(self, item.elseItems, false);
+                } else if (item.kind == DslStructItemKind::Switch) {
+                    for (const DslStructItem::SwitchArm& arm : item.switchArms) {
+                        self(self, arm.items, false);
+                    }
+                } else if (item.kind == DslStructItemKind::Repeat) {
+                    self(self, item.repeatItems, false);
+                }
+            }
+        };
+        validateTrailingBits(validateTrailingBits, structure.items, true);
+        if (trailingBitsCount != 0) {
+            for (const QString& reservedName : {QStringLiteral("rbsp_stop_one_bit"),
+                                                QStringLiteral("rbsp_alignment_zero_bit")}) {
+                if (declaresName(structure.items, reservedName)) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::DuplicateName,
+                         QStringLiteral("rbsp_trailing_bits reserves the field name %1")
+                             .arg(reservedName),
+                         structure.range});
+                }
+            }
+        }
         if (structure.items.empty() && closed) {
             result_.diagnostics.push_back({DslDiagnosticCode::EmptyStruct,
                                            QStringLiteral("A structure must contain at least one field"),
@@ -2054,7 +2116,8 @@ private:
                 for (const DslStructItem& item : items) {
                     if (item.kind == DslStructItemKind::Field ||
                         item.kind == DslStructItemKind::Computed ||
-                        item.kind == DslStructItemKind::LazyRegion) {
+                        item.kind == DslStructItemKind::LazyRegion ||
+                        item.kind == DslStructItemKind::RbspTrailingBits) {
                         return true;
                     }
                     if (item.kind == DslStructItemKind::Conditional &&
@@ -2081,6 +2144,9 @@ private:
                                            std::optional<quint64> fieldOffset)
                 -> std::optional<quint64> {
                 for (const DslStructItem& item : items) {
+                    if (item.kind == DslStructItemKind::RbspTrailingBits) {
+                        continue;
+                    }
                     if (item.kind == DslStructItemKind::Conditional) {
                         validateCondition(item.condition, active);
                         std::vector<ActiveCondition> thenConditions = active;
@@ -2467,7 +2533,8 @@ private:
                 return fieldOffset;
             };
             (void)validateItems(validateItems, structure.items, {}, quint64(0));
-            if (!structure.items.empty() && declaredFieldNames.empty()) {
+            if (!structure.items.empty() && declaredFieldNames.empty() &&
+                !containsField(containsField, structure.items)) {
                 result_.diagnostics.push_back(
                     {DslDiagnosticCode::EmptyStruct,
                      QStringLiteral("A structure must contain at least one field"),
@@ -2574,6 +2641,8 @@ private:
                 if (item.lazyRegion.name == name) {
                     return true;
                 }
+                break;
+            case DslStructItemKind::RbspTrailingBits:
                 break;
             case DslStructItemKind::Conditional:
                 if (declaresName(item.thenItems, name) || declaresName(item.elseItems, name)) {

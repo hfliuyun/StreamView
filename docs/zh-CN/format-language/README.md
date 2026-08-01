@@ -94,6 +94,9 @@ queue state 和单调 identifier，但不定义持久 checkpoint。
 它把 sequence element 解码出的 controller 值绑定到解码派生 payload view 的结构；当该
 payload 不含任何语法元素时绑定到 `empty`。决定 payload 使用哪个结构的是规则，不是 runner。
 
+当前接受的 H.264 trailing-bits 切片新增终结结构项 `rbsp_trailing_bits;`。它会消费必需的
+stop bit 与依当前位置决定的 RBSP 补零，而不引入通用对齐表达式或无界 loop。
+
 ## DSL 0.1 最小子集
 
 首个可执行子集使用以下语法。token 之间可以有空白，以及 `//` 或 `/* ... */`
@@ -111,7 +114,8 @@ parameter     := scalar_type identifier
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { struct_item } "}" [ ";" ]
-struct_item   := field | computed | lazy_region | conditional | switch | repeat
+struct_item   := field | computed | lazy_region | rbsp_trailing_bits
+               | conditional | switch | repeat
 field         := { annotation } field_type identifier [ "[" integer "]" ]
                  { annotation } ";"
 field_type    := "bits" "<" integer [ "," identifier ] ">" | "ue" | "se"
@@ -119,6 +123,7 @@ computed      := { annotation } "computed" "<" scalar_type ">" identifier
                  "=" expression { annotation } ";"
 lazy_region   := "@" "lazy" "(" expression ")" "bytes" identifier
                  { presentation_annotation } ";"
+rbsp_trailing_bits := "rbsp_trailing_bits" ";"
 presentation_annotation := "@" "description" "(" string ")"
                          | "@" "spec" "(" string "," string ")"
 scalar_type   := "bool" | "u64"
@@ -156,7 +161,8 @@ primary       := integer | "true" | "false" | identifier
 
 - 程序必须且只能有一个 `entry`；target 必须是已声明的结构或 sequence。
 - 结构、sequence、enum 和纯函数名共用顶层声明命名空间。语法字段、计算字段与 lazy byte
-  region 的名称在结构内统一保持唯一；结构至少包含其中一个 item。
+  region 的名称在结构内统一保持唯一；结构至少包含其中一个 item，或一个终结
+  `rbsp_trailing_bits` item。
 - enum member 名在所属 enum 内不能重复。不同 member 可以使用相同整数值；这些别名接受
   同一个解码数值。
 - 纯函数声明 `bool` 或 `u64` 返回类型、最多 16 个名称互异的 `bool` 或 `u64` 参数，以及
@@ -178,6 +184,14 @@ primary       := integer | "true" | "false" | identifier
 - 固定宽度数组按 `width * count` bit 参与静态对齐。小端数组的每个元素宽度必须是 8 的
   倍数，并且首元素必须从结构内的字节边界开始。`ue` 或 `se` 数组的总宽度未知，因此其
   后续小端字段与单个 Exp-Golomb 字段之后的小端字段一样会被拒绝。
+- `rbsp_trailing_bits;` 是不接受 annotation 的 H.264 终结项。它只能出现一次，只能作为结构
+  顶层的最后一项；不能位于 conditional、switch 或 repeat body 中，也不能后跟其他 item。使用
+  它的结构会保留名称 `rbsp_stop_one_bit` 和 `rbsp_alignment_zero_bit`。运行时先读取一个值必须
+  为 `1` 的 stop 字段，再读取零至七个值必须为 `0` 的 alignment 字段，直到下一个 logical-byte
+  boundary。每个实际消费的 bit 都有独立命名的 syntax-field node 与 mapped source location。
+  缺失 bit 为 `truncated-source`；约束失败会在对应字段上报告 `invalid-syntax`。compiler 会把
+  八个可能字段都计入 99,999-field 与 100,000-node 限制；VM 使用一条 bytecode instruction，
+  且只发布实际消费的 alignment 字段。
 - 等值条件 controller 必须是此前声明、且在到达该条件的每条路径上都保证已经物化的
   scalar `bits`、enum 或 `computed<u64>` 字段。数组、`ue`、`se`、`computed<bool>`、
   未来或未知字段，以及离开所属保证分支后使用的 branch-local 字段都会被拒绝。整数字面量
@@ -270,7 +284,7 @@ primary       := integer | "true" | "false" | identifier
 
 `enum`、`big`、`little`、`ue`、`se`、`pure`、`return`、`bool`、`u64`、
 `computed`、`lazy`、`bytes`、`true`、`false`、`if`、`else`、`switch`、`case`、
-`default`、`repeat`、`payload` 和 `empty` 只在上述语法位置作为上下文关键字，其他位置仍可
+`default`、`repeat`、`payload`、`empty` 和 `rbsp_trailing_bits` 只在上述语法位置作为上下文关键字，其他位置仍可
 作为普通 identifier。既有 scalar 声明保持不变，`bits<N>` 仍与
 `bits<N, big>` 完全等价；本切片不弃用任何已接受的 0.1 语法。
 
@@ -278,7 +292,7 @@ parser 生成面向 source、用于诊断的声明模型。静态 compiler 把�
 sequence 和 entry 引用解析成 typed program，保留声明顺序，并确定性生成
 `begin-structure`、`read-unsigned-bits`、`read-unsigned-exp-golomb`、
 `read-signed-exp-golomb`、`evaluate-computed`、`register-lazy-bytes`、
-`assert-equals`、`assert-repeat-count` 和 `end-structure` bytecode。每个 field opcode 必须与
+`read-rbsp-trailing-bits`、`assert-equals`、`assert-repeat-count` 和 `end-structure` bytecode。每个 field opcode 必须与
 字段类型匹配；
 Exp-Golomb typed field 的静态 bit width 为零、使用默认 bit order，且没有 enum reference 或
 equality constraint。固定数组按 source 顺序展开成名为 `name[0]` 到
@@ -288,6 +302,13 @@ equality constraint。固定数组按 source 顺序展开成名为 `name[0]` 到
 一般控制流 bytecode。switch case 字段携带一个正向等值 guard；default 字段携带全部 case
 guard 的否定合取，省略 default 时不会为未匹配路径生成字段。嵌套 switch 与条件的 guard
 按外层到内层追加。
+
+`rbsp_trailing_bits` 降低为一条 `read-rbsp-trailing-bits` instruction 与八个生成的 typed-field
+slot：一个 `rbsp_stop_one_bit` 和七个可能的 `rbsp_alignment_zero_bit[index]`。instruction 会在
+读取前校验这些生成字段的名称、类型、约束以及 H.264 7.3.2.11 metadata。它只发布到下一个
+logical-byte boundary 所需的 stop bit 和 padding，因此未用 slot 不创建 node，也不读取 source。
+该 instruction 是一个计入预算的 cancellation point；其八次独立的一 bit read 与 node 数量
+仍有明确上界。
 
 repeat body 按 `maximum` 次投影到同一条 typed-field 流。第 `i` 次迭代中的每个字段在外层
 guard 之后追加一个正向 `count > i` guard；物化名称先追加当前各层 repeat index，再追加
@@ -440,7 +461,7 @@ header，因此 direct header 之后的字节仍保持 uninterpreted，不会传
 映射，payload 为空时也不例外，因此每个被派发的 NAL 都存在 `rbsp_payload`。type `9` 把
 `AccessUnitDelimiterRbsp` 解码为 `rbsp_payload` 的子节点，公开 `primary_pic_type`、
 `rbsp_stop_one_bit` 以及 `rbsp_alignment_zero_bit[0]` 到 `rbsp_alignment_zero_bit[3]`。
-type `10` 与 `11` 声明为 `empty`，要求 RBSP 长度为零。因此一字节的 access unit delimiter
+这些字段由它的终结 `rbsp_trailing_bits;` item 生成。type `10` 与 `11` 声明为 `empty`，要求 RBSP 长度为零。因此一字节的 access unit delimiter
 可以完整解码；只有 header 的 access unit delimiter 是 `truncated-source`；只有 header 的
 end of sequence 或 end of stream 是物化；而这两种 type 一旦携带 RBSP 字节即为
 `invalid-syntax`。其余所有 type 的 `rbsp_payload` region 保持原样。
@@ -633,8 +654,7 @@ struct NalUnitHeader {
 @spec("ITU-T H.264", "7.3.2.4")
 struct AccessUnitDelimiterRbsp {
     bits<3> primary_pic_type;
-    bits<1> rbsp_stop_one_bit @equals(1);
-    bits<1> rbsp_alignment_zero_bit[4] @equals(0);
+    rbsp_trailing_bits;
 }
 
 @index(progressive)

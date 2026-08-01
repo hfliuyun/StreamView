@@ -14,12 +14,7 @@ struct NalUnitHeader {
 struct AccessUnitDelimiterRbsp {
     bits<3> primary_pic_type
         @description("Constrains the slice types present in the following primary picture.");
-    @spec("ITU-T H.264", "7.3.2.11")
-    bits<1> rbsp_stop_one_bit @equals(1)
-        @description("Marks the final meaningful bit of the payload.");
-    @spec("ITU-T H.264", "7.3.2.11")
-    bits<1> rbsp_alignment_zero_bit[4] @equals(0)
-        @description("Pads the payload to the next byte boundary.");
+    rbsp_trailing_bits;
 }
 
 @index(progressive)

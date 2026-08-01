@@ -85,6 +85,61 @@ private slots:
         }
     }
 
+    void reservesBoundedTypedFieldsForRbspTrailingBits() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Payload { bits<3> primary_pic_type; rbsp_trailing_bits; } "
+            "entry Payload;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& fields = compiled.program->structs.front().fields;
+        QCOMPARE(fields.size(), std::size_t(9));
+        QCOMPARE(fields.at(1).name, QStringLiteral("rbsp_stop_one_bit"));
+        QCOMPARE(fields.at(1).type.kind, DslValueTypeKind::UnsignedBits);
+        QCOMPARE(fields.at(1).type.bitWidth, quint8(1));
+        QCOMPARE(fields.at(1).equalsConstraint, std::optional<quint64>(1));
+        for (std::size_t index = 0; index < 7; ++index) {
+            QCOMPARE(fields.at(2 + index).name,
+                     QStringLiteral("rbsp_alignment_zero_bit[%1]").arg(index));
+            QCOMPARE(fields.at(2 + index).type.kind, DslValueTypeKind::UnsignedBits);
+            QCOMPARE(fields.at(2 + index).type.bitWidth, quint8(1));
+            QCOMPARE(fields.at(2 + index).equalsConstraint, std::optional<quint64>(0));
+        }
+        const std::vector<DslOpcode> expected{
+            DslOpcode::BeginStructure,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::ReadRbspTrailingBits,
+            DslOpcode::EndStructure,
+        };
+        QCOMPARE(compiled.program->bytecode.size(), expected.size());
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            QCOMPARE(compiled.program->bytecode.at(index).opcode, expected.at(index));
+        }
+        QCOMPARE(compiled.program->bytecode.at(2).operand, quint32(1));
+    }
+
+    void countsRbspTrailingBitsReservationAgainstTheStructureLimit() {
+        const auto accepted = DslParser::parse(QStringLiteral(
+            "struct Payload { bits<1> values[99991]; rbsp_trailing_bits; } "
+            "entry Payload;"));
+        const auto rejected = DslParser::parse(QStringLiteral(
+            "struct Payload { bits<1> values[99992]; rbsp_trailing_bits; } "
+            "entry Payload;"));
+        QVERIFY(accepted.succeeded());
+        QVERIFY(rejected.succeeded());
+
+        const auto compiledAccepted = DslCompiler::compile(accepted.program);
+        const auto compiledRejected = DslCompiler::compile(rejected.program);
+        QVERIFY(compiledAccepted.succeeded());
+        QCOMPARE(compiledAccepted.program->structs.front().fields.size(), std::size_t(99999));
+        QVERIFY(!compiledRejected.succeeded());
+        QVERIFY(hasDiagnostic(compiledRejected, DslDiagnosticCode::InvalidArrayLength));
+    }
+
     void compilesEnumAndExplicitEndianIntoTypedIr() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "enum NalUnitType { non_idr = 1; idr = 5; } "

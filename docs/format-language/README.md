@@ -110,6 +110,11 @@ structure that decodes the derived payload view, or to `empty` when that
 payload carries no syntax elements. The rule, not the runner, decides which
 structure a payload uses.
 
+The accepted H.264 trailing-bits slice adds the terminal
+`rbsp_trailing_bits;` structure item. It consumes the required stop bit and
+the position-dependent zero padding of an RBSP without introducing a general
+alignment expression or unbounded loop.
+
 ## Minimum DSL 0.1 Subset
 
 The first executable subset uses the following grammar. Whitespace and `//` or
@@ -129,7 +134,8 @@ parameter     := scalar_type identifier
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { struct_item } "}" [ ";" ]
-struct_item   := field | computed | lazy_region | conditional | switch | repeat
+struct_item   := field | computed | lazy_region | rbsp_trailing_bits
+               | conditional | switch | repeat
 field         := { annotation } field_type identifier [ "[" integer "]" ]
                  { annotation } ";"
 field_type    := "bits" "<" integer [ "," identifier ] ">" | "ue" | "se"
@@ -137,6 +143,7 @@ computed      := { annotation } "computed" "<" scalar_type ">" identifier
                  "=" expression { annotation } ";"
 lazy_region   := "@" "lazy" "(" expression ")" "bytes" identifier
                  { presentation_annotation } ";"
+rbsp_trailing_bits := "rbsp_trailing_bits" ";"
 presentation_annotation := "@" "description" "(" string ")"
                          | "@" "spec" "(" string "," string ")"
 scalar_type   := "bool" | "u64"
@@ -177,7 +184,7 @@ The static rules for this subset are:
 - Structure, sequence, enum, and pure-function names share one top-level
   declaration namespace. Names are unique within a structure across syntax
   fields, computed fields, and lazy byte regions, and a structure contains at
-  least one of those items.
+  least one of those items or one terminal `rbsp_trailing_bits` item.
 - Enum member names are unique within their enum. Distinct members may name the
   same integer value; aliases accept the same decoded numeric value.
 - A pure function declares a `bool` or `u64` return type, at most 16 uniquely
@@ -212,6 +219,18 @@ The static rules for this subset are:
   An array of `ue` or `se` fields has unknown total width, so a later
   little-endian field is rejected under the same rule as a scalar Exp-Golomb
   field.
+- `rbsp_trailing_bits;` is an unannotated H.264 terminal item. It may occur
+  once, only as the final top-level item of a structure; it is rejected in a
+  conditional, switch, or repeat body and cannot be followed by another item.
+  It reserves the names `rbsp_stop_one_bit` and `rbsp_alignment_zero_bit` in
+  that structure. At runtime it reads a one-bit stop field constrained to `1`,
+  then zero through seven one-bit alignment fields constrained to `0`, ending
+  at the next logical-byte boundary. Each consumed bit is a separately named
+  syntax-field node with its own mapped source location. Missing bits are
+  `truncated-source`; a failed constraint is `invalid-syntax` at that field.
+  The compiler reserves all eight possible fields against the 99,999-field and
+  100,000-node limits, while the VM uses one bytecode instruction and publishes
+  only the consumed alignment fields.
 - An equality-conditional controller must name an earlier scalar `bits`, enum,
   or `computed<u64>` field guaranteed to have been materialized on every path
   reaching that condition. Arrays, `ue`, `se`, `computed<bool>`, future or
@@ -347,7 +366,7 @@ The static rules for this subset are:
 
 `enum`, `big`, `little`, `ue`, `se`, `pure`, `return`, `bool`, `u64`,
 `computed`, `lazy`, `bytes`, `true`, `false`, `if`, `else`, `switch`, `case`,
-`default`, `repeat`, `payload`, and `empty` are contextual words in the
+`default`, `repeat`, `payload`, `empty`, and `rbsp_trailing_bits` are contextual words in the
 positions shown by the grammar and remain ordinary identifiers elsewhere.
 Existing scalar declarations are unchanged, and `bits<N>` remains exactly
 equivalent to `bits<N, big>`; this slice deprecates no accepted 0.1 syntax.
@@ -357,7 +376,7 @@ static compiler resolves pure functions, enums, structures, sequences, and entry
 references into a typed program, preserves declaration order, and emits
 deterministic bytecode using `begin-structure`, `read-unsigned-bits`,
 `read-unsigned-exp-golomb`, `read-signed-exp-golomb`, `evaluate-computed`,
-`register-lazy-bytes`, `assert-equals`, `assert-repeat-count`, and
+`register-lazy-bytes`, `read-rbsp-trailing-bits`, `assert-equals`, `assert-repeat-count`, and
 `end-structure` operations. Each field opcode must match the resolved field
 type.
 The fixed-width read carries the resolved enum and byte-order information; the
@@ -367,7 +386,18 @@ order into typed fields named `name[0]` through `name[count - 1]`; every element
 emits its own read and, when present, equality-check instruction. Conditional
 blocks are lowered into the same declaration-order field stream. Each possible
 field carries resolved presence guards that reference earlier typed-field
-indexes; no jump opcode or general control-flow bytecode is introduced. Switch
+indexes; no jump opcode or general control-flow bytecode is introduced.
+
+`rbsp_trailing_bits` lowers to one `read-rbsp-trailing-bits` instruction and
+eight generated typed-field slots: one `rbsp_stop_one_bit` and seven possible
+`rbsp_alignment_zero_bit[index]` fields. The instruction validates those
+generated names, types, constraints, and H.264 7.3.2.11 metadata before it
+reads. It publishes only the stop bit and the padding needed to reach the next
+logical-byte boundary, so unused slots create neither nodes nor source reads.
+The instruction remains one budgeted cancellation point; its eight individual
+one-bit reads and nodes are independently bounded.
+
+Switch
 case fields receive one positive equality guard. Default fields receive the
 conjunction of every case guard negated; an omitted default emits no field for
 the unmatched path. Nested switch and conditional guards are appended outer-to-
@@ -587,7 +617,8 @@ The bundled rule declares a payload dispatch for `nal_unit_type` values `9`,
 empty, so `rbsp_payload` is present for every dispatched NAL. Type `9` decodes
 `AccessUnitDelimiterRbsp` as a child of `rbsp_payload`, exposing
 `primary_pic_type`, `rbsp_stop_one_bit`, and `rbsp_alignment_zero_bit[0]`
-through `rbsp_alignment_zero_bit[3]`. Types `10` and `11` are declared `empty`
+through `rbsp_alignment_zero_bit[3]` from its terminal
+`rbsp_trailing_bits;` item. Types `10` and `11` are declared `empty`
 and require a zero-length RBSP. A one-byte access unit delimiter is therefore
 fully decoded, a header-only access unit delimiter is `truncated-source`, a
 header-only end of sequence or end of stream is materialized, and either of
@@ -794,8 +825,7 @@ struct NalUnitHeader {
 @spec("ITU-T H.264", "7.3.2.4")
 struct AccessUnitDelimiterRbsp {
     bits<3> primary_pic_type;
-    bits<1> rbsp_stop_one_bit @equals(1);
-    bits<1> rbsp_alignment_zero_bit[4] @equals(0);
+    rbsp_trailing_bits;
 }
 
 @index(progressive)

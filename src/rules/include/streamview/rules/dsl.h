@@ -85,6 +85,7 @@ enum class DslDiagnosticCode : quint8 {
     InvalidCondition,
     InvalidExpression,
     InvalidPayloadDispatch,
+    InvalidRbspTrailingBits,
 };
 
 struct DslDiagnostic final {
@@ -231,6 +232,11 @@ struct DslLazyRegion final {
     DslSourceRange range;
 };
 
+struct DslRbspTrailingBits final {
+    std::vector<DslAnnotation> annotations;
+    DslSourceRange range;
+};
+
 struct DslEqualityCondition final {
     QString fieldName;
     quint64 expectedValue = 0;
@@ -242,6 +248,7 @@ enum class DslStructItemKind : quint8 {
     Field,
     Computed,
     LazyRegion,
+    RbspTrailingBits,
     Conditional,
     Switch,
     Repeat,
@@ -265,6 +272,7 @@ struct DslStructItem final {
     DslBitField field;
     DslComputedField computed;
     DslLazyRegion lazyRegion;
+    DslRbspTrailingBits rbspTrailingBits;
     DslEqualityCondition condition;
     std::vector<DslStructItem> thenItems;
     std::vector<DslStructItem> elseItems;

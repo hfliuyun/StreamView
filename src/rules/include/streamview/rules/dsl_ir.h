@@ -71,7 +71,14 @@ struct DslTypedExpression final {
     std::vector<DslTypedExpression> operands;
 };
 
+enum class DslTypedFieldKind : quint8 {
+    Declared,
+    RbspStopOneBit,
+    RbspAlignmentZeroBit,
+};
+
 struct DslTypedField final {
+    DslTypedFieldKind kind = DslTypedFieldKind::Declared;
     QString name;
     DslValueType type;
     std::optional<quint64> equalsConstraint;
@@ -142,6 +149,7 @@ enum class DslOpcode : quint8 {
     ReadSignedExpGolomb,
     EvaluateComputed,
     RegisterLazyBytes,
+    ReadRbspTrailingBits,
     AssertEquals,
     AssertRepeatCount,
     EndStructure,

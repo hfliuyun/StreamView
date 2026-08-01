@@ -232,6 +232,69 @@ private slots:
         QVERIFY(hasDiagnostic(missingBracket, DslDiagnosticCode::MissingToken));
     }
 
+    void parsesATerminalRbspTrailingBitsItem() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct Payload { bits<3> primary_pic_type; rbsp_trailing_bits; } "
+            "entry Payload;"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        QCOMPARE(result.program.structs.size(), std::size_t(1));
+        QCOMPARE(result.program.structs.front().items.size(), std::size_t(2));
+        QCOMPARE(result.program.structs.front().items.back().kind,
+                 DslStructItemKind::RbspTrailingBits);
+        QVERIFY(result.program.structs.front().items.back().range.end.offset >
+                result.program.structs.front().items.back().range.start.offset);
+
+        const auto terminalOnly = DslParser::parse(QStringLiteral(
+            "struct Payload { rbsp_trailing_bits; } entry Payload;"));
+        QVERIFY(terminalOnly.succeeded());
+    }
+
+    void rejectsInvalidRbspTrailingBitsPlacementAndAnnotations() {
+        const std::vector<QString> invalidPlacements{
+            QStringLiteral(
+                "struct Payload { rbsp_trailing_bits; bits<1> tail; } entry Payload;"),
+            QStringLiteral(
+                "struct Payload { rbsp_trailing_bits; rbsp_trailing_bits; } entry Payload;"),
+            QStringLiteral(
+                "struct Payload { bits<1> flag; if (flag) { rbsp_trailing_bits; } } "
+                "entry Payload;"),
+            QStringLiteral(
+                "struct Payload { bits<1> flag; switch (flag) { "
+                "case 0: { rbsp_trailing_bits; } } } entry Payload;"),
+            QStringLiteral(
+                "struct Payload { bits<1> count; repeat (count, 1) { "
+                "rbsp_trailing_bits; } } entry Payload;"),
+        };
+
+        for (const QString& source : invalidPlacements) {
+            const auto result = DslParser::parse(source);
+            QVERIFY(!result.succeeded());
+            QVERIFY(hasDiagnostic(result, DslDiagnosticCode::InvalidRbspTrailingBits));
+        }
+
+        const auto annotated = DslParser::parse(QStringLiteral(
+            "struct Payload { @spec(\"ITU-T H.264\", \"7.3.2.11\") "
+            "rbsp_trailing_bits; } entry Payload;"));
+        QVERIFY(!annotated.succeeded());
+        QVERIFY(hasDiagnostic(annotated, DslDiagnosticCode::InvalidAnnotation));
+
+        const std::vector<QString> reservedNames{
+            QStringLiteral("rbsp_stop_one_bit"),
+            QStringLiteral("rbsp_alignment_zero_bit"),
+        };
+        for (const QString& name : reservedNames) {
+            const auto conflict = DslParser::parse(QStringLiteral(
+                "struct Payload { bits<1> %1; rbsp_trailing_bits; } entry Payload;")
+                                                      .arg(name));
+            QVERIFY(!conflict.succeeded());
+            QVERIFY(hasDiagnostic(conflict, DslDiagnosticCode::DuplicateName));
+        }
+    }
+
     void computesStaticAlignmentAcrossFixedLengthArrays() {
         const auto aligned = DslParser::parse(QStringLiteral(
             "struct Header { bits<4> prefix[2]; bits<16, little> value; } entry Header;"));

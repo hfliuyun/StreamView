@@ -29,7 +29,8 @@ void collectFields(const std::vector<DslStructItem>& items,
     for (const DslStructItem& item : items) {
         if (item.kind == DslStructItemKind::Field ||
             item.kind == DslStructItemKind::Computed ||
-            item.kind == DslStructItemKind::LazyRegion) {
+            item.kind == DslStructItemKind::LazyRegion ||
+            item.kind == DslStructItemKind::RbspTrailingBits) {
             fields.push_back(&item);
         } else if (item.kind == DslStructItemKind::Conditional) {
             collectFields(item.thenItems, fields);
@@ -60,6 +61,8 @@ void collectFields(const std::vector<DslStructItem>& items,
         } else if (item.kind == DslStructItemKind::Computed ||
                    item.kind == DslStructItemKind::LazyRegion) {
             itemProjection = 1;
+        } else if (item.kind == DslStructItemKind::RbspTrailingBits) {
+            itemProjection = 8;
         } else if (item.kind == DslStructItemKind::Conditional) {
             itemProjection = add(expandedFieldProjection(item.thenItems),
                                  expandedFieldProjection(item.elseItems));
@@ -722,6 +725,9 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         std::vector<QString> declaredFieldNames;
         declaredFieldNames.reserve(fieldDeclarations.size());
         for (const DslStructItem* item : fieldDeclarations) {
+            if (item->kind == DslStructItemKind::RbspTrailingBits) {
+                continue;
+            }
             const QString& name = item->kind == DslStructItemKind::Field
                                       ? item->field.name
                                       : item->kind == DslStructItemKind::Computed
@@ -1299,6 +1305,76 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     fieldOffset = compileLazyRegion(item.lazyRegion, conditions, fieldOffset);
                     continue;
                 }
+                if (item.kind == DslStructItemKind::RbspTrailingBits) {
+                    constexpr quint64 reservedFieldCount = 8;
+                    if (!conditions.empty() || !repeatIndices.empty()) {
+                        addDiagnostic(
+                            result.diagnostics,
+                            DslDiagnosticCode::InvalidRbspTrailingBits,
+                            QStringLiteral(
+                                "rbsp_trailing_bits must be an unconditional top-level item"),
+                            item.range);
+                        fieldOffset = std::nullopt;
+                        continue;
+                    }
+                    const bool reservesADeclaredName =
+                        std::any_of(declaredFieldNames.begin(),
+                                    declaredFieldNames.end(),
+                                    [](const QString& name) {
+                                        return name == QStringLiteral("rbsp_stop_one_bit") ||
+                                               name ==
+                                                   QStringLiteral("rbsp_alignment_zero_bit");
+                                    });
+                    if (reservesADeclaredName) {
+                        addDiagnostic(
+                            result.diagnostics,
+                            DslDiagnosticCode::DuplicateName,
+                            QStringLiteral(
+                                "rbsp_trailing_bits reserves generated field names"),
+                            item.range);
+                        fieldOffset = std::nullopt;
+                        continue;
+                    }
+                    if (reservedFieldCount > maximumExpandedFieldsPerStructure -
+                                                 typedStruct.fields.size()) {
+                        addDiagnostic(
+                            result.diagnostics,
+                            DslDiagnosticCode::InvalidArrayLength,
+                            QStringLiteral(
+                                "rbsp_trailing_bits exceeds the structure materialization limit"),
+                            item.range);
+                        fieldOffset = std::nullopt;
+                        continue;
+                    }
+                    for (quint32 index = 0; index < reservedFieldCount; ++index) {
+                        DslTypedField typedField;
+                        typedField.kind = index == 0
+                                              ? DslTypedFieldKind::RbspStopOneBit
+                                              : DslTypedFieldKind::RbspAlignmentZeroBit;
+                        typedField.name = index == 0
+                                              ? QStringLiteral("rbsp_stop_one_bit")
+                                              : QStringLiteral(
+                                                    "rbsp_alignment_zero_bit[%1]")
+                                                    .arg(index - 1);
+                        typedField.type = {DslValueTypeKind::UnsignedBits,
+                                           quint8(1),
+                                           DslEndian::Big,
+                                           std::nullopt};
+                        typedField.equalsConstraint = index == 0 ? quint64(1) : quint64(0);
+                        typedField.metadata.typeName = QStringLiteral("bits");
+                        typedField.metadata.specification = core::AnalysisSpecification{
+                            QStringLiteral("ITU-T H.264"), QStringLiteral("7.3.2.11")};
+                        typedField.metadata.description =
+                            index == 0
+                                ? QStringLiteral("Marks the final meaningful bit of the RBSP.")
+                                : QStringLiteral(
+                                      "Pads the RBSP to the next logical byte boundary.");
+                        typedField.range = item.rbspTrailingBits.range;
+                        typedStruct.fields.push_back(std::move(typedField));
+                    }
+                    fieldOffset = std::nullopt;
+                    continue;
+                }
                 if (item.kind == DslStructItemKind::Conditional) {
                     const auto resolved = resolveCondition(item.condition, conditions);
                     std::vector<DslTypedFieldCondition> thenConditions = conditions;
@@ -1757,6 +1833,24 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 ++repeatBoundIndex;
             }
             if (fieldIndex == structure.fields.size()) {
+                break;
+            }
+            if (structure.fields.at(fieldIndex).kind ==
+                DslTypedFieldKind::RbspStopOneBit) {
+                emitted = appendInstruction(
+                    {DslOpcode::ReadRbspTrailingBits,
+                     static_cast<quint32>(fieldIndex),
+                     0});
+                fieldIndex += 7;
+                continue;
+            }
+            if (structure.fields.at(fieldIndex).kind ==
+                DslTypedFieldKind::RbspAlignmentZeroBit) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidRbspTrailingBits,
+                              QStringLiteral("rbsp_trailing_bits typed fields are malformed"),
+                              structure.fields.at(fieldIndex).range);
+                emitted = false;
                 break;
             }
             const DslOpcode readOpcode = [&]() {

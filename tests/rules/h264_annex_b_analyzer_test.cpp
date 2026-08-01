@@ -292,6 +292,9 @@ private slots:
         QCOMPARE(parsed.program.structs.at(0).name, QStringLiteral("NalUnitHeader"));
         QCOMPARE(parsed.program.structs.at(1).name,
                  QStringLiteral("AccessUnitDelimiterRbsp"));
+        QCOMPARE(parsed.program.structs.at(1).items.size(), std::size_t(2));
+        QCOMPARE(parsed.program.structs.at(1).items.at(1).kind,
+                 streamview::rules::DslStructItemKind::RbspTrailingBits);
         QCOMPARE(parsed.program.scans.size(), std::size_t(1));
         QCOMPARE(parsed.program.entry.targetName, QStringLiteral("nal_units"));
         QVERIFY(parsed.program.payloadDispatch.has_value());
@@ -466,6 +469,36 @@ private slots:
         QVERIFY(retained.has_value());
         QCOMPARE(retained->name(), QStringLiteral("primary_pic_type"));
         QCOMPARE(retained->value().toULongLong(), quint64(2));
+    }
+
+    void rejectsNonzeroAccessUnitDelimiterPaddingAndContinues() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x09, 0x54,
+                                   0x00, 0x00, 0x01, 0x41}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+        const auto malformedNal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(malformedNal.has_value());
+        QCOMPARE(malformedNal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(malformedNal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto aud = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(aud.has_value());
+        QCOMPARE(aud->state(), MaterializationState::Invalid);
+        QCOMPARE(aud->children().size(), std::size_t(4));
+        const auto nonzeroPadding = analyzer->tree().node(aud->children().at(3));
+        QVERIFY(nonzeroPadding.has_value());
+        QCOMPARE(nonzeroPadding->name(), QStringLiteral("rbsp_alignment_zero_bit[1]"));
+        QCOMPARE(nonzeroPadding->value().toULongLong(), quint64(1));
+
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
     }
 
     void rejectsAnAccessUnitDelimiterWithUndeclaredTrailingBits() {

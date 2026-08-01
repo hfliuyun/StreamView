@@ -318,6 +318,221 @@ private slots:
         QCOMPARE(structure->state(), streamview::core::MaterializationState::Materialized);
     }
 
+    void materializesRbspTrailingBitsAtTheNextLogicalByteBoundary() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Payload { bits<3> primary_pic_type; rbsp_trailing_bits; } "
+            "entry Payload;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source(bytes({0xb0}));
+        const auto mapping = mappingForBytes(1);
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *mapping);
+        auto tree = AnalysisTree::create(QStringLiteral("rbsp-trailing-bits"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(
+            parsed.program, QStringLiteral("Payload"), reader, *mapping, 0, *tree, tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(8));
+        QCOMPARE(result.instructionsExecuted, quint64(4));
+        QCOMPARE(result.nodesCreated, quint64(7));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(6));
+        const auto prefix = tree->node(structure->children().at(0));
+        QVERIFY(prefix.has_value());
+        QCOMPARE(prefix->name(), QStringLiteral("primary_pic_type"));
+        QCOMPARE(prefix->value().toULongLong(), quint64(5));
+        const auto stop = tree->node(structure->children().at(1));
+        QVERIFY(stop.has_value());
+        QCOMPARE(stop->name(), QStringLiteral("rbsp_stop_one_bit"));
+        QCOMPARE(stop->value().toULongLong(), quint64(1));
+        QCOMPARE(stop->location()->sourceSpans().front().start().absoluteBitOffset(), quint64(3));
+        QCOMPARE(stop->metadata().specification->clause, QStringLiteral("7.3.2.11"));
+        for (std::size_t index = 0; index < 4; ++index) {
+            const auto alignment = tree->node(structure->children().at(2 + index));
+            QVERIFY(alignment.has_value());
+            QCOMPARE(alignment->name(),
+                     QStringLiteral("rbsp_alignment_zero_bit[%1]").arg(index));
+            QCOMPARE(alignment->value().toULongLong(), quint64(0));
+            QCOMPARE(alignment->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     quint64(4 + index));
+        }
+    }
+
+    void materializesRbspTrailingBitsWithoutPaddingAndAcrossMappedSourceSpans() {
+        const auto byteAligned = DslParser::parse(QStringLiteral(
+            "struct Payload { bits<7> prefix; rbsp_trailing_bits; } entry Payload;"));
+        QVERIFY(byteAligned.succeeded());
+        MemorySource byteAlignedSource(bytes({0xff}));
+        const auto byteAlignedMapping = mappingForBytes(1);
+        QVERIFY(byteAlignedMapping.has_value());
+        BitReader byteAlignedReader(byteAlignedSource, *byteAlignedMapping);
+        auto byteAlignedTree = AnalysisTree::create(QStringLiteral("rbsp-no-padding"));
+        QVERIFY(byteAlignedTree.has_value());
+        const auto byteAlignedResult = DslExecutor::decodeStruct(byteAligned.program,
+                                                                   QStringLiteral("Payload"),
+                                                                   byteAlignedReader,
+                                                                   *byteAlignedMapping,
+                                                                   0,
+                                                                   *byteAlignedTree,
+                                                                   byteAlignedTree->rootId());
+        QCOMPARE(byteAlignedResult.status, DslExecutionStatus::Materialized);
+        QCOMPARE(byteAlignedResult.bitsConsumed, quint64(8));
+        const auto byteAlignedStructure = byteAlignedTree->node(*byteAlignedResult.structureNode);
+        QVERIFY(byteAlignedStructure.has_value());
+        QCOMPARE(byteAlignedStructure->children().size(), std::size_t(2));
+
+        const auto mapped = DslParser::parse(QStringLiteral(
+            "struct Payload { bits<3> prefix; rbsp_trailing_bits; } entry Payload;"));
+        QVERIFY(mapped.succeeded());
+        MemorySource mappedSource(bytes({0xb0, 0x00}));
+        const auto mappedMapping = mappingForSpans({{0, 4}, {8, 4}});
+        QVERIFY(mappedMapping.has_value());
+        BitReader mappedReader(mappedSource, *mappedMapping);
+        auto mappedTree = AnalysisTree::create(QStringLiteral("mapped-rbsp-trailing-bits"));
+        QVERIFY(mappedTree.has_value());
+        const auto mappedResult = DslExecutor::decodeStruct(mapped.program,
+                                                              QStringLiteral("Payload"),
+                                                              mappedReader,
+                                                              *mappedMapping,
+                                                              0,
+                                                              *mappedTree,
+                                                              mappedTree->rootId());
+        QCOMPARE(mappedResult.status, DslExecutionStatus::Materialized);
+        const auto mappedStructure = mappedTree->node(*mappedResult.structureNode);
+        QVERIFY(mappedStructure.has_value());
+        QCOMPARE(mappedStructure->children().size(), std::size_t(6));
+        const auto stop = mappedTree->node(mappedStructure->children().at(1));
+        const auto firstAlignment = mappedTree->node(mappedStructure->children().at(2));
+        QVERIFY(stop.has_value());
+        QVERIFY(firstAlignment.has_value());
+        QCOMPARE(stop->location()->sourceSpans().front().start().absoluteBitOffset(), quint64(3));
+        QCOMPARE(firstAlignment->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(8));
+    }
+
+    void retainsPublishedRbspTrailingBitsOnConstraintAndTruncationFailures() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Payload { bits<3> prefix; rbsp_trailing_bits; } entry Payload;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource clearedStopSource(bytes({0xa0}));
+        const auto fullMapping = mappingForBytes(1);
+        QVERIFY(fullMapping.has_value());
+        BitReader clearedStopReader(clearedStopSource, *fullMapping);
+        auto clearedStopTree = AnalysisTree::create(QStringLiteral("cleared-rbsp-stop"));
+        QVERIFY(clearedStopTree.has_value());
+        const auto clearedStop = DslExecutor::decodeStruct(parsed.program,
+                                                            QStringLiteral("Payload"),
+                                                            clearedStopReader,
+                                                            *fullMapping,
+                                                            0,
+                                                            *clearedStopTree,
+                                                            clearedStopTree->rootId());
+        QCOMPARE(clearedStop.status, DslExecutionStatus::InvalidSyntax);
+        QCOMPARE(clearedStop.bitsConsumed, quint64(4));
+        const auto clearedStopStructure = clearedStopTree->node(*clearedStop.structureNode);
+        QVERIFY(clearedStopStructure.has_value());
+        QCOMPARE(clearedStopStructure->children().size(), std::size_t(2));
+        QCOMPARE(clearedStopStructure->diagnostics().front().code, DiagnosticCode::InvalidSyntax);
+
+        MemorySource nonzeroPaddingSource(bytes({0xb4}));
+        BitReader nonzeroPaddingReader(nonzeroPaddingSource, *fullMapping);
+        auto nonzeroPaddingTree = AnalysisTree::create(QStringLiteral("nonzero-rbsp-padding"));
+        QVERIFY(nonzeroPaddingTree.has_value());
+        const auto nonzeroPadding = DslExecutor::decodeStruct(parsed.program,
+                                                               QStringLiteral("Payload"),
+                                                               nonzeroPaddingReader,
+                                                               *fullMapping,
+                                                               0,
+                                                               *nonzeroPaddingTree,
+                                                               nonzeroPaddingTree->rootId());
+        QCOMPARE(nonzeroPadding.status, DslExecutionStatus::InvalidSyntax);
+        QCOMPARE(nonzeroPadding.bitsConsumed, quint64(6));
+        const auto nonzeroPaddingStructure = nonzeroPaddingTree->node(*nonzeroPadding.structureNode);
+        QVERIFY(nonzeroPaddingStructure.has_value());
+        QCOMPARE(nonzeroPaddingStructure->children().size(), std::size_t(4));
+
+        MemorySource truncatedSource(bytes({0xa0}));
+        const auto truncatedMapping = mappingForSpans({{0, 3}});
+        QVERIFY(truncatedMapping.has_value());
+        BitReader truncatedReader(truncatedSource, *truncatedMapping);
+        auto truncatedTree = AnalysisTree::create(QStringLiteral("truncated-rbsp-stop"));
+        QVERIFY(truncatedTree.has_value());
+        const auto truncated = DslExecutor::decodeStruct(parsed.program,
+                                                          QStringLiteral("Payload"),
+                                                          truncatedReader,
+                                                          *truncatedMapping,
+                                                          0,
+                                                          *truncatedTree,
+                                                          truncatedTree->rootId());
+        QCOMPARE(truncated.status, DslExecutionStatus::TruncatedSource);
+        QCOMPARE(truncated.bitsConsumed, quint64(3));
+        const auto truncatedStructure = truncatedTree->node(*truncated.structureNode);
+        QVERIFY(truncatedStructure.has_value());
+        QCOMPARE(truncatedStructure->children().size(), std::size_t(1));
+        QCOMPARE(truncatedStructure->diagnostics().front().code, DiagnosticCode::TruncatedSource);
+    }
+
+    void rejectsMalformedRbspTrailingBitsBytecodeAfterRetainingPriorFields() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Payload { bits<3> prefix; rbsp_trailing_bits; } entry Payload;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+        auto malformed = *compiled.program;
+        malformed.bytecode.at(2).immediate = 1;
+
+        MemorySource source(bytes({0xb0}));
+        const auto mapping = mappingForBytes(1);
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *mapping);
+        auto tree = AnalysisTree::create(QStringLiteral("malformed-rbsp-trailing-bits"));
+        QVERIFY(tree.has_value());
+        const auto result = DslExecutor::decodeStruct(
+            malformed, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(result.nodesCreated, quint64(2));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(1));
+    }
+
+    void rejectsTypedFieldsThatFollowRbspTrailingBits() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Payload { bits<3> prefix; rbsp_trailing_bits; } entry Payload;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+        auto malformed = *compiled.program;
+        auto tail = malformed.structs.front().fields.front();
+        tail.name = QStringLiteral("tail");
+        tail.equalsConstraint.reset();
+        malformed.structs.front().fields.push_back(std::move(tail));
+        malformed.bytecode.insert(malformed.bytecode.end() - 1,
+                                  {DslOpcode::ReadUnsignedBits, quint32(9), 0});
+        ++malformed.structs.front().bytecodeLength;
+
+        MemorySource source(bytes({0xb0, 0x00}));
+        const auto mapping = mappingForBytes(2);
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *mapping);
+        auto tree = AnalysisTree::create(QStringLiteral("nonterminal-rbsp-trailing-bits"));
+        QVERIFY(tree.has_value());
+        const auto result = DslExecutor::decodeStruct(
+            malformed, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(result.nodesCreated, quint64(2));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(1));
+    }
+
     void materializesComputedValuesWithoutSourceLocations() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "pure u64 twice(u64 value) { return value * 2; } "
