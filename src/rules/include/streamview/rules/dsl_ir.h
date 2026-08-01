@@ -121,6 +121,20 @@ struct DslTypedEntry final {
     quint32 targetIndex = 0;
 };
 
+struct DslTypedPayloadCase final {
+    quint64 value = 0;
+    std::optional<quint32> structureIndex;
+};
+
+struct DslTypedPayloadDispatch final {
+    quint32 scanIndex = 0;
+    quint32 controllerFieldIndex = 0;
+    std::vector<DslTypedPayloadCase> cases;
+    core::AnalysisNodeMetadata metadata;
+
+    [[nodiscard]] const DslTypedPayloadCase* find(quint64 value) const noexcept;
+};
+
 enum class DslOpcode : quint8 {
     BeginStructure,
     ReadUnsignedBits,
@@ -145,6 +159,7 @@ struct DslTypedProgram final {
     std::vector<DslTypedScan> scans;
     std::vector<DslInstruction> bytecode;
     DslTypedEntry entry;
+    std::optional<DslTypedPayloadDispatch> payloadDispatch;
 
     [[nodiscard]] std::optional<quint32> enumIndex(const QString& name) const;
     [[nodiscard]] std::optional<quint32> structureIndex(const QString& name) const;

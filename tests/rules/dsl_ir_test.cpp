@@ -1246,6 +1246,70 @@ private slots:
         QVERIFY(!compiled.program.has_value());
         QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidBitWidth));
     }
+
+    void lowersPayloadDispatchToResolvedCasesWithoutNewOpcodes() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct NalUnitHeader { bits<3> pad; bits<5> nal_unit_type; }
+            struct AccessUnitDelimiterRbsp { bits<8> value; }
+            @index(progressive)
+            sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+            @description("Payload selection.")
+            payload<rbsp> nal_units switch (nal_unit_type) {
+                case 9: AccessUnitDelimiterRbsp;
+                case 10: empty;
+            }
+            entry nal_units;
+        )"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+
+        QVERIFY(compiled.succeeded());
+        const auto& program = *compiled.program;
+        QVERIFY(program.payloadDispatch.has_value());
+        const auto& dispatch = *program.payloadDispatch;
+        QCOMPARE(dispatch.scanIndex, quint32(0));
+        QCOMPARE(dispatch.controllerFieldIndex, quint32(1));
+        QCOMPARE(dispatch.metadata.description, QStringLiteral("Payload selection."));
+        QCOMPARE(dispatch.cases.size(), std::size_t(2));
+
+        const auto* structureCase = dispatch.find(9);
+        QVERIFY(structureCase != nullptr);
+        QVERIFY(structureCase->structureIndex.has_value());
+        QCOMPARE(program.structs.at(*structureCase->structureIndex).name,
+                 QStringLiteral("AccessUnitDelimiterRbsp"));
+
+        const auto* emptyCase = dispatch.find(10);
+        QVERIFY(emptyCase != nullptr);
+        QVERIFY(!emptyCase->structureIndex.has_value());
+        QVERIFY(dispatch.find(11) == nullptr);
+
+        QVERIFY(std::none_of(program.bytecode.begin(),
+                             program.bytecode.end(),
+                             [](const auto& instruction) {
+                                 return instruction.opcode > DslOpcode::EndStructure;
+                             }));
+    }
+
+    void rejectsPayloadDispatchThatSurvivesParsingWithAnInvalidController() {
+        auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct NalUnitHeader { bits<3> pad; bits<5> nal_unit_type; }
+            struct AccessUnitDelimiterRbsp { bits<8> value; }
+            @index(progressive)
+            sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+            payload<rbsp> nal_units switch (nal_unit_type) {
+                case 9: AccessUnitDelimiterRbsp;
+            }
+            entry nal_units;
+        )"));
+        QVERIFY(parsed.succeeded());
+        parsed.program.payloadDispatch->controllerFieldName = QStringLiteral("pad_missing");
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+
+        QVERIFY(!compiled.succeeded());
+        QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidPayloadDispatch));
+    }
 };
 
 QTEST_GUILESS_MAIN(DslIrTest)

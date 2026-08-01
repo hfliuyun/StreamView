@@ -103,6 +103,13 @@ The accepted progressive-index recovery slice keeps the existing
 resumable in the same analyzer. It preserves published nodes, scanner and queue
 state, and monotonic identifiers without defining persistent checkpoints.
 
+The accepted payload-dispatch slice adds a single top-level
+`payload<rbsp> sequence switch (controller) { case integer: Structure; }`
+declaration. It binds controller values decoded by a sequence element to the
+structure that decodes the derived payload view, or to `empty` when that
+payload carries no syntax elements. The rule, not the runner, decides which
+structure a payload uses.
+
 ## Minimum DSL 0.1 Subset
 
 The first executable subset uses the following grammar. Whitespace and `//` or
@@ -113,7 +120,8 @@ unsigned decimal or `0x` hexadecimal values. String literals use `"`, `\\`,
 
 ```text
 program       := { declaration }
-declaration   := pure_function | { annotation } ( enum | struct | sequence | entry )
+declaration   := pure_function
+               | { annotation } ( enum | struct | sequence | payload | entry )
 pure_function := "pure" scalar_type identifier "("
                  [ parameter { "," parameter } ] ")"
                  "{" "return" expression ";" "}"
@@ -143,6 +151,9 @@ repeat        := "repeat" "(" identifier "," integer ")"
                  "{" { struct_item } "}"
 sequence      := "sequence" "<" identifier ">" identifier "="
                  "scan" "(" identifier ")" ";"
+payload       := "payload" "<" identifier ">" identifier
+                 "switch" "(" identifier ")" "{" payload_case { payload_case } "}"
+payload_case  := "case" integer ":" ( identifier | "empty" ) ";"
 entry         := "entry" identifier ";"
 annotation    := "@" identifier [ "(" [ value { "," value } ] ")" ]
 value         := integer | string | identifier
@@ -304,6 +315,17 @@ The static rules for this subset are:
 - The only accepted progressive sequence form is
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`.
   `Element` must name a declared structure.
+- A program declares at most one payload dispatch. Its view kind must be
+  `rbsp`, and it must name a declared progressive sequence for which an `entry`
+  exists. The controller must name an unsigned scalar `bits` field of at most
+  64 bits declared unconditionally at the top level of that sequence's element
+  structure, so it is guaranteed on every path. Exp-Golomb fields, computed
+  fields, array elements, lazy regions, and any field inside a conditional,
+  switch, or repeat body are rejected as controllers. Case values must be
+  distinct and must fit the controller's declared width. Each case target names
+  a declared structure other than the element structure, or `empty`. There is
+  no `default` arm; an unlisted controller value keeps the uninterpreted
+  payload behavior.
 - An `@equals(integer)` field annotation is a checked constraint and may appear
   at most once on a `bits` field. Its value must fit the field's unsigned bit
   width. An `@enum(Type)` annotation may appear at most once on a `bits` field
@@ -325,8 +347,8 @@ The static rules for this subset are:
 
 `enum`, `big`, `little`, `ue`, `se`, `pure`, `return`, `bool`, `u64`,
 `computed`, `lazy`, `bytes`, `true`, `false`, `if`, `else`, `switch`, `case`,
-`default`, and `repeat` are contextual words in the positions shown by the
-grammar and remain ordinary identifiers elsewhere.
+`default`, `repeat`, `payload`, and `empty` are contextual words in the
+positions shown by the grammar and remain ordinary identifiers elsewhere.
 Existing scalar declarations are unchanged, and `bits<N>` remains exactly
 equivalent to `bits<N, big>`; this slice deprecates no accepted 0.1 syntax.
 
@@ -558,7 +580,19 @@ coalesced into source spans. The NAL children appear in this order:
 `emulation_prevention_three_byte[index]` regions in source order, and optional
 `trailing_zero_8bits`. NAL-unit types `14`, `20`, and `21` require extension
 headers that this profile does not yet parse, so their bytes after the direct
-header remain uninterpreted and are not passed to the mapper.
+header remain uninterpreted, are not passed to the mapper, and cannot dispatch.
+
+The bundled rule declares a payload dispatch for `nal_unit_type` values `9`,
+`10`, and `11`. A dispatched type is always mapped, even when its payload is
+empty, so `rbsp_payload` is present for every dispatched NAL. Type `9` decodes
+`AccessUnitDelimiterRbsp` as a child of `rbsp_payload`, exposing
+`primary_pic_type`, `rbsp_stop_one_bit`, and `rbsp_alignment_zero_bit[0]`
+through `rbsp_alignment_zero_bit[3]`. Types `10` and `11` are declared `empty`
+and require a zero-length RBSP. A one-byte access unit delimiter is therefore
+fully decoded, a header-only access unit delimiter is `truncated-source`, a
+header-only end of sequence or end of stream is materialized, and either of
+those types carrying RBSP bytes is `invalid-syntax`. Every other type keeps the
+uninterpreted `rbsp_payload` region unchanged.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
 addition to their record-count and inspected-position budgets. The default is
@@ -747,6 +781,36 @@ struct NalUnitHeader {
 entry NalUnitHeader;
 ```
 
+Valid payload-dispatch example:
+
+```cpp
+@spec("ITU-T H.264", "7.3.1")
+struct NalUnitHeader {
+    bits<1> forbidden_zero_bit @equals(0);
+    bits<2> nal_ref_idc;
+    bits<5> nal_unit_type;
+}
+
+@spec("ITU-T H.264", "7.3.2.4")
+struct AccessUnitDelimiterRbsp {
+    bits<3> primary_pic_type;
+    bits<1> rbsp_stop_one_bit @equals(1);
+    bits<1> rbsp_alignment_zero_bit[4] @equals(0);
+}
+
+@index(progressive)
+sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+
+@spec("ITU-T H.264", "7.3.1")
+payload<rbsp> nal_units switch (nal_unit_type) {
+    case 9:  AccessUnitDelimiterRbsp;
+    case 10: empty;
+    case 11: empty;
+}
+
+entry nal_units;
+```
+
 Invalid minimum examples include `bits<0> flag;`, `bits<65> flag;`,
 `bits<12, little> value;`, a little-endian field after an unaligned field,
 `ue value @equals(0);`, `se value @enum(Type);`, a little-endian field after a
@@ -769,6 +833,16 @@ fields, a repeat-local controller used by another iteration or after the
 repeat, a little-endian field after a repeat, `scan(other_scanner)`, two
 declarations with the same name, a program with no `entry`, or multiple `entry`
 declarations.
+
+Invalid payload-dispatch examples include two payload declarations,
+`payload<ebsp>` or any other view kind, a dispatch naming a structure or an
+undeclared name instead of a sequence, a dispatch whose sequence has no
+`entry`, an unknown controller name, an Exp-Golomb, computed, array-element, or
+lazy-region controller, a controller declared inside a conditional, switch, or
+repeat body, a case value outside the controller's width, a duplicate case
+value, a dispatch with no case, a case target that is undeclared or is the
+sequence element structure itself, a `default` arm, and a missing case colon or
+semicolon.
 
 Invalid pure-function and computed-field examples include an annotated pure
 function, more than 16 parameters, duplicate parameter or function names, an
@@ -883,6 +957,65 @@ from the analysis root representing the entry sequence. A NAL committed as a
 cancelled partial result remains cancelled, so a root that later reaches
 `materialized` may still belong to a tree with partial results. This in-memory
 recovery is not a serialized or cross-process checkpoint contract.
+
+## Payload Dispatch
+
+A sequence element decodes a header; the syntax that follows it usually depends
+on a value that header just produced. A payload dispatch binds those values to
+the structures that decode the derived payload view:
+
+```cpp
+@spec("ITU-T H.264", "7.3.1")
+payload<rbsp> nal_units switch (nal_unit_type) {
+    case 9:  AccessUnitDelimiterRbsp;
+    case 10: empty;
+    case 11: empty;
+}
+```
+
+The declaration is top-level and at most one may appear. `rbsp` is the only
+accepted view kind; it names the mapped payload view the runtime already
+derives for each sequence element. Annotations before the declaration become
+the dispatch's own metadata.
+
+The dispatch adds no opcode. A selected structure is executed by the same
+`begin-structure` through `end-structure` bytecode the compiler emits for every
+declared structure, so a case target has no special typed form. Case
+distinctness, controller resolution, and target indexes are validated before
+execution; a malformed dispatch is an invalid typed definition.
+
+At runtime the controller value is read from the element's published header
+after that header materializes.
+
+An unlisted value changes nothing. The payload stays an uninterpreted region
+when it is non-empty, and an element with no payload gets no payload node.
+
+A listed value always receives the derived payload view, including when that
+view is empty. Presence of a case, not payload length, decides whether the view
+exists. A rule that describes a payload therefore always gets an exact view to
+decode against.
+
+An `empty` case requires the payload view's logical length to be exactly zero.
+A non-empty payload is `invalid-syntax` at the payload path and retains the
+complete payload region and every excluded region.
+
+A structure case executes its target over the payload view from logical zero,
+parented under the payload region node, with the same execution options,
+sandbox budgets, and cancellation points as the header.
+
+A materialized structure must consume the payload view's complete logical
+length. Residual bits are `invalid-syntax` at the payload path. Exact
+consumption is what makes trailing-bit declarations verifiable and what
+prevents silently accepting bytes no declaration describes.
+
+A structure needing more bits than the view holds is `truncated-source`,
+including when the view is empty. Under the bundled H.264 rule a header-only
+access unit delimiter is therefore truncated, while a header-only end of
+sequence is materialized.
+
+Payload failure marks the containing element invalid or cancelled and retains
+the header, the payload region, the excluded regions, and any framing regions.
+It never terminates the sequence, and later elements continue to be analyzed.
 
 ## Position-Aware Context Directories
 

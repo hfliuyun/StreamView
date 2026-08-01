@@ -634,7 +634,10 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
     }
 
     const quint64 nalBitLength = record.nalUnit ? record.nalUnit->bitLength() : 0;
-    if (nalBitLength > 8U && !hasExtensionHeader(nalUnitType)) {
+    std::optional<DslTypedPayloadCase> payloadCase = payloadCaseFor(nalUnitType);
+    const bool mapPayload =
+        !hasExtensionHeader(nalUnitType) && (nalBitLength > 8U || payloadCase.has_value());
+    if (mapPayload) {
         const quint64 nalStart = record.nalUnit->start().absoluteBitOffset();
         if (nalStart > std::numeric_limits<quint64>::max() - 8U) {
             return failPublishedNal(
@@ -654,6 +657,8 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
             nalUnitIndex,
             H264EbspRbspMapper(
                 *source_, rbspViewId, *payloadSpan, mapperLimits_, cancellation_),
+            std::move(payloadCase),
+            allowExecutionCancellation,
         });
         return true;
     }
@@ -702,6 +707,130 @@ bool H264AnnexBAnalyzer::appendTrailingZeroRegion(const H264StartCodeRecord& rec
         core::AnalysisSpecification{QStringLiteral("ITU-T H.264"), QStringLiteral("B.1.1")};
     if (!tree_.appendChild(nalNode, std::move(spec))) {
         *errorMessage = QStringLiteral("Unable to append Annex B trailing-zero framing");
+        return false;
+    }
+    return true;
+}
+
+std::optional<DslTypedPayloadCase> H264AnnexBAnalyzer::payloadCaseFor(
+    quint64 nalUnitType) const {
+    if (!program_.payloadDispatch) {
+        return std::nullopt;
+    }
+    const DslTypedPayloadDispatch& dispatch = *program_.payloadDispatch;
+    if (dispatch.scanIndex >= program_.scans.size() ||
+        program_.scans.at(dispatch.scanIndex).elementStructIndex != elementStructIndex_) {
+        return std::nullopt;
+    }
+    const DslTypedPayloadCase* payloadCase = dispatch.find(nalUnitType);
+    return payloadCase == nullptr ? std::nullopt : std::optional(*payloadCase);
+}
+
+bool H264AnnexBAnalyzer::decodePayloadStructure(PendingNalUnit& pending,
+                                                core::AnalysisNodeId rbspNode,
+                                                const QString& rbspPath,
+                                                bool* payloadDecoded,
+                                                H264AnnexBAnalysisStatus* failureStatus,
+                                                QString* errorMessage) {
+    *payloadDecoded = false;
+    *failureStatus = H264AnnexBAnalysisStatus::InvalidRule;
+    const core::SourceMapping& mapping = pending.mapper.mapping();
+    const quint64 payloadBits = mapping.logicalBitLength();
+
+    const auto reportPayload = [this, rbspNode, &rbspPath](core::DiagnosticCode code,
+                                                           core::MaterializationState state,
+                                                           QString message) {
+        core::ParseDiagnostic diagnostic;
+        diagnostic.code = code;
+        diagnostic.severity = core::DiagnosticSeverity::Error;
+        diagnostic.message = std::move(message);
+        diagnostic.fieldPath = rbspPath;
+        const auto node = tree_.node(rbspNode);
+        if (node) {
+            diagnostic.location = node->location();
+        }
+        return tree_.markPartial(rbspNode, state, std::move(diagnostic));
+    };
+
+    if (!pending.payloadCase->structureIndex) {
+        if (payloadBits == 0) {
+            *payloadDecoded = true;
+            return true;
+        }
+        if (!reportPayload(core::DiagnosticCode::InvalidSyntax,
+                           core::MaterializationState::Invalid,
+                           QStringLiteral("This NAL unit type requires an empty RBSP"))) {
+            *errorMessage = QStringLiteral("Unable to reject a non-empty empty-RBSP payload");
+            return false;
+        }
+        return true;
+    }
+
+    const quint32 structureIndex = *pending.payloadCase->structureIndex;
+    if (structureIndex >= program_.structs.size()) {
+        *errorMessage = QStringLiteral("H.264 payload dispatch names an unknown structure");
+        return false;
+    }
+
+    core::BitReader reader(*source_, mapping);
+    DslExecutionOptions executionOptions;
+    if (pending.allowExecutionCancellation) {
+        executionOptions.cancellation = cancellation_;
+    }
+    const DslExecutionResult execution = DslExecutor::decodeStruct(
+        program_, structureIndex, reader, mapping, 0, tree_, rbspNode, executionOptions);
+
+    if (execution.materialized() && execution.bitsConsumed == payloadBits) {
+        *payloadDecoded = true;
+        return true;
+    }
+
+    core::DiagnosticCode code = core::DiagnosticCode::InvalidSyntax;
+    core::MaterializationState state = core::MaterializationState::Invalid;
+    QString message;
+    bool terminal = false;
+    if (execution.materialized()) {
+        message = QStringLiteral("H.264 RBSP payload retains %1 undeclared bits")
+                      .arg(payloadBits - execution.bitsConsumed);
+    } else {
+        message = execution.errorMessage.isEmpty()
+                      ? QStringLiteral("Unable to decode the H.264 RBSP payload")
+                      : execution.errorMessage;
+        switch (execution.status) {
+        case DslExecutionStatus::TruncatedSource:
+            code = core::DiagnosticCode::TruncatedSource;
+            break;
+        case DslExecutionStatus::SourceError:
+            code = core::DiagnosticCode::SourceError;
+            *failureStatus = H264AnnexBAnalysisStatus::SourceError;
+            terminal = true;
+            break;
+        case DslExecutionStatus::Cancelled:
+            code = core::DiagnosticCode::Cancelled;
+            state = core::MaterializationState::Cancelled;
+            *failureStatus = H264AnnexBAnalysisStatus::Cancelled;
+            terminal = true;
+            break;
+        case DslExecutionStatus::ResourceLimit:
+            code = core::DiagnosticCode::ResourceLimit;
+            *failureStatus = H264AnnexBAnalysisStatus::ResourceLimit;
+            terminal = true;
+            break;
+        case DslExecutionStatus::InvalidDefinition:
+            *failureStatus = H264AnnexBAnalysisStatus::InvalidRule;
+            terminal = true;
+            break;
+        case DslExecutionStatus::InvalidSyntax:
+        case DslExecutionStatus::Materialized:
+            break;
+        }
+    }
+    if (!reportPayload(code, state, message)) {
+        *errorMessage = QStringLiteral("Unable to mark the H.264 RBSP payload as a partial result");
+        return false;
+    }
+    if (terminal) {
+        *errorMessage = std::move(message);
         return false;
     }
     return true;
@@ -761,7 +890,8 @@ bool H264AnnexBAnalyzer::finishPendingNalUnit(const H264EbspRbspMapBatch& mapBat
     }
     const core::MaterializationState rbspState =
         mappingComplete
-            ? core::MaterializationState::Materialized
+            ? (pending.payloadCase ? core::MaterializationState::Indexing
+                                   : core::MaterializationState::Materialized)
             : (mappedFailureStatus == H264AnnexBAnalysisStatus::Cancelled
                    ? core::MaterializationState::Cancelled
                    : core::MaterializationState::Invalid);
@@ -846,9 +976,49 @@ bool H264AnnexBAnalyzer::finishPendingNalUnit(const H264EbspRbspMapBatch& mapBat
             }
         }
 
-        const core::MaterializationState nalState = pending.mapper.issues().empty()
-                                                        ? core::MaterializationState::Materialized
-                                                        : core::MaterializationState::Invalid;
+        bool payloadDecoded = true;
+        if (pending.payloadCase) {
+            H264AnnexBAnalysisStatus payloadFailureStatus =
+                H264AnnexBAnalysisStatus::InvalidRule;
+            QString payloadError;
+            const bool payloadContinues = decodePayloadStructure(pending,
+                                                                 *rbspNode,
+                                                                 rbspPath,
+                                                                 &payloadDecoded,
+                                                                 &payloadFailureStatus,
+                                                                 &payloadError);
+            if (payloadDecoded && !tree_.transition(*rbspNode,
+                                                    core::MaterializationState::Materialized)) {
+                return failPendingNal(
+                    QStringLiteral("Unable to materialize the decoded H.264 RBSP payload"));
+            }
+            if (!payloadContinues) {
+                *failureStatus = payloadFailureStatus;
+                *errorMessage = payloadError;
+                const core::MaterializationState nalState =
+                    payloadFailureStatus == H264AnnexBAnalysisStatus::Cancelled
+                        ? core::MaterializationState::Cancelled
+                        : core::MaterializationState::Invalid;
+                core::ParseDiagnostic diagnostic;
+                diagnostic.code = diagnosticCode(payloadFailureStatus);
+                diagnostic.severity = core::DiagnosticSeverity::Error;
+                diagnostic.message = payloadError;
+                diagnostic.fieldPath = rbspPath;
+                diagnostic.location = rbspLocation;
+                if (!tree_.markPartial(pending.node, nalState, std::move(diagnostic))) {
+                    return failPendingNal(
+                        QStringLiteral("Unable to mark the decoded H.264 NAL unit as partial"));
+                }
+                batch.nalUnitNodes.push_back(pending.node);
+                pendingNalUnit_.reset();
+                return false;
+            }
+        }
+
+        const core::MaterializationState nalState =
+            pending.mapper.issues().empty() && payloadDecoded
+                ? core::MaterializationState::Materialized
+                : core::MaterializationState::Invalid;
         if (!tree_.transition(pending.node, nalState)) {
             return failPendingNal(
                 QStringLiteral("Unable to finish the mapped H.264 NAL unit"));

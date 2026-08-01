@@ -288,9 +288,237 @@ private slots:
         QVERIFY2(!source.isEmpty(), qPrintable(errorMessage));
         const auto parsed = DslParser::parse(source);
         QVERIFY(parsed.succeeded());
-        QCOMPARE(parsed.program.structs.size(), std::size_t(1));
+        QCOMPARE(parsed.program.structs.size(), std::size_t(2));
+        QCOMPARE(parsed.program.structs.at(0).name, QStringLiteral("NalUnitHeader"));
+        QCOMPARE(parsed.program.structs.at(1).name,
+                 QStringLiteral("AccessUnitDelimiterRbsp"));
         QCOMPARE(parsed.program.scans.size(), std::size_t(1));
         QCOMPARE(parsed.program.entry.targetName, QStringLiteral("nal_units"));
+        QVERIFY(parsed.program.payloadDispatch.has_value());
+        const auto& dispatch = *parsed.program.payloadDispatch;
+        QCOMPARE(dispatch.viewKind, QStringLiteral("rbsp"));
+        QCOMPARE(dispatch.sequenceName, QStringLiteral("nal_units"));
+        QCOMPARE(dispatch.controllerFieldName, QStringLiteral("nal_unit_type"));
+        QCOMPARE(dispatch.cases.size(), std::size_t(3));
+    }
+
+    void decodesTheAccessUnitDelimiterPayload() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x09, 0x50}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        QCOMPARE(nal->children().size(), std::size_t(3));
+
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        QCOMPARE(rbsp->name(), QStringLiteral("rbsp_payload"));
+        QCOMPARE(rbsp->state(), MaterializationState::Materialized);
+        QCOMPARE(rbsp->children().size(), std::size_t(1));
+
+        const auto aud = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(aud.has_value());
+        QCOMPARE(aud->name(), QStringLiteral("AccessUnitDelimiterRbsp"));
+        QCOMPARE(aud->state(), MaterializationState::Materialized);
+        QCOMPARE(aud->children().size(), std::size_t(6));
+        QCOMPARE(aud->metadata().specification->clause, QStringLiteral("7.3.2.4"));
+
+        const auto primaryPicType = analyzer->tree().node(aud->children().at(0));
+        QVERIFY(primaryPicType.has_value());
+        QCOMPARE(primaryPicType->name(), QStringLiteral("primary_pic_type"));
+        QCOMPARE(primaryPicType->kind(), AnalysisNodeKind::SyntaxField);
+        QCOMPARE(primaryPicType->value().toULongLong(), quint64(2));
+        QCOMPARE(primaryPicType->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(32));
+        QCOMPARE(primaryPicType->location()->sourceSpans().front().bitLength(), quint64(3));
+
+        const auto stopBit = analyzer->tree().node(aud->children().at(1));
+        QVERIFY(stopBit.has_value());
+        QCOMPARE(stopBit->name(), QStringLiteral("rbsp_stop_one_bit"));
+        QCOMPARE(stopBit->value().toULongLong(), quint64(1));
+        QCOMPARE(stopBit->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(35));
+        QCOMPARE(stopBit->metadata().specification->clause, QStringLiteral("7.3.2.11"));
+
+        for (std::size_t index = 0; index < 4; ++index) {
+            const auto alignment = analyzer->tree().node(aud->children().at(2 + index));
+            QVERIFY(alignment.has_value());
+            QCOMPARE(alignment->name(),
+                     QStringLiteral("rbsp_alignment_zero_bit[%1]").arg(index));
+            QCOMPARE(alignment->value().toULongLong(), quint64(0));
+            QCOMPARE(
+                alignment->location()->sourceSpans().front().start().absoluteBitOffset(),
+                quint64(36 + index));
+            QCOMPARE(alignment->location()->sourceSpans().front().bitLength(), quint64(1));
+        }
+    }
+
+    void reportsAHeaderOnlyAccessUnitDelimiterAsTruncated() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x09}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Invalid);
+        QCOMPARE(nal->children().size(), std::size_t(3));
+
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        QCOMPARE(rbsp->name(), QStringLiteral("rbsp_payload"));
+        QCOMPARE(rbsp->state(), MaterializationState::Invalid);
+        QCOMPARE(rbsp->diagnostics().size(), std::size_t(1));
+        QCOMPARE(rbsp->diagnostics().front().code,
+                 streamview::core::DiagnosticCode::TruncatedSource);
+    }
+
+    void materializesHeaderOnlyEndOfSequenceAndEndOfStream() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x0A, 0x00, 0x00, 0x01, 0x0B}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+        for (const auto nodeId : batch.nalUnitNodes) {
+            const auto nal = analyzer->tree().node(nodeId);
+            QVERIFY(nal.has_value());
+            QCOMPARE(nal->state(), MaterializationState::Materialized);
+            QCOMPARE(nal->children().size(), std::size_t(3));
+            const auto rbsp = analyzer->tree().node(nal->children().at(2));
+            QVERIFY(rbsp.has_value());
+            QCOMPARE(rbsp->name(), QStringLiteral("rbsp_payload"));
+            QCOMPARE(rbsp->state(), MaterializationState::Materialized);
+            QVERIFY(rbsp->children().empty());
+            QVERIFY(rbsp->diagnostics().empty());
+        }
+    }
+
+    void rejectsANonEmptyEndOfSequencePayload() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x0A, 0x80,
+                                   0x00, 0x00, 0x01, 0x09, 0x50}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        QCOMPARE(rbsp->state(), MaterializationState::Invalid);
+        QVERIFY(rbsp->children().empty());
+        QCOMPARE(rbsp->diagnostics().size(), std::size_t(1));
+        QCOMPARE(rbsp->diagnostics().front().code,
+                 streamview::core::DiagnosticCode::InvalidSyntax);
+        QVERIFY(rbsp->diagnostics().front().message.contains(QStringLiteral("empty RBSP")));
+        QCOMPARE(rbsp->location()->logicalRange().bitLength(), quint64(8));
+
+        const auto following = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(following.has_value());
+        QCOMPARE(following->state(), MaterializationState::Materialized);
+        const auto followingRbsp = analyzer->tree().node(following->children().at(2));
+        QVERIFY(followingRbsp.has_value());
+        QCOMPARE(followingRbsp->children().size(), std::size_t(1));
+    }
+
+    void rejectsAnAccessUnitDelimiterWithAClearedStopBit() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x09, 0x40}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        QCOMPARE(rbsp->state(), MaterializationState::Invalid);
+        QCOMPARE(rbsp->children().size(), std::size_t(1));
+
+        const auto aud = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(aud.has_value());
+        QCOMPARE(aud->state(), MaterializationState::Invalid);
+        QCOMPARE(aud->diagnostics().front().code,
+                 streamview::core::DiagnosticCode::InvalidSyntax);
+        QCOMPARE(aud->children().size(), std::size_t(2));
+        const auto retained = analyzer->tree().node(aud->children().front());
+        QVERIFY(retained.has_value());
+        QCOMPARE(retained->name(), QStringLiteral("primary_pic_type"));
+        QCOMPARE(retained->value().toULongLong(), quint64(2));
+    }
+
+    void rejectsAnAccessUnitDelimiterWithUndeclaredTrailingBits() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x09, 0x50, 0x55}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        QCOMPARE(rbsp->state(), MaterializationState::Invalid);
+        QCOMPARE(rbsp->diagnostics().size(), std::size_t(1));
+        QCOMPARE(rbsp->diagnostics().front().code,
+                 streamview::core::DiagnosticCode::InvalidSyntax);
+        QVERIFY(rbsp->diagnostics().front().message.contains(QStringLiteral("8 undeclared")));
+
+        const auto aud = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(aud.has_value());
+        QCOMPARE(aud->state(), MaterializationState::Materialized);
+        QCOMPARE(aud->children().size(), std::size_t(6));
+    }
+
+    void keepsUndispatchedNalUnitPayloadsUninterpreted() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x65, 0xAA, 0x00, 0x00, 0x01, 0x41}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+
+        const auto withPayload = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(withPayload.has_value());
+        QCOMPARE(withPayload->state(), MaterializationState::Materialized);
+        QCOMPARE(withPayload->children().size(), std::size_t(3));
+        const auto rbsp = analyzer->tree().node(withPayload->children().at(2));
+        QVERIFY(rbsp.has_value());
+        QCOMPARE(rbsp->name(), QStringLiteral("rbsp_payload"));
+        QCOMPARE(rbsp->state(), MaterializationState::Materialized);
+        QVERIFY(rbsp->children().empty());
+
+        const auto headerOnly = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(headerOnly.has_value());
+        QCOMPARE(headerOnly->state(), MaterializationState::Materialized);
+        QCOMPARE(headerOnly->children().size(), std::size_t(2));
     }
 
     void rejectsInvalidMapperLimitsBeforeAnalysis() {

@@ -13,6 +13,7 @@ using streamview::rules::DslExpressionKind;
 using streamview::rules::DslFieldEncoding;
 using streamview::rules::DslLexer;
 using streamview::rules::DslParser;
+using streamview::rules::DslPayloadCaseKind;
 using streamview::rules::DslScalarType;
 using streamview::rules::DslSwitchArmKind;
 using streamview::rules::DslStructItemKind;
@@ -26,6 +27,23 @@ namespace {
                        result.diagnostics.end(),
                        [code](const auto& diagnostic) { return diagnostic.code == code; });
 }
+
+[[nodiscard]] QString payloadSource(const QString& dispatch) {
+    return QStringLiteral(
+               "struct NalUnitHeader { bits<5> nal_unit_type; }\n"
+               "struct AccessUnitDelimiterRbsp { bits<8> value; }\n"
+               "@index(progressive)\n"
+               "sequence<NalUnitHeader> nal_units = scan(h264_start_code);\n") +
+           dispatch + QStringLiteral("entry nal_units;\n");
+}
+
+const QString kPayloadDispatchSource = payloadSource(
+    QStringLiteral("@spec(\"ITU-T H.264\", \"7.3.1\")\n"
+                   "payload<rbsp> nal_units switch (nal_unit_type) {\n"
+                   "    case 9: AccessUnitDelimiterRbsp;\n"
+                   "    case 10: empty;\n"
+                   "    case 11: empty;\n"
+                   "}\n"));
 
 } // namespace
 
@@ -815,6 +833,208 @@ private slots:
         QVERIFY(hasDiagnostic(duplicate, DslDiagnosticCode::DuplicateName));
         QVERIFY(hasDiagnostic(unsupported, DslDiagnosticCode::UnsupportedScanner));
         QVERIFY(hasDiagnostic(unsupported, DslDiagnosticCode::InvalidProgressiveAnnotation));
+    }
+
+    void parsesPayloadDispatchDeclaration() {
+        const auto result = DslParser::parse(kPayloadDispatchSource);
+
+        QVERIFY(result.succeeded());
+        QVERIFY(result.program.payloadDispatch.has_value());
+        const auto& dispatch = *result.program.payloadDispatch;
+        QCOMPARE(dispatch.viewKind, QStringLiteral("rbsp"));
+        QCOMPARE(dispatch.sequenceName, QStringLiteral("nal_units"));
+        QCOMPARE(dispatch.controllerFieldName, QStringLiteral("nal_unit_type"));
+        QCOMPARE(dispatch.annotations.size(), std::size_t(1));
+        QCOMPARE(dispatch.annotations.front().name, QStringLiteral("spec"));
+        QCOMPARE(dispatch.cases.size(), std::size_t(3));
+        QCOMPARE(dispatch.cases.at(0).value, quint64(9));
+        QCOMPARE(dispatch.cases.at(0).kind, DslPayloadCaseKind::Structure);
+        QCOMPARE(dispatch.cases.at(0).targetName,
+                 QStringLiteral("AccessUnitDelimiterRbsp"));
+        QCOMPARE(dispatch.cases.at(1).value, quint64(10));
+        QCOMPARE(dispatch.cases.at(1).kind, DslPayloadCaseKind::Empty);
+        QVERIFY(dispatch.cases.at(1).targetName.isEmpty());
+        QCOMPARE(dispatch.cases.at(2).value, quint64(11));
+        QCOMPARE(dispatch.cases.at(2).kind, DslPayloadCaseKind::Empty);
+    }
+
+    void keepsPayloadAndEmptyUsableAsOrdinaryIdentifiers() {
+        const auto result = DslParser::parse(QStringLiteral(R"(
+            enum Kind {
+                payload = 1;
+                empty = 2;
+            }
+            struct Header {
+                bits<8> payload @enum(Kind);
+                bits<8> empty;
+            }
+            entry Header;
+        )"));
+
+        QVERIFY(result.succeeded());
+        QVERIFY(!result.program.payloadDispatch.has_value());
+    }
+
+    void rejectsUnsupportedPayloadViewKindAndDuplicateDispatch() {
+        const auto badView = DslParser::parse(payloadSource(
+            QStringLiteral("payload<ebsp> nal_units switch (nal_unit_type) {\n"
+                           "    case 9: AccessUnitDelimiterRbsp;\n"
+                           "}\n")));
+        const auto duplicate = DslParser::parse(payloadSource(
+            QStringLiteral("payload<rbsp> nal_units switch (nal_unit_type) {\n"
+                           "    case 9: AccessUnitDelimiterRbsp;\n"
+                           "}\n"
+                           "payload<rbsp> nal_units switch (nal_unit_type) {\n"
+                           "    case 10: empty;\n"
+                           "}\n")));
+
+        QVERIFY(hasDiagnostic(badView, DslDiagnosticCode::InvalidPayloadDispatch));
+        QVERIFY(hasDiagnostic(duplicate, DslDiagnosticCode::DuplicateName));
+    }
+
+    void rejectsPayloadDispatchWithUnknownReferences() {
+        const auto unknownSequence = DslParser::parse(payloadSource(
+            QStringLiteral("payload<rbsp> missing_units switch (nal_unit_type) {\n"
+                           "    case 9: AccessUnitDelimiterRbsp;\n"
+                           "}\n")));
+        const auto unknownController = DslParser::parse(payloadSource(
+            QStringLiteral("payload<rbsp> nal_units switch (missing_field) {\n"
+                           "    case 9: AccessUnitDelimiterRbsp;\n"
+                           "}\n")));
+        const auto unknownTarget = DslParser::parse(payloadSource(
+            QStringLiteral("payload<rbsp> nal_units switch (nal_unit_type) {\n"
+                           "    case 9: MissingRbsp;\n"
+                           "}\n")));
+        const auto structureSequence = DslParser::parse(payloadSource(
+            QStringLiteral("payload<rbsp> NalUnitHeader switch (nal_unit_type) {\n"
+                           "    case 9: AccessUnitDelimiterRbsp;\n"
+                           "}\n")));
+
+        QVERIFY(hasDiagnostic(unknownSequence, DslDiagnosticCode::UnknownReference));
+        QVERIFY(hasDiagnostic(unknownController, DslDiagnosticCode::UnknownReference));
+        QVERIFY(hasDiagnostic(unknownTarget, DslDiagnosticCode::UnknownReference));
+        QVERIFY(hasDiagnostic(structureSequence, DslDiagnosticCode::UnknownReference));
+    }
+
+    void rejectsInvalidPayloadDispatchControllers() {
+        const auto expGolombController = DslParser::parse(QStringLiteral(R"(
+            struct NalUnitHeader { bits<5> nal_unit_type; ue code; }
+            struct Body { bits<8> value; }
+            @index(progressive)
+            sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+            payload<rbsp> nal_units switch (code) {
+                case 9: Body;
+            }
+            entry nal_units;
+        )"));
+        const auto computedController = DslParser::parse(QStringLiteral(R"(
+            struct NalUnitHeader {
+                bits<5> nal_unit_type;
+                computed<u64> shifted = nal_unit_type + 1;
+            }
+            struct Body { bits<8> value; }
+            @index(progressive)
+            sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+            payload<rbsp> nal_units switch (shifted) {
+                case 9: Body;
+            }
+            entry nal_units;
+        )"));
+        const auto arrayController = DslParser::parse(QStringLiteral(R"(
+            struct NalUnitHeader { bits<5> nal_unit_type; bits<4> flags[2]; }
+            struct Body { bits<8> value; }
+            @index(progressive)
+            sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+            payload<rbsp> nal_units switch (flags) {
+                case 9: Body;
+            }
+            entry nal_units;
+        )"));
+        const auto guardedController = DslParser::parse(QStringLiteral(R"(
+            struct NalUnitHeader {
+                bits<5> nal_unit_type;
+                if (nal_unit_type == 1) {
+                    bits<3> guarded_type;
+                }
+            }
+            struct Body { bits<8> value; }
+            @index(progressive)
+            sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+            payload<rbsp> nal_units switch (guarded_type) {
+                case 9: Body;
+            }
+            entry nal_units;
+        )"));
+
+        QVERIFY(hasDiagnostic(expGolombController,
+                              DslDiagnosticCode::InvalidPayloadDispatch));
+        QVERIFY(hasDiagnostic(computedController,
+                              DslDiagnosticCode::InvalidPayloadDispatch));
+        QVERIFY(hasDiagnostic(arrayController,
+                              DslDiagnosticCode::InvalidPayloadDispatch));
+        QVERIFY(hasDiagnostic(guardedController,
+                              DslDiagnosticCode::InvalidPayloadDispatch));
+    }
+
+    void rejectsInvalidPayloadDispatchArms() {
+        const auto duplicateCase = DslParser::parse(payloadSource(
+            QStringLiteral("payload<rbsp> nal_units switch (nal_unit_type) {\n"
+                           "    case 9: AccessUnitDelimiterRbsp;\n"
+                           "    case 9: empty;\n"
+                           "}\n")));
+        const auto noCase = DslParser::parse(payloadSource(
+            QStringLiteral("payload<rbsp> nal_units switch (nal_unit_type) {\n"
+                           "}\n")));
+        const auto defaultArm = DslParser::parse(payloadSource(
+            QStringLiteral("payload<rbsp> nal_units switch (nal_unit_type) {\n"
+                           "    case 9: AccessUnitDelimiterRbsp;\n"
+                           "    default: empty;\n"
+                           "}\n")));
+        const auto selfTarget = DslParser::parse(payloadSource(
+            QStringLiteral("payload<rbsp> nal_units switch (nal_unit_type) {\n"
+                           "    case 9: NalUnitHeader;\n"
+                           "}\n")));
+        const auto outOfRange = DslParser::parse(payloadSource(
+            QStringLiteral("payload<rbsp> nal_units switch (nal_unit_type) {\n"
+                           "    case 32: AccessUnitDelimiterRbsp;\n"
+                           "}\n")));
+
+        QVERIFY(hasDiagnostic(duplicateCase, DslDiagnosticCode::InvalidPayloadDispatch));
+        QVERIFY(hasDiagnostic(noCase, DslDiagnosticCode::InvalidPayloadDispatch));
+        QVERIFY(hasDiagnostic(defaultArm, DslDiagnosticCode::InvalidPayloadDispatch));
+        QVERIFY(hasDiagnostic(selfTarget, DslDiagnosticCode::InvalidPayloadDispatch));
+        QVERIFY(hasDiagnostic(outOfRange, DslDiagnosticCode::ConstraintOutOfRange));
+    }
+
+    void rejectsPayloadDispatchWithoutMatchingEntry() {
+        const auto result = DslParser::parse(QStringLiteral(R"(
+            struct NalUnitHeader { bits<5> nal_unit_type; }
+            struct AccessUnitDelimiterRbsp { bits<8> value; }
+            @index(progressive)
+            sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+            payload<rbsp> nal_units switch (nal_unit_type) {
+                case 9: AccessUnitDelimiterRbsp;
+            }
+            entry NalUnitHeader;
+        )"));
+
+        QVERIFY(hasDiagnostic(result, DslDiagnosticCode::InvalidPayloadDispatch));
+    }
+
+    void recoversFromMalformedPayloadDispatchArms() {
+        const auto missingColon = DslParser::parse(payloadSource(
+            QStringLiteral("payload<rbsp> nal_units switch (nal_unit_type) {\n"
+                           "    case 9 AccessUnitDelimiterRbsp;\n"
+                           "}\n")));
+        const auto missingSemicolon = DslParser::parse(payloadSource(
+            QStringLiteral("payload<rbsp> nal_units switch (nal_unit_type) {\n"
+                           "    case 9: AccessUnitDelimiterRbsp\n"
+                           "}\n")));
+
+        QVERIFY(!missingColon.succeeded());
+        QVERIFY(hasDiagnostic(missingColon, DslDiagnosticCode::MissingToken));
+        QVERIFY(!missingSemicolon.succeeded());
+        QVERIFY(hasDiagnostic(missingSemicolon, DslDiagnosticCode::MissingToken));
     }
 
     void reportsLexicalFailuresWithoutCrashingParser() {

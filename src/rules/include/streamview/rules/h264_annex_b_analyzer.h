@@ -94,6 +94,8 @@ private:
         core::AnalysisNodeId node;
         quint64 index = 0;
         H264EbspRbspMapper mapper;
+        std::optional<DslTypedPayloadCase> payloadCase;
+        bool allowExecutionCancellation = false;
     };
 
     H264AnnexBAnalyzer(const core::RandomAccessSource& source,
@@ -114,6 +116,13 @@ private:
     [[nodiscard]] bool appendTrailingZeroRegion(const H264StartCodeRecord& record,
                                                 core::AnalysisNodeId nalNode,
                                                 QString* errorMessage);
+    [[nodiscard]] std::optional<DslTypedPayloadCase> payloadCaseFor(quint64 nalUnitType) const;
+    [[nodiscard]] bool decodePayloadStructure(PendingNalUnit& pending,
+                                              core::AnalysisNodeId rbspNode,
+                                              const QString& rbspPath,
+                                              bool* payloadDecoded,
+                                              H264AnnexBAnalysisStatus* failureStatus,
+                                              QString* errorMessage);
     [[nodiscard]] bool finishPendingNalUnit(const H264EbspRbspMapBatch& mapBatch,
                                             H264AnnexBAnalysisBatch& batch,
                                             H264AnnexBAnalysisStatus* failureStatus,

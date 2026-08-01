@@ -89,6 +89,11 @@ logical cursor。本切片只注册安全的未解释 boundary；typed on-demand
 语法，并让 cancelled index 可以在同一个 analyzer 内恢复。它保留已发布 node、scanner 与
 queue state 和单调 identifier，但不定义持久 checkpoint。
 
+当前接受的 payload-dispatch 切片新增唯一的顶层
+`payload<rbsp> sequence switch (controller) { case integer: Structure; }` 声明。
+它把 sequence element 解码出的 controller 值绑定到解码派生 payload view 的结构；当该
+payload 不含任何语法元素时绑定到 `empty`。决定 payload 使用哪个结构的是规则，不是 runner。
+
 ## DSL 0.1 最小子集
 
 首个可执行子集使用以下语法。token 之间可以有空白，以及 `//` 或 `/* ... */`
@@ -97,7 +102,8 @@ queue state 和单调 identifier，但不定义持久 checkpoint。
 
 ```text
 program       := { declaration }
-declaration   := pure_function | { annotation } ( enum | struct | sequence | entry )
+declaration   := pure_function
+               | { annotation } ( enum | struct | sequence | payload | entry )
 pure_function := "pure" scalar_type identifier "("
                  [ parameter { "," parameter } ] ")"
                  "{" "return" expression ";" "}"
@@ -127,6 +133,9 @@ repeat        := "repeat" "(" identifier "," integer ")"
                  "{" { struct_item } "}"
 sequence      := "sequence" "<" identifier ">" identifier "="
                  "scan" "(" identifier ")" ";"
+payload       := "payload" "<" identifier ">" identifier
+                 "switch" "(" identifier ")" "{" payload_case { payload_case } "}"
+payload_case  := "case" integer ":" ( identifier | "empty" ) ";"
 entry         := "entry" identifier ";"
 annotation    := "@" identifier [ "(" [ value { "," value } ] ")" ]
 value         := integer | string | identifier
@@ -239,6 +248,14 @@ primary       := integer | "true" | "false" | identifier
 - 唯一接受的渐进 sequence 形式是
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`。
   `Element` 必须是已声明结构。
+- 一个程序至多声明一个 payload 派发。其 view kind 必须是 `rbsp`，且必须命名一个已声明、
+  并且存在对应 `entry` 的渐进 sequence。controller 必须命名该 sequence 的 element structure
+  中、在顶层无条件声明的无符号 scalar `bits` 字段，宽度至多 64 bit，从而在每条路径上都
+  保证存在。Exp-Golomb 字段、计算字段、数组元素、lazy region，以及位于 conditional、
+  switch 或 repeat body 内部的字段一律拒绝作为 controller。case 值必须互异，并且能由
+  controller 的声明宽度表示。每个 case 目标要么是已声明结构（且不得是 element structure
+  本身），要么是 `empty`。不存在 `default` arm；未列出的 controller 值保持未解释 payload
+  行为。
 - `@equals(integer)` 字段注解是会执行检查的约束，在一个 `bits` 字段上最多出现一次，且
   参数值必须能由该字段的无符号 bit 宽度表示；`@enum(Type)` 只能出现在 `bits` 字段上，
   最多出现一次，参数必须是已声明 enum 类型，并且它的每个 member 值都必须能由字段宽度
@@ -253,8 +270,8 @@ primary       := integer | "true" | "false" | identifier
 
 `enum`、`big`、`little`、`ue`、`se`、`pure`、`return`、`bool`、`u64`、
 `computed`、`lazy`、`bytes`、`true`、`false`、`if`、`else`、`switch`、`case`、
-`default` 和 `repeat` 只在上述语法位置作为上下文关键字，其他位置仍可作为普通
-identifier。既有 scalar 声明保持不变，`bits<N>` 仍与
+`default`、`repeat`、`payload` 和 `empty` 只在上述语法位置作为上下文关键字，其他位置仍可
+作为普通 identifier。既有 scalar 声明保持不变，`bits<N>` 仍与
 `bits<N, big>` 完全等价；本切片不弃用任何已接受的 0.1 语法。
 
 parser 生成面向 source、用于诊断的声明模型。静态 compiler 把纯函数、enum、结构、
@@ -417,7 +434,16 @@ view。每个完整的 `00 00 03` 都会排除其中的 `03`，并把它呈现�
 子节点固定按以下顺序出现：`start_code`、`NalUnitHeader`、可选的 `rbsp_payload`、按 source
 顺序排列的零个或多个 `emulation_prevention_three_byte[index]` region，以及可选的
 `trailing_zero_8bits`。NAL unit type `14`、`20`、`21` 需要当前 profile 尚未解析的 extension
-header，因此 direct header 之后的字节仍保持 uninterpreted，也不会传给 mapper。
+header，因此 direct header 之后的字节仍保持 uninterpreted，不会传给 mapper，也无法派发。
+
+内置规则为 `nal_unit_type` 值 `9`、`10`、`11` 声明了 payload 派发。被派发的 type 一定会经过
+映射，payload 为空时也不例外，因此每个被派发的 NAL 都存在 `rbsp_payload`。type `9` 把
+`AccessUnitDelimiterRbsp` 解码为 `rbsp_payload` 的子节点，公开 `primary_pic_type`、
+`rbsp_stop_one_bit` 以及 `rbsp_alignment_zero_bit[0]` 到 `rbsp_alignment_zero_bit[3]`。
+type `10` 与 `11` 声明为 `empty`，要求 RBSP 长度为零。因此一字节的 access unit delimiter
+可以完整解码；只有 header 的 access unit delimiter 是 `truncated-source`；只有 header 的
+end of sequence 或 end of stream 是物化；而这两种 type 一旦携带 RBSP 字节即为
+`invalid-syntax`。其余所有 type 的 `rbsp_payload` region 保持原样。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
 的 mapped-byte budget；默认每次最多处理 64 KiB EBSP source byte。预算耗尽时返回
@@ -594,6 +620,36 @@ struct NalUnitHeader {
 entry NalUnitHeader;
 ```
 
+payload 派发合法示例：
+
+```cpp
+@spec("ITU-T H.264", "7.3.1")
+struct NalUnitHeader {
+    bits<1> forbidden_zero_bit @equals(0);
+    bits<2> nal_ref_idc;
+    bits<5> nal_unit_type;
+}
+
+@spec("ITU-T H.264", "7.3.2.4")
+struct AccessUnitDelimiterRbsp {
+    bits<3> primary_pic_type;
+    bits<1> rbsp_stop_one_bit @equals(1);
+    bits<1> rbsp_alignment_zero_bit[4] @equals(0);
+}
+
+@index(progressive)
+sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+
+@spec("ITU-T H.264", "7.3.1")
+payload<rbsp> nal_units switch (nal_unit_type) {
+    case 9:  AccessUnitDelimiterRbsp;
+    case 10: empty;
+    case 11: empty;
+}
+
+entry nal_units;
+```
+
 最小非法示例包括 `bits<0> flag;`、`bits<65> flag;`、`bits<12, little> value;`、
 位于未对齐字段之后的小端字段、`ue value @equals(0);`、`se value @enum(Type);`、
 变长字段之后的小端字段、`bits<1> flags[0];`、`bits<1> flags[];`、数组长度表达式或第二
@@ -609,6 +665,12 @@ case 值、没有 case 的 switch、重复或不位于最后的 default、缺少
 repeat body、repeat 前的 annotation、投影后超过 99,999 字段、在其他迭代或 repeat 之后
 使用 repeat-local controller、repeat 之后的小端字段、`scan(other_scanner)`、重复声明同名，
 以及没有 `entry` 或包含多个 `entry` 声明的程序。
+
+payload 派发的非法示例包括：两个 payload 声明、`payload<ebsp>` 或其他 view kind、派发命名
+结构或未声明名称而非 sequence、所派发 sequence 没有 `entry`、未知 controller 名、以
+Exp-Golomb、计算字段、数组元素或 lazy region 作为 controller、controller 声明在 conditional、
+switch 或 repeat body 内部、case 值超出 controller 宽度、重复 case 值、没有 case 的派发、
+未声明或就是 element structure 本身的 case 目标、`default` arm，以及缺少 case 冒号或分号。
 
 纯函数与计算字段的非法示例包括：带 annotation 的纯函数、超过 16 个参数、重复参数名或
 函数名、overload 或顶层名称冲突、纯函数体调用后声明的函数或发生递归、在纯函数体内引用
@@ -708,6 +770,53 @@ index recovery 保持 append-only tree，不会在后续 batch 重放已经发�
 entry sequence 的 analysis root 上已经过时的 cancellation diagnostic。已经作为 cancelled
 partial result 提交的 NAL 仍保持 cancelled，因此后来进入 `materialized` 的 root 仍可能属于
 含 partial result 的 tree。这种内存恢复不是 serialized 或 cross-process checkpoint 契约。
+
+## payload 派发
+
+sequence element 解码出一个 header，紧随其后的语法通常取决于该 header 刚刚产出的某个值。
+payload 派发把这些值绑定到解码派生 payload view 的结构：
+
+```cpp
+@spec("ITU-T H.264", "7.3.1")
+payload<rbsp> nal_units switch (nal_unit_type) {
+    case 9:  AccessUnitDelimiterRbsp;
+    case 10: empty;
+    case 11: empty;
+}
+```
+
+该声明位于顶层，至多出现一次。`rbsp` 是当前唯一接受的 view kind，指 runtime 已经为每个
+sequence element 派生的 mapped payload view。声明之前的 annotation 成为该派发自身的 metadata。
+
+派发不新增 opcode。被选中的结构由 compiler 为每个已声明结构生成的同一套 `begin-structure`
+到 `end-structure` bytecode 执行，因此 case 目标没有特殊的 typed 形式。case 互异性、
+controller 解析和目标索引都在执行前完成校验；malformed 派发属于 invalid typed definition。
+
+运行时在 header 物化之后，从 element 已发布的 header 中读取 controller 值。
+
+未列出的值不改变任何行为：payload 非空时仍是未解释 region，没有 payload 的 element 也不会
+获得 payload node。
+
+已列出的值一定会获得派生 payload view，view 为空时也不例外。决定 view 是否存在的是「是否
+存在 case」，而不是 payload 长度。描述了某个 payload 的规则因此总能拿到一个精确的 view 去
+解码。
+
+`empty` case 要求 payload view 的 logical length 恰好为零。非空 payload 在 payload path 上
+报告 `invalid-syntax`，并保留完整的 payload region 与全部 excluded region。
+
+结构 case 从 logical 零开始在 payload view 上执行其目标，父节点为 payload region node，
+并沿用与 header 相同的 execution option、沙箱预算和取消检查点。
+
+已物化的结构必须消费 payload view 的完整 logical length。剩余 bit 在 payload path 上报告
+`invalid-syntax`。精确消费正是让 trailing-bit 声明可校验的原因，也阻止静默接受任何声明都
+没有描述的字节。
+
+所需 bit 多于 view 容量的结构报告 `truncated-source`，view 为空时同样如此。在内置 H.264
+规则下，只有 header 的 access unit delimiter 因此是截断，而只有 header 的 end of sequence
+是物化。
+
+payload 失败使所属 element 变为 invalid 或 cancelled，同时保留 header、payload region、
+excluded region 和任何 framing region。它绝不终止 sequence，后续 element 继续分析。
 
 ## 位置感知上下文目录
 

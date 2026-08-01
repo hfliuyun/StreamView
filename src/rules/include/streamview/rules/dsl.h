@@ -84,6 +84,7 @@ enum class DslDiagnosticCode : quint8 {
     InvalidArrayLength,
     InvalidCondition,
     InvalidExpression,
+    InvalidPayloadDispatch,
 };
 
 struct DslDiagnostic final {
@@ -299,11 +300,35 @@ struct DslEntry final {
     DslSourceRange range;
 };
 
+enum class DslPayloadCaseKind : quint8 {
+    Structure,
+    Empty,
+};
+
+struct DslPayloadCase final {
+    DslPayloadCaseKind kind = DslPayloadCaseKind::Structure;
+    quint64 value = 0;
+    DslSourceRange valueRange;
+    QString targetName;
+    DslSourceRange range;
+};
+
+struct DslPayloadDispatch final {
+    QString viewKind;
+    QString sequenceName;
+    QString controllerFieldName;
+    DslSourceRange controllerRange;
+    std::vector<DslPayloadCase> cases;
+    std::vector<DslAnnotation> annotations;
+    DslSourceRange range;
+};
+
 struct DslProgram final {
     std::vector<DslPureFunction> pureFunctions;
     std::vector<DslEnum> enums;
     std::vector<DslStruct> structs;
     std::vector<DslProgressiveScan> scans;
+    std::optional<DslPayloadDispatch> payloadDispatch;
     DslEntry entry;
     bool hasEntry = false;
 };

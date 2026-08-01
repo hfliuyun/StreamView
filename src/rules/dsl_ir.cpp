@@ -204,6 +204,15 @@ std::optional<quint32> DslTypedProgram::scanIndex(const QString& name) const {
     return std::nullopt;
 }
 
+const DslTypedPayloadCase* DslTypedPayloadDispatch::find(quint64 value) const noexcept {
+    for (const DslTypedPayloadCase& payloadCase : cases) {
+        if (payloadCase.value == value) {
+            return &payloadCase;
+        }
+    }
+    return nullptr;
+}
+
 DslCompileResult DslCompiler::compile(const DslProgram& program) {
     DslCompileResult result;
     DslTypedProgram typed;
@@ -1645,6 +1654,88 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                       DslDiagnosticCode::UnknownReference,
                       QStringLiteral("Entry target is not declared"),
                       program.entry.range);
+    }
+
+    if (program.payloadDispatch) {
+        const DslPayloadDispatch& dispatch = *program.payloadDispatch;
+        DslTypedPayloadDispatch typedDispatch;
+        typedDispatch.metadata = metadataForAnnotations(dispatch.annotations);
+        bool valid = true;
+        if (dispatch.viewKind != QStringLiteral("rbsp")) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidPayloadDispatch,
+                          QStringLiteral("The only accepted payload view kind is rbsp"),
+                          dispatch.range);
+            valid = false;
+        }
+        const auto dispatchScanIndex = typed.scanIndex(dispatch.sequenceName);
+        if (!dispatchScanIndex) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::UnknownReference,
+                          QStringLiteral("A payload dispatch must name a declared sequence"),
+                          dispatch.range);
+            valid = false;
+        }
+        if (dispatch.cases.empty()) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidPayloadDispatch,
+                          QStringLiteral("A payload dispatch must declare at least one case"),
+                          dispatch.range);
+            valid = false;
+        }
+        if (valid) {
+            typedDispatch.scanIndex = *dispatchScanIndex;
+            const DslTypedStruct& element =
+                typed.structs.at(typed.scans.at(*dispatchScanIndex).elementStructIndex);
+            std::optional<quint32> controllerIndex;
+            for (quint32 index = 0; index < element.fields.size(); ++index) {
+                const DslTypedField& field = element.fields.at(index);
+                if (field.name != dispatch.controllerFieldName) {
+                    continue;
+                }
+                if (field.conditions.empty() &&
+                    (field.type.kind == DslValueTypeKind::UnsignedBits ||
+                     field.type.kind == DslValueTypeKind::Enum)) {
+                    controllerIndex = index;
+                }
+                break;
+            }
+            if (!controllerIndex) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidPayloadDispatch,
+                              QStringLiteral("A payload controller must be an unsigned scalar "
+                                             "bits field declared unconditionally at the top "
+                                             "level of the sequence element structure"),
+                              dispatch.controllerRange);
+                valid = false;
+            } else {
+                typedDispatch.controllerFieldIndex = *controllerIndex;
+            }
+        }
+        for (const DslPayloadCase& payloadCase : dispatch.cases) {
+            if (!valid) {
+                break;
+            }
+            DslTypedPayloadCase typedCase;
+            typedCase.value = payloadCase.value;
+            if (payloadCase.kind == DslPayloadCaseKind::Structure) {
+                const auto targetIndex = typed.structureIndex(payloadCase.targetName);
+                if (!targetIndex) {
+                    addDiagnostic(
+                        result.diagnostics,
+                        DslDiagnosticCode::UnknownReference,
+                        QStringLiteral("A payload case target must name a declared structure"),
+                        payloadCase.range);
+                    valid = false;
+                    break;
+                }
+                typedCase.structureIndex = *targetIndex;
+            }
+            typedDispatch.cases.push_back(typedCase);
+        }
+        if (valid) {
+            typed.payloadDispatch = std::move(typedDispatch);
+        }
     }
 
     for (quint32 structIndex = 0; structIndex < typed.structs.size(); ++structIndex) {
