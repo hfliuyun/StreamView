@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: DSL payload dispatch and the first H.264 formal-structure slice
+Last Completed Step: Bounded H.264 RBSP trailing-bits terminal
 Next Action: Define the next M6 H.264 slice, beginning with the sequence parameter set
-Last Verification: Commit b59f250 local dev/ci/sanitize passed 31/31; hosted run
-  30699364480 passed on Windows, macOS, and Ubuntu
+Last Verification: Commit bea0a8f local dev/ci/sanitize passed 31/31; hosted run
+  30717519949 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -420,3 +420,12 @@ Blockers: None
   CTest 均为 31/31。hosted run `30699364480` 在 Windows 2022 / Qt 6.10.1、macOS 15 /
   Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、Install、Upload 均成功。
   下一步界定并实现 sequence parameter set 切片。
+- 2026-08-02：完成有界 `rbsp_trailing_bits;` DSL 终结项，为变长 H.264 结构的精确
+  RBSP 消费提供受限 lowering。ADR-0038（`b9f2963`）决定该项只能作为结构顶层最后一项；
+  `bea0a8f` 实现 parser、typed IR、单条 VM instruction、逐 bit source-span 物化、恶意
+  typed IR 拒绝、官方 AUD 规则迁移与双语 DSL 参考。回归覆盖静态 placement、八 slot 资源
+  预留、stop/padding 约束与截断、跨 excluded source span、失败后继续扫描以及非终端 IR。
+  本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 31/31；hosted run
+  `30717519949` 对 `bea0a8f9acb969d025353d903932da59653c3170` 在 Windows 2022 /
+  Qt 6.10.1、macOS 15 / Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、
+  Test、Install、Upload 均成功。下一步界定并实现 sequence parameter set 切片。
