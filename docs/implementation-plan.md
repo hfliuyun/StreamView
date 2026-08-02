@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Bounded H.264 sequence parameter set structural core
-Next Action: Define the next SPS semantic-constraint slice for bounded Exp-Golomb values
-Last Verification: Commit 30109e0 local dev/ci/sanitize passed 31/31; hosted run
-  30719765999 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Non-fatal `@range` constraint for bounded H.264 SPS `log2_*_minus4` fields
+Next Action: Define the bounded H.264 picture parameter set slice
+Last Verification: Commit 4e5326b local dev/ci/sanitize passed 31/31; hosted run
+  30744876898 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -441,3 +441,24 @@ Blockers: None
   `30109e0c0fa1c22bb299ecaa41012e445db59c1d` 在 Windows 2022 / Qt 6.10.1、macOS 15 /
   Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、Install、Upload 均成功。
   下一步界定并实现 H.264 clause 7.4.2.1.1 的 SPS `log2_*_minus4` 语义范围约束。
+- 2026-08-02：完成 H.264 clause 7.4.2.1.1 的 SPS `log2_*_minus4` 语义范围约束。
+  ADR-0040（`8653fc0`）区分两类约束：`@equals` 与 enum 成员属于 layout-critical，违反意味着
+  bit 位置假设已被破坏，必须把结构标记为 Invalid 并停止解码；`0..12` 属于 value-domain，
+  Exp-Golomb 码字本身读取正确、后续字段位置精确无误，因此必须继续解码，只在该字段挂一条
+  Warning 诊断。`4e5326b` 实现 `@range(min, max)`：parser 静态校验每字段至多一次、只允许
+  `ue` 字段、必须是两个整数实参、最小值不得大于最大值、最大值不得超出可编码 `ue` 上界；
+  typed IR 增加 `DslTypedUnsignedRange` 与 `AssertRangeMinimum`/`AssertRangeMaximum` 两条
+  指令，在读取指令之后按声明顺序发射，数组元素逐个展开；VM 在执行前拒绝出现在非 `ue`
+  字段、computed controller、`se`、lazy bytes 与 rbsp trailing bits 上的 range 约束，并拒绝
+  operand、immediate 或字段类型与 typed IR 不一致的恶意指令。违规时结构仍然物化、
+  `bitsConsumed` 继续推进，诊断为 `invalid-syntax` + Warning，`fieldPath` 为
+  `Structure.field`，location 精确覆盖该码字的逐 bit source span；被条件跳过的字段不做检查。
+  官方规则给 `log2_max_frame_num_minus4` 与 `log2_max_pic_order_cnt_lsb_minus4` 标注
+  `@range(0, 12)` 并附 clause 引用与双语说明，package 更新到 `0.1.3`。回归覆盖 parser 正反例、
+  与 `@equals` 共存的降低顺序、数组展开、in-range 物化、越上界与越下界的告警（含 severity、
+  fieldPath、bit 长度与后续字段仍然正确解码）、跳过分支不检查、五种 malformed typed IR，
+  以及真实 SPS 中 `log2_max_frame_num_minus4 == 13` 的分析器级告警。双语 DSL 参考与 ADR-0040
+  双语版本已同步。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 31/31；
+  hosted run `30744876898` 对 `4e5326b546ac46711a825b2763cd80734babf4d8` 在 Windows 2022 /
+  Qt 6.10.1、macOS 15 / Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、
+  Install、Upload 均成功。下一步界定并实现有界 H.264 picture parameter set 切片。
