@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Bounded H.264 picture parameter set base syntax
-Next Action: Define the bounded H.264 VUI core slice
-Last Verification: Commit 27bd8d0 local dev/ci/sanitize passed 31/31; hosted run
-  30752902472 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Bounded H.264 VUI core slice
+Next Action: Define the bounded H.264 HRD parameters slice
+Last Verification: Commit a0317ed local dev/ci/sanitize passed 31/31; hosted run
+  30753887431 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -181,6 +181,9 @@ Blockers: None
 - [ ] 完成 Annex B、EBSP→RBSP、trailing bits、SPS、PPS、VUI/HRD。
   - [x] payload 派发与 access unit delimiter、end of sequence、end of stream 的
     RBSP 与 trailing bits。
+  - [x] 有界 SPS、PPS 与 VUI core，以及 layout-critical unsupported branch 和
+    non-fatal value-domain constraint。
+  - [ ] 有界 HRD parameters。
 - [ ] 完成 Baseline/Main/High 8-bit 4:2:0 slice header；slice data 标记为压缩载荷。
 - [ ] 所有 SEI 解析 payloadType/payloadSize。
 - [ ] 深入解析 buffering period、pic timing、用户数据、recovery point、frame packing 和 display orientation。
@@ -478,3 +481,18 @@ Blockers: None
   `30752902472` 对 `27bd8d01a151e4a42a672191e1e81248283c44b9` 在 Windows 2022 /
   Qt 6.10.1、macOS 15 / Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、
   Install、Upload 均成功。下一步界定并实现有界 H.264 VUI core slice。
+- 2026-08-03：完成有界 H.264 VUI core slice。ADR-0042（`12c4241`）决定把 SPS 的
+  `vui_parameters_present_flag @equals(0)` 边界替换为 Annex E.1.1 的 inline 可选分支：支持
+  aspect ratio 与 Extended SAR、overscan、video signal 与 colour description、chroma sample
+  location、timing、`pic_struct_present_flag` 和完整 bitstream-restriction syntax；NAL/VCL HRD
+  presence flag 暂时要求为零，存在任一 HRD branch 时保留已解码前缀并以 `invalid-syntax`
+  停止。`a0317ed` 实现上述结构，把 package 更新到 `0.1.5`，并为两个 chroma location 增加
+  非致命 `@range(0, 5)`，为两个 denominator 与两个 motion-vector length 字段增加非致命
+  `@range(0, 16)`。回归覆盖 minimal 与完整 VUI、Extended SAR、全部 presence branch、六个
+  range warning、两条 HRD fatal 边界、精确 diagnostic field/source span、trailing bits 和失败
+  NAL 后继续扫描；H.264 analyzer 定向测试为 48/48。英文规范与中文伴随文档同步记录全部
+  已声明 VUI 字段、warning/fatal 语义及延期的 fixed-width、relational、HRD 与 registration
+  边界。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 31/31；hosted run
+  `30753887431` 对 `a0317ed6fc097306b36d7825bd9512023cedd48a` 在 Windows 2022 /
+  Qt 6.10.1、macOS 15 / Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、
+  Install、Upload 均成功。下一步界定并实现有界 H.264 HRD parameters slice。
