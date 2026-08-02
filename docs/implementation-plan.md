@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Bounded H.264 VUI core slice
-Next Action: Define the bounded H.264 HRD parameters slice
-Last Verification: Commit a0317ed local dev/ci/sanitize passed 31/31; hosted run
-  30753887431 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Bounded H.264 HRD parameters slice
+Next Action: Define the bounded H.264 slice-header and parameter-set dependency slice
+Last Verification: Commit e093de8 local dev/ci/sanitize passed 31/31; hosted run
+  30754634886 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -178,12 +178,12 @@ Blockers: None
 
 ## 阶段 3：H.264 正式结构支持
 
-- [ ] 完成 Annex B、EBSP→RBSP、trailing bits、SPS、PPS、VUI/HRD。
+- [x] 完成 Annex B、EBSP→RBSP、trailing bits、SPS、PPS、VUI/HRD。
   - [x] payload 派发与 access unit delimiter、end of sequence、end of stream 的
     RBSP 与 trailing bits。
   - [x] 有界 SPS、PPS 与 VUI core，以及 layout-critical unsupported branch 和
     non-fatal value-domain constraint。
-  - [ ] 有界 HRD parameters。
+  - [x] 有界 HRD parameters。
 - [ ] 完成 Baseline/Main/High 8-bit 4:2:0 slice header；slice data 标记为压缩载荷。
 - [ ] 所有 SEI 解析 payloadType/payloadSize。
 - [ ] 深入解析 buffering period、pic timing、用户数据、recovery point、frame packing 和 display orientation。
@@ -496,3 +496,19 @@ Blockers: None
   `30753887431` 对 `a0317ed6fc097306b36d7825bd9512023cedd48a` 在 Windows 2022 /
   Qt 6.10.1、macOS 15 / Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、
   Install、Upload 均成功。下一步界定并实现有界 H.264 HRD parameters slice。
+- 2026-08-03：完成有界 H.264 HRD parameters slice。ADR-0043（`b620a9c`）决定移除两个
+  HRD presence flag 的 `@equals(0)` 边界，并用独立 `nal_hrd_` / `vcl_hrd_` 前缀 inline
+  展开 Annex E.1.2：每个分支包含 `cpb_cnt_minus1`、两个 scale、由 computed count 控制且
+  最多 32 次的 CPB schedule repeat，以及四个 delay-length 字段；任一分支存在时，通过
+  computed Boolean 读取共同的 `low_delay_hrd_flag`。`e093de8` 实现上述规则，把 package
+  更新到 `0.1.6`。两个 `cpb_cnt_minus1` 带非致命 `@range(0, 31)`；越界 count 保留字段
+  warning、scale 与派生 count，再由 layout-critical repeat bound 在 schedule entry 前停止，
+  因此既报告 value-domain 问题，也不允许 unsupported count 改变声明布局。回归覆盖 NAL-only、
+  VCL-only、两者同时存在、重复 schedule index、computed field、精确 E.2.2 source span、
+  `low_delay_hrd_flag`、trailing bits，以及 count 32 warning/fatal 后继续扫描；H.264 analyzer
+  定向测试为 49/49。英中参考同步记录全部 HRD syntax/computed 字段与延期的 SEI consumer、
+  level-dependent bitrate/CPB/delay relation 和 context registration。本机 `dev`、`ci`、
+  `sanitize` 重新配置、完整构建与 CTest 均为 31/31；hosted run `30754634886` 对
+  `e093de848baf6ab3515c6f4704c524a25376b2b8` 在 Windows 2022 / Qt 6.10.1、macOS 15 /
+  Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、Install、Upload 均成功。
+  下一步界定并实现有界 H.264 slice-header 与 parameter-set dependency slice。
