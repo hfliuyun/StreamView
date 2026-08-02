@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Non-fatal `@range` constraint for bounded H.264 SPS `log2_*_minus4` fields
-Next Action: Define the bounded H.264 picture parameter set slice
-Last Verification: Commit 4e5326b local dev/ci/sanitize passed 31/31; hosted run
-  30744876898 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Bounded H.264 picture parameter set base syntax
+Next Action: Define the bounded H.264 VUI core slice
+Last Verification: Commit 27bd8d0 local dev/ci/sanitize passed 31/31; hosted run
+  30752902472 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -462,3 +462,19 @@ Blockers: None
   hosted run `30744876898` 对 `4e5326b546ac46711a825b2763cd80734babf4d8` 在 Windows 2022 /
   Qt 6.10.1、macOS 15 / Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、
   Install、Upload 均成功。下一步界定并实现有界 H.264 picture parameter set 切片。
+- 2026-08-02：完成有界 H.264 picture parameter set base syntax。在开始 PPS 前，`e3d67db`
+  与 `f5721dd` 先把上一条 `@range` 切片的 bundled-profile 行为、typed IR constraint 和
+  `assert-range-minimum`/`assert-range-maximum` bytecode 清单在英中参考中对齐。ADR-0041
+  （`da0f87c`）把 type-8 `PictureParameterSetRbsp` 限定为无需 SPS lookup 即可精确解析的
+  clause 7.3.2.2 base 字段：只接受 `num_slice_groups_minus1 == 0` 且没有 PPS extension，
+  不声称已经解析 SPS generation、注册 PPS 或可供 slice header 使用。`27bd8d0` 新增 type 8
+  payload dispatch、PPS/SPS ID 与默认 reference-index count 的非致命 range、三种
+  `weighted_bipred_idc` enum 值、signed QP 字段和 base control flag，以
+  `rbsp_trailing_bits;` 精确终结；package 更新到 `0.1.4`，entrypoint coverage depth 更新为
+  `parameter-sets`。回归覆盖最小与非默认合法 PPS、逐字段 metadata/source span、PPS ID 256
+  warning、非零 slice group 后继续扫描、reserved weighted biprediction 与 PPS extension 拒绝；
+  H.264 analyzer 定向测试为 44/44。双语参考包含全部已声明 PPS 字段的含义和延期边界。本机
+  `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 31/31；hosted run
+  `30752902472` 对 `27bd8d01a151e4a42a672191e1e81248283c44b9` 在 Windows 2022 /
+  Qt 6.10.1、macOS 15 / Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、
+  Install、Upload 均成功。下一步界定并实现有界 H.264 VUI core slice。
