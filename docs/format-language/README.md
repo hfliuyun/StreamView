@@ -643,14 +643,69 @@ fully decoded, a header-only access unit delimiter is `truncated-source`, a
 header-only end of sequence or end of stream is materialized, and either of
 those types carrying RBSP bytes is `invalid-syntax`. Type `7` decodes the
 8-bit Baseline/Main/Extended SPS core and the constrained High subset with 4:2:0 chroma,
-eight-bit luma/chroma, transform bypass disabled, no scaling matrix,
-`pic_order_cnt_type == 0`, and no VUI. A present unsupported feature retains
-the decoded prefix and is `invalid-syntax`. Both `log2_*_minus4` fields carry
-the clause 7.4.2.1.1 `@range(0, 12)` bounds; a value outside them keeps the
-field, the structure, and the NAL unit intact and reports a source-located
-`invalid-syntax` warning on that field alone. Materialization therefore means
-exact declared-structure consumption, and any semantic bound the rule does not
-declare is still unchecked. Type `8` decodes the clause
+eight-bit luma/chroma, transform bypass disabled, no scaling matrix, and
+`pic_order_cnt_type == 0`. When `vui_parameters_present_flag` is one, the rule
+also decodes the bounded Annex E.1.1 VUI core: aspect-ratio information including
+Extended SAR, overscan information, video-signal and optional colour-description
+fields, chroma sample locations, timing information, the NAL/VCL HRD presence
+boundaries, `pic_struct_present_flag`, and the complete bitstream-restriction branch.
+The SPS `rbsp_trailing_bits;` remains the exact terminal after the optional VUI.
+
+Both HRD presence flags must equal zero. A present NAL or VCL HRD branch changes the
+following layout, so the presence-flag mismatch retains the decoded prefix and
+terminates that SPS as `invalid-syntax`; `low_delay_hrd_flag` is absent when both
+flags are zero. The two chroma sample-location types carry non-fatal
+`@range(0, 5)` constraints. `max_bytes_per_pic_denom`, `max_bits_per_mb_denom`, and
+both `log2_max_mv_length_*` fields carry non-fatal `@range(0, 16)` constraints.
+Both SPS `log2_*_minus4` fields carry the clause 7.4.2.1.1 `@range(0, 12)` bounds.
+An out-of-range value keeps the field, complete SPS/NAL, and later declared fields
+materialized, and reports a source-located `invalid-syntax` warning on that field.
+Other VUI values remain source-backed, but materialization claims only exact
+consumption of the selected declared branches, not complete Annex E semantic
+conformance. Reserved fixed-width table values, nonzero SAR/timing values, timing
+ratios, and the relationship between `max_num_reorder_frames`,
+`max_dec_frame_buffering`, and SPS-derived decoder limits remain unchecked where the
+stable DSL lacks the required fixed-width or relational constraint. A materialized
+SPS/VUI core does not imply SPS context registration.
+
+The declared VUI fields have the following bounded meanings:
+
+| Field | Meaning in this slice |
+| --- | --- |
+| `vui_parameters_present_flag` | Selects the optional bounded VUI core before the SPS trailing bits. |
+| `aspect_ratio_info_present_flag` | Signals `aspect_ratio_idc` and its optional Extended SAR dimensions. |
+| `aspect_ratio_idc` | Identifies the sample aspect ratio; value 255 selects Extended SAR. Other table-value validity is deferred. |
+| `sar_width` | Gives the 16-bit Extended SAR horizontal size; a nonzero requirement is deferred. |
+| `sar_height` | Gives the 16-bit Extended SAR vertical size; a nonzero requirement is deferred. |
+| `overscan_info_present_flag` | Signals `overscan_appropriate_flag`. |
+| `overscan_appropriate_flag` | Indicates whether cropped display may be appropriate. |
+| `video_signal_type_present_flag` | Signals video-format, range, and optional colour-description fields. |
+| `video_format` | Identifies the source video format; reserved table-value checks are deferred. |
+| `video_full_range_flag` | Selects full-range rather than studio-range sample values. |
+| `colour_description_present_flag` | Signals the three colour-description identifiers. |
+| `colour_primaries` | Identifies the source colour primaries; reserved table-value checks are deferred. |
+| `transfer_characteristics` | Identifies the transfer characteristics; reserved table-value checks are deferred. |
+| `matrix_coefficients` | Identifies the matrix coefficients; reserved table-value checks are deferred. |
+| `chroma_loc_info_present_flag` | Signals top- and bottom-field chroma sample locations. |
+| `chroma_sample_loc_type_top_field` | Identifies the top-field chroma location and warns outside `0..5`. |
+| `chroma_sample_loc_type_bottom_field` | Identifies the bottom-field chroma location and warns outside `0..5`. |
+| `timing_info_present_flag` | Signals the timing scale, tick count, and fixed-rate indication. |
+| `num_units_in_tick` | Gives the 32-bit clock-tick numerator; the nonzero and ratio checks are deferred. |
+| `time_scale` | Gives the 32-bit time scale; the nonzero and ratio checks are deferred. |
+| `fixed_frame_rate_flag` | Indicates whether temporal distance between coded pictures is constrained. |
+| `nal_hrd_parameters_present_flag` | Must be zero because NAL HRD parameters are not parsed. |
+| `vcl_hrd_parameters_present_flag` | Must be zero because VCL HRD parameters are not parsed. |
+| `pic_struct_present_flag` | Signals picture-structure information for later timing consumers. |
+| `bitstream_restriction_flag` | Signals the complete bounded bitstream-restriction branch. |
+| `motion_vectors_over_pic_boundaries_flag` | Indicates whether motion vectors may cross picture boundaries. |
+| `max_bytes_per_pic_denom` | Bounds the maximum coded-picture byte count and warns outside `0..16`. |
+| `max_bits_per_mb_denom` | Bounds the maximum macroblock bit count and warns outside `0..16`. |
+| `log2_max_mv_length_horizontal` | Gives the horizontal motion-vector length bound and warns outside `0..16`. |
+| `log2_max_mv_length_vertical` | Gives the vertical motion-vector length bound and warns outside `0..16`. |
+| `max_num_reorder_frames` | Gives the maximum number of frames that may precede an output frame; relational checks are deferred. |
+| `max_dec_frame_buffering` | Gives the decoder frame-buffer bound; SPS-derived and relational checks are deferred. |
+
+Type `8` decodes the clause
 7.3.2.2 base PPS with one slice group and no PPS extension. Out-of-range PPS/SPS
 identifiers or default reference-index counts retain the complete PPS with a
 field warning. A nonzero `num_slice_groups_minus1`, reserved

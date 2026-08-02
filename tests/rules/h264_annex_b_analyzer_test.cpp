@@ -479,7 +479,292 @@ private slots:
         QCOMPARE(stop->value().toULongLong(), quint64(1));
     }
 
-    void rejectsUnsupportedSequenceParameterSetBranchesAndContinues() {
+    void decodesTheMinimalVideoUsabilityInformationCore() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x67,
+                                   0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xd0, 0x04}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sps.has_value());
+        QCOMPARE(sps->state(), MaterializationState::Materialized);
+
+        const auto fieldNamed = [&](const QString& name) {
+            const auto found = std::find_if(
+                sps->children().begin(), sps->children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == sps->children().end() ? std::nullopt
+                                                : analyzer->tree().node(*found);
+        };
+        const auto vuiPresent = fieldNamed(QStringLiteral("vui_parameters_present_flag"));
+        const auto aspectPresent = fieldNamed(QStringLiteral("aspect_ratio_info_present_flag"));
+        const auto nalHrd = fieldNamed(QStringLiteral("nal_hrd_parameters_present_flag"));
+        const auto vclHrd = fieldNamed(QStringLiteral("vcl_hrd_parameters_present_flag"));
+        const auto picStruct = fieldNamed(QStringLiteral("pic_struct_present_flag"));
+        const auto restriction = fieldNamed(QStringLiteral("bitstream_restriction_flag"));
+        const auto stop = fieldNamed(QStringLiteral("rbsp_stop_one_bit"));
+        QVERIFY(vuiPresent.has_value());
+        QVERIFY(aspectPresent.has_value());
+        QVERIFY(nalHrd.has_value());
+        QVERIFY(vclHrd.has_value());
+        QVERIFY(picStruct.has_value());
+        QVERIFY(restriction.has_value());
+        QVERIFY(stop.has_value());
+        QCOMPARE(vuiPresent->value().toULongLong(), quint64(1));
+        QCOMPARE(aspectPresent->value().toULongLong(), quint64(0));
+        QCOMPARE(nalHrd->value().toULongLong(), quint64(0));
+        QCOMPARE(vclHrd->value().toULongLong(), quint64(0));
+        QCOMPARE(picStruct->value().toULongLong(), quint64(0));
+        QCOMPARE(restriction->value().toULongLong(), quint64(0));
+        QCOMPARE(stop->value().toULongLong(), quint64(1));
+        QVERIFY(!fieldNamed(QStringLiteral("aspect_ratio_idc")).has_value());
+        QVERIFY(!fieldNamed(QStringLiteral("motion_vectors_over_pic_boundaries_flag"))
+                     .has_value());
+    }
+
+    void decodesTheSupportedVideoUsabilityInformationBranches() {
+        MemorySource source(bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xdf,
+            0xf8, 0x00, 0x20, 0x00, 0x1f, 0xb8, 0x08, 0x08, 0x0d, 0x92, 0x00,
+            0x00, 0x07, 0xd2, 0x00, 0x01, 0xd4, 0xc1, 0x3b, 0x41, 0x10, 0x83,
+            0x2c,
+        }));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sps.has_value());
+        QCOMPARE(sps->state(), MaterializationState::Materialized);
+
+        const auto fieldNamed = [&](const QString& name) {
+            const auto found = std::find_if(
+                sps->children().begin(), sps->children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == sps->children().end() ? std::nullopt
+                                                : analyzer->tree().node(*found);
+        };
+        const std::vector expectedUnsigned{
+            std::pair{QStringLiteral("aspect_ratio_info_present_flag"), quint64(1)},
+            std::pair{QStringLiteral("aspect_ratio_idc"), quint64(255)},
+            std::pair{QStringLiteral("sar_width"), quint64(4)},
+            std::pair{QStringLiteral("sar_height"), quint64(3)},
+            std::pair{QStringLiteral("overscan_info_present_flag"), quint64(1)},
+            std::pair{QStringLiteral("overscan_appropriate_flag"), quint64(1)},
+            std::pair{QStringLiteral("video_signal_type_present_flag"), quint64(1)},
+            std::pair{QStringLiteral("video_format"), quint64(5)},
+            std::pair{QStringLiteral("video_full_range_flag"), quint64(1)},
+            std::pair{QStringLiteral("colour_description_present_flag"), quint64(1)},
+            std::pair{QStringLiteral("colour_primaries"), quint64(1)},
+            std::pair{QStringLiteral("transfer_characteristics"), quint64(1)},
+            std::pair{QStringLiteral("matrix_coefficients"), quint64(1)},
+            std::pair{QStringLiteral("chroma_loc_info_present_flag"), quint64(1)},
+            std::pair{QStringLiteral("chroma_sample_loc_type_top_field"), quint64(2)},
+            std::pair{QStringLiteral("chroma_sample_loc_type_bottom_field"), quint64(3)},
+            std::pair{QStringLiteral("timing_info_present_flag"), quint64(1)},
+            std::pair{QStringLiteral("num_units_in_tick"), quint64(1001)},
+            std::pair{QStringLiteral("time_scale"), quint64(60000)},
+            std::pair{QStringLiteral("fixed_frame_rate_flag"), quint64(1)},
+            std::pair{QStringLiteral("nal_hrd_parameters_present_flag"), quint64(0)},
+            std::pair{QStringLiteral("vcl_hrd_parameters_present_flag"), quint64(0)},
+            std::pair{QStringLiteral("pic_struct_present_flag"), quint64(1)},
+            std::pair{QStringLiteral("bitstream_restriction_flag"), quint64(1)},
+            std::pair{QStringLiteral("motion_vectors_over_pic_boundaries_flag"), quint64(1)},
+            std::pair{QStringLiteral("max_bytes_per_pic_denom"), quint64(2)},
+            std::pair{QStringLiteral("max_bits_per_mb_denom"), quint64(1)},
+            std::pair{QStringLiteral("log2_max_mv_length_horizontal"), quint64(16)},
+            std::pair{QStringLiteral("log2_max_mv_length_vertical"), quint64(15)},
+            std::pair{QStringLiteral("max_num_reorder_frames"), quint64(2)},
+            std::pair{QStringLiteral("max_dec_frame_buffering"), quint64(4)},
+            std::pair{QStringLiteral("rbsp_stop_one_bit"), quint64(1)},
+        };
+        for (const auto& [name, expected] : expectedUnsigned) {
+            const auto field = fieldNamed(name);
+            QVERIFY2(field.has_value(), qPrintable(name));
+            QCOMPARE(field->value().toULongLong(), expected);
+            QVERIFY(field->diagnostics().empty());
+        }
+        const auto aspect = fieldNamed(QStringLiteral("aspect_ratio_idc"));
+        const auto chroma = fieldNamed(QStringLiteral("chroma_sample_loc_type_top_field"));
+        QVERIFY(aspect.has_value());
+        QVERIFY(chroma.has_value());
+        QCOMPARE(aspect->metadata().specification->clause, QStringLiteral("E.1.1"));
+        QCOMPARE(chroma->metadata().specification->clause, QStringLiteral("E.2.1"));
+        QCOMPARE(aspect->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(85));
+        QCOMPARE(aspect->location()->sourceSpans().front().bitLength(), quint64(8));
+        QVERIFY(!fieldNamed(QStringLiteral("low_delay_hrd_flag")).has_value());
+    }
+
+    void warnsOnOutOfRangeVideoUsabilityInformationValues() {
+        struct RangeCase {
+            std::vector<unsigned int> values;
+            QString fieldName;
+            quint64 value;
+            quint64 bitLength;
+        };
+        const std::vector cases{
+            RangeCase{{0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e,
+                       0xf4, 0x0a, 0x0f, 0xd1, 0x3c, 0x10},
+                      QStringLiteral("chroma_sample_loc_type_top_field"), quint64(6), quint64(5)},
+            RangeCase{{0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e,
+                       0xf4, 0x0a, 0x0f, 0xd1, 0x9c, 0x10},
+                      QStringLiteral("chroma_sample_loc_type_bottom_field"),
+                      quint64(6), quint64(5)},
+            RangeCase{{0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e,
+                       0xf4, 0x0a, 0x0f, 0xd0, 0x0c, 0x25, 0xf8},
+                      QStringLiteral("max_bytes_per_pic_denom"), quint64(17), quint64(9)},
+            RangeCase{{0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e,
+                       0xf4, 0x0a, 0x0f, 0xd0, 0x0e, 0x12, 0xf8},
+                      QStringLiteral("max_bits_per_mb_denom"), quint64(17), quint64(9)},
+            RangeCase{{0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e,
+                       0xf4, 0x0a, 0x0f, 0xd0, 0x0f, 0x09, 0x78},
+                      QStringLiteral("log2_max_mv_length_horizontal"), quint64(17), quint64(9)},
+            RangeCase{{0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e,
+                       0xf4, 0x0a, 0x0f, 0xd0, 0x0f, 0x84, 0xb8},
+                      QStringLiteral("log2_max_mv_length_vertical"), quint64(17), quint64(9)},
+        };
+
+        for (const auto& rangeCase : cases) {
+            std::vector<std::byte> sourceBytes;
+            sourceBytes.reserve(rangeCase.values.size());
+            for (const unsigned int value : rangeCase.values) {
+                sourceBytes.push_back(static_cast<std::byte>(value));
+            }
+            MemorySource source(std::move(sourceBytes));
+            QString errorMessage;
+            auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+            QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+            const auto batch = analyzer->analyzeBatch();
+
+            QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+            const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+            QVERIFY(nal.has_value());
+            QCOMPARE(nal->state(), MaterializationState::Materialized);
+            const auto rbsp = analyzer->tree().node(nal->children().at(2));
+            QVERIFY(rbsp.has_value());
+            const auto sps = analyzer->tree().node(rbsp->children().front());
+            QVERIFY(sps.has_value());
+            QCOMPARE(sps->state(), MaterializationState::Materialized);
+            const auto fieldNamed = [&](const QString& name) {
+                const auto found = std::find_if(
+                    sps->children().begin(), sps->children().end(), [&](const auto id) {
+                        const auto node = analyzer->tree().node(id);
+                        return node && node->name() == name;
+                    });
+                return found == sps->children().end() ? std::nullopt
+                                                    : analyzer->tree().node(*found);
+            };
+            const auto field = fieldNamed(rangeCase.fieldName);
+            QVERIFY2(field.has_value(), qPrintable(rangeCase.fieldName));
+            QCOMPARE(field->value().toULongLong(), rangeCase.value);
+            QCOMPARE(field->diagnostics().size(), std::size_t(1));
+            const auto& diagnostic = field->diagnostics().front();
+            QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::InvalidSyntax);
+            QCOMPARE(diagnostic.severity, streamview::core::DiagnosticSeverity::Warning);
+            QCOMPARE(diagnostic.fieldPath,
+                     QStringLiteral("SequenceParameterSetRbsp.") + rangeCase.fieldName);
+            QVERIFY(diagnostic.location.has_value());
+            QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(),
+                     rangeCase.bitLength);
+            const auto stop = fieldNamed(QStringLiteral("rbsp_stop_one_bit"));
+            QVERIFY(stop.has_value());
+            QCOMPARE(stop->value().toULongLong(), quint64(1));
+        }
+    }
+
+    void rejectsUnsupportedVideoUsabilityInformationHrdAndContinues() {
+        struct HrdCase {
+            std::vector<unsigned int> values;
+            QString fieldName;
+            quint64 sourceBitOffset;
+        };
+        const std::vector cases{
+            HrdCase{{0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4,
+                     0x0a, 0x0f, 0xd0, 0x40, 0x00, 0x00, 0x01, 0x41},
+                    QStringLiteral("nal_hrd_parameters_present_flag"), quint64(89)},
+            HrdCase{{0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4,
+                     0x0a, 0x0f, 0xd0, 0x20, 0x00, 0x00, 0x01, 0x41},
+                    QStringLiteral("vcl_hrd_parameters_present_flag"), quint64(90)},
+        };
+
+        for (const auto& hrdCase : cases) {
+            std::vector<std::byte> sourceBytes;
+            sourceBytes.reserve(hrdCase.values.size());
+            for (const unsigned int value : hrdCase.values) {
+                sourceBytes.push_back(static_cast<std::byte>(value));
+            }
+            MemorySource source(std::move(sourceBytes));
+            QString errorMessage;
+            auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+            QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+            const auto batch = analyzer->analyzeBatch();
+
+            QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+            QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+            const auto invalidNal = analyzer->tree().node(batch.nalUnitNodes.front());
+            QVERIFY(invalidNal.has_value());
+            QCOMPARE(invalidNal->state(), MaterializationState::Invalid);
+            const auto rbsp = analyzer->tree().node(invalidNal->children().at(2));
+            QVERIFY(rbsp.has_value());
+            const auto sps = analyzer->tree().node(rbsp->children().front());
+            QVERIFY(sps.has_value());
+            QCOMPARE(sps->state(), MaterializationState::Invalid);
+            const auto fieldNamed = [&](const QString& name) {
+                const auto found = std::find_if(
+                    sps->children().begin(), sps->children().end(), [&](const auto id) {
+                        const auto node = analyzer->tree().node(id);
+                        return node && node->name() == name;
+                    });
+                return found == sps->children().end() ? std::nullopt
+                                                    : analyzer->tree().node(*found);
+            };
+            const auto hrd = fieldNamed(hrdCase.fieldName);
+            QVERIFY2(hrd.has_value(), qPrintable(hrdCase.fieldName));
+            QCOMPARE(hrd->value().toULongLong(), quint64(1));
+            QCOMPARE(sps->diagnostics().size(), std::size_t(1));
+            const auto& diagnostic = sps->diagnostics().front();
+            QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::InvalidSyntax);
+            QCOMPARE(diagnostic.severity, streamview::core::DiagnosticSeverity::Error);
+            QCOMPARE(diagnostic.fieldPath,
+                     QStringLiteral("SequenceParameterSetRbsp.") + hrdCase.fieldName);
+            QVERIFY(diagnostic.location.has_value());
+            QCOMPARE(diagnostic.location->sourceSpans().front().start().absoluteBitOffset(),
+                     hrdCase.sourceBitOffset);
+            QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(1));
+            QVERIFY(!fieldNamed(QStringLiteral("pic_struct_present_flag")).has_value());
+            QVERIFY(!fieldNamed(QStringLiteral("low_delay_hrd_flag")).has_value());
+
+            const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+            QVERIFY(followingNal.has_value());
+            QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+        }
+    }
+
+    void rejectsTruncatedSequenceParameterSetVuiAndContinues() {
         MemorySource source(bytes({0x00, 0x00, 0x01, 0x67,
                                    0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xd8,
                                    0x00, 0x00, 0x01, 0x41}));

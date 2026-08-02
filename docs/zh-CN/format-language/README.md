@@ -477,12 +477,64 @@ header，因此 direct header 之后的字节仍保持 uninterpreted，不会传
 可以完整解码；只有 header 的 access unit delimiter 是 `truncated-source`；只有 header 的
 end of sequence 或 end of stream 是物化；而这两种 type 一旦携带 RBSP 字节即为
 `invalid-syntax`。type `7` 解码 8-bit Baseline/Main/Extended SPS 核心，以及受限的 High 子集：
-4:2:0 chroma、eight-bit luma/chroma、关闭 transform bypass、无 scaling matrix、
-`pic_order_cnt_type == 0` 且没有 VUI。出现未支持 feature 时会保留已解码前缀并成为
-`invalid-syntax`。两个 `log2_*_minus4` 字段都带有 clause 7.4.2.1.1 的 `@range(0, 12)`
-约束；越界值会完整保留该字段、所在结构和 NAL unit，只在该字段上报告一条带 source
-位置的 `invalid-syntax` warning。因此 materialized 表示精确消费已声明结构，规则未声明的
-语义约束仍然不做检查。type `8` 解码 clause 7.3.2.2 的 base PPS，要求只有一个 slice group
+4:2:0 chroma、eight-bit luma/chroma、关闭 transform bypass、无 scaling matrix，并要求
+`pic_order_cnt_type == 0`。当 `vui_parameters_present_flag` 为一时，规则还会解码有界的
+Annex E.1.1 VUI core：aspect-ratio information（包括 Extended SAR）、overscan information、
+video-signal 及可选 colour-description 字段、chroma sample location、timing information、
+NAL/VCL HRD presence 边界、`pic_struct_present_flag` 和完整 bitstream-restriction 分支。
+SPS 的 `rbsp_trailing_bits;` 仍是可选 VUI 之后的精确终结项。
+
+两个 HRD presence flag 都必须等于零。NAL 或 VCL HRD 分支一旦存在就会改变后续布局，
+因此 presence flag 不匹配时保留已解码前缀，并让该 SPS 以 `invalid-syntax` 停止；两个 flag
+都为零时不存在 `low_delay_hrd_flag`。两个 chroma sample-location type 带有非致命
+`@range(0, 5)`；`max_bytes_per_pic_denom`、`max_bits_per_mb_denom` 和两个
+`log2_max_mv_length_*` 字段带有非致命 `@range(0, 16)`。SPS 的两个 `log2_*_minus4`
+字段都带有 clause 7.4.2.1.1 的 `@range(0, 12)`。越界值保留该字段、完整 SPS/NAL 及其后
+已声明字段，只在该字段上报告带 source 位置的 `invalid-syntax` warning。其他 VUI 值仍带
+source；materialized 只表示精确消费了被选中的已声明分支，不表示完整 Annex E 语义
+conformant。稳定 DSL 缺少所需 fixed-width 或 relational constraint 时，reserved fixed-width
+table 值、非零 SAR/timing 值、timing ratio，以及 `max_num_reorder_frames`、
+`max_dec_frame_buffering` 与 SPS-derived decoder limit 的关系仍不检查。SPS/VUI core
+materialized 不表示 SPS 已注册到 context directory。
+
+已声明 VUI 字段具有以下有界含义：
+
+| 字段 | 本切片中的含义 |
+| --- | --- |
+| `vui_parameters_present_flag` | 在 SPS trailing bits 前选择可选的有界 VUI core。 |
+| `aspect_ratio_info_present_flag` | 表示存在 `aspect_ratio_idc` 及其可选 Extended SAR 尺寸。 |
+| `aspect_ratio_idc` | 标识 sample aspect ratio；值 255 选择 Extended SAR，其他 table value 的有效性留待后续。 |
+| `sar_width` | 给出 16-bit Extended SAR 水平尺寸；非零要求留待后续。 |
+| `sar_height` | 给出 16-bit Extended SAR 垂直尺寸；非零要求留待后续。 |
+| `overscan_info_present_flag` | 表示存在 `overscan_appropriate_flag`。 |
+| `overscan_appropriate_flag` | 表示 cropped display 是否可能合适。 |
+| `video_signal_type_present_flag` | 表示存在 video format、range 和可选 colour-description 字段。 |
+| `video_format` | 标识 source video format；reserved table-value 检查留待后续。 |
+| `video_full_range_flag` | 选择 full-range 而非 studio-range sample value。 |
+| `colour_description_present_flag` | 表示存在三个 colour-description identifier。 |
+| `colour_primaries` | 标识 source colour primaries；reserved table-value 检查留待后续。 |
+| `transfer_characteristics` | 标识 transfer characteristics；reserved table-value 检查留待后续。 |
+| `matrix_coefficients` | 标识 matrix coefficients；reserved table-value 检查留待后续。 |
+| `chroma_loc_info_present_flag` | 表示存在 top-field 与 bottom-field chroma sample location。 |
+| `chroma_sample_loc_type_top_field` | 标识 top-field chroma location，超出 `0..5` 时告警。 |
+| `chroma_sample_loc_type_bottom_field` | 标识 bottom-field chroma location，超出 `0..5` 时告警。 |
+| `timing_info_present_flag` | 表示存在 timing scale、tick count 和 fixed-rate indication。 |
+| `num_units_in_tick` | 给出 32-bit clock-tick numerator；非零与 ratio 检查留待后续。 |
+| `time_scale` | 给出 32-bit time scale；非零与 ratio 检查留待后续。 |
+| `fixed_frame_rate_flag` | 表示 coded picture 之间的 temporal distance 是否受约束。 |
+| `nal_hrd_parameters_present_flag` | 必须为零，因为尚不解析 NAL HRD parameters。 |
+| `vcl_hrd_parameters_present_flag` | 必须为零，因为尚不解析 VCL HRD parameters。 |
+| `pic_struct_present_flag` | 为后续 timing consumer 表示 picture-structure information。 |
+| `bitstream_restriction_flag` | 表示存在完整的有界 bitstream-restriction 分支。 |
+| `motion_vectors_over_pic_boundaries_flag` | 表示 motion vector 是否可以越过 picture boundary。 |
+| `max_bytes_per_pic_denom` | 约束最大 coded-picture byte count，超出 `0..16` 时告警。 |
+| `max_bits_per_mb_denom` | 约束最大 macroblock bit count，超出 `0..16` 时告警。 |
+| `log2_max_mv_length_horizontal` | 给出水平 motion-vector length bound，超出 `0..16` 时告警。 |
+| `log2_max_mv_length_vertical` | 给出垂直 motion-vector length bound，超出 `0..16` 时告警。 |
+| `max_num_reorder_frames` | 给出可先于一个 output frame 的最大 frame 数；relational 检查留待后续。 |
+| `max_dec_frame_buffering` | 给出 decoder frame-buffer bound；SPS-derived 与 relational 检查留待后续。 |
+
+type `8` 解码 clause 7.3.2.2 的 base PPS，要求只有一个 slice group
 且不存在 PPS extension。PPS/SPS identifier 或默认 reference-index count 越界时，会用字段
 warning 保留完整 PPS；非零 `num_slice_groups_minus1`、reserved `weighted_bipred_idc` 或
 extension 语法会改变或扩展已声明布局，因此成为 `invalid-syntax`。PPS materialized 尚不表示

@@ -70,7 +70,65 @@ struct SequenceParameterSetRbsp {
         ue frame_crop_top_offset;
         ue frame_crop_bottom_offset;
     }
-    bits<1> vui_parameters_present_flag @equals(0);
+    bits<1> vui_parameters_present_flag;
+    if (vui_parameters_present_flag == 1) {
+        bits<1> aspect_ratio_info_present_flag @spec("ITU-T H.264", "E.1.1");
+        if (aspect_ratio_info_present_flag == 1) {
+            bits<8> aspect_ratio_idc @spec("ITU-T H.264", "E.1.1");
+            if (aspect_ratio_idc == 255) {
+                bits<16> sar_width @spec("ITU-T H.264", "E.1.1");
+                bits<16> sar_height @spec("ITU-T H.264", "E.1.1");
+            }
+        }
+        bits<1> overscan_info_present_flag @spec("ITU-T H.264", "E.1.1");
+        if (overscan_info_present_flag == 1) {
+            bits<1> overscan_appropriate_flag @spec("ITU-T H.264", "E.1.1");
+        }
+        bits<1> video_signal_type_present_flag @spec("ITU-T H.264", "E.1.1");
+        if (video_signal_type_present_flag == 1) {
+            bits<3> video_format @spec("ITU-T H.264", "E.1.1");
+            bits<1> video_full_range_flag @spec("ITU-T H.264", "E.1.1");
+            bits<1> colour_description_present_flag @spec("ITU-T H.264", "E.1.1");
+            if (colour_description_present_flag == 1) {
+                bits<8> colour_primaries @spec("ITU-T H.264", "E.1.1");
+                bits<8> transfer_characteristics @spec("ITU-T H.264", "E.1.1");
+                bits<8> matrix_coefficients @spec("ITU-T H.264", "E.1.1");
+            }
+        }
+        bits<1> chroma_loc_info_present_flag @spec("ITU-T H.264", "E.1.1");
+        if (chroma_loc_info_present_flag == 1) {
+            ue chroma_sample_loc_type_top_field @range(0, 5)
+                @spec("ITU-T H.264", "E.2.1");
+            ue chroma_sample_loc_type_bottom_field @range(0, 5)
+                @spec("ITU-T H.264", "E.2.1");
+        }
+        bits<1> timing_info_present_flag @spec("ITU-T H.264", "E.1.1");
+        if (timing_info_present_flag == 1) {
+            bits<32> num_units_in_tick @spec("ITU-T H.264", "E.1.1");
+            bits<32> time_scale @spec("ITU-T H.264", "E.1.1");
+            bits<1> fixed_frame_rate_flag @spec("ITU-T H.264", "E.1.1");
+        }
+        bits<1> nal_hrd_parameters_present_flag @equals(0)
+            @spec("ITU-T H.264", "E.1.1");
+        bits<1> vcl_hrd_parameters_present_flag @equals(0)
+            @spec("ITU-T H.264", "E.1.1");
+        bits<1> pic_struct_present_flag @spec("ITU-T H.264", "E.1.1");
+        bits<1> bitstream_restriction_flag @spec("ITU-T H.264", "E.1.1");
+        if (bitstream_restriction_flag == 1) {
+            bits<1> motion_vectors_over_pic_boundaries_flag
+                @spec("ITU-T H.264", "E.1.1");
+            ue max_bytes_per_pic_denom @range(0, 16)
+                @spec("ITU-T H.264", "E.2.1");
+            ue max_bits_per_mb_denom @range(0, 16)
+                @spec("ITU-T H.264", "E.2.1");
+            ue log2_max_mv_length_horizontal @range(0, 16)
+                @spec("ITU-T H.264", "E.2.1");
+            ue log2_max_mv_length_vertical @range(0, 16)
+                @spec("ITU-T H.264", "E.2.1");
+            ue max_num_reorder_frames @spec("ITU-T H.264", "E.1.1");
+            ue max_dec_frame_buffering @spec("ITU-T H.264", "E.1.1");
+        }
+    }
     rbsp_trailing_bits;
 }
 
