@@ -469,7 +469,7 @@ view。每个完整的 `00 00 03` 都会排除其中的 `03`，并把它呈现�
 `trailing_zero_8bits`。NAL unit type `14`、`20`、`21` 需要当前 profile 尚未解析的 extension
 header，因此 direct header 之后的字节仍保持 uninterpreted，不会传给 mapper，也无法派发。
 
-内置规则为 `nal_unit_type` 值 `7`、`9`、`10`、`11` 声明了 payload 派发。被派发的 type 一定会经过
+内置规则为 `nal_unit_type` 值 `7`、`8`、`9`、`10`、`11` 声明了 payload 派发。被派发的 type 一定会经过
 映射，payload 为空时也不例外，因此每个被派发的 NAL 都存在 `rbsp_payload`。type `9` 把
 `AccessUnitDelimiterRbsp` 解码为 `rbsp_payload` 的子节点，公开 `primary_pic_type`、
 `rbsp_stop_one_bit` 以及 `rbsp_alignment_zero_bit[0]` 到 `rbsp_alignment_zero_bit[3]`。
@@ -482,7 +482,32 @@ end of sequence 或 end of stream 是物化；而这两种 type 一旦携带 RBS
 `invalid-syntax`。两个 `log2_*_minus4` 字段都带有 clause 7.4.2.1.1 的 `@range(0, 12)`
 约束；越界值会完整保留该字段、所在结构和 NAL unit，只在该字段上报告一条带 source
 位置的 `invalid-syntax` warning。因此 materialized 表示精确消费已声明结构，规则未声明的
-语义约束仍然不做检查。其余所有 type 的 `rbsp_payload` region 保持原样。
+语义约束仍然不做检查。type `8` 解码 clause 7.3.2.2 的 base PPS，要求只有一个 slice group
+且不存在 PPS extension。PPS/SPS identifier 或默认 reference-index count 越界时，会用字段
+warning 保留完整 PPS；非零 `num_slice_groups_minus1`、reserved `weighted_bipred_idc` 或
+extension 语法会改变或扩展已声明布局，因此成为 `invalid-syntax`。PPS materialized 尚不表示
+被引用 SPS generation 存在、PPS 已注册或 slice header 可以使用它。其余所有 type 的
+`rbsp_payload` region 保持原样。
+
+已声明 PPS 字段具有以下有界含义：
+
+| 字段 | 本切片中的含义 |
+| --- | --- |
+| `pic_parameter_set_id` | 标识 PPS；clause 7.4.2.2 将其约束为 `0..255`。 |
+| `seq_parameter_set_id` | 命名但不解析被引用 SPS；clause 7.4.2.2 将其约束为 `0..31`。 |
+| `entropy_coding_mode_flag` | 为关联 slice 选择 CAVLC 或 CABAC entropy coding。 |
+| `bottom_field_pic_order_in_frame_present_flag` | 表示关联 slice header 中存在 bottom-field picture-order 语法。 |
+| `num_slice_groups_minus1` | 必须为零，因为本切片不解析 flexible macroblock ordering。 |
+| `num_ref_idx_l0_default_active_minus1` | 设置默认 list 0 reference count，超出 `0..31` 时告警。 |
+| `num_ref_idx_l1_default_active_minus1` | 设置默认 list 1 reference count，超出 `0..31` 时告警。 |
+| `weighted_pred_flag` | 为 P 与 SP slice 启用 weighted prediction。 |
+| `weighted_bipred_idc` | 选择关闭、explicit 或 implicit weighted biprediction；值 3 为 reserved。 |
+| `pic_init_qp_minus26` | 设置相对 26 的初始 luma QP；依赖 SPS 的 signed bound 留待后续。 |
+| `pic_init_qs_minus26` | 设置相对 26 的初始 SP/SI QP；signed bound 留待后续。 |
+| `chroma_qp_index_offset` | 设置第一个 chroma QP index offset；signed bound 留待后续。 |
+| `deblocking_filter_control_present_flag` | 表示关联 slice header 中存在 deblocking-filter control 语法。 |
+| `constrained_intra_pred_flag` | 将 intra prediction 限制在 intra-coded 相邻 macroblock。 |
+| `redundant_pic_cnt_present_flag` | 表示关联 slice header 中存在 redundant-picture count 语法。 |
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
 的 mapped-byte budget；默认每次最多处理 64 KiB EBSP source byte。预算耗尽时返回

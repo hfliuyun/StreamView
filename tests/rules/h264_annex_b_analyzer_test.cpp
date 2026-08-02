@@ -288,7 +288,7 @@ private slots:
         QVERIFY2(!source.isEmpty(), qPrintable(errorMessage));
         const auto parsed = DslParser::parse(source);
         QVERIFY(parsed.succeeded());
-        QCOMPARE(parsed.program.structs.size(), std::size_t(3));
+        QCOMPARE(parsed.program.structs.size(), std::size_t(4));
         QCOMPARE(parsed.program.structs.at(0).name, QStringLiteral("NalUnitHeader"));
         QCOMPARE(parsed.program.structs.at(1).name,
                  QStringLiteral("AccessUnitDelimiterRbsp"));
@@ -297,6 +297,10 @@ private slots:
                  streamview::rules::DslStructItemKind::RbspTrailingBits);
         QCOMPARE(parsed.program.structs.at(2).name,
                  QStringLiteral("SequenceParameterSetRbsp"));
+        QCOMPARE(parsed.program.structs.at(3).name,
+                 QStringLiteral("PictureParameterSetRbsp"));
+        QCOMPARE(parsed.program.structs.at(3).items.back().kind,
+                 streamview::rules::DslStructItemKind::RbspTrailingBits);
         QCOMPARE(parsed.program.scans.size(), std::size_t(1));
         QCOMPARE(parsed.program.entry.targetName, QStringLiteral("nal_units"));
         QVERIFY(parsed.program.payloadDispatch.has_value());
@@ -304,7 +308,7 @@ private slots:
         QCOMPARE(dispatch.viewKind, QStringLiteral("rbsp"));
         QCOMPARE(dispatch.sequenceName, QStringLiteral("nal_units"));
         QCOMPARE(dispatch.controllerFieldName, QStringLiteral("nal_unit_type"));
-        QCOMPARE(dispatch.cases.size(), std::size_t(4));
+        QCOMPARE(dispatch.cases.size(), std::size_t(5));
     }
 
     void decodesTheSupportedBaselineSequenceParameterSetPayload() {
@@ -582,6 +586,238 @@ private slots:
                     return node && node->name() == expectedName;
                 });
             QVERIFY(field != sps->children().end());
+        }
+    }
+
+    void decodesTheSupportedPictureParameterSetBaseSyntax() {
+        MemorySource source(
+            bytes({0x00, 0x00, 0x01, 0x68, 0xce, 0x3c, 0x80}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        QCOMPARE(rbsp->state(), MaterializationState::Materialized);
+        QCOMPARE(rbsp->children().size(), std::size_t(1));
+        const auto pps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(pps.has_value());
+        QCOMPARE(pps->name(), QStringLiteral("PictureParameterSetRbsp"));
+        QCOMPARE(pps->state(), MaterializationState::Materialized);
+        QCOMPARE(pps->metadata().specification->clause, QStringLiteral("7.3.2.2"));
+        QCOMPARE(pps->children().size(), std::size_t(23));
+
+        const auto fieldNamed = [&](const QString& name) {
+            const auto found = std::find_if(
+                pps->children().begin(), pps->children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == pps->children().end() ? std::nullopt
+                                                : analyzer->tree().node(*found);
+        };
+        const auto ppsId = fieldNamed(QStringLiteral("pic_parameter_set_id"));
+        const auto spsId = fieldNamed(QStringLiteral("seq_parameter_set_id"));
+        const auto sliceGroups = fieldNamed(QStringLiteral("num_slice_groups_minus1"));
+        const auto weightedBipred = fieldNamed(QStringLiteral("weighted_bipred_idc"));
+        const auto qp = fieldNamed(QStringLiteral("pic_init_qp_minus26"));
+        const auto deblocking =
+            fieldNamed(QStringLiteral("deblocking_filter_control_present_flag"));
+        const auto stop = fieldNamed(QStringLiteral("rbsp_stop_one_bit"));
+        QVERIFY(ppsId.has_value());
+        QVERIFY(spsId.has_value());
+        QVERIFY(sliceGroups.has_value());
+        QVERIFY(weightedBipred.has_value());
+        QVERIFY(qp.has_value());
+        QVERIFY(deblocking.has_value());
+        QVERIFY(stop.has_value());
+        QCOMPARE(ppsId->value().toULongLong(), quint64(0));
+        QCOMPARE(ppsId->metadata().specification->clause, QStringLiteral("7.4.2.2"));
+        QVERIFY(ppsId->metadata().description.contains(QStringLiteral("0 to 255")));
+        QCOMPARE(spsId->value().toULongLong(), quint64(0));
+        QCOMPARE(sliceGroups->value().toULongLong(), quint64(0));
+        QCOMPARE(weightedBipred->value().toULongLong(), quint64(0));
+        QCOMPARE(weightedBipred->metadata().typeName, QStringLiteral("WeightedBipredIdc"));
+        QCOMPARE(qp->value().toLongLong(), qlonglong(0));
+        QCOMPARE(deblocking->value().toULongLong(), quint64(1));
+        QCOMPARE(stop->value().toULongLong(), quint64(1));
+        QCOMPARE(ppsId->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(32));
+        QCOMPARE(ppsId->location()->sourceSpans().front().bitLength(), quint64(1));
+    }
+
+    void decodesNonDefaultPictureParameterSetValues() {
+        MemorySource source(bytes(
+            {0x00, 0x00, 0x01, 0x68, 0x23, 0xed, 0x66, 0x8a, 0xe0}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto pps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(pps.has_value());
+        QCOMPARE(pps->state(), MaterializationState::Materialized);
+
+        const auto fieldNamed = [&](const QString& name) {
+            const auto found = std::find_if(
+                pps->children().begin(), pps->children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == pps->children().end() ? std::nullopt
+                                                : analyzer->tree().node(*found);
+        };
+        QCOMPARE(fieldNamed(QStringLiteral("pic_parameter_set_id"))->value().toULongLong(),
+                 quint64(3));
+        QCOMPARE(fieldNamed(QStringLiteral("seq_parameter_set_id"))->value().toULongLong(),
+                 quint64(2));
+        QCOMPARE(fieldNamed(QStringLiteral("entropy_coding_mode_flag"))->value().toULongLong(),
+                 quint64(1));
+        QCOMPARE(fieldNamed(QStringLiteral("bottom_field_pic_order_in_frame_present_flag"))
+                     ->value()
+                     .toULongLong(),
+                 quint64(1));
+        QCOMPARE(fieldNamed(QStringLiteral("num_ref_idx_l0_default_active_minus1"))
+                     ->value()
+                     .toULongLong(),
+                 quint64(2));
+        QCOMPARE(fieldNamed(QStringLiteral("num_ref_idx_l1_default_active_minus1"))
+                     ->value()
+                     .toULongLong(),
+                 quint64(1));
+        QCOMPARE(fieldNamed(QStringLiteral("weighted_bipred_idc"))->value().toULongLong(),
+                 quint64(2));
+        QCOMPARE(fieldNamed(QStringLiteral("pic_init_qp_minus26"))->value().toLongLong(),
+                 qlonglong(-1));
+        QCOMPARE(fieldNamed(QStringLiteral("pic_init_qs_minus26"))->value().toLongLong(),
+                 qlonglong(1));
+        QCOMPARE(fieldNamed(QStringLiteral("chroma_qp_index_offset"))->value().toLongLong(),
+                 qlonglong(-2));
+        QCOMPARE(fieldNamed(QStringLiteral("constrained_intra_pred_flag"))
+                     ->value()
+                     .toULongLong(),
+                 quint64(1));
+        QCOMPARE(fieldNamed(QStringLiteral("redundant_pic_cnt_present_flag"))
+                     ->value()
+                     .toULongLong(),
+                 quint64(1));
+    }
+
+    void warnsOnOutOfRangePictureParameterSetIdentifier() {
+        MemorySource source(
+            bytes({0x00, 0x00, 0x01, 0x68, 0x00, 0x80, 0xce, 0x3c, 0x80}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto pps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(pps.has_value());
+        QCOMPARE(pps->state(), MaterializationState::Materialized);
+        const auto ppsId = analyzer->tree().node(pps->children().front());
+        QVERIFY(ppsId.has_value());
+        QCOMPARE(ppsId->name(), QStringLiteral("pic_parameter_set_id"));
+        QCOMPARE(ppsId->value().toULongLong(), quint64(256));
+        QCOMPARE(ppsId->diagnostics().size(), std::size_t(1));
+        const auto& diagnostic = ppsId->diagnostics().front();
+        QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::InvalidSyntax);
+        QCOMPARE(diagnostic.severity, streamview::core::DiagnosticSeverity::Warning);
+        QCOMPARE(diagnostic.fieldPath,
+                 QStringLiteral("PictureParameterSetRbsp.pic_parameter_set_id"));
+        QVERIFY(diagnostic.location.has_value());
+        QCOMPARE(diagnostic.location->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(32));
+        QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(17));
+    }
+
+    void rejectsUnsupportedPictureParameterSetSliceGroupsAndContinues() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x68, 0xc5,
+                                   0x00, 0x00, 0x01, 0x41}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+        const auto invalidNal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(invalidNal.has_value());
+        QCOMPARE(invalidNal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(invalidNal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto pps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(pps.has_value());
+        QCOMPARE(pps->state(), MaterializationState::Invalid);
+        const auto sliceGroups = std::find_if(
+            pps->children().begin(), pps->children().end(), [&](const auto id) {
+                const auto node = analyzer->tree().node(id);
+                return node && node->name() == QStringLiteral("num_slice_groups_minus1");
+            });
+        QVERIFY(sliceGroups != pps->children().end());
+        QCOMPARE(analyzer->tree().node(*sliceGroups)->value().toULongLong(), quint64(1));
+
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+    }
+
+    void rejectsReservedPictureParameterSetValuesAndExtensions() {
+        const std::vector cases{
+            std::pair{std::vector<unsigned int>{0xce, 0xfc, 0x80},
+                      QStringLiteral("weighted_bipred_idc")},
+            std::pair{std::vector<unsigned int>{0xce, 0x3c, 0x30},
+                      QStringLiteral("rbsp_stop_one_bit")},
+        };
+
+        for (const auto& [payload, expectedName] : cases) {
+            std::vector<std::byte> sourceBytes = bytes({0x00, 0x00, 0x01, 0x68});
+            for (const unsigned int value : payload) {
+                sourceBytes.push_back(static_cast<std::byte>(value));
+            }
+            MemorySource source(std::move(sourceBytes));
+            QString errorMessage;
+            auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+            QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+            const auto batch = analyzer->analyzeBatch();
+
+            QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+            const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+            QVERIFY(nal.has_value());
+            QCOMPARE(nal->state(), MaterializationState::Invalid);
+            const auto rbsp = analyzer->tree().node(nal->children().at(2));
+            QVERIFY(rbsp.has_value());
+            const auto pps = analyzer->tree().node(rbsp->children().front());
+            QVERIFY(pps.has_value());
+            QCOMPARE(pps->state(), MaterializationState::Invalid);
+            const auto field = std::find_if(
+                pps->children().begin(), pps->children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == expectedName;
+                });
+            QVERIFY(field != pps->children().end());
         }
     }
 

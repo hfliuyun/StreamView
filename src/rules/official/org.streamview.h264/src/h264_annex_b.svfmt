@@ -74,6 +74,52 @@ struct SequenceParameterSetRbsp {
     rbsp_trailing_bits;
 }
 
+enum WeightedBipredIdc {
+    disabled = 0;
+    explicit_weighting = 1;
+    implicit_weighting = 2;
+}
+
+@spec("ITU-T H.264", "7.3.2.2")
+@description("The supported picture parameter set base syntax without slice groups or extensions.")
+struct PictureParameterSetRbsp {
+    ue pic_parameter_set_id @range(0, 255)
+        @spec("ITU-T H.264", "7.4.2.2")
+        @description("Identifies this picture parameter set; conformant values are 0 to 255.");
+    ue seq_parameter_set_id @range(0, 31)
+        @spec("ITU-T H.264", "7.4.2.2")
+        @description("Identifies the referenced sequence parameter set; conformant values are 0 to 31.");
+    bits<1> entropy_coding_mode_flag
+        @description("Selects CAVLC or CABAC entropy coding for slices using this PPS.");
+    bits<1> bottom_field_pic_order_in_frame_present_flag
+        @description("Signals bottom-field picture-order syntax in associated slice headers.");
+    ue num_slice_groups_minus1 @equals(0)
+        @description("The supported base syntax contains one slice group.");
+    ue num_ref_idx_l0_default_active_minus1 @range(0, 31)
+        @spec("ITU-T H.264", "7.4.2.2")
+        @description("Sets the default list 0 reference count; conformant values are 0 to 31.");
+    ue num_ref_idx_l1_default_active_minus1 @range(0, 31)
+        @spec("ITU-T H.264", "7.4.2.2")
+        @description("Sets the default list 1 reference count; conformant values are 0 to 31.");
+    bits<1> weighted_pred_flag
+        @description("Enables weighted prediction for P and SP slices using this PPS.");
+    bits<2> weighted_bipred_idc @enum(WeightedBipredIdc)
+        @description("Selects the supported weighted biprediction mode.");
+    se pic_init_qp_minus26
+        @description("Sets the initial luma quantization parameter relative to 26.");
+    se pic_init_qs_minus26
+        @description("Sets the initial SP/SI quantization parameter relative to 26.");
+    se chroma_qp_index_offset
+        @description("Sets the first chroma quantization-parameter index offset.");
+    bits<1> deblocking_filter_control_present_flag
+        @description("Signals deblocking-filter control syntax in associated slice headers.");
+    bits<1> constrained_intra_pred_flag
+        @description("Restricts intra prediction to intra-coded neighboring macroblocks.");
+    bits<1> redundant_pic_cnt_present_flag
+        @description("Signals redundant-picture count syntax in associated slice headers.");
+    rbsp_trailing_bits;
+}
+
 @index(progressive)
 sequence<NalUnitHeader> nal_units = scan(h264_start_code);
 
@@ -81,6 +127,7 @@ sequence<NalUnitHeader> nal_units = scan(h264_start_code);
 @description("Selects the payload syntax carried by each NAL unit type.")
 payload<rbsp> nal_units switch (nal_unit_type) {
     case 7: SequenceParameterSetRbsp;
+    case 8: PictureParameterSetRbsp;
     case 9: AccessUnitDelimiterRbsp;
     case 10: empty;
     case 11: empty;

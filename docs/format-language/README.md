@@ -632,8 +632,8 @@ headers that this profile does not yet parse, so their bytes after the direct
 header remain uninterpreted, are not passed to the mapper, and cannot dispatch.
 
 The bundled rule declares a payload dispatch for `nal_unit_type` values `7`,
-`9`, `10`, and `11`. A dispatched type is always mapped, even when its payload is
-empty, so `rbsp_payload` is present for every dispatched NAL. Type `9` decodes
+`8`, `9`, `10`, and `11`. A dispatched type is always mapped, even when its
+payload is empty, so `rbsp_payload` is present for every dispatched NAL. Type `9` decodes
 `AccessUnitDelimiterRbsp` as a child of `rbsp_payload`, exposing
 `primary_pic_type`, `rbsp_stop_one_bit`, and `rbsp_alignment_zero_bit[0]`
 through `rbsp_alignment_zero_bit[3]` from its terminal
@@ -650,8 +650,35 @@ the clause 7.4.2.1.1 `@range(0, 12)` bounds; a value outside them keeps the
 field, the structure, and the NAL unit intact and reports a source-located
 `invalid-syntax` warning on that field alone. Materialization therefore means
 exact declared-structure consumption, and any semantic bound the rule does not
-declare is still unchecked. Every other type keeps the
+declare is still unchecked. Type `8` decodes the clause
+7.3.2.2 base PPS with one slice group and no PPS extension. Out-of-range PPS/SPS
+identifiers or default reference-index counts retain the complete PPS with a
+field warning. A nonzero `num_slice_groups_minus1`, reserved
+`weighted_bipred_idc`, or extension syntax is `invalid-syntax` because the
+unsupported input changes or extends the declared layout. A materialized PPS
+does not yet imply that its referenced SPS generation exists, that the PPS was
+registered, or that a slice header may use it. Every other type keeps the
 uninterpreted `rbsp_payload` region unchanged.
+
+The declared PPS fields have the following bounded meanings:
+
+| Field | Meaning in this slice |
+| --- | --- |
+| `pic_parameter_set_id` | Identifies the PPS; clause 7.4.2.2 constrains it to `0..255`. |
+| `seq_parameter_set_id` | Names the referenced SPS without resolving it; clause 7.4.2.2 constrains it to `0..31`. |
+| `entropy_coding_mode_flag` | Selects CAVLC or CABAC entropy coding for associated slices. |
+| `bottom_field_pic_order_in_frame_present_flag` | Signals bottom-field picture-order syntax in associated slice headers. |
+| `num_slice_groups_minus1` | Must be zero because this slice does not parse flexible macroblock ordering. |
+| `num_ref_idx_l0_default_active_minus1` | Sets the default list 0 reference count and warns outside `0..31`. |
+| `num_ref_idx_l1_default_active_minus1` | Sets the default list 1 reference count and warns outside `0..31`. |
+| `weighted_pred_flag` | Enables weighted prediction for P and SP slices. |
+| `weighted_bipred_idc` | Selects disabled, explicit, or implicit weighted biprediction; value 3 is reserved. |
+| `pic_init_qp_minus26` | Sets the initial luma QP relative to 26; its SPS-dependent signed bound is deferred. |
+| `pic_init_qs_minus26` | Sets the initial SP/SI QP relative to 26; its signed bound is deferred. |
+| `chroma_qp_index_offset` | Sets the first chroma QP index offset; its signed bound is deferred. |
+| `deblocking_filter_control_present_flag` | Signals deblocking-filter control syntax in associated slice headers. |
+| `constrained_intra_pred_flag` | Restricts intra prediction to intra-coded neighboring macroblocks. |
+| `redundant_pic_cnt_present_flag` | Signals redundant-picture count syntax in associated slice headers. |
 
 Annex B analysis batches have an independent positive mapped-byte budget in
 addition to their record-count and inspected-position budgets. The default is
