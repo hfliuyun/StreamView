@@ -648,25 +648,32 @@ eight-bit luma/chroma, transform bypass disabled, no scaling matrix, and
 also decodes the bounded Annex E.1.1 VUI core: aspect-ratio information including
 Extended SAR, overscan information, video-signal and optional colour-description
 fields, chroma sample locations, timing information, the NAL/VCL HRD presence
-boundaries, `pic_struct_present_flag`, and the complete bitstream-restriction branch.
-The SPS `rbsp_trailing_bits;` remains the exact terminal after the optional VUI.
+flags and complete bounded Annex E.1.2 HRD schedules, `low_delay_hrd_flag`,
+`pic_struct_present_flag`, and the complete bitstream-restriction branch. The SPS
+`rbsp_trailing_bits;` remains the exact terminal after the optional VUI.
 
-Both HRD presence flags must equal zero. A present NAL or VCL HRD branch changes the
-following layout, so the presence-flag mismatch retains the decoded prefix and
-terminates that SPS as `invalid-syntax`; `low_delay_hrd_flag` is absent when both
-flags are zero. The two chroma sample-location types carry non-fatal
-`@range(0, 5)` constraints. `max_bytes_per_pic_denom`, `max_bits_per_mb_denom`, and
-both `log2_max_mv_length_*` fields carry non-fatal `@range(0, 16)` constraints.
-Both SPS `log2_*_minus4` fields carry the clause 7.4.2.1.1 `@range(0, 12)` bounds.
-An out-of-range value keeps the field, complete SPS/NAL, and later declared fields
-materialized, and reports a source-located `invalid-syntax` warning on that field.
-Other VUI values remain source-backed, but materialization claims only exact
-consumption of the selected declared branches, not complete Annex E semantic
+Each present HRD flag selects an independently prefixed schedule with one through
+32 CPB entries and four delay-length fields. Either presence flag causes the shared
+`low_delay_hrd_flag` to be read after both schedules. Each `cpb_cnt_minus1` carries
+a non-fatal `@range(0, 31)` warning, while its derived count controls
+`repeat(..., 32)`. A larger count therefore retains the source-backed warning, then
+stops the SPS before schedule entries at the layout-critical repeat boundary; the
+scale fields and derived count remain available as a decoded prefix.
+
+The two chroma sample-location types carry non-fatal `@range(0, 5)` constraints.
+`max_bytes_per_pic_denom`, `max_bits_per_mb_denom`, and both
+`log2_max_mv_length_*` fields carry non-fatal `@range(0, 16)` constraints. Both SPS
+`log2_*_minus4` fields carry the clause 7.4.2.1.1 `@range(0, 12)` bounds. A violation
+of these non-layout bounds keeps the field, complete SPS/NAL, and later declared
+fields materialized, and reports a source-located `invalid-syntax` warning on that
+field. Other syntax values remain source-backed, but materialization claims only
+exact consumption of the selected declared branches, not complete Annex E semantic
 conformance. Reserved fixed-width table values, nonzero SAR/timing values, timing
-ratios, and the relationship between `max_num_reorder_frames`,
-`max_dec_frame_buffering`, and SPS-derived decoder limits remain unchecked where the
-stable DSL lacks the required fixed-width or relational constraint. A materialized
-SPS/VUI core does not imply SPS context registration.
+ratios, level-dependent HRD bitrate/CPB/delay relationships, and the relationship
+between `max_num_reorder_frames`, `max_dec_frame_buffering`, and SPS-derived decoder
+limits remain unchecked where the stable DSL lacks the required fixed-width or
+relational constraint. A materialized SPS/VUI/HRD core does not imply SPS context
+registration or that later SEI timing consumers have been decoded.
 
 The declared VUI fields have the following bounded meanings:
 
@@ -693,8 +700,10 @@ The declared VUI fields have the following bounded meanings:
 | `num_units_in_tick` | Gives the 32-bit clock-tick numerator; the nonzero and ratio checks are deferred. |
 | `time_scale` | Gives the 32-bit time scale; the nonzero and ratio checks are deferred. |
 | `fixed_frame_rate_flag` | Indicates whether temporal distance between coded pictures is constrained. |
-| `nal_hrd_parameters_present_flag` | Must be zero because NAL HRD parameters are not parsed. |
-| `vcl_hrd_parameters_present_flag` | Must be zero because VCL HRD parameters are not parsed. |
+| `nal_hrd_parameters_present_flag` | Signals the complete bounded NAL HRD schedule. |
+| `vcl_hrd_parameters_present_flag` | Signals the complete bounded VCL HRD schedule. |
+| `hrd_parameters_present` | Derived Boolean used to select `low_delay_hrd_flag`; it has no source location. |
+| `low_delay_hrd_flag` | Indicates the low-delay HRD mode when either HRD schedule is present. |
 | `pic_struct_present_flag` | Signals picture-structure information for later timing consumers. |
 | `bitstream_restriction_flag` | Signals the complete bounded bitstream-restriction branch. |
 | `motion_vectors_over_pic_boundaries_flag` | Indicates whether motion vectors may cross picture boundaries. |
@@ -704,6 +713,23 @@ The declared VUI fields have the following bounded meanings:
 | `log2_max_mv_length_vertical` | Gives the vertical motion-vector length bound and warns outside `0..16`. |
 | `max_num_reorder_frames` | Gives the maximum number of frames that may precede an output frame; relational checks are deferred. |
 | `max_dec_frame_buffering` | Gives the decoder frame-buffer bound; SPS-derived and relational checks are deferred. |
+
+Each `*` below stands for the `nal_hrd` or `vcl_hrd` prefix of one independently
+present HRD schedule:
+
+| Field | Meaning in this slice |
+| --- | --- |
+| `*_cpb_cnt_minus1` | Gives one less than the number of CPB schedules, warns outside `0..31`, and is bounded by the repeat contract. |
+| `*_bit_rate_scale` | Supplies the four-bit exponent used to derive schedule bit rates. |
+| `*_cpb_size_scale` | Supplies the four-bit exponent used to derive schedule CPB sizes. |
+| `*_cpb_count` | Derived `cpb_cnt_minus1 + 1` repeat count with no source location. |
+| `*_bit_rate_value_minus1[i]` | Supplies the indexed CPB schedule bitrate value before scaling. |
+| `*_cpb_size_value_minus1[i]` | Supplies the indexed CPB schedule size value before scaling. |
+| `*_cbr_flag[i]` | Indicates whether the indexed schedule operates at a constant bitrate. |
+| `*_initial_cpb_removal_delay_length_minus1` | Gives one less than the bit length of initial CPB removal delays. |
+| `*_cpb_removal_delay_length_minus1` | Gives one less than the bit length of CPB removal delays. |
+| `*_dpb_output_delay_length_minus1` | Gives one less than the bit length of DPB output delays. |
+| `*_time_offset_length` | Gives the signed time-offset bit length; zero means no time-offset syntax. |
 
 Type `8` decodes the clause
 7.3.2.2 base PPS with one slice group and no PPS extension. Out-of-range PPS/SPS

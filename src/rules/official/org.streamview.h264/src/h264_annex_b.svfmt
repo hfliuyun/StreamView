@@ -108,10 +108,51 @@ struct SequenceParameterSetRbsp {
             bits<32> time_scale @spec("ITU-T H.264", "E.1.1");
             bits<1> fixed_frame_rate_flag @spec("ITU-T H.264", "E.1.1");
         }
-        bits<1> nal_hrd_parameters_present_flag @equals(0)
-            @spec("ITU-T H.264", "E.1.1");
-        bits<1> vcl_hrd_parameters_present_flag @equals(0)
-            @spec("ITU-T H.264", "E.1.1");
+        bits<1> nal_hrd_parameters_present_flag @spec("ITU-T H.264", "E.1.1");
+        if (nal_hrd_parameters_present_flag == 1) {
+            ue nal_hrd_cpb_cnt_minus1 @range(0, 31)
+                @spec("ITU-T H.264", "E.2.2");
+            bits<4> nal_hrd_bit_rate_scale @spec("ITU-T H.264", "E.1.2");
+            bits<4> nal_hrd_cpb_size_scale @spec("ITU-T H.264", "E.1.2");
+            computed<u64> nal_hrd_cpb_count = nal_hrd_cpb_cnt_minus1 + 1;
+            repeat (nal_hrd_cpb_count, 32) {
+                ue nal_hrd_bit_rate_value_minus1 @spec("ITU-T H.264", "E.1.2");
+                ue nal_hrd_cpb_size_value_minus1 @spec("ITU-T H.264", "E.1.2");
+                bits<1> nal_hrd_cbr_flag @spec("ITU-T H.264", "E.1.2");
+            }
+            bits<5> nal_hrd_initial_cpb_removal_delay_length_minus1
+                @spec("ITU-T H.264", "E.1.2");
+            bits<5> nal_hrd_cpb_removal_delay_length_minus1
+                @spec("ITU-T H.264", "E.1.2");
+            bits<5> nal_hrd_dpb_output_delay_length_minus1
+                @spec("ITU-T H.264", "E.1.2");
+            bits<5> nal_hrd_time_offset_length @spec("ITU-T H.264", "E.1.2");
+        }
+        bits<1> vcl_hrd_parameters_present_flag @spec("ITU-T H.264", "E.1.1");
+        if (vcl_hrd_parameters_present_flag == 1) {
+            ue vcl_hrd_cpb_cnt_minus1 @range(0, 31)
+                @spec("ITU-T H.264", "E.2.2");
+            bits<4> vcl_hrd_bit_rate_scale @spec("ITU-T H.264", "E.1.2");
+            bits<4> vcl_hrd_cpb_size_scale @spec("ITU-T H.264", "E.1.2");
+            computed<u64> vcl_hrd_cpb_count = vcl_hrd_cpb_cnt_minus1 + 1;
+            repeat (vcl_hrd_cpb_count, 32) {
+                ue vcl_hrd_bit_rate_value_minus1 @spec("ITU-T H.264", "E.1.2");
+                ue vcl_hrd_cpb_size_value_minus1 @spec("ITU-T H.264", "E.1.2");
+                bits<1> vcl_hrd_cbr_flag @spec("ITU-T H.264", "E.1.2");
+            }
+            bits<5> vcl_hrd_initial_cpb_removal_delay_length_minus1
+                @spec("ITU-T H.264", "E.1.2");
+            bits<5> vcl_hrd_cpb_removal_delay_length_minus1
+                @spec("ITU-T H.264", "E.1.2");
+            bits<5> vcl_hrd_dpb_output_delay_length_minus1
+                @spec("ITU-T H.264", "E.1.2");
+            bits<5> vcl_hrd_time_offset_length @spec("ITU-T H.264", "E.1.2");
+        }
+        computed<bool> hrd_parameters_present =
+            nal_hrd_parameters_present_flag == 1 || vcl_hrd_parameters_present_flag == 1;
+        if (hrd_parameters_present) {
+            bits<1> low_delay_hrd_flag @spec("ITU-T H.264", "E.1.1");
+        }
         bits<1> pic_struct_present_flag @spec("ITU-T H.264", "E.1.1");
         bits<1> bitstream_restriction_flag @spec("ITU-T H.264", "E.1.1");
         if (bitstream_restriction_flag == 1) {

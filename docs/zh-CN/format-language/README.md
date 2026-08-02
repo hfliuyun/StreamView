@@ -481,21 +481,27 @@ end of sequence 或 end of stream 是物化；而这两种 type 一旦携带 RBS
 `pic_order_cnt_type == 0`。当 `vui_parameters_present_flag` 为一时，规则还会解码有界的
 Annex E.1.1 VUI core：aspect-ratio information（包括 Extended SAR）、overscan information、
 video-signal 及可选 colour-description 字段、chroma sample location、timing information、
-NAL/VCL HRD presence 边界、`pic_struct_present_flag` 和完整 bitstream-restriction 分支。
-SPS 的 `rbsp_trailing_bits;` 仍是可选 VUI 之后的精确终结项。
+NAL/VCL HRD presence flag 与完整的有界 Annex E.1.2 HRD schedule、
+`low_delay_hrd_flag`、`pic_struct_present_flag` 和完整 bitstream-restriction 分支。SPS 的
+`rbsp_trailing_bits;` 仍是可选 VUI 之后的精确终结项。
 
-两个 HRD presence flag 都必须等于零。NAL 或 VCL HRD 分支一旦存在就会改变后续布局，
-因此 presence flag 不匹配时保留已解码前缀，并让该 SPS 以 `invalid-syntax` 停止；两个 flag
-都为零时不存在 `low_delay_hrd_flag`。两个 chroma sample-location type 带有非致命
-`@range(0, 5)`；`max_bytes_per_pic_denom`、`max_bits_per_mb_denom` 和两个
-`log2_max_mv_length_*` 字段带有非致命 `@range(0, 16)`。SPS 的两个 `log2_*_minus4`
-字段都带有 clause 7.4.2.1.1 的 `@range(0, 12)`。越界值保留该字段、完整 SPS/NAL 及其后
-已声明字段，只在该字段上报告带 source 位置的 `invalid-syntax` warning。其他 VUI 值仍带
-source；materialized 只表示精确消费了被选中的已声明分支，不表示完整 Annex E 语义
-conformant。稳定 DSL 缺少所需 fixed-width 或 relational constraint 时，reserved fixed-width
-table 值、非零 SAR/timing 值、timing ratio，以及 `max_num_reorder_frames`、
-`max_dec_frame_buffering` 与 SPS-derived decoder limit 的关系仍不检查。SPS/VUI core
-materialized 不表示 SPS 已注册到 context directory。
+每个存在的 HRD flag 选择一套具有独立前缀的 schedule，包含一至 32 个 CPB entry 和四个
+delay-length 字段。任一 presence flag 为一时，两个 schedule 之后都会读取共同的
+`low_delay_hrd_flag`。每个 `cpb_cnt_minus1` 带非致命 `@range(0, 31)` warning，其派生 count
+则控制 `repeat(..., 32)`。因此更大的 count 会保留带 source 的 warning，再在进入 schedule
+entry 前由 layout-critical repeat 边界停止 SPS；scale 字段和派生 count 仍作为已解码前缀保留。
+
+两个 chroma sample-location type 带有非致命 `@range(0, 5)`；
+`max_bytes_per_pic_denom`、`max_bits_per_mb_denom` 和两个 `log2_max_mv_length_*` 字段带有
+非致命 `@range(0, 16)`。SPS 的两个 `log2_*_minus4` 字段带有 clause 7.4.2.1.1 的
+`@range(0, 12)`。违反这些非 layout bound 时会保留该字段、完整 SPS/NAL 及其后已声明字段，
+只在该字段上报告带 source 位置的 `invalid-syntax` warning。其他 syntax 值仍带 source；
+materialized 只表示精确消费了被选中的已声明分支，不表示完整 Annex E 语义 conformant。
+稳定 DSL 缺少所需 fixed-width 或 relational constraint 时，reserved fixed-width table 值、
+非零 SAR/timing 值、timing ratio、依赖 level 的 HRD bitrate/CPB/delay 关系，以及
+`max_num_reorder_frames`、`max_dec_frame_buffering` 与 SPS-derived decoder limit 的关系仍不
+检查。SPS/VUI/HRD core materialized 不表示 SPS 已注册到 context directory，也不表示已经
+解码后续 SEI timing consumer。
 
 已声明 VUI 字段具有以下有界含义：
 
@@ -522,8 +528,10 @@ materialized 不表示 SPS 已注册到 context directory。
 | `num_units_in_tick` | 给出 32-bit clock-tick numerator；非零与 ratio 检查留待后续。 |
 | `time_scale` | 给出 32-bit time scale；非零与 ratio 检查留待后续。 |
 | `fixed_frame_rate_flag` | 表示 coded picture 之间的 temporal distance 是否受约束。 |
-| `nal_hrd_parameters_present_flag` | 必须为零，因为尚不解析 NAL HRD parameters。 |
-| `vcl_hrd_parameters_present_flag` | 必须为零，因为尚不解析 VCL HRD parameters。 |
+| `nal_hrd_parameters_present_flag` | 表示存在完整的有界 NAL HRD schedule。 |
+| `vcl_hrd_parameters_present_flag` | 表示存在完整的有界 VCL HRD schedule。 |
+| `hrd_parameters_present` | 用于选择 `low_delay_hrd_flag` 的派生 Boolean；没有 source location。 |
+| `low_delay_hrd_flag` | 任一 HRD schedule 存在时表示 low-delay HRD mode。 |
 | `pic_struct_present_flag` | 为后续 timing consumer 表示 picture-structure information。 |
 | `bitstream_restriction_flag` | 表示存在完整的有界 bitstream-restriction 分支。 |
 | `motion_vectors_over_pic_boundaries_flag` | 表示 motion vector 是否可以越过 picture boundary。 |
@@ -533,6 +541,22 @@ materialized 不表示 SPS 已注册到 context directory。
 | `log2_max_mv_length_vertical` | 给出垂直 motion-vector length bound，超出 `0..16` 时告警。 |
 | `max_num_reorder_frames` | 给出可先于一个 output frame 的最大 frame 数；relational 检查留待后续。 |
 | `max_dec_frame_buffering` | 给出 decoder frame-buffer bound；SPS-derived 与 relational 检查留待后续。 |
+
+下表中的每个 `*` 表示一套独立存在的 HRD schedule 所使用的 `nal_hrd` 或 `vcl_hrd` 前缀：
+
+| 字段 | 本切片中的含义 |
+| --- | --- |
+| `*_cpb_cnt_minus1` | 给出 CPB schedule 数减一，超出 `0..31` 时告警，并受 repeat contract 限制。 |
+| `*_bit_rate_scale` | 给出用于派生 schedule bitrate 的四 bit exponent。 |
+| `*_cpb_size_scale` | 给出用于派生 schedule CPB size 的四 bit exponent。 |
+| `*_cpb_count` | 派生的 `cpb_cnt_minus1 + 1` repeat count；没有 source location。 |
+| `*_bit_rate_value_minus1[i]` | 给出 indexed CPB schedule 在 scale 前的 bitrate 值。 |
+| `*_cpb_size_value_minus1[i]` | 给出 indexed CPB schedule 在 scale 前的 size 值。 |
+| `*_cbr_flag[i]` | 表示 indexed schedule 是否以 constant bitrate 工作。 |
+| `*_initial_cpb_removal_delay_length_minus1` | 给出 initial CPB removal delay 的 bit length 减一。 |
+| `*_cpb_removal_delay_length_minus1` | 给出 CPB removal delay 的 bit length 减一。 |
+| `*_dpb_output_delay_length_minus1` | 给出 DPB output delay 的 bit length 减一。 |
+| `*_time_offset_length` | 给出 signed time-offset bit length；零表示不存在 time-offset 语法。 |
 
 type `8` 解码 clause 7.3.2.2 的 base PPS，要求只有一个 slice group
 且不存在 PPS extension。PPS/SPS identifier 或默认 reference-index count 越界时，会用字段

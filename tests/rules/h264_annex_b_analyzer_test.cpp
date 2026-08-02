@@ -617,6 +617,160 @@ private slots:
         QVERIFY(!fieldNamed(QStringLiteral("low_delay_hrd_flag")).has_value());
     }
 
+    void decodesTheSupportedHypotheticalReferenceDecoderBranches() {
+        struct HrdCase {
+            std::vector<unsigned int> values;
+            std::vector<std::pair<QString, quint64>> expectedFields;
+            std::vector<QString> absentFields;
+            quint64 lowDelayHrdFlag;
+        };
+        const std::vector cases{
+            HrdCase{
+                {0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a,
+                 0x0f, 0xd0, 0x51, 0xa5, 0x59, 0x17, 0xb5, 0x68, 0xd0},
+                {
+                    {QStringLiteral("nal_hrd_cpb_cnt_minus1"), quint64(1)},
+                    {QStringLiteral("nal_hrd_bit_rate_scale"), quint64(3)},
+                    {QStringLiteral("nal_hrd_cpb_size_scale"), quint64(4)},
+                    {QStringLiteral("nal_hrd_cpb_count"), quint64(2)},
+                    {QStringLiteral("nal_hrd_bit_rate_value_minus1[0]"), quint64(0)},
+                    {QStringLiteral("nal_hrd_cpb_size_value_minus1[0]"), quint64(1)},
+                    {QStringLiteral("nal_hrd_cbr_flag[0]"), quint64(1)},
+                    {QStringLiteral("nal_hrd_bit_rate_value_minus1[1]"), quint64(2)},
+                    {QStringLiteral("nal_hrd_cpb_size_value_minus1[1]"), quint64(3)},
+                    {QStringLiteral("nal_hrd_cbr_flag[1]"), quint64(0)},
+                    {QStringLiteral("nal_hrd_initial_cpb_removal_delay_length_minus1"),
+                     quint64(23)},
+                    {QStringLiteral("nal_hrd_cpb_removal_delay_length_minus1"), quint64(22)},
+                    {QStringLiteral("nal_hrd_dpb_output_delay_length_minus1"), quint64(21)},
+                    {QStringLiteral("nal_hrd_time_offset_length"), quint64(20)},
+                },
+                {QStringLiteral("vcl_hrd_cpb_cnt_minus1")},
+                quint64(1),
+            },
+            HrdCase{
+                {0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a,
+                 0x0f, 0xd0, 0x31, 0x22, 0x9a, 0xa5, 0xb1, 0xa2},
+                {
+                    {QStringLiteral("vcl_hrd_cpb_cnt_minus1"), quint64(0)},
+                    {QStringLiteral("vcl_hrd_bit_rate_scale"), quint64(1)},
+                    {QStringLiteral("vcl_hrd_cpb_size_scale"), quint64(2)},
+                    {QStringLiteral("vcl_hrd_cpb_count"), quint64(1)},
+                    {QStringLiteral("vcl_hrd_bit_rate_value_minus1[0]"), quint64(4)},
+                    {QStringLiteral("vcl_hrd_cpb_size_value_minus1[0]"), quint64(5)},
+                    {QStringLiteral("vcl_hrd_cbr_flag[0]"), quint64(1)},
+                    {QStringLiteral("vcl_hrd_initial_cpb_removal_delay_length_minus1"),
+                     quint64(10)},
+                    {QStringLiteral("vcl_hrd_cpb_removal_delay_length_minus1"), quint64(11)},
+                    {QStringLiteral("vcl_hrd_dpb_output_delay_length_minus1"), quint64(12)},
+                    {QStringLiteral("vcl_hrd_time_offset_length"), quint64(13)},
+                },
+                {QStringLiteral("nal_hrd_cpb_cnt_minus1")},
+                quint64(0),
+            },
+            HrdCase{
+                {0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f,
+                 0xd0, 0x64, 0xa9, 0x8e, 0x84, 0xaa, 0x99, 0xc8, 0x59, 0x8e,
+                 0x5b, 0x1a, 0xe9},
+                {
+                    {QStringLiteral("nal_hrd_cpb_cnt_minus1"), quint64(0)},
+                    {QStringLiteral("nal_hrd_bit_rate_scale"), quint64(2)},
+                    {QStringLiteral("nal_hrd_cpb_size_scale"), quint64(5)},
+                    {QStringLiteral("nal_hrd_bit_rate_value_minus1[0]"), quint64(1)},
+                    {QStringLiteral("nal_hrd_cpb_size_value_minus1[0]"), quint64(2)},
+                    {QStringLiteral("vcl_hrd_cpb_cnt_minus1"), quint64(1)},
+                    {QStringLiteral("vcl_hrd_bit_rate_scale"), quint64(6)},
+                    {QStringLiteral("vcl_hrd_cpb_size_scale"), quint64(7)},
+                    {QStringLiteral("vcl_hrd_bit_rate_value_minus1[1]"), quint64(5)},
+                    {QStringLiteral("vcl_hrd_cpb_size_value_minus1[1]"), quint64(6)},
+                    {QStringLiteral("vcl_hrd_initial_cpb_removal_delay_length_minus1"),
+                     quint64(11)},
+                    {QStringLiteral("vcl_hrd_time_offset_length"), quint64(14)},
+                },
+                {},
+                quint64(1),
+            },
+        };
+
+        for (const auto& hrdCase : cases) {
+            std::vector<std::byte> sourceBytes;
+            sourceBytes.reserve(hrdCase.values.size());
+            for (const unsigned int value : hrdCase.values) {
+                sourceBytes.push_back(static_cast<std::byte>(value));
+            }
+            MemorySource source(std::move(sourceBytes));
+            QString errorMessage;
+            auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+            QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+            const auto batch = analyzer->analyzeBatch();
+
+            QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+            const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+            QVERIFY(nal.has_value());
+            QCOMPARE(nal->state(), MaterializationState::Materialized);
+            const auto rbsp = analyzer->tree().node(nal->children().at(2));
+            QVERIFY(rbsp.has_value());
+            const auto sps = analyzer->tree().node(rbsp->children().front());
+            QVERIFY(sps.has_value());
+            QCOMPARE(sps->state(), MaterializationState::Materialized);
+            const auto fieldNamed = [&](const QString& name) {
+                const auto found = std::find_if(
+                    sps->children().begin(), sps->children().end(), [&](const auto id) {
+                        const auto node = analyzer->tree().node(id);
+                        return node && node->name() == name;
+                    });
+                return found == sps->children().end() ? std::nullopt
+                                                    : analyzer->tree().node(*found);
+            };
+            for (const auto& [name, expected] : hrdCase.expectedFields) {
+                const auto field = fieldNamed(name);
+                QVERIFY2(field.has_value(), qPrintable(name));
+                QCOMPARE(field->value().toULongLong(), expected);
+                QVERIFY(field->diagnostics().empty());
+            }
+            for (const auto& name : hrdCase.absentFields) {
+                QVERIFY2(!fieldNamed(name).has_value(), qPrintable(name));
+            }
+            const auto anyHrd = fieldNamed(QStringLiteral("hrd_parameters_present"));
+            const auto lowDelay = fieldNamed(QStringLiteral("low_delay_hrd_flag"));
+            const auto stop = fieldNamed(QStringLiteral("rbsp_stop_one_bit"));
+            QVERIFY(anyHrd.has_value());
+            QVERIFY(lowDelay.has_value());
+            QVERIFY(stop.has_value());
+            QCOMPARE(anyHrd->value().toBool(), true);
+            QVERIFY(!anyHrd->location().has_value());
+            QCOMPARE(lowDelay->value().toULongLong(), hrdCase.lowDelayHrdFlag);
+            QCOMPARE(stop->value().toULongLong(), quint64(1));
+        }
+
+        MemorySource metadataSource(bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a,
+            0x0f, 0xd0, 0x51, 0xa5, 0x59, 0x17, 0xb5, 0x68, 0xd0,
+        }));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(metadataSource, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+        const auto batch = analyzer->analyzeBatch();
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sps.has_value());
+        const auto count = std::find_if(
+            sps->children().begin(), sps->children().end(), [&](const auto id) {
+                const auto node = analyzer->tree().node(id);
+                return node && node->name() == QStringLiteral("nal_hrd_cpb_cnt_minus1");
+            });
+        QVERIFY(count != sps->children().end());
+        const auto countNode = analyzer->tree().node(*count);
+        QVERIFY(countNode.has_value());
+        QCOMPARE(countNode->metadata().specification->clause, QStringLiteral("E.2.2"));
+        QCOMPARE(countNode->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(90));
+    }
+
     void warnsOnOutOfRangeVideoUsabilityInformationValues() {
         struct RangeCase {
             std::vector<unsigned int> values;
@@ -695,73 +849,66 @@ private slots:
         }
     }
 
-    void rejectsUnsupportedVideoUsabilityInformationHrdAndContinues() {
-        struct HrdCase {
-            std::vector<unsigned int> values;
-            QString fieldName;
-            quint64 sourceBitOffset;
+    void rejectsOutOfRangeHypotheticalReferenceDecoderScheduleCountAndContinues() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e,
+                                   0xf4, 0x0a, 0x0f, 0xd0, 0x41, 0x08, 0x07,
+                                   0x00, 0x00, 0x01, 0x41}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+        const auto invalidNal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(invalidNal.has_value());
+        QCOMPARE(invalidNal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(invalidNal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sps.has_value());
+        QCOMPARE(sps->state(), MaterializationState::Invalid);
+        const auto fieldNamed = [&](const QString& name) {
+            const auto found = std::find_if(
+                sps->children().begin(), sps->children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == sps->children().end() ? std::nullopt
+                                                : analyzer->tree().node(*found);
         };
-        const std::vector cases{
-            HrdCase{{0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4,
-                     0x0a, 0x0f, 0xd0, 0x40, 0x00, 0x00, 0x01, 0x41},
-                    QStringLiteral("nal_hrd_parameters_present_flag"), quint64(89)},
-            HrdCase{{0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4,
-                     0x0a, 0x0f, 0xd0, 0x20, 0x00, 0x00, 0x01, 0x41},
-                    QStringLiteral("vcl_hrd_parameters_present_flag"), quint64(90)},
-        };
+        const auto count = fieldNamed(QStringLiteral("nal_hrd_cpb_cnt_minus1"));
+        const auto scale = fieldNamed(QStringLiteral("nal_hrd_bit_rate_scale"));
+        const auto computedCount = fieldNamed(QStringLiteral("nal_hrd_cpb_count"));
+        QVERIFY(count.has_value());
+        QVERIFY(scale.has_value());
+        QVERIFY(computedCount.has_value());
+        QCOMPARE(count->value().toULongLong(), quint64(32));
+        QCOMPARE(computedCount->value().toULongLong(), quint64(33));
+        QCOMPARE(count->diagnostics().size(), std::size_t(1));
+        const auto& warning = count->diagnostics().front();
+        QCOMPARE(warning.code, streamview::core::DiagnosticCode::InvalidSyntax);
+        QCOMPARE(warning.severity, streamview::core::DiagnosticSeverity::Warning);
+        QCOMPARE(warning.fieldPath,
+                 QStringLiteral("SequenceParameterSetRbsp.nal_hrd_cpb_cnt_minus1"));
+        QVERIFY(warning.location.has_value());
+        QCOMPARE(warning.location->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(90));
+        QCOMPARE(warning.location->sourceSpans().front().bitLength(), quint64(11));
+        QCOMPARE(sps->diagnostics().size(), std::size_t(1));
+        const auto& error = sps->diagnostics().front();
+        QCOMPARE(error.code, streamview::core::DiagnosticCode::InvalidSyntax);
+        QCOMPARE(error.severity, streamview::core::DiagnosticSeverity::Error);
+        QCOMPARE(error.fieldPath,
+                 QStringLiteral("SequenceParameterSetRbsp.nal_hrd_cpb_count"));
+        QVERIFY(!error.location.has_value());
+        QVERIFY(!fieldNamed(QStringLiteral("nal_hrd_bit_rate_value_minus1[0]")).has_value());
+        QVERIFY(!fieldNamed(QStringLiteral("vcl_hrd_parameters_present_flag")).has_value());
 
-        for (const auto& hrdCase : cases) {
-            std::vector<std::byte> sourceBytes;
-            sourceBytes.reserve(hrdCase.values.size());
-            for (const unsigned int value : hrdCase.values) {
-                sourceBytes.push_back(static_cast<std::byte>(value));
-            }
-            MemorySource source(std::move(sourceBytes));
-            QString errorMessage;
-            auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
-            QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
-
-            const auto batch = analyzer->analyzeBatch();
-
-            QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
-            QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
-            const auto invalidNal = analyzer->tree().node(batch.nalUnitNodes.front());
-            QVERIFY(invalidNal.has_value());
-            QCOMPARE(invalidNal->state(), MaterializationState::Invalid);
-            const auto rbsp = analyzer->tree().node(invalidNal->children().at(2));
-            QVERIFY(rbsp.has_value());
-            const auto sps = analyzer->tree().node(rbsp->children().front());
-            QVERIFY(sps.has_value());
-            QCOMPARE(sps->state(), MaterializationState::Invalid);
-            const auto fieldNamed = [&](const QString& name) {
-                const auto found = std::find_if(
-                    sps->children().begin(), sps->children().end(), [&](const auto id) {
-                        const auto node = analyzer->tree().node(id);
-                        return node && node->name() == name;
-                    });
-                return found == sps->children().end() ? std::nullopt
-                                                    : analyzer->tree().node(*found);
-            };
-            const auto hrd = fieldNamed(hrdCase.fieldName);
-            QVERIFY2(hrd.has_value(), qPrintable(hrdCase.fieldName));
-            QCOMPARE(hrd->value().toULongLong(), quint64(1));
-            QCOMPARE(sps->diagnostics().size(), std::size_t(1));
-            const auto& diagnostic = sps->diagnostics().front();
-            QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::InvalidSyntax);
-            QCOMPARE(diagnostic.severity, streamview::core::DiagnosticSeverity::Error);
-            QCOMPARE(diagnostic.fieldPath,
-                     QStringLiteral("SequenceParameterSetRbsp.") + hrdCase.fieldName);
-            QVERIFY(diagnostic.location.has_value());
-            QCOMPARE(diagnostic.location->sourceSpans().front().start().absoluteBitOffset(),
-                     hrdCase.sourceBitOffset);
-            QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(1));
-            QVERIFY(!fieldNamed(QStringLiteral("pic_struct_present_flag")).has_value());
-            QVERIFY(!fieldNamed(QStringLiteral("low_delay_hrd_flag")).has_value());
-
-            const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
-            QVERIFY(followingNal.has_value());
-            QCOMPARE(followingNal->state(), MaterializationState::Materialized);
-        }
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
     }
 
     void rejectsTruncatedSequenceParameterSetVuiAndContinues() {
