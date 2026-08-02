@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Bounded H.264 RBSP trailing-bits terminal
-Next Action: Define the next M6 H.264 slice, beginning with the sequence parameter set
-Last Verification: Commit bea0a8f local dev/ci/sanitize passed 31/31; hosted run
-  30717519949 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Bounded H.264 sequence parameter set structural core
+Next Action: Define the next SPS semantic-constraint slice for bounded Exp-Golomb values
+Last Verification: Commit 30109e0 local dev/ci/sanitize passed 31/31; hosted run
+  30719765999 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -429,3 +429,15 @@ Blockers: None
   `30717519949` 对 `bea0a8f9acb969d025353d903932da59653c3170` 在 Windows 2022 /
   Qt 6.10.1、macOS 15 / Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、
   Test、Install、Upload 均成功。下一步界定并实现 sequence parameter set 切片。
+- 2026-08-02：完成有界 H.264 SPS 结构核心。ADR-0039（`1d121d3`）把 type-7
+  `SequenceParameterSetRbsp` 限定为 Baseline/Main/Extended 核心及 8-bit 4:2:0 的受限
+  High 子集：接受 `pic_order_cnt_type == 0`、无 VUI 的路径，并在 unsupported profile、
+  High chroma/depth/transform/scaling 值、picture-order 分支和 VUI 边界保留已解码前缀后报告
+  `invalid-syntax`。`30109e0` 新增 `ue @equals` 约束（包括可编码 `ue` 上界、malformed typed
+  IR 防护、source-located failure 与 constrained-repeat controller），将官方规则分派 type 7，
+  并把 package 更新到 `0.1.2`，清单同步声明 Extended。双语语言参考和 SPS 结构、High 子集、
+  不支持分支、profile/reserved-bit 拒绝以及 `ue` runtime/IR 回归均已覆盖。本机 `dev`、`ci`、
+  `sanitize` 重新配置、完整构建与 CTest 均为 31/31；hosted run `30719765999` 对
+  `30109e0c0fa1c22bb299ecaa41012e445db59c1d` 在 Windows 2022 / Qt 6.10.1、macOS 15 /
+  Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、Install、Upload 均成功。
+  下一步界定并实现 H.264 clause 7.4.2.1.1 的 SPS `log2_*_minus4` 语义范围约束。
