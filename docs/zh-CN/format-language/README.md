@@ -478,9 +478,10 @@ end of sequence 或 end of stream 是物化；而这两种 type 一旦携带 RBS
 `invalid-syntax`。type `7` 解码 8-bit Baseline/Main/Extended SPS 核心，以及受限的 High 子集：
 4:2:0 chroma、eight-bit luma/chroma、关闭 transform bypass、无 scaling matrix、
 `pic_order_cnt_type == 0` 且没有 VUI。出现未支持 feature 时会保留已解码前缀并成为
-`invalid-syntax`。首个结构切片尚不强制两个 `log2_*_minus4` 字段的 H.264 `0..12` 范围；
-materialized 表示精确消费已声明结构，而不是完整语义 conformance。其余所有 type 的
-`rbsp_payload` region 保持原样。
+`invalid-syntax`。两个 `log2_*_minus4` 字段都带有 clause 7.4.2.1.1 的 `@range(0, 12)`
+约束；越界值会完整保留该字段、所在结构和 NAL unit，只在该字段上报告一条带 source
+位置的 `invalid-syntax` warning。因此 materialized 表示精确消费已声明结构，规则未声明的
+语义约束仍然不做检查。其余所有 type 的 `rbsp_payload` region 保持原样。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
 的 mapped-byte budget；默认每次最多处理 64 KiB EBSP source byte。预算耗尽时返回

@@ -644,10 +644,12 @@ those types carrying RBSP bytes is `invalid-syntax`. Type `7` decodes the
 8-bit Baseline/Main/Extended SPS core and the constrained High subset with 4:2:0 chroma,
 eight-bit luma/chroma, transform bypass disabled, no scaling matrix,
 `pic_order_cnt_type == 0`, and no VUI. A present unsupported feature retains
-the decoded prefix and is `invalid-syntax`. This first structural slice does
-not yet enforce the H.264 `0..12` bounds on the two `log2_*_minus4` fields;
-materialization means exact declared-structure consumption rather than full
-semantic conformance. Every other type keeps the
+the decoded prefix and is `invalid-syntax`. Both `log2_*_minus4` fields carry
+the clause 7.4.2.1.1 `@range(0, 12)` bounds; a value outside them keeps the
+field, the structure, and the NAL unit intact and reports a source-located
+`invalid-syntax` warning on that field alone. Materialization therefore means
+exact declared-structure consumption, and any semantic bound the rule does not
+declare is still unchecked. Every other type keeps the
 uninterpreted `rbsp_payload` region unchanged.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
