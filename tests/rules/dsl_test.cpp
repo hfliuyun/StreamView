@@ -208,6 +208,59 @@ private slots:
                  QStringLiteral("equals"));
     }
 
+    void acceptsRangeOnUnsignedExpGolombFields() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct Header { ue log2_max_frame_num_minus4 @range(0, 12); } entry Header;"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& annotation =
+            result.program.structs.front().items.front().field.annotations.front();
+        QCOMPARE(annotation.name, QStringLiteral("range"));
+        QCOMPARE(annotation.arguments.size(), std::size_t{2});
+        QCOMPARE(annotation.arguments.at(0).integerValue, quint64{0});
+        QCOMPARE(annotation.arguments.at(1).integerValue, quint64{12});
+    }
+
+    void rejectsInvalidRangeAnnotations() {
+        const auto repeated = DslParser::parse(QStringLiteral(
+            "struct Header { ue value @range(0, 1) @range(0, 2); } entry Header;"));
+        const auto onBits = DslParser::parse(
+            QStringLiteral("struct Header { bits<8> value @range(0, 12); } entry Header;"));
+        const auto onSigned = DslParser::parse(
+            QStringLiteral("struct Header { se value @range(0, 12); } entry Header;"));
+        const auto oneArgument = DslParser::parse(
+            QStringLiteral("struct Header { ue value @range(12); } entry Header;"));
+        const auto threeArguments = DslParser::parse(
+            QStringLiteral("struct Header { ue value @range(0, 1, 2); } entry Header;"));
+        const auto nonInteger = DslParser::parse(QStringLiteral(
+            "struct Header { ue value @range(0, \"twelve\"); } entry Header;"));
+        const auto inverted = DslParser::parse(
+            QStringLiteral("struct Header { ue value @range(12, 0); } entry Header;"));
+
+        QVERIFY(hasDiagnostic(repeated, DslDiagnosticCode::InvalidAnnotation));
+        QVERIFY(hasDiagnostic(onBits, DslDiagnosticCode::InvalidAnnotation));
+        QVERIFY(hasDiagnostic(onSigned, DslDiagnosticCode::InvalidAnnotation));
+        QVERIFY(hasDiagnostic(oneArgument, DslDiagnosticCode::InvalidAnnotation));
+        QVERIFY(hasDiagnostic(threeArguments, DslDiagnosticCode::InvalidAnnotation));
+        QVERIFY(hasDiagnostic(nonInteger, DslDiagnosticCode::InvalidAnnotation));
+        QVERIFY(hasDiagnostic(inverted, DslDiagnosticCode::ConstraintOutOfRange));
+    }
+
+    void acceptsCoincidentRangeAndEqualsOnUnsignedExpGolombFields() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct Header { ue value @equals(4) @range(0, 12); } entry Header;"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        QCOMPARE(result.program.structs.front().items.front().field.annotations.size(),
+                 std::size_t{2});
+    }
+
     void parsesFixedLengthArraysForAllScalarFieldEncodings() {
         const auto result = DslParser::parse(QStringLiteral(
             "struct Header { bits<3> flags[3] @description(\"Flags.\"); "

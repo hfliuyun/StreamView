@@ -138,6 +138,58 @@ void collectFields(const std::vector<DslStructItem>& items,
     return result;
 }
 
+[[nodiscard]] std::optional<DslTypedUnsignedRange> rangeConstraint(
+    const DslBitField& field,
+    std::vector<DslDiagnostic>& diagnostics) {
+    std::optional<DslTypedUnsignedRange> result;
+    bool seen = false;
+    for (const DslAnnotation& annotation : field.annotations) {
+        if (annotation.name != QStringLiteral("range")) {
+            continue;
+        }
+        if (seen) {
+            addDiagnostic(diagnostics,
+                          DslDiagnosticCode::InvalidAnnotation,
+                          QStringLiteral("@range may appear at most once on a field"),
+                          annotation.range);
+        }
+        seen = true;
+        if (annotation.arguments.size() != 2 ||
+            std::any_of(annotation.arguments.begin(),
+                        annotation.arguments.end(),
+                        [](const DslAnnotationValue& argument) {
+                            return argument.kind != DslAnnotationValueKind::Integer;
+                        })) {
+            addDiagnostic(diagnostics,
+                          DslDiagnosticCode::InvalidAnnotation,
+                          QStringLiteral("@range requires two integer arguments"),
+                          annotation.range);
+            continue;
+        }
+        const DslTypedUnsignedRange candidate{annotation.arguments.at(0).integerValue,
+                                              annotation.arguments.at(1).integerValue};
+        if (candidate.minimum > candidate.maximum) {
+            addDiagnostic(diagnostics,
+                          DslDiagnosticCode::ConstraintOutOfRange,
+                          QStringLiteral("@range minimum cannot exceed its maximum"),
+                          annotation.range);
+            continue;
+        }
+        if (candidate.maximum > maximumUnsignedExpGolombValue) {
+            addDiagnostic(diagnostics,
+                          DslDiagnosticCode::ConstraintOutOfRange,
+                          QStringLiteral(
+                              "@range maximum exceeds the largest supported ue value"),
+                          annotation.range);
+            continue;
+        }
+        if (!result) {
+            result = candidate;
+        }
+    }
+    return result;
+}
+
 [[nodiscard]] std::optional<QString> enumTypeName(
     const DslBitField& field,
     std::vector<DslDiagnostic>& diagnostics) {
@@ -1067,6 +1119,20 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                   return field.range;
                               }());
             }
+            typedField.rangeConstraint =
+                isUnsignedExpGolomb ? rangeConstraint(field, result.diagnostics)
+                                    : std::nullopt;
+            if (!isUnsignedExpGolomb &&
+                std::any_of(field.annotations.begin(),
+                            field.annotations.end(),
+                            [](const DslAnnotation& annotation) {
+                                return annotation.name == QStringLiteral("range");
+                            })) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidAnnotation,
+                              QStringLiteral("@range is only supported on ue fields"),
+                              field.range);
+            }
             const quint32 firstTypedIndex =
                 static_cast<quint32>(typedStruct.fields.size());
             if (field.arrayLength) {
@@ -1893,6 +1959,18 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     {DslOpcode::AssertEquals,
                      static_cast<quint32>(fieldIndex),
                      *structure.fields.at(fieldIndex).equalsConstraint});
+            }
+            if (emitted && structure.fields.at(fieldIndex).rangeConstraint) {
+                const DslTypedUnsignedRange& range =
+                    *structure.fields.at(fieldIndex).rangeConstraint;
+                emitted = appendInstruction({DslOpcode::AssertRangeMinimum,
+                                             static_cast<quint32>(fieldIndex),
+                                             range.minimum});
+                if (emitted) {
+                    emitted = appendInstruction({DslOpcode::AssertRangeMaximum,
+                                                 static_cast<quint32>(fieldIndex),
+                                                 range.maximum});
+                }
             }
         }
         if (repeatBoundIndex != structure.repeatBounds.size()) {

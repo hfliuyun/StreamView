@@ -85,6 +85,97 @@ private slots:
         }
     }
 
+    void lowersUnsignedExpGolombRangeConstraintsToBoundAssertions() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { ue log2_max_frame_num_minus4 @range(0, 12); "
+            "ue trailing; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+
+        const auto& structure = compiled.program->structs.front();
+        QCOMPARE(structure.fields.size(), std::size_t(2));
+        QVERIFY(structure.fields.at(0).rangeConstraint.has_value());
+        QCOMPARE(structure.fields.at(0).rangeConstraint->minimum, quint64(0));
+        QCOMPARE(structure.fields.at(0).rangeConstraint->maximum, quint64(12));
+        QVERIFY(!structure.fields.at(1).rangeConstraint.has_value());
+
+        const std::vector<DslOpcode> expected{
+            DslOpcode::BeginStructure,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::AssertRangeMinimum,
+            DslOpcode::AssertRangeMaximum,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::EndStructure,
+        };
+        QCOMPARE(compiled.program->bytecode.size(), expected.size());
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            QCOMPARE(compiled.program->bytecode.at(index).opcode, expected.at(index));
+        }
+        QCOMPARE(compiled.program->bytecode.at(2).operand, quint32(0));
+        QCOMPARE(compiled.program->bytecode.at(2).immediate, quint64(0));
+        QCOMPARE(compiled.program->bytecode.at(3).operand, quint32(0));
+        QCOMPARE(compiled.program->bytecode.at(3).immediate, quint64(12));
+    }
+
+    void lowersCoincidentEqualsAndRangeConstraintsInDeclarationOrder() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { ue value @equals(4) @range(0, 12); } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const std::vector<DslOpcode> expected{
+            DslOpcode::BeginStructure,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::AssertEquals,
+            DslOpcode::AssertRangeMinimum,
+            DslOpcode::AssertRangeMaximum,
+            DslOpcode::EndStructure,
+        };
+        QCOMPARE(compiled.program->bytecode.size(), expected.size());
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            QCOMPARE(compiled.program->bytecode.at(index).opcode, expected.at(index));
+        }
+    }
+
+    void expandsRangeConstraintsForEveryArrayElement() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { ue values[2] @range(1, 9); } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const auto& structure = compiled.program->structs.front();
+        QCOMPARE(structure.fields.size(), std::size_t(2));
+        for (std::size_t index = 0; index < structure.fields.size(); ++index) {
+            QVERIFY(structure.fields.at(index).rangeConstraint.has_value());
+            QCOMPARE(structure.fields.at(index).rangeConstraint->minimum, quint64(1));
+            QCOMPARE(structure.fields.at(index).rangeConstraint->maximum, quint64(9));
+        }
+
+        const std::vector<DslOpcode> expected{
+            DslOpcode::BeginStructure,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::AssertRangeMinimum,
+            DslOpcode::AssertRangeMaximum,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::AssertRangeMinimum,
+            DslOpcode::AssertRangeMaximum,
+            DslOpcode::EndStructure,
+        };
+        QCOMPARE(compiled.program->bytecode.size(), expected.size());
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            QCOMPARE(compiled.program->bytecode.at(index).opcode, expected.at(index));
+        }
+    }
+
     void reservesBoundedTypedFieldsForRbspTrailingBits() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "struct Payload { bits<3> primary_pic_type; rbsp_trailing_bits; } "

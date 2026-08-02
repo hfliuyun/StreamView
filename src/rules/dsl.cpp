@@ -2006,6 +2006,7 @@ private:
             const auto validateFieldAnnotations = [&](const DslBitField& field) {
                 validatePresentationAnnotations(field.annotations);
                 bool equalsSeen = false;
+                bool rangeSeen = false;
                 bool enumSeen = false;
                 for (const DslAnnotation& annotation : field.annotations) {
                     if (annotation.name == QStringLiteral("enum")) {
@@ -2056,6 +2057,52 @@ private:
                                     break;
                                 }
                             }
+                        }
+                        continue;
+                    }
+                    if (annotation.name == QStringLiteral("range")) {
+                        if (rangeSeen) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidAnnotation,
+                                 QStringLiteral("@range may appear at most once on a field"),
+                                 annotation.range});
+                        }
+                        rangeSeen = true;
+                        if (field.encoding != DslFieldEncoding::UnsignedExpGolomb) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidAnnotation,
+                                 QStringLiteral("@range is only supported on ue fields"),
+                                 annotation.range});
+                            continue;
+                        }
+                        if (annotation.arguments.size() != 2 ||
+                            std::any_of(annotation.arguments.begin(),
+                                        annotation.arguments.end(),
+                                        [](const DslAnnotationValue& argument) {
+                                            return argument.kind != DslAnnotationValueKind::Integer;
+                                        })) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidAnnotation,
+                                 QStringLiteral("@range requires two integer arguments"),
+                                 annotation.range});
+                            continue;
+                        }
+                        const quint64 minimum = annotation.arguments.at(0).integerValue;
+                        const quint64 maximum = annotation.arguments.at(1).integerValue;
+                        if (minimum > maximum) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::ConstraintOutOfRange,
+                                 QStringLiteral("@range minimum cannot exceed its maximum"),
+                                 annotation.range});
+                        }
+                        constexpr quint64 maximumUnsignedExpGolombValue =
+                            std::numeric_limits<quint64>::max() - 1;
+                        if (maximum > maximumUnsignedExpGolombValue) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::ConstraintOutOfRange,
+                                 QStringLiteral(
+                                     "@range maximum exceeds the largest supported ue value"),
+                                 annotation.range});
                         }
                         continue;
                     }

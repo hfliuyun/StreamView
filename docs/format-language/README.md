@@ -205,8 +205,8 @@ The static rules for this subset are:
   endian argument and always consume the encoded codeword most-significant bit
   first. Because their width is not statically known, a later little-endian
   field is rejected unless a future language feature can prove its alignment.
-  An unsigned `ue` field may use one `@equals(integer)` constraint; a signed
-  `se` field cannot.
+  An unsigned `ue` field may use one `@equals(integer)` constraint and one
+  `@range(minimum, maximum)` constraint; a signed `se` field cannot use either.
 - A scalar field may have one fixed array suffix `[count]`. `count` is an
   unsigned integer literal greater than zero; expressions, additional array
   dimensions, structure arrays, and runtime-sized arrays are not accepted.
@@ -351,6 +351,12 @@ The static rules for this subset are:
   at most once on a `bits` or `ue` field. Its value must fit a `bits` field's
   unsigned bit width; a `ue` accepts `0..2^64 - 2`, its complete supported
   unsigned range.
+- A `@range(minimum, maximum)` field annotation is a checked semantic
+  constraint and may appear at most once, on a `ue` field only. Both arguments
+  are unsigned integer literals satisfying
+  `minimum <= maximum <= 2^64 - 2`. A field may carry both `@equals` and
+  `@range`. Unlike every other checked constraint, a `@range` violation is not
+  fatal: see the runtime semantics below.
   An `@enum(Type)` annotation may appear at most once on a `bits` field and
   requires a declared enum type. Every declared member value must fit the
   field's bit width. Enum values are still decoded as unsigned integers; the
@@ -459,7 +465,15 @@ field node, marks the structure invalid, and reports an `invalid-syntax`
 diagnostic at that field. A truncated or failed read retains earlier fields and
 marks the structure invalid with a source diagnostic. An `@equals` mismatch
 retains the field, then marks the structure invalid with an invalid-syntax
-diagnostic. Each expanded array element becomes a separate syntax-field node
+diagnostic. A `@range` violation instead keeps the structure and every later
+field materialized: it retains the decoded value and attaches a warning
+`invalid-syntax` diagnostic to that field node, reporting whether the value fell
+below the minimum or above the maximum. Decoding continues because a
+non-conformant `ue` value still consumed a well-formed codeword, so no
+subsequent field position depends on the violation. A value equal to either
+bound conforms and reports nothing. When a field carries both constraints, the
+`@equals` check runs first, so a mismatch marks the structure invalid before any
+range warning is attached. Each expanded array element becomes a separate syntax-field node
 whose source location covers only that element. A failure keeps all earlier
 complete elements, creates no node for an incomplete element, and uses the
 expanded path such as `Header.values[2]` in its diagnostic. A failure in a later
@@ -472,7 +486,7 @@ presentation derives field width from that node's logical range.
 Before each field read, the VM validates and evaluates its presence guards in
 outer-to-inner order. A false guard skips the field without consuming source
 bits, creating an analysis node, enforcing enum membership, or applying an
-`@equals` value check. Selected fields retain the existing value, diagnostic,
+`@equals` or `@range` value check. Selected fields retain the existing value, diagnostic,
 and source-location behavior, so the following selected field begins exactly
 where the previous selected field ended. Guard metadata that references an
 unknown, current, future, incorrectly typed, or unavailable controller is an
@@ -854,7 +868,11 @@ entry nal_units;
 
 Invalid minimum examples include `bits<0> flag;`, `bits<65> flag;`,
 `bits<12, little> value;`, a little-endian field after an unaligned field,
-`se value @equals(0);`, `se value @enum(Type);`, a little-endian field after a
+`se value @equals(0);`, `se value @enum(Type);`, `se value @range(0, 12);`,
+`bits<8> value @range(0, 12);`, `ue value @range(12, 0);`,
+`ue value @range(12);`, `ue value @range(0, 1, 2);`,
+`ue value @range(0, "twelve");`, a repeated `@range`, a little-endian field
+after a
 variable-length field, `bits<1> flags[0];`, `bits<1> flags[];`, an expression or
 second dimension in an array length, a structure projection above 99,999
 fields, a truncated array element, a truncated Exp-Golomb codeword, 64 leading
@@ -1111,7 +1129,8 @@ use the same instruction-budget and cancellation boundaries.
 
 Array syntax does not reserve a separate runtime budget. Every expanded
 element consumes one materialized node and one read instruction; `@equals`
-adds one assertion instruction per element. Truncation, a failed constraint,
+adds one assertion instruction per element, and `@range` adds two, one per
+bound. Truncation, a failed constraint,
 an instruction limit, or a node limit can therefore stop between elements
 while preserving the elements completed before the failure. The static
 99,999-field projection limit ensures one default structure materialization

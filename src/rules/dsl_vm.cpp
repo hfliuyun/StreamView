@@ -645,7 +645,8 @@ DslExecutionResult DslVirtualMachine::execute(
         return controller.kind == DslTypedFieldKind::Declared &&
                controller.type.kind == expectedKind && controller.type.bitWidth == 0 &&
                controller.type.endian == DslEndian::Big && !controller.type.enumIndex &&
-               !controller.equalsConstraint && controller.computedExpression.has_value();
+               !controller.equalsConstraint && !controller.rangeConstraint &&
+               controller.computedExpression.has_value();
     };
     const auto validateConditions = [&](const std::vector<DslTypedFieldCondition>& conditions,
                                         std::size_t subjectFieldIndex,
@@ -720,7 +721,8 @@ DslExecutionResult DslVirtualMachine::execute(
         const bool lazyBytes = field.type.kind == DslValueTypeKind::LazyBytes;
         if (lazyBytes) {
             if (field.type.bitWidth != 0 || field.type.endian != DslEndian::Big ||
-                field.type.enumIndex || field.equalsConstraint || field.computedExpression ||
+                field.type.enumIndex || field.equalsConstraint || field.rangeConstraint ||
+                field.computedExpression ||
                 !field.lazyByteCountExpression) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Typed lazy byte region definition is invalid"),
@@ -777,6 +779,15 @@ DslExecutionResult DslVirtualMachine::execute(
                 *field.equalsConstraint > maximumUnsignedExpGolombValue) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Typed ue equality constraint is out of range"),
+                            &field);
+                return result;
+            }
+            if (field.rangeConstraint &&
+                (field.type.kind != DslValueTypeKind::UnsignedExpGolomb ||
+                 field.rangeConstraint->minimum > field.rangeConstraint->maximum ||
+                 field.rangeConstraint->maximum > maximumUnsignedExpGolombValue)) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed ue range constraint is out of range"),
                             &field);
                 return result;
             }
@@ -909,6 +920,7 @@ DslExecutionResult DslVirtualMachine::execute(
         structure.fields.size());
     std::optional<quint32> lastField;
     std::optional<quint64> lastValue;
+    std::optional<core::AnalysisNodeId> lastFieldNode;
     bool lastFieldSkipped = false;
     quint32 nextFieldIndex = 0;
     bool ended = false;
@@ -1051,7 +1063,8 @@ DslExecutionResult DslVirtualMachine::execute(
                                            : DslValueTypeKind::SignedExpGolomb;
                 if (field.type.kind != expectedKind || field.type.bitWidth != 0 ||
                     field.type.endian != DslEndian::Big || field.type.enumIndex ||
-                    (!readsUnsignedExpGolomb && field.equalsConstraint)) {
+                    (!readsUnsignedExpGolomb &&
+                     (field.equalsConstraint || field.rangeConstraint))) {
                     markFailure(DslExecutionStatus::InvalidDefinition,
                                 QStringLiteral("Typed Exp-Golomb field definition is invalid"),
                                 &field);
@@ -1170,12 +1183,15 @@ DslExecutionResult DslVirtualMachine::execute(
                                   : QVariant::fromValue<qlonglong>(signedValue);
             fieldSpec.location = *location;
             fieldSpec.metadata = field.metadata;
-            if (!tree.appendChild(*result.structureNode, std::move(fieldSpec))) {
+            const std::optional<core::AnalysisNodeId> fieldNode =
+                tree.appendChild(*result.structureNode, std::move(fieldSpec));
+            if (!fieldNode) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Unable to append typed field node"),
                             &field);
                 return result;
             }
+            lastFieldNode = fieldNode;
             ++result.nodesCreated;
             fieldValues.at(instruction.operand) =
                 readsFixedBits || readsUnsignedExpGolomb
@@ -1624,6 +1640,65 @@ DslExecutionResult DslVirtualMachine::execute(
                                    core::MaterializationState::Invalid,
                                    std::move(diagnostic));
             return result;
+        }
+        case DslOpcode::AssertRangeMinimum:
+        case DslOpcode::AssertRangeMaximum: {
+            const bool checksMinimum = instruction.opcode == DslOpcode::AssertRangeMinimum;
+            const DslTypedField* field = instruction.operand < structure.fields.size()
+                                             ? &structure.fields.at(instruction.operand)
+                                             : nullptr;
+            if (!result.structureNode || !lastField || *lastField != instruction.operand ||
+                field == nullptr || !field->rangeConstraint ||
+                field->kind != DslTypedFieldKind::Declared ||
+                field->type.kind != DslValueTypeKind::UnsignedExpGolomb ||
+                (checksMinimum ? field->rangeConstraint->minimum
+                               : field->rangeConstraint->maximum) != instruction.immediate ||
+                (lastFieldSkipped ? lastValue.has_value() : !lastValue.has_value())) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR range instruction is invalid"),
+                            nullptr);
+                return result;
+            }
+            if (lastFieldSkipped) {
+                break;
+            }
+            if (checksMinimum ? *lastValue >= instruction.immediate
+                              : *lastValue <= instruction.immediate) {
+                break;
+            }
+            if (!lastFieldNode) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR range field node is unavailable"),
+                            field);
+                return result;
+            }
+            const auto range = fieldRanges.at(instruction.operand);
+            if (!range) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR range field range is unavailable"),
+                            field);
+                return result;
+            }
+            core::ParseDiagnostic diagnostic;
+            diagnostic.code = core::DiagnosticCode::InvalidSyntax;
+            diagnostic.severity = core::DiagnosticSeverity::Warning;
+            diagnostic.message =
+                checksMinimum
+                    ? QStringLiteral("Field value is below its @range minimum")
+                    : QStringLiteral("Field value is above its @range maximum");
+            diagnostic.fieldPath = structure.name + QLatin1Char('.') + field->name;
+            diagnostic.location = locationAt(mapping,
+                                             logicalStart,
+                                             range->start,
+                                             range->bitCount,
+                                             range->bitCount);
+            if (!tree.addDiagnostic(*lastFieldNode, std::move(diagnostic))) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Unable to attach @range diagnostic"),
+                            field);
+                return result;
+            }
+            break;
         }
         case DslOpcode::AssertRepeatCount: {
             const DslTypedRepeatBound* repeat =

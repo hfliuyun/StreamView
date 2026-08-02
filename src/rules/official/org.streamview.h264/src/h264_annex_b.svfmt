@@ -47,9 +47,13 @@ struct SequenceParameterSetRbsp {
         bits<1> qpprime_y_zero_transform_bypass_flag @equals(0);
         bits<1> seq_scaling_matrix_present_flag @equals(0);
     }
-    ue log2_max_frame_num_minus4;
+    ue log2_max_frame_num_minus4 @range(0, 12)
+        @spec("ITU-T H.264", "7.4.2.1.1")
+        @description("Sets the frame-number wrap; conformant values are 0 to 12.");
     ue pic_order_cnt_type @equals(0);
-    ue log2_max_pic_order_cnt_lsb_minus4;
+    ue log2_max_pic_order_cnt_lsb_minus4 @range(0, 12)
+        @spec("ITU-T H.264", "7.4.2.1.1")
+        @description("Sets the picture-order-count wrap; conformant values are 0 to 12.");
     ue max_num_ref_frames;
     bits<1> gaps_in_frame_num_value_allowed_flag;
     ue pic_width_in_mbs_minus1;

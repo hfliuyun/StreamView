@@ -176,8 +176,8 @@ primary       := integer | "true" | "false" | identifier
   字节的数值权重，不改变实际消耗的 bit 顺序。
 - `ue` 和 `se` 是变长 Exp-Golomb 字段，不接受宽度或 endian 参数，并始终按
   MSB-first 消耗编码码字。由于宽度不能静态确定，变长字段之后的小端字段会被拒绝，除非
-  后续语言功能能够证明其对齐。无符号 `ue` 字段可以带一个 `@equals(integer)` constraint；
-  有符号 `se` 字段不可以。
+  后续语言功能能够证明其对齐。无符号 `ue` 字段可以带一个 `@equals(integer)` constraint 和
+  一个 `@range(minimum, maximum)` constraint；有符号 `se` 字段两者都不可以。
 - scalar 字段可以带一个 `[count]` 固定数组后缀。`count` 必须是大于零的无符号整数字面量；
   不接受表达式、额外维度、结构数组或运行时长度。重复名称检查仍使用声明的基础字段名。
   一个结构展开后最多投影 99,999 个 scalar 字段，从而在默认 100,000 个物化节点预算内
@@ -274,6 +274,11 @@ primary       := integer | "true" | "false" | identifier
 - `@equals(integer)` 字段注解是会执行检查的约束，在一个 `bits` 或 `ue` 字段上最多出现一次。
   `bits` 字段的参数值必须能由其无符号 bit 宽度表示；`ue` 接受完整的受支持无符号范围
   `0..2^64 - 2`。
+- `@range(minimum, maximum)` 是只能用在 `ue` 字段上的语义范围约束，最多出现一次，参数是
+  两个无符号整数字面量，且必须满足 `minimum <= maximum`、`maximum <= 2^64 - 2`。它与
+  `@equals` 表达同一字段的不同约束层级，因此同一个 `ue` 字段可以同时带 `@equals` 和
+  `@range`。与其他所有受检约束不同，`@range` 违规不属于结构性失败：它记录 H.264
+  clause 7.4.2.1.1 这类值域规则，而这类违规不会破坏后续字段的 bit 位置。
   `@enum(Type)` 只能出现在 `bits` 字段上，最多出现一次，参数必须是已声明 enum 类型，并且
   它的每个 member 值都必须能由字段宽度表示。enum 字段仍解码为无符号整数，enum 为该数值
   提供名称和有效值检查。`se` 拒绝这两个注解，`ue` 拒绝 `@enum`。`@description("text")` 提供项目编写的
@@ -347,7 +352,11 @@ typed execution 非法，并且不消耗该字段。后续 source-span 边界不
 保留数值和类型 metadata；
 若数值不属于已声明 member，则保留字段节点，把结构标记为 invalid，并在字段位置报告
 `invalid-syntax`。读取截断或失败时保留之前的字段，并把结构标记为 invalid 并附 source
-诊断。`@equals` 不匹配时保留该字段，再用 invalid-syntax 诊断标记结构。每个展开的数组元素
+诊断。`@equals` 不匹配时保留该字段，再用 invalid-syntax 诊断标记结构。`@range` 违规不同：
+它保留字段和已解码值，把结构留在 materialized 状态，继续解码后续字段，并在该字段节点上
+附加一条带精确 source location 的 warning-severity `invalid-syntax` 诊断。一个结构可以因此
+累积多条 `@range` warning。同一字段上的 `@equals` 会先执行；`@equals` 失败时该字段不再
+计算 `@range`。每个展开的数组元素
 都是独立 syntax-field 节点，source location 只覆盖该元素；失败时保留之前完成的元素，不为
 未完成元素创建节点，并把 `Header.values[2]` 这样的展开路径写入诊断。mapped backing 的后续
 span 读取失败时，reader 保持在字段起点，也不创建半成品字段节点；诊断通过同一 mapping
@@ -355,8 +364,8 @@ span 读取失败时，reader 保持在字段起点，也不创建半成品字�
 analysis-node snapshot 上；展示宽度由节点的逻辑范围推导。
 
 VM 在每次字段读取前按外层到内层的顺序验证并计算 presence guard。guard 为 false 时跳过
-该字段，不消耗 source bit、不创建 analysis node，也不执行 enum member 或 `@equals` 数值
-检查。选中字段沿用既有数值、诊断和 source-location 行为，因此后续选中字段紧接在上一个
+该字段，不消耗 source bit、不创建 analysis node，也不执行 enum member、`@equals` 或
+`@range` 数值检查。选中字段沿用既有数值、诊断和 source-location 行为，因此后续选中字段紧接在上一个
 选中字段结束处开始。guard metadata 引用未知、当前、未来、类型错误或当前路径不能保证存在
 的 controller 时，typed definition 非法。字段定义即使位于未选分支也仍会验证，malformed
 typed IR 不能藏在 false guard 后面。
@@ -369,7 +378,7 @@ controller 值。计数超过 `maximum` 时绝不截断：保留计数字段，�
 computed controller 只报告 field path，不带 location。外层 guard 为 false 时，边界断言和
 全部 body 字段都会跳过，也不要求 controller 值存在。第 `i` 次投影迭代仅在 `count > i`
 时存在。只有存在的迭代才消耗 source bit 或物化节点名额；缺席迭代不创建节点或 source
-location，也不执行 enum member 或 `@equals` 数值检查。选中字段沿用既有数值、metadata、
+location，也不执行 enum member、`@equals` 或 `@range` 数值检查。选中字段沿用既有数值、metadata、
 部分结果和 source 坐标行为，诊断路径包括 `Header.value[1][0]` 这样的投影名称。非法
 repeat metadata、controller guard 或 assertion 位置属于 invalid typed definition，运行时
 不会猜测执行。
@@ -679,6 +688,9 @@ entry nal_units;
 
 最小非法示例包括 `bits<0> flag;`、`bits<65> flag;`、`bits<12, little> value;`、
 位于未对齐字段之后的小端字段、`se value @equals(0);`、`se value @enum(Type);`、
+`bits<4> value @range(0, 12);`、`se value @range(0, 12);`、
+`computed<u64> value = 1 @range(0, 12);`、`ue value @range(12, 0);`、
+`ue value @range(0);`、`ue value @range(0, 12) @range(0, 6);`、
 变长字段之后的小端字段、`bits<1> flags[0];`、`bits<1> flags[];`、数组长度表达式或第二
 维、展开后超过 99,999 字段的结构、截断的数组元素、截断的 Exp-Golomb 码字、64 个前导零、`@enum(Missing)`、
 无法放入字段宽度的 enum member 值、重复 enum member 名、缺少 `@index(progressive)` 的
@@ -889,9 +901,14 @@ enum 成员检查和字节序转换都属于现有的字段读取操作，不增
 并使用同一套 instruction budget 和取消检查边界。
 
 数组语法不另占运行时预算。每个展开元素消耗一个物化节点和一条 read instruction；每个
-`@equals` 元素再增加一条 assertion instruction。因此截断、约束失败、指令上限或节点上限
+`@equals` 元素再增加一条 assertion instruction，每个 `@range` 元素再增加两条
+assertion instruction。因此截断、约束失败、指令上限或节点上限
 都可能发生在元素之间，同时保留失败前已经完成的元素。静态的 99,999 字段投影上限确保
 一次默认结构物化不会需要超过文档规定的 100,000 个节点。
+
+`@range` 的两条 assertion instruction 计入 instruction budget 并且是取消检查点，但两者
+都不新建 analysis node、不消耗 source bit，也不改变 bit reader position。因此违反 range
+不会改变后续字段的读取位置或预算账目。
 
 条件和 switch 语法都不另占 opcode 或节点预算。每个可能字段仍生成 read instruction，
 `@equals` 仍生成 assertion instruction；即使字段被跳过，这些指令仍计入 instruction

@@ -77,11 +77,17 @@ enum class DslTypedFieldKind : quint8 {
     RbspAlignmentZeroBit,
 };
 
+struct DslTypedUnsignedRange final {
+    quint64 minimum = 0;
+    quint64 maximum = 0;
+};
+
 struct DslTypedField final {
     DslTypedFieldKind kind = DslTypedFieldKind::Declared;
     QString name;
     DslValueType type;
     std::optional<quint64> equalsConstraint;
+    std::optional<DslTypedUnsignedRange> rangeConstraint;
     std::optional<DslTypedExpression> computedExpression;
     std::optional<DslTypedExpression> lazyByteCountExpression;
     std::vector<DslTypedFieldCondition> conditions;
@@ -151,6 +157,8 @@ enum class DslOpcode : quint8 {
     RegisterLazyBytes,
     ReadRbspTrailingBits,
     AssertEquals,
+    AssertRangeMinimum,
+    AssertRangeMaximum,
     AssertRepeatCount,
     EndStructure,
 };

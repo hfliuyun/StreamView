@@ -409,6 +409,72 @@ private slots:
         QCOMPARE(scaling->value().toULongLong(), quint64(0));
     }
 
+    void warnsOnOutOfRangeSequenceParameterSetFrameNumberWrap() {
+        // log2_max_frame_num_minus4 carries ue(13), one above the 7.4.2.1.1 maximum,
+        // which shifts every following field six bits later without invalidating them.
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x67,
+                                   0x42, 0x00, 0x1e, 0x8e, 0xd0, 0x28, 0x3f, 0x20}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        QCOMPARE(rbsp->state(), MaterializationState::Materialized);
+        const auto sps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sps.has_value());
+        QCOMPARE(sps->state(), MaterializationState::Materialized);
+        QVERIFY(sps->diagnostics().empty());
+
+        const auto fieldNamed = [&](const QString& name) {
+            const auto found = std::find_if(
+                sps->children().begin(), sps->children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == sps->children().end() ? std::nullopt
+                                                : analyzer->tree().node(*found);
+        };
+        const auto frameNum = fieldNamed(QStringLiteral("log2_max_frame_num_minus4"));
+        QVERIFY(frameNum.has_value());
+        QCOMPARE(frameNum->state(), MaterializationState::Materialized);
+        QCOMPARE(frameNum->value().toULongLong(), quint64(13));
+        QCOMPARE(frameNum->diagnostics().size(), std::size_t(1));
+        const auto& diagnostic = frameNum->diagnostics().front();
+        QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::InvalidSyntax);
+        QCOMPARE(diagnostic.severity, streamview::core::DiagnosticSeverity::Warning);
+        QCOMPARE(diagnostic.message,
+                 QStringLiteral("Field value is above its @range maximum"));
+        QCOMPARE(diagnostic.fieldPath,
+                 QStringLiteral("SequenceParameterSetRbsp.log2_max_frame_num_minus4"));
+        QVERIFY(diagnostic.location.has_value());
+        QCOMPARE(diagnostic.location->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(57));
+        QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(7));
+
+        // Every field after the violation keeps its conformant value and stays clean.
+        const auto lsb = fieldNamed(QStringLiteral("log2_max_pic_order_cnt_lsb_minus4"));
+        const auto width = fieldNamed(QStringLiteral("pic_width_in_mbs_minus1"));
+        const auto height = fieldNamed(QStringLiteral("pic_height_in_map_units_minus1"));
+        const auto stop = fieldNamed(QStringLiteral("rbsp_stop_one_bit"));
+        QVERIFY(lsb.has_value());
+        QVERIFY(width.has_value());
+        QVERIFY(height.has_value());
+        QVERIFY(stop.has_value());
+        QCOMPARE(lsb->value().toULongLong(), quint64(0));
+        QVERIFY(lsb->diagnostics().empty());
+        QCOMPARE(width->value().toULongLong(), quint64(19));
+        QCOMPARE(height->value().toULongLong(), quint64(14));
+        QCOMPARE(stop->value().toULongLong(), quint64(1));
+    }
+
     void rejectsUnsupportedSequenceParameterSetBranchesAndContinues() {
         MemorySource source(bytes({0x00, 0x00, 0x01, 0x67,
                                    0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xd8,
