@@ -386,14 +386,15 @@ static compiler resolves pure functions, enums, structures, sequences, and entry
 references into a typed program, preserves declaration order, and emits
 deterministic bytecode using `begin-structure`, `read-unsigned-bits`,
 `read-unsigned-exp-golomb`, `read-signed-exp-golomb`, `evaluate-computed`,
-`register-lazy-bytes`, `read-rbsp-trailing-bits`, `assert-equals`, `assert-repeat-count`, and
-`end-structure` operations. Each field opcode must match the resolved field
-type.
+`register-lazy-bytes`, `read-rbsp-trailing-bits`, `assert-equals`,
+`assert-range-minimum`, `assert-range-maximum`, `assert-repeat-count`, and
+`end-structure` operations. Each field opcode must match the resolved field type.
 The fixed-width read carries the resolved enum and byte-order information; the
 Exp-Golomb types have zero static bit width, default bit order, no enum
-reference, and no equality constraint. A fixed array is expanded in source
-order into typed fields named `name[0]` through `name[count - 1]`; every element
-emits its own read and, when present, equality-check instruction. Conditional
+reference. Unsigned fields preserve optional equality and range constraints;
+signed fields have neither. A fixed array is expanded in source order into typed
+fields named `name[0]` through `name[count - 1]`; every element emits its own read
+and, when present, constraint-check instructions. Conditional
 blocks are lowered into the same declaration-order field stream. Each possible
 field carries resolved presence guards that reference earlier typed-field
 indexes; no jump opcode or general control-flow bytecode is introduced.

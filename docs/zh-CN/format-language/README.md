@@ -299,12 +299,13 @@ parser 生成面向 source、用于诊断的声明模型。静态 compiler 把�
 sequence 和 entry 引用解析成 typed program，保留声明顺序，并确定性生成
 `begin-structure`、`read-unsigned-bits`、`read-unsigned-exp-golomb`、
 `read-signed-exp-golomb`、`evaluate-computed`、`register-lazy-bytes`、
-`read-rbsp-trailing-bits`、`assert-equals`、`assert-repeat-count` 和 `end-structure` bytecode。每个 field opcode 必须与
-字段类型匹配；
-Exp-Golomb typed field 的静态 bit width 为零、使用默认 bit order，且没有 enum reference 或
-equality constraint。固定数组按 source 顺序展开成名为 `name[0]` 到
-`name[count - 1]` 的 typed field；每个元素各自产生 read instruction，并在存在 `@equals`
-时各自产生 assertion instruction。条件 block 被降低到同一条按声明顺序排列的字段流，每个
+`read-rbsp-trailing-bits`、`assert-equals`、`assert-range-minimum`、
+`assert-range-maximum`、`assert-repeat-count` 和 `end-structure` bytecode。每个 field opcode
+必须与字段类型匹配；Exp-Golomb typed field 的静态 bit width 为零、使用默认 bit order，且没有
+enum reference。无符号字段保留可选 equality 与 range constraint；有符号字段不带这两类
+constraint。固定数组按 source 顺序展开成名为 `name[0]` 到 `name[count - 1]` 的 typed field；
+每个元素各自产生 read instruction，并在存在 constraint 时各自产生对应 assertion
+instruction。条件 block 被降低到同一条按声明顺序排列的字段流，每个
 可能字段携带引用此前 typed-field index 的已解析 presence guard；不会新增 jump opcode 或
 一般控制流 bytecode。switch case 字段携带一个正向等值 guard；default 字段携带全部 case
 guard 的否定合取，省略 default 时不会为未匹配路径生成字段。嵌套 switch 与条件的 guard
