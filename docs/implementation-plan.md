@@ -2,11 +2,10 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Rule-declared context import and exact dependency payload hand-off
-Next Action: Define dynamic `bits<expression>` over exact imported context values for the bounded
-  H.264 slice-header slice
-Last Verification: Commit 8b00e1c local dev/ci/sanitize passed 32/32; hosted run
-  30842615170 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Imported dynamic `bits<expression>` width evaluation over exact context values
+Next Action: Define the bounded sentinel loop for the H.264 slice-header slice
+Last Verification: Commit 4ff23ad local dev/ci/sanitize passed 32/32; hosted run
+  30850983789 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -552,3 +551,16 @@ Blockers: None
   Configure、Build、Test、Install、Upload 均成功。完整 slice-header 项仍未完成；下一步定义
   exact imported context value 的 expression namespace 与 dynamic `bits<expression>`，之后再做
   bounded sentinel loop 和 compressed remaining-bit payload。
+- 2026-08-04：完成 imported dynamic `bits<expression>` width evaluation。ADR-0046
+  固化 `context_value(import_key, context_kind, exported_field)` 这一受限 expression leaf：
+  compiler 只接受 import root/精确 dependency closure 中恰好一个 publisher 的 exported
+  unsigned scalar，并把 imported leaf 纳入 node/depth 预算；dynamic field 仅允许 big-endian
+  scalar bits，runtime width 严格为 1..64，checked arithmetic、截断事务和 mapped source
+  spans 沿用既有 VM 语义。`RuleExecutionSession` 为每次 run 建立 per-run exact-generation
+  closure cache，VM 与最终 imported result 复用同一 root-first dependency-order closure，
+  missing/future/stale generation 不回退；被引用 publisher 的 context descriptor 也在 source
+  read 前完整预验证。英中 DSL 规范、ADR-0046 伴随说明与 malformed IR/session 回归已同步。
+  实现提交为 `4ff23ad`；本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 32/32；
+  hosted run `30850983789` 在 Windows 2022 / Qt 6.10.1、macOS 15 / Qt 6.11.1 与 Ubuntu
+  24.04 / Qt 6.11.1 的 Configure、Build、Test、Install、Upload 均成功。完整 slice-header 项
+  仍未完成；下一步定义 bounded sentinel loop，之后再实现 compressed remaining-bit payload。
