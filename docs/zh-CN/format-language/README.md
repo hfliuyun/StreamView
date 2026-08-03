@@ -672,8 +672,8 @@ extension 语法会改变或扩展已声明布局，因此成为 `invalid-syntax
 该 PPS NAL 之前具有声明 ID 的最近 available SPS，并在发布自身 generation 时绑定这个精确
 generation。若不存在 SPS，PPS structure 仍保持 materialized，但会收到带 source 位置的
 `dependency-unavailable` diagnostic；所属 RBSP 与 NAL 变为 invalid，不发布任何 generation，
-并继续分析后续 NAL。通用 context import 已可用，但 slice dispatch 以及在 expression 中使用
-imported value 仍未实现。其余所有 type 的 `rbsp_payload` region 保持原样。
+并继续分析后续 NAL。下面的有界 type-5 IDR slice 会使用通用 context import；其余所有
+type 的 `rbsp_payload` region 保持原样。
 
 已声明 PPS 字段具有以下有界含义：
 
@@ -694,6 +694,30 @@ imported value 仍未实现。其余所有 type 的 `rbsp_payload` region 保持
 | `deblocking_filter_control_present_flag` | 表示关联 slice header 中存在 deblocking-filter control 语法。 |
 | `constrained_intra_pred_flag` | 将 intra prediction 限制在 intra-coded 相邻 macroblock。 |
 | `redundant_pic_cnt_present_flag` | 表示关联 slice header 中存在 redundant-picture count 语法。 |
+
+type `5` 为有界 progressive `slice_type == 2` 形状解码
+`IdrSliceLayerWithoutPartitioningRbsp`。它导入 `pic_parameter_set_id` 选择的精确 PPS
+generation 以及该 PPS 的精确 SPS dependency，然后读取以下字段：
+
+| 字段 | 本切片中的含义 |
+| --- | --- |
+| `first_mb_in_slice` | 标识 slice 中的第一个 macroblock。 |
+| `slice_type` | 支持的 all-I 形状要求值为 2；等价值 7 留待后续。 |
+| `pic_parameter_set_id` | 选择此前精确 PPS generation，超出 `0..255` 时告警。 |
+| `frame_num` | 使用绑定 SPS 的 `log2_max_frame_num_minus4 + 4` bit。 |
+| `idr_pic_id` | 标识 IDR picture。 |
+| `pic_order_cnt_lsb` | 在绑定的 POC-type-0 SPS 下使用 `log2_max_pic_order_cnt_lsb_minus4 + 4` bit。 |
+| `no_output_of_prior_pics_flag` | 控制 IDR picture 之前 picture 的输出。 |
+| `long_term_reference_flag` | 设置时把 IDR picture 标记为 long-term reference。 |
+| `slice_qp_delta` | 调整初始 luma quantization parameter；signed bound 留待后续。 |
+| `slice_data` | 覆盖全部剩余 RBSP bit 的 materialized opaque suffix，其中包括可能存在的 slice trailing bits；不解码 CAVLC/CABAC。 |
+
+dynamic width 会在受影响字段读取 source 前拒绝 non-progressive SPS、非零 POC type、
+bottom-field POC、redundant-picture 语法或 deblocking control。missing/future/stale parameter-set
+generation 仍报告 `dependency-unavailable`；保留 partial header，并继续分析后续 NAL。
+non-IDR、P/B/SP/SI、field-picture、reference-list、weighted、adaptive-memory-management、
+deblocking 与 slice-group 分支均留待后续。package `0.1.8` 发布 coverage depth
+`idr-slice-header`；这尚未完成 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
 的 mapped-byte budget；默认每次最多处理 64 KiB EBSP source byte。预算耗尽时返回

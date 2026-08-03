@@ -773,8 +773,8 @@ coalesced into source spans. The NAL children appear in this order:
 headers that this profile does not yet parse, so their bytes after the direct
 header remain uninterpreted, are not passed to the mapper, and cannot dispatch.
 
-The bundled rule declares a payload dispatch for `nal_unit_type` values `7`,
-`8`, `9`, `10`, and `11`. A dispatched type is always mapped, even when its
+The bundled rule declares a payload dispatch for `nal_unit_type` values `5`,
+`7`, `8`, `9`, `10`, and `11`. A dispatched type is always mapped, even when its
 payload is empty, so `rbsp_payload` is present for every dispatched NAL. Type `9` decodes
 `AccessUnitDelimiterRbsp` as a child of `rbsp_payload`, exposing
 `primary_pic_type`, `rbsp_stop_one_bit`, and `rbsp_alignment_zero_bit[0]`
@@ -885,9 +885,8 @@ PPS NAL and binds that exact generation when it publishes its own generation.
 If no SPS is available, the PPS structure remains materialized but receives a
 source-located `dependency-unavailable` diagnostic; its RBSP and NAL are invalid,
 nothing is published, and later NAL units are still analyzed. Generic context
-import is available, but slice dispatch and use of imported values in expressions
-remain unimplemented. Every other type keeps the uninterpreted `rbsp_payload`
-region unchanged.
+import is used by the bounded type-5 IDR slice below. Every other type keeps the
+uninterpreted `rbsp_payload` region unchanged.
 
 The declared PPS fields have the following bounded meanings:
 
@@ -908,6 +907,33 @@ The declared PPS fields have the following bounded meanings:
 | `deblocking_filter_control_present_flag` | Signals deblocking-filter control syntax in associated slice headers. |
 | `constrained_intra_pred_flag` | Restricts intra prediction to intra-coded neighboring macroblocks. |
 | `redundant_pic_cnt_present_flag` | Signals redundant-picture count syntax in associated slice headers. |
+
+Type `5` decodes `IdrSliceLayerWithoutPartitioningRbsp` for the bounded
+progressive `slice_type == 2` form. It imports the exact PPS generation selected
+by `pic_parameter_set_id` and that PPS's exact SPS dependency, then reads the
+following fields:
+
+| Field | Meaning in this slice |
+| --- | --- |
+| `first_mb_in_slice` | Identifies the first macroblock in the slice. |
+| `slice_type` | Must be 2 for the supported all-I form; equivalent value 7 is deferred. |
+| `pic_parameter_set_id` | Selects the exact prior PPS generation and warns outside `0..255`. |
+| `frame_num` | Uses `log2_max_frame_num_minus4 + 4` bits from the bound SPS. |
+| `idr_pic_id` | Identifies the IDR picture. |
+| `pic_order_cnt_lsb` | Uses `log2_max_pic_order_cnt_lsb_minus4 + 4` bits from the bound POC-type-0 SPS. |
+| `no_output_of_prior_pics_flag` | Controls output of pictures preceding the IDR picture. |
+| `long_term_reference_flag` | Marks the IDR picture as a long-term reference when set. |
+| `slice_qp_delta` | Adjusts the initial luma quantization parameter; its signed bound is deferred. |
+| `slice_data` | Materialized opaque suffix covering every remaining RBSP bit, including any slice trailing bits; CAVLC/CABAC is not decoded. |
+
+Dynamic widths reject non-progressive SPS, POC types other than 0, bottom-field
+POC, redundant-picture syntax, or deblocking controls before the affected field
+reads source. Missing/future/stale parameter-set generations remain
+`dependency-unavailable`; the partial header is retained and later NAL units are
+still analyzed. Non-IDR, P/B/SP/SI, field-picture, reference-list, weighted,
+adaptive-memory-management, deblocking, and slice-group branches are deferred.
+Package `0.1.8` advertises coverage depth `idr-slice-header`; this is not yet the
+complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
 addition to their record-count and inspected-position budgets. The default is
