@@ -288,7 +288,7 @@ private slots:
         QVERIFY2(!source.isEmpty(), qPrintable(errorMessage));
         const auto parsed = DslParser::parse(source);
         QVERIFY(parsed.succeeded());
-        QCOMPARE(parsed.program.structs.size(), std::size_t(4));
+        QCOMPARE(parsed.program.structs.size(), std::size_t(5));
         QCOMPARE(parsed.program.structs.at(0).name, QStringLiteral("NalUnitHeader"));
         QCOMPARE(parsed.program.structs.at(1).name,
                  QStringLiteral("AccessUnitDelimiterRbsp"));
@@ -301,6 +301,10 @@ private slots:
                  QStringLiteral("PictureParameterSetRbsp"));
         QCOMPARE(parsed.program.structs.at(3).items.back().kind,
                  streamview::rules::DslStructItemKind::RbspTrailingBits);
+        QCOMPARE(parsed.program.structs.at(4).name,
+                 QStringLiteral("IdrSliceLayerWithoutPartitioningRbsp"));
+        QCOMPARE(parsed.program.structs.at(4).items.back().kind,
+                 streamview::rules::DslStructItemKind::CompressedPayload);
         QCOMPARE(parsed.program.scans.size(), std::size_t(1));
         QCOMPARE(parsed.program.entry.targetName, QStringLiteral("nal_units"));
         QVERIFY(parsed.program.payloadDispatch.has_value());
@@ -308,7 +312,7 @@ private slots:
         QCOMPARE(dispatch.viewKind, QStringLiteral("rbsp"));
         QCOMPARE(dispatch.sequenceName, QStringLiteral("nal_units"));
         QCOMPARE(dispatch.controllerFieldName, QStringLiteral("nal_unit_type"));
-        QCOMPARE(dispatch.cases.size(), std::size_t(5));
+        QCOMPARE(dispatch.cases.size(), std::size_t(6));
     }
 
     void decodesTheSupportedBaselineSequenceParameterSetPayload() {
@@ -1153,6 +1157,148 @@ private slots:
                  quint64(1));
     }
 
+    void decodesTheBoundedIdrSliceHeaderAndKeepsSliceDataOpaque() {
+        MemorySource source(bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+            0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
+            0x00, 0x00, 0x01, 0x65, 0xba, 0xcc, 0xd5,
+        }));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(3));
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        QCOMPARE(rbsp->state(), MaterializationState::Materialized);
+        QCOMPARE(rbsp->children().size(), std::size_t(1));
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->name(), QStringLiteral("IdrSliceLayerWithoutPartitioningRbsp"));
+        QCOMPARE(slice->state(), MaterializationState::Materialized);
+        QCOMPARE(slice->metadata().specification->clause, QStringLiteral("7.3.2.8, 7.3.3"));
+
+        const auto fieldNamed = [&](const QString& name) {
+            const auto found = std::find_if(
+                slice->children().begin(), slice->children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == slice->children().end() ? std::nullopt
+                                                   : analyzer->tree().node(*found);
+        };
+        const std::vector expectedUnsigned{
+            std::pair{QStringLiteral("first_mb_in_slice"), quint64(0)},
+            std::pair{QStringLiteral("slice_type"), quint64(2)},
+            std::pair{QStringLiteral("pic_parameter_set_id"), quint64(0)},
+            std::pair{QStringLiteral("frame_num"), quint64(5)},
+            std::pair{QStringLiteral("idr_pic_id"), quint64(0)},
+            std::pair{QStringLiteral("pic_order_cnt_lsb"), quint64(3)},
+            std::pair{QStringLiteral("no_output_of_prior_pics_flag"), quint64(0)},
+            std::pair{QStringLiteral("long_term_reference_flag"), quint64(0)},
+        };
+        for (const auto& [name, expected] : expectedUnsigned) {
+            const auto field = fieldNamed(name);
+            QVERIFY2(field.has_value(), qPrintable(name));
+            QCOMPARE(field->value().toULongLong(), expected);
+        }
+        const auto qp = fieldNamed(QStringLiteral("slice_qp_delta"));
+        const auto payload = fieldNamed(QStringLiteral("slice_data"));
+        QVERIFY(qp.has_value());
+        QVERIFY(payload.has_value());
+        QCOMPARE(qp->value().toLongLong(), qlonglong(0));
+        QCOMPARE(payload->kind(), AnalysisNodeKind::CompressedPayload);
+        QCOMPARE(payload->state(), MaterializationState::Materialized);
+        QCOMPARE(payload->metadata().specification->clause, QStringLiteral("7.3.2.10"));
+        QCOMPARE(payload->location()->logicalRange().bitLength(), quint64(7));
+        QCOMPARE(payload->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(193));
+        QCOMPARE(payload->location()->sourceSpans().front().bitLength(), quint64(7));
+        QCOMPARE(fieldNamed(QStringLiteral("frame_num"))
+                     ->location()
+                     ->logicalRange()
+                     .bitLength(),
+                 quint64(4));
+        QCOMPARE(fieldNamed(QStringLiteral("pic_order_cnt_lsb"))
+                     ->location()
+                     ->logicalRange()
+                     .bitLength(),
+                 quint64(4));
+    }
+
+    void rejectsIdrSliceWithoutPriorPictureParameterSetAndContinues() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x65, 0xba, 0xcc, 0xd5,
+                                   0x00, 0x00, 0x01, 0x09, 0x50}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+        const auto idrNal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(idrNal.has_value());
+        QCOMPARE(idrNal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(idrNal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        QCOMPARE(rbsp->state(), MaterializationState::Invalid);
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->children().size(), std::size_t(3));
+        QCOMPARE(slice->diagnostics().size(), std::size_t(1));
+        QCOMPARE(slice->diagnostics().front().code,
+                 streamview::core::DiagnosticCode::DependencyUnavailable);
+        QCOMPARE(slice->diagnostics().front().fieldPath,
+                 QStringLiteral("IdrSliceLayerWithoutPartitioningRbsp.pic_parameter_set_id"));
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+    }
+
+    void rejectsIdrSliceRequiringDeblockingSyntaxAndContinues() {
+        MemorySource source(bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+            0x00, 0x00, 0x01, 0x68, 0xce, 0x3c, 0x80,
+            0x00, 0x00, 0x01, 0x65, 0xba, 0xcc, 0xd5,
+            0x00, 0x00, 0x01, 0x09, 0x50,
+        }));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(4));
+        const auto idrNal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(idrNal.has_value());
+        QCOMPARE(idrNal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(idrNal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        QCOMPARE(rbsp->state(), MaterializationState::Invalid);
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Invalid);
+        QCOMPARE(slice->children().size(), std::size_t(6));
+        QCOMPARE(slice->diagnostics().size(), std::size_t(1));
+        const auto& diagnostic = slice->diagnostics().front();
+        QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::InvalidSyntax);
+        QCOMPARE(diagnostic.fieldPath,
+                 QStringLiteral(
+                     "IdrSliceLayerWithoutPartitioningRbsp.no_output_of_prior_pics_flag"));
+        QCOMPARE(diagnostic.message, QStringLiteral("Computed expression division by zero"));
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+    }
+
     void warnsOnOutOfRangePictureParameterSetIdentifier() {
         MemorySource source(bytes({0x00, 0x00, 0x01, 0x67,
                                    0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
@@ -1518,7 +1664,7 @@ private slots:
     }
 
     void keepsUndispatchedNalUnitPayloadsUninterpreted() {
-        MemorySource source(bytes({0x00, 0x00, 0x01, 0x65, 0xAA, 0x00, 0x00, 0x01, 0x41}));
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x61, 0xAA, 0x00, 0x00, 0x01, 0x41}));
         QString errorMessage;
         auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
         QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
@@ -1558,7 +1704,7 @@ private slots:
     }
 
     void materializesStartCodesAndNalHeadersInBatches() {
-        MemorySource source(bytes({0x00, 0x00, 0x01, 0x65, 0xAA,
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x61, 0xAA,
                                    0x00, 0x00, 0x00, 0x01, 0x41}));
         QString errorMessage;
         auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
@@ -1599,7 +1745,7 @@ private slots:
         QVERIFY(unitType.has_value());
         QCOMPARE(forbidden->value().toULongLong(), quint64(0));
         QCOMPARE(referenceIdc->value().toULongLong(), quint64(3));
-        QCOMPARE(unitType->value().toULongLong(), quint64(5));
+        QCOMPARE(unitType->value().toULongLong(), quint64(1));
         QVERIFY(forbidden->metadata().specification.has_value());
         QCOMPARE(forbidden->metadata().specification->standard,
                  QStringLiteral("ITU-T H.264"));
@@ -1653,7 +1799,7 @@ private slots:
 
     void mapsRbspPayloadAndPublishesExcludedBytes() {
         MemorySource source(bytes(
-            {0x00, 0x00, 0x01, 0x65, 0x00, 0x00, 0x03, 0x02, 0x00, 0x00}));
+            {0x00, 0x00, 0x01, 0x61, 0x00, 0x00, 0x03, 0x02, 0x00, 0x00}));
         QString errorMessage;
         auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
         QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
@@ -1728,7 +1874,7 @@ private slots:
     }
 
     void keepsEbspConformanceIssuesLocalAndContinues() {
-        MemorySource source(bytes({0x00, 0x00, 0x01, 0x65, 0x00, 0x00,
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x61, 0x00, 0x00,
                                    0x03, 0x04, 0x00, 0x00, 0x01, 0x41}));
         QString errorMessage;
         auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
@@ -1771,7 +1917,7 @@ private slots:
 
     void boundsRbspMappingAcrossAnalysisBatches() {
         MemorySource source(
-            bytes({0x00, 0x00, 0x01, 0x65, 0x12, 0x34, 0x56, 0x78, 0x9A}));
+            bytes({0x00, 0x00, 0x01, 0x61, 0x12, 0x34, 0x56, 0x78, 0x9A}));
         QString errorMessage;
         auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
         QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));

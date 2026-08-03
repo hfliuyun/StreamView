@@ -128,7 +128,7 @@ private slots:
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         const QString path = writeFixture(
-            directory, QStringLiteral("many.264"), QByteArray::fromHex("0000016500000141"));
+            directory, QStringLiteral("many.264"), QByteArray::fromHex("0000016100000141"));
         QVERIFY(!path.isEmpty());
         MainWindow window;
         QString errorMessage;
