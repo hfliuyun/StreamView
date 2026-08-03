@@ -104,8 +104,13 @@ execution session 将完整 definition 及选中的 typed value 发布到 positi
 
 当前接受的 context-import 切片新增可重复 structure annotation `@context_import`。consumer
 structure materialize 后，同一 session 在 consumer position 选择声明的 generation，并返回
-其 rules-owned export payload 与精确 dependency closure。imported value 尚不进入 expression
-namespace。
+其 rules-owned export payload 与精确 dependency closure。imported value 不进入一般
+expression namespace。
+
+当前接受的 imported dynamic-width 切片允许用 checked unsigned arithmetic expression 作为
+big-endian `bits` 字段的宽度。保留形式
+`context_value(import_key, context_kind, exported_field)` 只允许出现在该 width expression 中，
+并在读取字段前从精确 imported generation closure 解析一个 scalar。
 
 ## DSL 0.1 最小子集
 
@@ -128,7 +133,7 @@ struct_item   := field | computed | lazy_region | rbsp_trailing_bits
                | conditional | switch | repeat
 field         := { annotation } field_type identifier [ "[" integer "]" ]
                  { annotation } ";"
-field_type    := "bits" "<" integer [ "," identifier ] ">" | "ue" | "se"
+field_type    := "bits" "<" additive [ "," identifier ] ">" | "ue" | "se"
 computed      := { annotation } "computed" "<" scalar_type ">" identifier
                  "=" expression { annotation } ";"
 lazy_region   := "@" "lazy" "(" expression ")" "bytes" identifier
@@ -179,7 +184,11 @@ primary       := integer | "true" | "false" | identifier
   唯一一条 `return` 表达式。函数只能引用自己的参数和此前声明的纯函数。函数 overload、
   forward call、直接或间接递归，以及纯函数上的 annotation 都会被拒绝。每个函数体即使
   没有被使用，也会独立完成类型检查和表达式边界检查。
-- `bits<N>` 的宽度必须是 `1..64` 的整数。字段按声明顺序以 MSB-first 消耗输入。
+- 字面量 `bits<N>` 的宽度必须是 `1..64` 的整数。非字面量宽度是 checked `u64`
+  arithmetic expression，只允许用于 big-endian、非数组的 `bits` 字段；runtime 结果同样必须
+  位于 `1..64`。dynamic 字段不能使用 enum、equality/range constraint，也不能作为 context
+  key、dependency、import 或 export。它的 runtime width 会使后续精确静态 offset 变为未知。
+  字段按声明顺序以 MSB-first 消耗输入。
   省略第二个类型参数或写成 `big` 时，得到大端无符号值。`little` 只允许宽度为 8 的倍数、
   字段在结构内从字节边界开始，并且执行时字段的绝对逻辑起点与首个解析出的 source bit 都
   从字节边界开始；后续 mapping segment 的 source 边界不要求按字节对齐。它只反转完整逻辑
@@ -205,6 +214,13 @@ primary       := integer | "true" | "false" | identifier
 - `@context_import(kind, key_field)` 在一个 structure 上最多出现 16 次。它使用相同的已识别
   kind 与无条件 unsigned scalar key-field 规则，保留 declaration order；相同 kind/field pair
   是静态重复错误。
+- `context_value(import_key, context_kind, exported_field)` 保留给 dynamic `bits` width 使用，
+  三个参数都必须是 identifier。`import_key` 必须命名此前 context-eligible 的字段，并且在该
+  structure 上精确标识一个 import。kind identifier 只能是 `h264_sps`、`h264_pps`、
+  `aac_asc` 或 `iso_bmff_sample_description`，而且必须命名 imported root kind，或从其声明的
+  dependency graph 可达的 kind。该 target kind 必须恰好有一个 publishing structure，且该
+  structure 必须精确导出一个同名字段。pure-function body、computed field、condition、lazy
+  size、repeat bound 与其他 expression position 都拒绝这一形式。
 - 固定宽度数组按 `width * count` bit 参与静态对齐。小端数组的每个元素宽度必须是 8 的
   倍数，并且首元素必须从结构内的字节边界开始。`ue` 或 `se` 数组的总宽度未知，因此其
   后续小端字段与单个 Exp-Golomb 字段之后的小端字段一样会被拒绝。
@@ -275,7 +291,9 @@ primary       := integer | "true" | "false" | identifier
   short-circuit Boolean `&&` 和 `||`，优先级如 grammar 所示。不存在隐式转换：算术和大小
   比较要求 `u64`，逻辑运算要求 `bool`，等值运算两侧类型相同，函数实参必须与形参逐一
   匹配。无符号 overflow/underflow、除零和模零会在计算字段或 lazy region path 上产生
-  runtime `invalid-syntax`。enum 字段提供解码后的 `u64`；enum member 名不是本切片的
+  runtime `invalid-syntax`。dynamic bit width 使用同一套 checked arithmetic；`context_value`
+  是它唯一额外的 leaf form，并计入相同 node 与 depth 上限；完整的 width expression 仍受
+  共享 expansion-work 上限约束。enum 字段提供解码后的 `u64`；enum member 名不是本切片的
   expression value。
 - 每个写出的纯函数体、计算字段 expression 或 lazy byte-count expression，以及对应的完全
   内联 expression，深度最多 64，节点最多 256。展开一个函数体或 expression 时，call、
@@ -367,6 +385,12 @@ compiler 会独立 type-check 每个纯函数，再把每个 pure call 展开到
 的计算字段表达式超过固定节点、深度或 4,096-step expansion-work 上限时，都不会生成可执行
 typed IR。
 
+dynamic `bits` 字段继续使用既有 `read-unsigned-bits` instruction，以 typed width expression
+取代字面量 width。imported leaf 会 lower 为 context-import ordinal、target definition kind、
+唯一 publishing structure index 与有序 export index；runtime 不比较字段名。compiler 会证明
+target kind 就是 import root，或可从声明的 context dependency 到达，并把其后每个精确静态
+offset 设为未知。
+
 lazy declaration 以 `LazyBytes` kind 加入同一 typed-field stream，携带必需且已经内联的
 `u64` byte-count expression、解析后的 presentation metadata，以及相同的外层 guard 与
 repeat index。它生成一条 `register-lazy-bytes` instruction；不会加入 scalar value namespace，
@@ -393,6 +417,15 @@ typed execution 非法，并且不消耗该字段。后续 source-span 边界不
 span 读取失败时，reader 保持在字段起点，也不创建半成品字段节点；诊断通过同一 mapping
 解析已有逻辑范围，只包含 forwarded source spans。执行器把字段类型、说明和规范引用保留在
 analysis-node snapshot 上；展示宽度由节点的逻辑范围推导。
+
+读取选中的 dynamic 字段之前，VM 会计算已经预验证的 width expression。
+`RuleExecutionSession` 在 consumer enclosing source span 起点之前选择 root generation，为本次
+run 缓存该精确 rules-owned dependency closure，再按 lower 后的 structure/export ordinal 选择
+imported leaf。missing、future 或 stale generation 都是无 fallback 的 `dependency-unavailable`，
+并在 import-key 字段处把 partial structure 标为 `waiting-dependency`。target 缺失或歧义、
+payload/schema mismatch 或 malformed descriptor 都属于 invalid definition。checked arithmetic
+失败或 width 不在 `1..64` 时为 `invalid-syntax`，dynamic 字段不消费 bit；读取截断会回滚到字段
+起点，但诊断仍保留可用的 mapped prefix。
 
 VM 在每次字段读取前按外层到内层的顺序验证并计算 presence guard。guard 为 false 时跳过
 该字段，不消耗 source bit、不创建 analysis node，也不执行 enum member、`@equals` 或
@@ -665,7 +698,7 @@ context publication 与 import 合法示例：
 @context("h264-sps", sps_id)
 struct Sps {
     ue sps_id;
-    ue log2_width @context_export;
+    ue log2_max_frame_num_minus4 @context_export;
 }
 
 @context("h264-pps", pps_id)
@@ -680,6 +713,9 @@ struct Pps {
 struct SliceHeader {
     ue first_mb_in_slice;
     ue pps_id;
+    bits<context_value(pps_id,
+                       h264_sps,
+                       log2_max_frame_num_minus4) + 4> frame_num;
 }
 
 entry Sps;
@@ -874,6 +910,11 @@ repeated、array、signed、lazy 或 generated field 作为 key/export、
 不存在的 key 名同样会被拒绝。
 context import 的非法示例包括：完全相同的 import 重复、guarded/repeated/array/signed/lazy/
 generated 或未知 key field、不支持的 kind、malformed argument，以及超过 16 个 import。
+imported dynamic-width 的非法示例包括：在 dynamic `bits` width 之外使用 `context_value`、
+import key 缺失或声明得更晚、target kind 与 import closure 无关、target kind 没有 publisher 或
+存在多个 publisher、export 缺失，以及 dynamic little-endian、array、enum、constrained、
+context-key、dependency、import 或 export field。runtime 结果为 `0` 或 `65`、arithmetic
+overflow/underflow、除零或模零时，在该字段消费输入前报告 `invalid-syntax`。
 
 payload 派发的非法示例包括：两个 payload 声明、`payload<ebsp>` 或其他 view kind、派发命名
 结构或未声明名称而非 sequence、所派发 sequence 没有 `entry`、未知 controller 名、以
@@ -1060,14 +1101,17 @@ key 的更旧 generation，也不会猜测。malformed definition 不注册，�
 后续跨 generation dependency cycle 会产生 dependency-unavailable result，超过 64 个
 definition 的 dependency chain 也会得到同一结果。
 
-consumer materialize 并满足 requested exact-consumption policy 后，每个 import 都在 consumer
-enclosing span 的起点解析。缺少、future 或 stale generation 会在 import key 上添加精确
-source 位置的 `dependency-unavailable` diagnostic，且不返回部分 imported result。成功 import
-先返回 root definition，再按 dependency declaration order 做 depth-first traversal；每个精确
+dynamic width 首次请求 imported value 时，import 会在 consumer enclosing span 的起点解析；
+如果没有更早的 value request，则在 consumer materialize 后解析。该精确 closure 会在本次 run
+内缓存，并在成功精确消费后作为同一 closure 返回。缺少、future 或 stale generation 会在
+import key 上添加精确 source 位置的 `dependency-unavailable` diagnostic，且不返回部分
+imported result。成功 import 先返回 root definition，再按 dependency declaration order 做
+depth-first traversal；每个精确
 definition 只包含一次。每项保留 definition ID、kind、publishing structure index、有序 exported
 value 与精确 dependency ID。closure 最多 64 个 definition；rules-owned payload 缺失属于
-invalid runtime state。import result 不创建 analysis node，imported value 暂时也不能用作
-condition、expression、width 或 repeat bound 中的 identifier。
+invalid runtime state。import result 不创建 analysis node。imported value 只能通过 dynamic
+width 中 lower 后的 `context_value` leaf 使用，不能作为 condition、一般 expression、lazy size
+或 repeat bound 中的 identifier。
 
 只有 structure 成功 materialize、满足请求的精确消费策略、完成 dependency resolution 和
 typed-payload 准备后才会发布。registration 前会预留 payload 与 directory 容量，因此成功
@@ -1082,7 +1126,8 @@ publication 合同见
 [ADR-0044](../adr/0044-publish-rule-declared-context-generations.md)。内置 H.264 rule 从 package
 version `0.1.7` 开始使用该合同。import 合同见
 [ADR-0045](../adr/0045-import-rule-declared-context-generations.md)；内置 rule 会在新增 slice
-dispatch 后才使用 import。
+dispatch 后才使用 import。dynamic imported width 合同见
+[ADR-0046](../adr/0046-evaluate-dynamic-bit-widths-from-imported-context-values.md)。
 
 ## 沙箱与资源限制
 
@@ -1104,6 +1149,10 @@ enum 成员检查和字节序转换都属于现有的字段读取操作，不增
 一个 structure 最多声明 16 个 context import。import selection 不读取 source，也不创建 node。
 每个返回的 exact dependency closure 最多包含 64 个 definition；超限得到 `resource-limit`，
 且不暴露部分 imported result。
+
+dynamic-width imported leaf 复用这份 per-run closure，不增加 instruction、source read 或
+presentation node。完整展开的 width expression 仍受 256-node 与 depth-64 上限约束，并在所选
+字段的单条 read instruction 与既有 cancellation boundary 内求值。
 
 数组语法不另占运行时预算。每个展开元素消耗一个物化节点和一条 read instruction；每个
 `@equals` 元素再增加一条 assertion instruction，每个 `@range` 元素再增加两条

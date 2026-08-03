@@ -156,7 +156,8 @@ bool AnalysisTree::addDiagnostic(AnalysisNodeId id, ParseDiagnostic diagnostic) 
 bool AnalysisTree::markPartial(AnalysisNodeId id,
                                MaterializationState terminalState,
                                ParseDiagnostic diagnostic) {
-    if (terminalState != MaterializationState::Cancelled &&
+    if (terminalState != MaterializationState::WaitingDependency &&
+        terminalState != MaterializationState::Cancelled &&
         terminalState != MaterializationState::Unsupported &&
         terminalState != MaterializationState::Invalid) {
         return false;

@@ -125,7 +125,13 @@ The accepted context-import slice adds repeatable structure annotation
 `@context_import`. After a consumer structure materializes, the same session
 selects the declared generation at the consumer position and returns its
 rules-owned export payload plus the exact dependency closure. Imported values
-do not yet enter the expression namespace.
+do not enter the general expression namespace.
+
+The accepted imported dynamic-width slice permits a checked unsigned arithmetic
+expression as the width of a big-endian `bits` field. The reserved
+`context_value(import_key, context_kind, exported_field)` form is available only
+in that width expression and resolves one scalar from the exact imported
+generation closure before the field is read.
 
 ## Minimum DSL 0.1 Subset
 
@@ -150,7 +156,7 @@ struct_item   := field | computed | lazy_region | rbsp_trailing_bits
                | conditional | switch | repeat
 field         := { annotation } field_type identifier [ "[" integer "]" ]
                  { annotation } ";"
-field_type    := "bits" "<" integer [ "," identifier ] ">" | "ue" | "se"
+field_type    := "bits" "<" additive [ "," identifier ] ">" | "ue" | "se"
 computed      := { annotation } "computed" "<" scalar_type ">" identifier
                  "=" expression { annotation } ";"
 lazy_region   := "@" "lazy" "(" expression ")" "bytes" identifier
@@ -205,7 +211,12 @@ The static rules for this subset are:
   overloads, forward calls, direct or indirect recursion, and annotations on a
   pure function are rejected. Every body is type-checked and checked against
   the expression limits even when the function is unused.
-- A `bits<N>` width is an integer in `1..64`. Fields consume input in
+- A literal `bits<N>` width is an integer in `1..64`. A non-literal width is a
+  checked `u64` arithmetic expression and is accepted only for a big-endian,
+  non-array `bits` field. Its runtime result must also be in `1..64`. Dynamic
+  fields cannot use an enum, equality or range constraint, or serve as a context
+  key, dependency, import, or export. Their runtime width makes the following
+  exact static offset unknown. Fields consume input in
   declaration order, most-significant bit first. With no second type argument,
   or with `big`, the resulting unsigned value is big-endian. `little` is
   accepted only for a width that is a multiple of eight, a field that begins at
@@ -245,6 +256,15 @@ The static rules for this subset are:
   It uses the same recognized kinds and unconditional unsigned scalar key-field
   rules. Declaration order is preserved; an identical kind/field pair is a
   duplicate and is rejected.
+- `context_value(import_key, context_kind, exported_field)` is reserved for a
+  dynamic `bits` width. All three arguments are identifiers. `import_key` names
+  an earlier context-eligible field that identifies exactly one import on the
+  structure. The kind identifier is `h264_sps`, `h264_pps`, `aac_asc`, or
+  `iso_bmff_sample_description`, and must name the imported root kind or a kind
+  reachable through its declared dependency graph. Exactly one structure must
+  publish that target kind, and it must export exactly one field with the named
+  declaration. The form is rejected in pure-function bodies, computed fields,
+  conditions, lazy sizes, repeat bounds, and every other expression position.
 - Fixed-width arrays contribute `width * count` bits to static alignment.
   Every element of a little-endian array must therefore have a byte-multiple
   width and the first element must begin at a structure-relative byte boundary.
@@ -354,8 +374,11 @@ The static rules for this subset are:
   `bool`, equality operands have the same type, and function arguments exactly
   match their parameters. Unsigned overflow or underflow, division by zero, and
   remainder by zero are runtime `invalid-syntax` failures at the computed field
-  or lazy region path. Enum fields contribute their decoded `u64`; enum member
-  names are not expression values.
+  or lazy region path. The same checked arithmetic applies to a dynamic bit
+  width; `context_value` is its only additional leaf form and counts against the
+  same node and depth limits. The complete width expression remains subject to
+  the shared expansion-work limit. Enum fields contribute their decoded `u64`;
+  enum member names are not expression values.
 - Every written pure-function body, computed-field expression, or lazy
   byte-count expression, and every corresponding fully inlined expression, has
   depth at most 64 and at most 256 nodes. Expanding one body or expression may
@@ -480,6 +503,14 @@ scope as a syntax field. Written expressions and expanded computed expressions
 are rejected before executable typed IR is produced when they exceed their fixed
 node, depth, or 4,096-step expansion-work bounds.
 
+A dynamic `bits` field retains the existing `read-unsigned-bits` instruction and
+stores a typed width expression instead of a literal width. An imported leaf is
+lowered to the context-import ordinal, target definition kind, unique publishing
+structure index, and ordered export index. Runtime code compares no field names.
+The compiler proves the target kind is the import root or is reachable through
+declared context dependencies and makes every following exact static offset
+unknown.
+
 A lazy declaration joins the same typed-field stream with kind `LazyBytes`, a
 required inlined `u64` byte-count expression, resolved presentation metadata,
 and the same outer guards and repeat indexes. It emits one
@@ -523,6 +554,18 @@ field node. Diagnostics resolve the available logical range through the same
 mapping and include only forwarded source spans. The executor retains the field
 type, description, and specification reference on the analysis-node snapshot;
 presentation derives field width from that node's logical range.
+
+Before a selected dynamic field reads source, the VM evaluates its prevalidated
+width expression. `RuleExecutionSession` resolves an imported leaf by selecting
+the root generation before the consumer's enclosing source-span start, caching
+that exact rules-owned dependency closure for the run, and selecting the lowered
+structure/export ordinal from it. Missing, future, or stale generations are
+`dependency-unavailable` without fallback and mark the partial structure as
+`waiting-dependency` at the import-key field. A missing or ambiguous target,
+payload/schema mismatch, or malformed descriptor is an invalid definition.
+Checked arithmetic failure or a width outside `1..64` is `invalid-syntax` and
+consumes no bits for the dynamic field. A truncated read rolls back to the field
+start, while its diagnostic retains the available mapped prefix.
 
 Before each field read, the VM validates and evaluates its presence guards in
 outer-to-inner order. A false guard skips the field without consuming source
@@ -1029,7 +1072,7 @@ Valid context publication and import example:
 @context("h264-sps", sps_id)
 struct Sps {
     ue sps_id;
-    ue log2_width @context_export;
+    ue log2_max_frame_num_minus4 @context_export;
 }
 
 @context("h264-pps", pps_id)
@@ -1044,6 +1087,9 @@ struct Pps {
 struct SliceHeader {
     ue first_mb_in_slice;
     ue pps_id;
+    bits<context_value(pps_id,
+                       h264_sps,
+                       log2_max_frame_num_minus4) + 4> frame_num;
 }
 
 entry Sps;
@@ -1084,6 +1130,13 @@ more than 64 exports. Unknown context kinds and key names are rejected as well.
 Invalid context-import examples include an identical repeated import, a guarded,
 repeated, array, signed, lazy, generated, or unknown key field, an unsupported
 kind, malformed arguments, and more than 16 imports.
+Invalid imported dynamic-width examples include `context_value` outside a
+dynamic `bits` width, a missing or later import key, an unrelated target kind,
+zero or multiple publishers for the target kind, a missing export, and a dynamic
+little-endian, array, enum, constrained, context-key, dependency, import, or
+export field. Runtime results `0` and `65`, arithmetic overflow or underflow,
+division by zero, and remainder by zero are `invalid-syntax` before that field
+consumes input.
 
 Invalid payload-dispatch examples include two payload declarations,
 `payload<ebsp>` or any other view kind, a dispatch naming a structure or an
@@ -1310,17 +1363,20 @@ registration is transactional, and later cross-generation dependency cycles
 or dependency chains beyond 64 definitions produce dependency-unavailable
 results.
 
-After a consumer materializes and satisfies its requested exact-consumption
-policy, each import resolves at the consumer enclosing span's start. A missing,
-future, or stale generation adds a source-located `dependency-unavailable`
-diagnostic to the import key and returns no partial imported result. A successful
-import returns the root definition first, then its exact dependencies in
+An import resolves at the consumer enclosing span's start when a dynamic width
+first requests one of its values, or after the consumer materializes when no
+earlier value request occurred. The exact closure is cached for that run and is
+also the closure returned after successful exact consumption. A missing, future,
+or stale generation adds a source-located `dependency-unavailable` diagnostic to
+the import key and returns no partial imported result. A successful import
+returns the root definition first, then its exact dependencies in
 declaration-order depth-first traversal, with each definition included once.
 Every entry retains the definition ID, kind, publishing structure index,
 ordered exported values, and exact dependency IDs. A closure contains at most
 64 definitions; a missing rules-owned payload is invalid runtime state. Import
-results create no analysis nodes and imported values are not yet identifiers in
-conditions, expressions, widths, or repeat bounds.
+results create no analysis nodes. Imported values are available only through the
+lowered `context_value` leaf in a dynamic width, not as identifiers in
+conditions, general expressions, lazy sizes, or repeat bounds.
 
 Publication occurs only after successful materialization, requested exact
 consumption, dependency resolution, and complete typed-payload preparation.
@@ -1340,7 +1396,9 @@ The publication contract is specified by
 bundled H.264 rule first uses it in package version `0.1.7`. The import contract
 is specified by
 [ADR-0045](../adr/0045-import-rule-declared-context-generations.md); the bundled
-rule does not use imports until slice dispatch is added.
+rule does not use imports until slice dispatch is added. Dynamic imported widths
+are specified by
+[ADR-0046](../adr/0046-evaluate-dynamic-bit-widths-from-imported-context-values.md).
 
 ## Sandbox And Resource Limits
 
@@ -1367,6 +1425,11 @@ One structure declares at most 16 context imports. Import selection performs no
 source reads and creates no nodes. Each returned exact dependency closure is
 bounded to 64 definitions; exceeding that bound is `resource-limit` and exposes
 no partial imported result.
+
+Dynamic-width imported leaves reuse that per-run closure and add no instruction,
+source read, or presentation node. The complete expanded width expression remains
+bounded to 256 nodes and depth 64; it is evaluated within the selected field's
+single read instruction and existing cancellation boundary.
 
 Array syntax does not reserve a separate runtime budget. Every expanded
 element consumes one materialized node and one read instruction; `@equals`

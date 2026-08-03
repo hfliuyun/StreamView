@@ -9,6 +9,7 @@
 #include <QString>
 #include <QtGlobal>
 
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -18,6 +19,7 @@ enum class DslExecutionStatus : quint8 {
     Materialized,
     TruncatedSource,
     InvalidSyntax,
+    DependencyUnavailable,
     SourceError,
     Cancelled,
     ResourceLimit,
@@ -68,6 +70,30 @@ struct DslExecutionContextImport final {
     DslExecutionContextValue key;
 };
 
+struct DslContextValueRequest final {
+    quint32 contextImportIndex = 0;
+    core::ContextDefinitionKind importKind =
+        core::ContextDefinitionKind::H264SequenceParameterSet;
+    quint64 importKey = 0;
+    core::ContextDefinitionKind definitionKind =
+        core::ContextDefinitionKind::H264SequenceParameterSet;
+    quint32 structureIndex = 0;
+    quint32 exportIndex = 0;
+};
+
+struct DslContextValueResolution final {
+    DslExecutionStatus status = DslExecutionStatus::InvalidDefinition;
+    quint64 value = 0;
+    QString errorMessage;
+
+    [[nodiscard]] bool resolved() const noexcept {
+        return status == DslExecutionStatus::Materialized;
+    }
+};
+
+using DslContextValueResolver =
+    std::function<DslContextValueResolution(const DslContextValueRequest&)>;
+
 struct DslExecutionResult final {
     DslExecutionStatus status = DslExecutionStatus::InvalidDefinition;
     std::optional<core::AnalysisNodeId> structureNode;
@@ -93,7 +119,8 @@ public:
         quint64 logicalStart,
         core::AnalysisTree& tree,
         core::AnalysisNodeId parentId,
-        const DslExecutionOptions& options = {});
+        const DslExecutionOptions& options = {},
+        const DslContextValueResolver& contextValueResolver = {});
 };
 
 } // namespace streamview::rules

@@ -221,6 +221,26 @@ private slots:
         QVERIFY(materializedId.has_value());
         QVERIFY(tree->addDiagnostic(*materializedId, cancelled));
 
+        AnalysisNodeSpec waitingNode;
+        waitingNode.kind = AnalysisNodeKind::Region;
+        waitingNode.name = QStringLiteral("waiting region");
+        waitingNode.state = MaterializationState::Indexing;
+        const auto waitingId = tree->appendChild(tree->rootId(), waitingNode);
+        QVERIFY(waitingId.has_value());
+        ParseDiagnostic waiting;
+        waiting.code = DiagnosticCode::DependencyUnavailable;
+        waiting.severity = DiagnosticSeverity::Error;
+        waiting.message = QStringLiteral("dependency unavailable");
+        QVERIFY(tree->markPartial(
+            *waitingId, MaterializationState::WaitingDependency, waiting));
+        const auto waitingRegion = tree->node(*waitingId);
+        QVERIFY(waitingRegion.has_value());
+        QCOMPARE(waitingRegion->state(), MaterializationState::WaitingDependency);
+        QCOMPARE(waitingRegion->diagnostics().back().code,
+                 DiagnosticCode::DependencyUnavailable);
+        QVERIFY(tree->transition(*waitingId, MaterializationState::Indexing));
+        QVERIFY(tree->transition(*waitingId, MaterializationState::Materialized));
+
         const auto nodeCount = tree->nodeCount();
         QVERIFY(!tree->resumeCancelled(AnalysisNodeId(999)));
         QVERIFY(!tree->resumeCancelled(*materializedId));

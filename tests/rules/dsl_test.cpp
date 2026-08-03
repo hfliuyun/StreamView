@@ -94,6 +94,33 @@ private slots:
         }
     }
 
+    void parsesDynamicBitWidthExpressions() {
+        const auto result = DslParser::parse(QStringLiteral(R"(
+            struct SliceHeader {
+                ue pic_parameter_set_id;
+                bits<context_value(pic_parameter_set_id,
+                                   h264_sps,
+                                   log2_max_frame_num_minus4) + 4> frame_num;
+            }
+            entry SliceHeader;
+        )"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& field = result.program.structs.front().items.at(1).field;
+        QCOMPARE(field.width, quint8(0));
+        QVERIFY(field.widthExpression.has_value());
+        QCOMPARE(field.widthExpression->kind, DslExpressionKind::Binary);
+        QCOMPARE(field.widthExpression->binaryOperator, DslBinaryOperator::Add);
+        QCOMPARE(field.widthExpression->operands.at(0).kind, DslExpressionKind::Call);
+        QCOMPARE(field.widthExpression->operands.at(0).name,
+                 QStringLiteral("context_value"));
+        QCOMPARE(field.widthExpression->operands.at(0).operands.size(), std::size_t(3));
+        QCOMPARE(field.widthExpression->operands.at(1).unsignedValue, quint64(4));
+    }
+
     void parsesMinimumProgramIntoTypedIr() {
         const auto result = DslParser::parse(QStringLiteral(R"(
             @spec("ITU-T H.264", "7.3.1")

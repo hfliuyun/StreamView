@@ -11,6 +11,9 @@ ADR-0045 会在 consumer structure materialize 后返回精确的 rules-owned co
 完成前取得这个标量，同时不能把 directory policy 或 H.264 field knowledge 放进 Annex B
 analyzer。
 
+首个 dynamic-width 切片应复用既有 checked expression language，并保持 context interface
+窄小。它不需要 general member access、imported object model，也不允许规则任意调用 engine。
+
 ## 决策
 
 big-endian `bits` field 的宽度可以使用非 literal 的 unsigned arithmetic expression。

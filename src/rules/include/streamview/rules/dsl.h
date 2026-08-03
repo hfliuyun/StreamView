@@ -212,6 +212,7 @@ struct DslBitField final {
     QString name;
     DslFieldEncoding encoding = DslFieldEncoding::Bits;
     quint8 width = 0;
+    std::optional<DslExpression> widthExpression;
     DslEndian endian = DslEndian::Big;
     std::optional<quint64> arrayLength;
     std::vector<DslAnnotation> annotations;

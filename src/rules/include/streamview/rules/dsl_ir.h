@@ -57,6 +57,7 @@ enum class DslTypedExpressionKind : quint8 {
     UnsignedLiteral,
     BooleanLiteral,
     FieldReference,
+    ImportedContextReference,
     Unary,
     Binary,
 };
@@ -69,6 +70,11 @@ struct DslTypedExpression final {
     quint64 unsignedValue = 0;
     bool booleanValue = false;
     quint32 fieldIndex = 0;
+    quint32 contextImportIndex = 0;
+    core::ContextDefinitionKind contextDefinitionKind =
+        core::ContextDefinitionKind::H264SequenceParameterSet;
+    quint32 contextStructureIndex = 0;
+    quint32 contextExportIndex = 0;
     std::vector<DslTypedExpression> operands;
 };
 
@@ -88,6 +94,7 @@ struct DslTypedField final {
     QString name;
     DslValueType type;
     bool contextEligible = false;
+    std::optional<DslTypedExpression> bitWidthExpression;
     std::optional<quint64> equalsConstraint;
     std::optional<DslTypedUnsignedRange> rangeConstraint;
     std::optional<DslTypedExpression> computedExpression;

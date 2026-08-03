@@ -17,6 +17,8 @@ namespace {
         return RuleExecutionStatus::TruncatedSource;
     case DslExecutionStatus::InvalidSyntax:
         return RuleExecutionStatus::InvalidSyntax;
+    case DslExecutionStatus::DependencyUnavailable:
+        return RuleExecutionStatus::DependencyUnavailable;
     case DslExecutionStatus::SourceError:
         return RuleExecutionStatus::SourceError;
     case DslExecutionStatus::Cancelled:
@@ -101,6 +103,149 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
     }
     source_ = request.source;
     treeIdentity_ = request.tree->instanceIdentity();
+
+    struct ImportMaterialization final {
+        DslExecutionStatus status = DslExecutionStatus::InvalidDefinition;
+        RuleImportedContext* imported = nullptr;
+        QString errorMessage;
+
+        [[nodiscard]] bool materialized() const noexcept {
+            return status == DslExecutionStatus::Materialized && imported != nullptr;
+        }
+    };
+    std::vector<std::optional<RuleImportedContext>> importCache(
+        structure.contextImports.size());
+    const auto materializeImport =
+        [&](quint32 importIndex, quint64 importKey) -> ImportMaterialization {
+        if (importIndex >= structure.contextImports.size()) {
+            return {DslExecutionStatus::InvalidDefinition,
+                    nullptr,
+                    QStringLiteral("Context import index is out of range")};
+        }
+        if (importCache.at(importIndex)) {
+            RuleImportedContext& cached = *importCache.at(importIndex);
+            return cached.key.value == importKey
+                       ? ImportMaterialization{
+                             DslExecutionStatus::Materialized, &cached, {}}
+                       : ImportMaterialization{
+                             DslExecutionStatus::InvalidDefinition,
+                             nullptr,
+                             QStringLiteral(
+                                 "Context import key changed during one execution")};
+        }
+
+        const DslTypedContextImport& import =
+            structure.contextImports.at(importIndex);
+        const core::ContextKey key{import.kind, contextScopeId_, importKey};
+        const core::ContextLookupResult lookup = contextDirectory_.resolveBefore(
+            key, request.enclosingSourceSpan->start());
+        if (!lookup.found()) {
+            return {
+                DslExecutionStatus::DependencyUnavailable,
+                nullptr,
+                lookup.status == core::ContextLookupStatus::DependencyUnavailable
+                    ? QStringLiteral("Imported context generation is unavailable")
+                    : QStringLiteral(
+                          "Imported context was not defined before this structure"),
+            };
+        }
+
+        RuleImportedContext imported;
+        imported.key.value = importKey;
+        imported.definitionId = lookup.definition->id;
+        std::vector<core::ContextDefinitionId> included;
+        included.reserve(RuleImportedContext::maximumDefinitions());
+        DslExecutionStatus closureStatus = DslExecutionStatus::Materialized;
+        QString closureError;
+        std::function<bool(core::ContextDefinitionId)> appendDefinition;
+        appendDefinition = [&](core::ContextDefinitionId definitionId) {
+            if (std::find(included.begin(), included.end(), definitionId) !=
+                included.end()) {
+                return true;
+            }
+            if (included.size() >= RuleImportedContext::maximumDefinitions()) {
+                closureStatus = DslExecutionStatus::ResourceLimit;
+                closureError = QStringLiteral(
+                    "Imported context dependency closure exceeds 64 definitions");
+                return false;
+            }
+            const auto definition = contextDirectory_.definition(definitionId);
+            const ContextPayload* payload = contextPayload(definitionId);
+            if (!definition || payload == nullptr) {
+                closureStatus = DslExecutionStatus::InvalidDefinition;
+                closureError = QStringLiteral(
+                    "Imported context generation has no rules-owned payload");
+                return false;
+            }
+            included.push_back(definitionId);
+            imported.definitions.push_back({definitionId,
+                                            definition->key.kind,
+                                            payload->structureIndex,
+                                            payload->values,
+                                            definition->dependencies});
+            for (const core::ContextDefinitionId dependencyId :
+                 definition->dependencies) {
+                if (!appendDefinition(dependencyId)) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        if (!appendDefinition(imported.definitionId)) {
+            return {closureStatus, nullptr, std::move(closureError)};
+        }
+
+        importCache.at(importIndex) = std::move(imported);
+        return {DslExecutionStatus::Materialized,
+                &*importCache.at(importIndex),
+                {}};
+    };
+    const DslContextValueResolver contextValueResolver =
+        [&](const DslContextValueRequest& valueRequest) {
+        if (valueRequest.contextImportIndex >= structure.contextImports.size() ||
+            structure.contextImports.at(valueRequest.contextImportIndex).kind !=
+                valueRequest.importKind) {
+            return DslContextValueResolution{
+                DslExecutionStatus::InvalidDefinition,
+                0,
+                QStringLiteral("Imported context value request is invalid")};
+        }
+        const ImportMaterialization materialized = materializeImport(
+            valueRequest.contextImportIndex, valueRequest.importKey);
+        if (!materialized.materialized()) {
+            return DslContextValueResolution{
+                materialized.status, 0, materialized.errorMessage};
+        }
+
+        const RuleImportedContextDefinition* matchedDefinition = nullptr;
+        for (const RuleImportedContextDefinition& definition :
+             materialized.imported->definitions) {
+            if (definition.kind != valueRequest.definitionKind ||
+                definition.structureIndex != valueRequest.structureIndex) {
+                continue;
+            }
+            if (matchedDefinition != nullptr) {
+                return DslContextValueResolution{
+                    DslExecutionStatus::InvalidDefinition,
+                    0,
+                    QStringLiteral(
+                        "Imported context value publisher is ambiguous")};
+            }
+            matchedDefinition = &definition;
+        }
+        if (matchedDefinition == nullptr ||
+            valueRequest.exportIndex >= matchedDefinition->values.size()) {
+            return DslContextValueResolution{
+                DslExecutionStatus::InvalidDefinition,
+                0,
+                QStringLiteral(
+                    "Imported context value descriptor does not match its payload")};
+        }
+        return DslContextValueResolution{
+            DslExecutionStatus::Materialized,
+            matchedDefinition->values.at(valueRequest.exportIndex),
+            {}};
+    };
     result.execution = DslVirtualMachine::execute(program_,
                                                   request.structureIndex,
                                                   *reader,
@@ -108,7 +253,8 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
                                                   request.logicalStart,
                                                   *request.tree,
                                                   request.parentId,
-                                                  request.options);
+                                                  request.options,
+                                                  contextValueResolver);
     result.status = ruleStatus(result.execution.status);
     result.errorMessage = result.execution.errorMessage;
     if (!result.execution.materialized()) {
@@ -145,73 +291,18 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
             result.errorMessage = QStringLiteral("Context import runtime kind is invalid");
             return result;
         }
-        const core::ContextKey key{
-            import.kind, contextScopeId_, executionImport.key.value};
-        const core::ContextLookupResult lookup = contextDirectory_.resolveBefore(
-            key, request.enclosingSourceSpan->start());
-        if (!lookup.found()) {
-            result.status = RuleExecutionStatus::DependencyUnavailable;
-            result.errorMessage =
-                lookup.status == core::ContextLookupStatus::DependencyUnavailable
-                    ? QStringLiteral("Imported context generation is unavailable")
-                    : QStringLiteral("Imported context was not defined before this structure");
-            core::ParseDiagnostic diagnostic;
-            diagnostic.code = core::DiagnosticCode::DependencyUnavailable;
-            diagnostic.severity = core::DiagnosticSeverity::Error;
-            diagnostic.message = result.errorMessage;
-            diagnostic.fieldPath = structure.name + QLatin1Char('.') +
-                                   structure.fields.at(import.keyFieldIndex).name;
-            diagnostic.location = executionImport.key.location;
-            if (result.execution.structureNode) {
-                (void)request.tree->addDiagnostic(*result.execution.structureNode,
-                                                  std::move(diagnostic));
-            }
-            return result;
-        }
-
-        RuleImportedContext imported;
-        imported.key = executionImport.key;
-        imported.definitionId = lookup.definition->id;
-        std::vector<core::ContextDefinitionId> included;
-        included.reserve(RuleImportedContext::maximumDefinitions());
-        std::function<bool(core::ContextDefinitionId)> appendDefinition;
-        appendDefinition = [&](core::ContextDefinitionId definitionId) {
-            if (std::find(included.begin(), included.end(), definitionId) !=
-                included.end()) {
-                return true;
-            }
-            if (included.size() >= RuleImportedContext::maximumDefinitions()) {
-                result.status = RuleExecutionStatus::ResourceLimit;
-                result.errorMessage =
-                    QStringLiteral("Imported context dependency closure exceeds 64 definitions");
-                return false;
-            }
-            const auto definition = contextDirectory_.definition(definitionId);
-            const ContextPayload* payload = contextPayload(definitionId);
-            if (!definition || payload == nullptr) {
-                result.status = RuleExecutionStatus::InvalidDefinition;
-                result.errorMessage =
-                    QStringLiteral("Imported context generation has no rules-owned payload");
-                return false;
-            }
-            included.push_back(definitionId);
-            imported.definitions.push_back({definitionId,
-                                            definition->key.kind,
-                                            payload->structureIndex,
-                                            payload->values,
-                                            definition->dependencies});
-            for (const core::ContextDefinitionId dependencyId :
-                 definition->dependencies) {
-                if (!appendDefinition(dependencyId)) {
-                    return false;
-                }
-            }
-            return true;
-        };
-        if (!appendDefinition(imported.definitionId)) {
+        const ImportMaterialization materialized =
+            materializeImport(static_cast<quint32>(importIndex),
+                              executionImport.key.value);
+        if (!materialized.materialized()) {
+            result.status = ruleStatus(materialized.status);
+            result.errorMessage = materialized.errorMessage;
             core::ParseDiagnostic diagnostic;
             diagnostic.code = result.status == RuleExecutionStatus::ResourceLimit
                                   ? core::DiagnosticCode::ResourceLimit
+                              : result.status ==
+                                        RuleExecutionStatus::DependencyUnavailable
+                                  ? core::DiagnosticCode::DependencyUnavailable
                                   : core::DiagnosticCode::InvalidSyntax;
             diagnostic.severity = core::DiagnosticSeverity::Error;
             diagnostic.message = result.errorMessage;
@@ -224,7 +315,8 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
             }
             return result;
         }
-        importedContexts.push_back(std::move(imported));
+        materialized.imported->key = executionImport.key;
+        importedContexts.push_back(std::move(*importCache.at(importIndex)));
     }
 
     if (!structure.contextDefinition) {

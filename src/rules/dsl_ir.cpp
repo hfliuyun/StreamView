@@ -263,6 +263,23 @@ contextKindForName(const QString& name) noexcept {
     return std::nullopt;
 }
 
+[[nodiscard]] std::optional<core::ContextDefinitionKind>
+contextKindForIdentifier(const QString& name) noexcept {
+    if (name == QStringLiteral("h264_sps")) {
+        return core::ContextDefinitionKind::H264SequenceParameterSet;
+    }
+    if (name == QStringLiteral("h264_pps")) {
+        return core::ContextDefinitionKind::H264PictureParameterSet;
+    }
+    if (name == QStringLiteral("aac_asc")) {
+        return core::ContextDefinitionKind::AacAudioSpecificConfig;
+    }
+    if (name == QStringLiteral("iso_bmff_sample_description")) {
+        return core::ContextDefinitionKind::IsoBmffSampleDescription;
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] std::optional<quint32> findEnum(const DslTypedProgram& program,
                                               const QString& name) {
     for (quint32 index = 0; index < program.enums.size(); ++index) {
@@ -383,6 +400,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
     };
     using ExpressionResolver = std::function<std::optional<DslTypedExpression>(
         const QString&, const DslSourceRange&)>;
+    std::function<std::optional<DslTypedExpression>(const DslExpression&)>
+        contextValueResolver;
     const auto claimExpressionNode = [&](ExpressionBuildState& state,
                                          std::size_t depth,
                                          const DslSourceRange& range) {
@@ -476,6 +495,21 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             return cloneExpression(*resolved, depth, state, expression.range);
         }
         if (expression.kind == DslExpressionKind::Call) {
+            if (expression.name == QStringLiteral("context_value")) {
+                if (!claimExpressionNode(state, depth, expression.range)) {
+                    return std::nullopt;
+                }
+                if (!contextValueResolver) {
+                    addDiagnostic(
+                        result.diagnostics,
+                        DslDiagnosticCode::InvalidContext,
+                        QStringLiteral(
+                            "context_value is allowed only in a dynamic bits width"),
+                        expression.range);
+                    return std::nullopt;
+                }
+                return contextValueResolver(expression);
+            }
             const std::size_t functionCount =
                 std::min(availableFunctionCount, program.pureFunctions.size());
             const auto functionsEnd = program.pureFunctions.begin() +
@@ -804,6 +838,66 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         typedStruct.name = structure.name;
         typedStruct.metadata = metadataForAnnotations(structure.annotations);
         typedStruct.metadata.typeName = QStringLiteral("struct");
+
+        struct ContextAnnotation final {
+            core::ContextDefinitionKind kind =
+                core::ContextDefinitionKind::H264SequenceParameterSet;
+            QString keyFieldName;
+            DslSourceRange range;
+        };
+        const auto parseContextAnnotation =
+            [&result](const DslAnnotation& annotation,
+                      const QString& annotationName) -> std::optional<ContextAnnotation> {
+            if (annotation.arguments.size() != 2 ||
+                annotation.arguments.at(0).kind != DslAnnotationValueKind::String ||
+                annotation.arguments.at(1).kind != DslAnnotationValueKind::Identifier) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidContext,
+                              QStringLiteral("@%1 requires a context-kind string and a field name")
+                                  .arg(annotationName),
+                              annotation.range);
+                return std::nullopt;
+            }
+            const auto kind = contextKindForName(annotation.arguments.at(0).text);
+            if (!kind) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidContext,
+                              QStringLiteral("@%1 names an unsupported context kind")
+                                  .arg(annotationName),
+                              annotation.range);
+                return std::nullopt;
+            }
+            return ContextAnnotation{*kind,
+                                     annotation.arguments.at(1).text,
+                                     annotation.range};
+        };
+
+        std::optional<ContextAnnotation> contextAnnotation;
+        std::vector<ContextAnnotation> dependencyAnnotations;
+        std::vector<ContextAnnotation> importAnnotations;
+        for (const DslAnnotation& annotation : structure.annotations) {
+            if (annotation.name == QStringLiteral("context")) {
+                const auto parsed = parseContextAnnotation(annotation, annotation.name);
+                if (contextAnnotation) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidContext,
+                                  QStringLiteral("@context may appear at most once on a structure"),
+                                  annotation.range);
+                } else if (parsed) {
+                    contextAnnotation = *parsed;
+                }
+            } else if (annotation.name == QStringLiteral("context_dependency")) {
+                const auto parsed = parseContextAnnotation(annotation, annotation.name);
+                if (parsed) {
+                    dependencyAnnotations.push_back(*parsed);
+                }
+            } else if (annotation.name == QStringLiteral("context_import")) {
+                const auto parsed = parseContextAnnotation(annotation, annotation.name);
+                if (parsed) {
+                    importAnnotations.push_back(*parsed);
+                }
+            }
+        }
         if (fieldDeclarations.size() > maximumIndexedSize) {
             addDiagnostic(result.diagnostics,
                           DslDiagnosticCode::InvalidType,
@@ -977,286 +1071,6 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             return resolveConditionValue(
                 controller, condition.expectedValue, condition.range);
         };
-        const auto compileField = [&](const DslBitField& field,
-                                      const std::vector<DslTypedFieldCondition>& conditions,
-                                      std::optional<quint64> fieldOffset)
-            -> std::optional<quint64> {
-            const quint64 elementCount = field.arrayLength.value_or(1);
-            if (elementCount == 0 ||
-                elementCount > maximumExpandedFieldsPerStructure - typedStruct.fields.size()) {
-                addDiagnostic(
-                    result.diagnostics,
-                    DslDiagnosticCode::InvalidArrayLength,
-                    QStringLiteral(
-                        "Fixed array expansion exceeds the structure materialization limit"),
-                    field.range);
-                declaredFields.push_back({field.name,
-                                          &field,
-                                          nullptr,
-                                          DslScalarType::U64,
-                                          std::nullopt,
-                                          conditions});
-                return std::nullopt;
-            }
-            const bool isBits = field.encoding == DslFieldEncoding::Bits;
-            const bool isUnsignedExpGolomb =
-                field.encoding == DslFieldEncoding::UnsignedExpGolomb;
-            const bool isSignedExpGolomb =
-                field.encoding == DslFieldEncoding::SignedExpGolomb;
-            if (!isBits && !isUnsignedExpGolomb && !isSignedExpGolomb) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::InvalidType,
-                              QStringLiteral("Field encoding is invalid"),
-                              field.range);
-                declaredFields.push_back({field.name,
-                                          &field,
-                                          nullptr,
-                                          DslScalarType::U64,
-                                          std::nullopt,
-                                          conditions});
-                return std::nullopt;
-            }
-            if (isBits && (field.width == 0 || field.width > 64)) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::InvalidBitWidth,
-                              QStringLiteral("Bit field width must be in the range 1..64"),
-                              field.range);
-                declaredFields.push_back({field.name,
-                                          &field,
-                                          nullptr,
-                                          DslScalarType::U64,
-                                          std::nullopt,
-                                          conditions});
-                return std::nullopt;
-            }
-            if (!isBits && field.width != 0) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::InvalidType,
-                              QStringLiteral("Exp-Golomb fields cannot have a fixed bit width"),
-                              field.range);
-            }
-            if (field.endian != DslEndian::Big && field.endian != DslEndian::Little) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::InvalidEndian,
-                              QStringLiteral("Field byte order is invalid"),
-                              field.range);
-            }
-            if (!isBits && field.endian != DslEndian::Big) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::InvalidEndian,
-                              QStringLiteral("Exp-Golomb fields use the default bit order"),
-                              field.range);
-            }
-            if (isBits && field.endian == DslEndian::Little && field.width % 8 != 0) {
-                addDiagnostic(
-                    result.diagnostics,
-                    DslDiagnosticCode::InvalidEndian,
-                    QStringLiteral(
-                        "Little-endian fields must have a width that is a multiple of 8"),
-                    field.range);
-            }
-            if (isBits && field.endian == DslEndian::Little &&
-                (!fieldOffset || *fieldOffset % 8 != 0)) {
-                addDiagnostic(
-                    result.diagnostics,
-                    DslDiagnosticCode::InvalidEndian,
-                    QStringLiteral(
-                        "Little-endian fields must begin at a byte boundary within the structure"),
-                    field.range);
-            }
-            DslTypedField typedField;
-            typedField.name = field.name;
-            for (const quint64 repeatIndex : repeatIndices) {
-                typedField.name += QStringLiteral("[%1]").arg(repeatIndex);
-            }
-            const DslValueTypeKind valueKind =
-                isBits ? DslValueTypeKind::UnsignedBits
-                       : (isUnsignedExpGolomb ? DslValueTypeKind::UnsignedExpGolomb
-                                              : DslValueTypeKind::SignedExpGolomb);
-            typedField.type = {valueKind, isBits ? field.width : quint8(0),
-                               isBits ? field.endian : DslEndian::Big, std::nullopt};
-            typedField.contextEligible = !field.arrayLength && conditions.empty() &&
-                                         repeatIndices.empty() && !isSignedExpGolomb;
-            typedField.conditions = conditions;
-            typedField.metadata =
-                metadataForAnnotations(field.annotations, typedStruct.metadata.specification);
-            typedField.metadata.typeName = isBits ? QStringLiteral("bits")
-                                                  : (isUnsignedExpGolomb ? QStringLiteral("ue")
-                                                                         : QStringLiteral("se"));
-            typedField.range = field.range;
-            const auto hasAnnotation = [&field](const QString& name) {
-                return std::any_of(field.annotations.begin(),
-                                   field.annotations.end(),
-                                   [&name](const DslAnnotation& annotation) {
-                                       return annotation.name == name;
-                                   });
-            };
-            if (!isBits && hasAnnotation(QStringLiteral("enum"))) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::InvalidAnnotation,
-                              QStringLiteral("@enum is only supported on bits fields"),
-                              field.range);
-            }
-            if (isSignedExpGolomb && hasAnnotation(QStringLiteral("equals"))) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::InvalidAnnotation,
-                              QStringLiteral("@equals is only supported on bits and ue fields"),
-                              field.range);
-            }
-            const std::optional<QString> enumName =
-                isBits ? enumTypeName(field, result.diagnostics) : std::nullopt;
-            if (enumName) {
-                const auto enumIndex = typed.enumIndex(*enumName);
-                if (!enumIndex) {
-                    addDiagnostic(result.diagnostics,
-                                  DslDiagnosticCode::UnknownReference,
-                                  QStringLiteral("Field enum type is not declared"),
-                                  field.range);
-                } else {
-                    typedField.type.kind = DslValueTypeKind::Enum;
-                    typedField.type.enumIndex = *enumIndex;
-                    typedField.metadata.typeName = *enumName;
-                    if (field.width < 64) {
-                        const quint64 exclusiveLimit = quint64{1} << field.width;
-                        for (const DslTypedEnumValue& value : typed.enums.at(*enumIndex).values) {
-                            if (value.value >= exclusiveLimit) {
-                                addDiagnostic(
-                                    result.diagnostics,
-                                    DslDiagnosticCode::EnumValueOutOfRange,
-                                    QStringLiteral(
-                                        "Enum member value does not fit the field width"),
-                                    field.range);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            typedField.equalsConstraint =
-                (isBits || isUnsignedExpGolomb)
-                    ? equalsConstraint(field, result.diagnostics)
-                    : std::nullopt;
-            if (isBits && typedField.equalsConstraint && field.width < 64 &&
-                *typedField.equalsConstraint >= (quint64{1} << field.width)) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::ConstraintOutOfRange,
-                              QStringLiteral("@equals value does not fit the field width"),
-                              [&field]() {
-                                  for (const DslAnnotation& annotation : field.annotations) {
-                                      if (annotation.name == QStringLiteral("equals")) {
-                                          return annotation.range;
-                                      }
-                                  }
-                                  return field.range;
-                              }());
-            }
-            if (isUnsignedExpGolomb && typedField.equalsConstraint &&
-                *typedField.equalsConstraint > maximumUnsignedExpGolombValue) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::ConstraintOutOfRange,
-                              QStringLiteral("@equals value exceeds the largest supported ue value"),
-                              [&field]() {
-                                  for (const DslAnnotation& annotation : field.annotations) {
-                                      if (annotation.name == QStringLiteral("equals")) {
-                                          return annotation.range;
-                                      }
-                                  }
-                                  return field.range;
-                              }());
-            }
-            typedField.rangeConstraint =
-                isUnsignedExpGolomb ? rangeConstraint(field, result.diagnostics)
-                                    : std::nullopt;
-            if (!isUnsignedExpGolomb &&
-                std::any_of(field.annotations.begin(),
-                            field.annotations.end(),
-                            [](const DslAnnotation& annotation) {
-                                return annotation.name == QStringLiteral("range");
-                            })) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::InvalidAnnotation,
-                              QStringLiteral("@range is only supported on ue fields"),
-                              field.range);
-            }
-            const quint32 firstTypedIndex =
-                static_cast<quint32>(typedStruct.fields.size());
-            if (contextExportRequested(field.annotations, result.diagnostics)) {
-                if (field.arrayLength || !conditions.empty() || !repeatIndices.empty() ||
-                    isSignedExpGolomb) {
-                    addDiagnostic(
-                        result.diagnostics,
-                        DslDiagnosticCode::InvalidContext,
-                        QStringLiteral("@context_export requires an unconditional top-level "
-                                       "non-array unsigned scalar field"),
-                        field.range);
-                } else {
-                    contextExportFieldIndices.push_back(firstTypedIndex);
-                }
-            }
-            if (field.arrayLength) {
-                for (quint64 elementIndex = 0; elementIndex < elementCount; ++elementIndex) {
-                    DslTypedField element = typedField;
-                    element.name += QStringLiteral("[%1]").arg(elementIndex);
-                    typedStruct.fields.push_back(std::move(element));
-                }
-            } else {
-                typedStruct.fields.push_back(std::move(typedField));
-            }
-            declaredFields.push_back({field.name,
-                                      &field,
-                                      nullptr,
-                                      DslScalarType::U64,
-                                      firstTypedIndex,
-                                      conditions});
-            if (!isBits) {
-                return std::nullopt;
-            }
-            if (elementCount > std::numeric_limits<quint64>::max() / field.width) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::InvalidArrayLength,
-                              QStringLiteral("Fixed array bit width is too large"),
-                              field.range);
-                return std::nullopt;
-            }
-            if (!fieldOffset) {
-                return std::nullopt;
-            }
-            const quint64 totalWidth = elementCount * field.width;
-            if (*fieldOffset > std::numeric_limits<quint64>::max() - totalWidth) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::InvalidType,
-                              QStringLiteral("Structure bit width is too large"),
-                              structure.range);
-                return std::nullopt;
-            }
-            return *fieldOffset + totalWidth;
-        };
-        const auto validatePresentationOnlyAnnotations =
-            [&result](const std::vector<DslAnnotation>& annotations,
-                      const QString& subject) {
-            for (const DslAnnotation& annotation : annotations) {
-                const bool descriptionValid =
-                    annotation.name == QStringLiteral("description") &&
-                    annotation.arguments.size() == 1 &&
-                    annotation.arguments.front().kind ==
-                        DslAnnotationValueKind::String;
-                const bool specificationValid =
-                    annotation.name == QStringLiteral("spec") &&
-                    annotation.arguments.size() == 2 &&
-                    annotation.arguments.at(0).kind ==
-                        DslAnnotationValueKind::String &&
-                    annotation.arguments.at(1).kind ==
-                        DslAnnotationValueKind::String;
-                if (!descriptionValid && !specificationValid) {
-                    addDiagnostic(result.diagnostics,
-                                  DslDiagnosticCode::InvalidAnnotation,
-                                  QStringLiteral(
-                                      "%1 accept only valid @description and @spec annotations")
-                                      .arg(subject),
-                                  annotation.range);
-                }
-            }
-        };
         const auto resolveExpressionDependency =
             [&](const QString& name,
                 const DslSourceRange& range,
@@ -1306,9 +1120,553 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             }
             DslTypedExpression reference;
             reference.kind = DslTypedExpressionKind::FieldReference;
-            reference.type = found->computed != nullptr ? found->scalarType : DslScalarType::U64;
+            reference.type = found->computed != nullptr ? found->scalarType
+                                                        : DslScalarType::U64;
             reference.fieldIndex = *found->typedIndex;
             return reference;
+        };
+        const auto compileField = [&](const DslBitField& field,
+                                      const std::vector<DslTypedFieldCondition>& conditions,
+                                      std::optional<quint64> fieldOffset)
+            -> std::optional<quint64> {
+            const quint64 elementCount = field.arrayLength.value_or(1);
+            if (elementCount == 0 ||
+                elementCount > maximumExpandedFieldsPerStructure - typedStruct.fields.size()) {
+                addDiagnostic(
+                    result.diagnostics,
+                    DslDiagnosticCode::InvalidArrayLength,
+                    QStringLiteral(
+                        "Fixed array expansion exceeds the structure materialization limit"),
+                    field.range);
+                declaredFields.push_back({field.name,
+                                          &field,
+                                          nullptr,
+                                          DslScalarType::U64,
+                                          std::nullopt,
+                                          conditions});
+                return std::nullopt;
+            }
+            const bool isBits = field.encoding == DslFieldEncoding::Bits;
+            const bool isUnsignedExpGolomb =
+                field.encoding == DslFieldEncoding::UnsignedExpGolomb;
+            const bool isSignedExpGolomb =
+                field.encoding == DslFieldEncoding::SignedExpGolomb;
+            const bool isDynamicBits = isBits && field.widthExpression.has_value();
+            if (!isBits && !isUnsignedExpGolomb && !isSignedExpGolomb) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              QStringLiteral("Field encoding is invalid"),
+                              field.range);
+                declaredFields.push_back({field.name,
+                                          &field,
+                                          nullptr,
+                                          DslScalarType::U64,
+                                          std::nullopt,
+                                          conditions});
+                return std::nullopt;
+            }
+            if (isBits && !isDynamicBits &&
+                (field.width == 0 || field.width > 64)) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidBitWidth,
+                              QStringLiteral("Bit field width must be in the range 1..64"),
+                              field.range);
+                declaredFields.push_back({field.name,
+                                          &field,
+                                          nullptr,
+                                          DslScalarType::U64,
+                                          std::nullopt,
+                                          conditions});
+                return std::nullopt;
+            }
+            if (!isBits && field.width != 0) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              QStringLiteral("Exp-Golomb fields cannot have a fixed bit width"),
+                              field.range);
+            }
+            if (!isBits && field.widthExpression) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              QStringLiteral("Only bits fields have width expressions"),
+                              field.range);
+            }
+            if (isDynamicBits && field.arrayLength) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidArrayLength,
+                              QStringLiteral("Dynamic-width bits fields cannot be arrays"),
+                              field.range);
+            }
+            if (field.endian != DslEndian::Big && field.endian != DslEndian::Little) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidEndian,
+                              QStringLiteral("Field byte order is invalid"),
+                              field.range);
+            }
+            if (!isBits && field.endian != DslEndian::Big) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidEndian,
+                              QStringLiteral("Exp-Golomb fields use the default bit order"),
+                              field.range);
+            }
+            if (isBits && field.endian == DslEndian::Little && field.width % 8 != 0) {
+                addDiagnostic(
+                    result.diagnostics,
+                    DslDiagnosticCode::InvalidEndian,
+                    QStringLiteral(
+                        "Little-endian fields must have a width that is a multiple of 8"),
+                    field.range);
+            }
+            if (isDynamicBits && field.endian != DslEndian::Big) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidEndian,
+                              QStringLiteral("Dynamic-width bits fields must be big-endian"),
+                              field.range);
+            }
+            if (isBits && field.endian == DslEndian::Little &&
+                (!fieldOffset || *fieldOffset % 8 != 0)) {
+                addDiagnostic(
+                    result.diagnostics,
+                    DslDiagnosticCode::InvalidEndian,
+                    QStringLiteral(
+                        "Little-endian fields must begin at a byte boundary within the structure"),
+                    field.range);
+            }
+            DslTypedField typedField;
+            typedField.name = field.name;
+            for (const quint64 repeatIndex : repeatIndices) {
+                typedField.name += QStringLiteral("[%1]").arg(repeatIndex);
+            }
+            const DslValueTypeKind valueKind =
+                isBits ? DslValueTypeKind::UnsignedBits
+                       : (isUnsignedExpGolomb ? DslValueTypeKind::UnsignedExpGolomb
+                                              : DslValueTypeKind::SignedExpGolomb);
+            typedField.type = {valueKind,
+                               isBits && !isDynamicBits ? field.width : quint8(0),
+                               isBits ? field.endian : DslEndian::Big, std::nullopt};
+            typedField.contextEligible = !isDynamicBits && !field.arrayLength &&
+                                         conditions.empty() && repeatIndices.empty() &&
+                                         !isSignedExpGolomb;
+            typedField.conditions = conditions;
+            typedField.metadata =
+                metadataForAnnotations(field.annotations, typedStruct.metadata.specification);
+            typedField.metadata.typeName = isBits ? QStringLiteral("bits")
+                                                  : (isUnsignedExpGolomb ? QStringLiteral("ue")
+                                                                         : QStringLiteral("se"));
+            typedField.range = field.range;
+            if (isDynamicBits) {
+                const ExpressionResolver resolveWidthField =
+                    [&](const QString& name,
+                        const DslSourceRange& range) -> std::optional<DslTypedExpression> {
+                    return resolveExpressionDependency(
+                        name,
+                        range,
+                        conditions,
+                        QStringLiteral("Dynamic bit width"),
+                        QStringLiteral(
+                            "Dynamic bit widths require scalar unsigned fields"));
+                };
+                contextValueResolver = [&](const DslExpression& expression)
+                    -> std::optional<DslTypedExpression> {
+                    if (expression.operands.size() != 3 ||
+                        std::any_of(expression.operands.begin(),
+                                    expression.operands.end(),
+                                    [](const DslExpression& operand) {
+                                        return operand.kind != DslExpressionKind::Identifier;
+                                    })) {
+                        addDiagnostic(
+                            result.diagnostics,
+                            DslDiagnosticCode::InvalidContext,
+                            QStringLiteral("context_value requires an import key, a context-kind "
+                                           "identifier, and an exported field name"),
+                            expression.range);
+                        return std::nullopt;
+                    }
+                    const QString& importKeyName = expression.operands.at(0).name;
+                    const auto import = std::find_if(
+                        importAnnotations.begin(),
+                        importAnnotations.end(),
+                        [&importKeyName](const ContextAnnotation& candidate) {
+                            return candidate.keyFieldName == importKeyName;
+                        });
+                    if (import == importAnnotations.end() ||
+                        std::find_if(std::next(import),
+                                     importAnnotations.end(),
+                                     [&importKeyName](const ContextAnnotation& candidate) {
+                                         return candidate.keyFieldName == importKeyName;
+                                     }) != importAnnotations.end()) {
+                        addDiagnostic(
+                            result.diagnostics,
+                            DslDiagnosticCode::InvalidContext,
+                            QStringLiteral("context_value import key must identify exactly one "
+                                           "context import"),
+                            expression.operands.at(0).range);
+                        return std::nullopt;
+                    }
+                    const auto declaredKey = std::find_if(
+                        declaredFields.rbegin(),
+                        declaredFields.rend(),
+                        [&importKeyName](const DeclaredField& declared) {
+                            return declared.name == importKeyName;
+                        });
+                    if (declaredKey == declaredFields.rend() ||
+                        !declaredKey->typedIndex ||
+                        *declaredKey->typedIndex >= typedStruct.fields.size() ||
+                        !typedStruct.fields.at(*declaredKey->typedIndex).contextEligible) {
+                        addDiagnostic(result.diagnostics,
+                                      DslDiagnosticCode::InvalidContext,
+                                      QStringLiteral("context_value import key must be an earlier "
+                                                     "context-eligible field"),
+                                      expression.operands.at(0).range);
+                        return std::nullopt;
+                    }
+                    const auto targetKind =
+                        contextKindForIdentifier(expression.operands.at(1).name);
+                    if (!targetKind) {
+                        addDiagnostic(result.diagnostics,
+                                      DslDiagnosticCode::InvalidContext,
+                                      QStringLiteral("context_value names an unsupported context "
+                                                     "kind identifier"),
+                                      expression.operands.at(1).range);
+                        return std::nullopt;
+                    }
+
+                    const auto publishedKind = [](const DslStruct& candidate)
+                        -> std::optional<core::ContextDefinitionKind> {
+                        for (const DslAnnotation& annotation : candidate.annotations) {
+                            if (annotation.name != QStringLiteral("context") ||
+                                annotation.arguments.size() != 2 ||
+                                annotation.arguments.at(0).kind !=
+                                    DslAnnotationValueKind::String) {
+                                continue;
+                            }
+                            const auto kind = contextKindForName(
+                                annotation.arguments.at(0).text);
+                            if (kind) {
+                                return kind;
+                            }
+                        }
+                        return std::nullopt;
+                    };
+                    std::vector<core::ContextDefinitionKind> reachableKinds{
+                        import->kind};
+                    for (std::size_t reachableIndex = 0;
+                         reachableIndex < reachableKinds.size();
+                         ++reachableIndex) {
+                        for (const DslStruct& candidate : program.structs) {
+                            if (publishedKind(candidate) !=
+                                std::optional<core::ContextDefinitionKind>(
+                                    reachableKinds.at(reachableIndex))) {
+                                continue;
+                            }
+                            for (const DslAnnotation& annotation :
+                                 candidate.annotations) {
+                                if (annotation.name !=
+                                        QStringLiteral("context_dependency") ||
+                                    annotation.arguments.size() != 2 ||
+                                    annotation.arguments.at(0).kind !=
+                                        DslAnnotationValueKind::String) {
+                                    continue;
+                                }
+                                const auto dependencyKind = contextKindForName(
+                                    annotation.arguments.at(0).text);
+                                if (dependencyKind &&
+                                    std::find(reachableKinds.begin(),
+                                              reachableKinds.end(),
+                                              *dependencyKind) ==
+                                        reachableKinds.end()) {
+                                    reachableKinds.push_back(*dependencyKind);
+                                }
+                            }
+                        }
+                    }
+                    if (std::find(reachableKinds.begin(),
+                                  reachableKinds.end(),
+                                  *targetKind) == reachableKinds.end()) {
+                        addDiagnostic(
+                            result.diagnostics,
+                            DslDiagnosticCode::InvalidContext,
+                            QStringLiteral("context_value target kind is not reachable from the "
+                                           "selected context import"),
+                            expression.operands.at(1).range);
+                        return std::nullopt;
+                    }
+
+                    std::vector<quint32> publisherIndices;
+                    for (quint32 candidateIndex = 0;
+                         candidateIndex < program.structs.size();
+                         ++candidateIndex) {
+                        const DslStruct& candidate = program.structs.at(candidateIndex);
+                        if (publishedKind(candidate) == targetKind) {
+                            publisherIndices.push_back(candidateIndex);
+                        }
+                    }
+                    if (publisherIndices.size() != 1) {
+                        addDiagnostic(
+                            result.diagnostics,
+                            DslDiagnosticCode::InvalidContext,
+                            QStringLiteral("context_value target kind must have exactly one "
+                                           "publishing structure"),
+                            expression.operands.at(1).range);
+                        return std::nullopt;
+                    }
+                    const quint32 publisherIndex = publisherIndices.front();
+                    const DslStruct& publisher = program.structs.at(publisherIndex);
+                    const QString& exportName = expression.operands.at(2).name;
+                    std::vector<quint32> exportIndices;
+                    quint32 exportIndex = 0;
+                    for (const DslStructItem& item : publisher.items) {
+                        const std::vector<DslAnnotation>* annotations = nullptr;
+                        const QString* itemName = nullptr;
+                        if (item.kind == DslStructItemKind::Field) {
+                            annotations = &item.field.annotations;
+                            itemName = &item.field.name;
+                        } else if (item.kind == DslStructItemKind::Computed) {
+                            annotations = &item.computed.annotations;
+                            itemName = &item.computed.name;
+                        }
+                        if (annotations == nullptr) {
+                            continue;
+                        }
+                        const bool exported = std::any_of(
+                            annotations->begin(),
+                            annotations->end(),
+                            [](const DslAnnotation& annotation) {
+                                return annotation.name ==
+                                       QStringLiteral("context_export");
+                            });
+                        if (!exported) {
+                            continue;
+                        }
+                        if (*itemName == exportName) {
+                            exportIndices.push_back(exportIndex);
+                        }
+                        ++exportIndex;
+                    }
+                    if (exportIndices.size() != 1) {
+                        addDiagnostic(
+                            result.diagnostics,
+                            DslDiagnosticCode::InvalidContext,
+                            QStringLiteral("context_value target must identify exactly one "
+                                           "exported field"),
+                            expression.operands.at(2).range);
+                        return std::nullopt;
+                    }
+                    DslTypedExpression imported;
+                    imported.kind = DslTypedExpressionKind::ImportedContextReference;
+                    imported.type = DslScalarType::U64;
+                    imported.contextImportIndex = static_cast<quint32>(
+                        std::distance(importAnnotations.begin(), import));
+                    imported.contextDefinitionKind = *targetKind;
+                    imported.contextStructureIndex = publisherIndex;
+                    imported.contextExportIndex = exportIndices.front();
+                    return imported;
+                };
+                ExpressionBuildState state;
+                typedField.bitWidthExpression = compileExpression(
+                    *field.widthExpression,
+                    resolveWidthField,
+                    program.pureFunctions.size(),
+                    1,
+                    state);
+                contextValueResolver = {};
+                if (typedField.bitWidthExpression &&
+                    typedField.bitWidthExpression->type != DslScalarType::U64) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidType,
+                                  QStringLiteral("Dynamic bit width expression must be u64"),
+                                  field.widthExpression->range);
+                }
+            }
+            const auto hasAnnotation = [&field](const QString& name) {
+                return std::any_of(field.annotations.begin(),
+                                   field.annotations.end(),
+                                   [&name](const DslAnnotation& annotation) {
+                                       return annotation.name == name;
+                                   });
+            };
+            if (!isBits && hasAnnotation(QStringLiteral("enum"))) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidAnnotation,
+                              QStringLiteral("@enum is only supported on bits fields"),
+                              field.range);
+            }
+            if (isSignedExpGolomb && hasAnnotation(QStringLiteral("equals"))) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidAnnotation,
+                              QStringLiteral("@equals is only supported on bits and ue fields"),
+                              field.range);
+            }
+            const std::optional<QString> enumName =
+                isBits && !isDynamicBits
+                    ? enumTypeName(field, result.diagnostics)
+                    : std::nullopt;
+            if (isDynamicBits && hasAnnotation(QStringLiteral("enum"))) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidAnnotation,
+                              QStringLiteral("Dynamic-width bits fields cannot use @enum"),
+                              field.range);
+            }
+            if (enumName) {
+                const auto enumIndex = typed.enumIndex(*enumName);
+                if (!enumIndex) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::UnknownReference,
+                                  QStringLiteral("Field enum type is not declared"),
+                                  field.range);
+                } else {
+                    typedField.type.kind = DslValueTypeKind::Enum;
+                    typedField.type.enumIndex = *enumIndex;
+                    typedField.metadata.typeName = *enumName;
+                    if (field.width < 64) {
+                        const quint64 exclusiveLimit = quint64{1} << field.width;
+                        for (const DslTypedEnumValue& value : typed.enums.at(*enumIndex).values) {
+                            if (value.value >= exclusiveLimit) {
+                                addDiagnostic(
+                                    result.diagnostics,
+                                    DslDiagnosticCode::EnumValueOutOfRange,
+                                    QStringLiteral(
+                                        "Enum member value does not fit the field width"),
+                                    field.range);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            typedField.equalsConstraint =
+                ((isBits && !isDynamicBits) || isUnsignedExpGolomb)
+                    ? equalsConstraint(field, result.diagnostics)
+                    : std::nullopt;
+            if (isDynamicBits && hasAnnotation(QStringLiteral("equals"))) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidAnnotation,
+                              QStringLiteral("Dynamic-width bits fields cannot use @equals"),
+                              field.range);
+            }
+            if (isBits && typedField.equalsConstraint && field.width < 64 &&
+                *typedField.equalsConstraint >= (quint64{1} << field.width)) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::ConstraintOutOfRange,
+                              QStringLiteral("@equals value does not fit the field width"),
+                              [&field]() {
+                                  for (const DslAnnotation& annotation : field.annotations) {
+                                      if (annotation.name == QStringLiteral("equals")) {
+                                          return annotation.range;
+                                      }
+                                  }
+                                  return field.range;
+                              }());
+            }
+            if (isUnsignedExpGolomb && typedField.equalsConstraint &&
+                *typedField.equalsConstraint > maximumUnsignedExpGolombValue) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::ConstraintOutOfRange,
+                              QStringLiteral("@equals value exceeds the largest supported ue value"),
+                              [&field]() {
+                                  for (const DslAnnotation& annotation : field.annotations) {
+                                      if (annotation.name == QStringLiteral("equals")) {
+                                          return annotation.range;
+                                      }
+                                  }
+                                  return field.range;
+                              }());
+            }
+            typedField.rangeConstraint =
+                isUnsignedExpGolomb ? rangeConstraint(field, result.diagnostics)
+                                    : std::nullopt;
+            if (!isUnsignedExpGolomb &&
+                std::any_of(field.annotations.begin(),
+                            field.annotations.end(),
+                            [](const DslAnnotation& annotation) {
+                                return annotation.name == QStringLiteral("range");
+                            })) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidAnnotation,
+                              QStringLiteral("@range is only supported on ue fields"),
+                              field.range);
+            }
+            const quint32 firstTypedIndex =
+                static_cast<quint32>(typedStruct.fields.size());
+            if (contextExportRequested(field.annotations, result.diagnostics)) {
+                if (isDynamicBits || field.arrayLength || !conditions.empty() ||
+                    !repeatIndices.empty() || isSignedExpGolomb) {
+                    addDiagnostic(
+                        result.diagnostics,
+                        DslDiagnosticCode::InvalidContext,
+                        QStringLiteral("@context_export requires an unconditional top-level "
+                                       "non-array unsigned scalar field"),
+                        field.range);
+                } else {
+                    contextExportFieldIndices.push_back(firstTypedIndex);
+                }
+            }
+            if (field.arrayLength) {
+                for (quint64 elementIndex = 0; elementIndex < elementCount; ++elementIndex) {
+                    DslTypedField element = typedField;
+                    element.name += QStringLiteral("[%1]").arg(elementIndex);
+                    typedStruct.fields.push_back(std::move(element));
+                }
+            } else {
+                typedStruct.fields.push_back(std::move(typedField));
+            }
+            declaredFields.push_back({field.name,
+                                      &field,
+                                      nullptr,
+                                      DslScalarType::U64,
+                                      firstTypedIndex,
+                                      conditions});
+            if (!isBits) {
+                return std::nullopt;
+            }
+            if (isDynamicBits) {
+                return std::nullopt;
+            }
+            if (elementCount > std::numeric_limits<quint64>::max() / field.width) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidArrayLength,
+                              QStringLiteral("Fixed array bit width is too large"),
+                              field.range);
+                return std::nullopt;
+            }
+            if (!fieldOffset) {
+                return std::nullopt;
+            }
+            const quint64 totalWidth = elementCount * field.width;
+            if (*fieldOffset > std::numeric_limits<quint64>::max() - totalWidth) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              QStringLiteral("Structure bit width is too large"),
+                              structure.range);
+                return std::nullopt;
+            }
+            return *fieldOffset + totalWidth;
+        };
+        const auto validatePresentationOnlyAnnotations =
+            [&result](const std::vector<DslAnnotation>& annotations,
+                      const QString& subject) {
+            for (const DslAnnotation& annotation : annotations) {
+                const bool descriptionValid =
+                    annotation.name == QStringLiteral("description") &&
+                    annotation.arguments.size() == 1 &&
+                    annotation.arguments.front().kind ==
+                        DslAnnotationValueKind::String;
+                const bool specificationValid =
+                    annotation.name == QStringLiteral("spec") &&
+                    annotation.arguments.size() == 2 &&
+                    annotation.arguments.at(0).kind ==
+                        DslAnnotationValueKind::String &&
+                    annotation.arguments.at(1).kind ==
+                        DslAnnotationValueKind::String;
+                if (!descriptionValid && !specificationValid) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidAnnotation,
+                                  QStringLiteral(
+                                      "%1 accept only valid @description and @spec annotations")
+                                      .arg(subject),
+                                  annotation.range);
+                }
+            }
         };
         const auto compileComputed =
             [&](const DslComputedField& field,
@@ -1760,65 +2118,6 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         };
         (void)compileItems(compileItems, structure.items, {}, quint64(0));
 
-        struct ContextAnnotation final {
-            core::ContextDefinitionKind kind =
-                core::ContextDefinitionKind::H264SequenceParameterSet;
-            QString keyFieldName;
-            DslSourceRange range;
-        };
-        const auto parseContextAnnotation =
-            [&result](const DslAnnotation& annotation,
-                      const QString& annotationName) -> std::optional<ContextAnnotation> {
-            if (annotation.arguments.size() != 2 ||
-                annotation.arguments.at(0).kind != DslAnnotationValueKind::String ||
-                annotation.arguments.at(1).kind != DslAnnotationValueKind::Identifier) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::InvalidContext,
-                              QStringLiteral("@%1 requires a context-kind string and a field name")
-                                  .arg(annotationName),
-                              annotation.range);
-                return std::nullopt;
-            }
-            const auto kind = contextKindForName(annotation.arguments.at(0).text);
-            if (!kind) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::InvalidContext,
-                              QStringLiteral("@%1 names an unsupported context kind")
-                                  .arg(annotationName),
-                              annotation.range);
-                return std::nullopt;
-            }
-            return ContextAnnotation{*kind,
-                                     annotation.arguments.at(1).text,
-                                     annotation.range};
-        };
-
-        std::optional<ContextAnnotation> contextAnnotation;
-        std::vector<ContextAnnotation> dependencyAnnotations;
-        std::vector<ContextAnnotation> importAnnotations;
-        for (const DslAnnotation& annotation : structure.annotations) {
-            if (annotation.name == QStringLiteral("context")) {
-                const auto parsed = parseContextAnnotation(annotation, annotation.name);
-                if (contextAnnotation) {
-                    addDiagnostic(result.diagnostics,
-                                  DslDiagnosticCode::InvalidContext,
-                                  QStringLiteral("@context may appear at most once on a structure"),
-                                  annotation.range);
-                } else if (parsed) {
-                    contextAnnotation = *parsed;
-                }
-            } else if (annotation.name == QStringLiteral("context_dependency")) {
-                const auto parsed = parseContextAnnotation(annotation, annotation.name);
-                if (parsed) {
-                    dependencyAnnotations.push_back(*parsed);
-                }
-            } else if (annotation.name == QStringLiteral("context_import")) {
-                const auto parsed = parseContextAnnotation(annotation, annotation.name);
-                if (parsed) {
-                    importAnnotations.push_back(*parsed);
-                }
-            }
-        }
         if (dependencyAnnotations.size() >
             DslTypedContextDefinition::maximumDependencies()) {
             addDiagnostic(result.diagnostics,

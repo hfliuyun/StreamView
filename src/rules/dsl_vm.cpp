@@ -39,6 +39,8 @@ constexpr quint64 maximumUnsignedExpGolombValue = std::numeric_limits<quint64>::
         return core::DiagnosticCode::Cancelled;
     case DslExecutionStatus::ResourceLimit:
         return core::DiagnosticCode::ResourceLimit;
+    case DslExecutionStatus::DependencyUnavailable:
+        return core::DiagnosticCode::DependencyUnavailable;
     case DslExecutionStatus::InvalidSyntax:
     case DslExecutionStatus::InvalidDefinition:
         return core::DiagnosticCode::InvalidSyntax;
@@ -131,6 +133,122 @@ constexpr quint64 maximumUnsignedExpGolombValue = std::numeric_limits<quint64>::
     return type == DslScalarType::Bool || type == DslScalarType::U64;
 }
 
+[[nodiscard]] bool validContextKind(core::ContextDefinitionKind kind) noexcept {
+    switch (kind) {
+    case core::ContextDefinitionKind::H264SequenceParameterSet:
+    case core::ContextDefinitionKind::H264PictureParameterSet:
+    case core::ContextDefinitionKind::AacAudioSpecificConfig:
+    case core::ContextDefinitionKind::IsoBmffSampleDescription:
+        return true;
+    }
+    return false;
+}
+
+[[nodiscard]] bool validContextField(const DslTypedStruct& structure,
+                                     quint32 fieldIndex) noexcept {
+    if (fieldIndex >= structure.fields.size()) {
+        return false;
+    }
+    const DslTypedField& field = structure.fields.at(fieldIndex);
+    const bool unsignedScalar =
+        field.type.kind == DslValueTypeKind::UnsignedBits ||
+        field.type.kind == DslValueTypeKind::Enum ||
+        field.type.kind == DslValueTypeKind::UnsignedExpGolomb ||
+        field.type.kind == DslValueTypeKind::ComputedUnsigned;
+    return field.kind == DslTypedFieldKind::Declared && field.contextEligible &&
+           field.conditions.empty() && unsignedScalar;
+}
+
+[[nodiscard]] bool validContextDefinitionHeader(
+    const DslTypedStruct& structure) noexcept {
+    if (!structure.contextDefinition) {
+        return false;
+    }
+    const DslTypedContextDefinition& definition = *structure.contextDefinition;
+    return definition.dependencies.size() <=
+               DslTypedContextDefinition::maximumDependencies() &&
+           definition.exportFieldIndices.size() <=
+               DslTypedContextDefinition::maximumExports() &&
+           validContextKind(definition.kind) &&
+           validContextField(structure, definition.keyFieldIndex);
+}
+
+[[nodiscard]] bool validContextDefinitionExports(
+    const DslTypedStruct& structure) noexcept {
+    if (!structure.contextDefinition) {
+        return false;
+    }
+    const std::vector<quint32>& exports =
+        structure.contextDefinition->exportFieldIndices;
+    for (std::size_t index = 0; index < exports.size(); ++index) {
+        if (!validContextField(structure, exports.at(index))) {
+            return false;
+        }
+        for (std::size_t previous = 0; previous < index; ++previous) {
+            if (exports.at(previous) == exports.at(index)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] bool validContextDefinitionDependencies(
+    const DslTypedStruct& structure) noexcept {
+    if (!structure.contextDefinition) {
+        return false;
+    }
+    const std::vector<DslTypedContextDependency>& dependencies =
+        structure.contextDefinition->dependencies;
+    for (std::size_t index = 0; index < dependencies.size(); ++index) {
+        const DslTypedContextDependency& dependency = dependencies.at(index);
+        if (!validContextKind(dependency.kind) ||
+            !validContextField(structure, dependency.keyFieldIndex)) {
+            return false;
+        }
+        for (std::size_t previous = 0; previous < index; ++previous) {
+            const DslTypedContextDependency& candidate =
+                dependencies.at(previous);
+            if (candidate.kind == dependency.kind &&
+                candidate.keyFieldIndex == dependency.keyFieldIndex) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] bool validContextDefinition(
+    const DslTypedStruct& structure) noexcept {
+    return validContextDefinitionHeader(structure) &&
+           validContextDefinitionExports(structure) &&
+           validContextDefinitionDependencies(structure);
+}
+
+[[nodiscard]] bool contextKindReachable(
+    const DslTypedProgram& program,
+    core::ContextDefinitionKind rootKind,
+    core::ContextDefinitionKind targetKind) {
+    std::vector<core::ContextDefinitionKind> reachable{rootKind};
+    for (std::size_t index = 0; index < reachable.size(); ++index) {
+        for (const DslTypedStruct& candidate : program.structs) {
+            if (!candidate.contextDefinition ||
+                candidate.contextDefinition->kind != reachable.at(index)) {
+                continue;
+            }
+            for (const DslTypedContextDependency& dependency :
+                 candidate.contextDefinition->dependencies) {
+                if (std::find(reachable.begin(), reachable.end(), dependency.kind) ==
+                    reachable.end()) {
+                    reachable.push_back(dependency.kind);
+                }
+            }
+        }
+    }
+    return std::find(reachable.begin(), reachable.end(), targetKind) !=
+           reachable.end();
+}
+
 [[nodiscard]] std::optional<DslScalarType> scalarTypeForField(
     const DslTypedField& field) noexcept {
     switch (field.type.kind) {
@@ -157,11 +275,13 @@ constexpr quint64 maximumUnsignedExpGolombValue = std::numeric_limits<quint64>::
 
 struct TypedExpressionValidationState final {
     std::size_t nodeCount = 0;
+    bool allowImportedContextReferences = false;
     QString errorMessage;
 };
 
 [[nodiscard]] bool validateTypedExpression(
     const DslTypedExpression& expression,
+    const DslTypedProgram& program,
     const DslTypedStruct& structure,
     std::size_t subjectFieldIndex,
     const std::vector<DslTypedFieldCondition>& subjectConditions,
@@ -219,12 +339,53 @@ struct TypedExpressionValidationState final {
                    : fail(QStringLiteral(
                          "Typed computed field dependency is not guaranteed"));
     }
+    case DslTypedExpressionKind::ImportedContextReference: {
+        if (!state.allowImportedContextReferences || !expression.operands.empty() ||
+            expression.type != DslScalarType::U64 ||
+            expression.contextImportIndex >= structure.contextImports.size()) {
+            return fail(QStringLiteral("Typed imported context reference is invalid"));
+        }
+        const DslTypedContextImport& import =
+            structure.contextImports.at(expression.contextImportIndex);
+        if (import.keyFieldIndex >= subjectFieldIndex ||
+            import.keyFieldIndex >= structure.fields.size() ||
+            expression.contextStructureIndex >= program.structs.size()) {
+            return fail(QStringLiteral("Typed imported context reference is out of range"));
+        }
+        const DslTypedStruct& publisher =
+            program.structs.at(expression.contextStructureIndex);
+        const std::size_t publisherCount = static_cast<std::size_t>(std::count_if(
+            program.structs.begin(),
+            program.structs.end(),
+            [&expression](const DslTypedStruct& candidate) {
+                return candidate.contextDefinition &&
+                       candidate.contextDefinition->kind ==
+                           expression.contextDefinitionKind;
+            }));
+        if (!validContextDefinition(publisher) ||
+            !validContextKind(expression.contextDefinitionKind) ||
+            publisherCount != 1 ||
+            !contextKindReachable(program,
+                                  import.kind,
+                                  expression.contextDefinitionKind) ||
+            publisher.contextDefinition->kind != expression.contextDefinitionKind ||
+            expression.contextExportIndex >=
+                publisher.contextDefinition->exportFieldIndices.size() ||
+            !validContextField(
+                publisher,
+                publisher.contextDefinition->exportFieldIndices.at(
+                    expression.contextExportIndex))) {
+            return fail(QStringLiteral("Typed imported context export descriptor is invalid"));
+        }
+        return true;
+    }
     case DslTypedExpressionKind::Unary:
         if (expression.unaryOperator != DslUnaryOperator::LogicalNot ||
             expression.type != DslScalarType::Bool || expression.operands.size() != 1) {
             return fail(QStringLiteral("Typed unary computed expression is invalid"));
         }
         if (!validateTypedExpression(expression.operands.front(),
+                                     program,
                                      structure,
                                      subjectFieldIndex,
                                      subjectConditions,
@@ -247,12 +408,14 @@ struct TypedExpressionValidationState final {
     const DslTypedExpression& left = expression.operands.at(0);
     const DslTypedExpression& right = expression.operands.at(1);
     if (!validateTypedExpression(left,
+                                 program,
                                  structure,
                                  subjectFieldIndex,
                                  subjectConditions,
                                  depth + 1,
                                  state) ||
         !validateTypedExpression(right,
+                                 program,
                                  structure,
                                  subjectFieldIndex,
                                  subjectConditions,
@@ -305,6 +468,7 @@ struct ComputedEvaluationResult final {
     DslExecutionStatus status = DslExecutionStatus::InvalidDefinition;
     ComputedScalarValue value;
     QString errorMessage;
+    std::optional<quint32> diagnosticFieldIndex;
 
     [[nodiscard]] bool complete() const noexcept {
         return status == DslExecutionStatus::Materialized;
@@ -313,23 +477,28 @@ struct ComputedEvaluationResult final {
 
 [[nodiscard]] ComputedEvaluationResult evaluateTypedExpression(
     const DslTypedExpression& expression,
-    const std::vector<std::optional<quint64>>& fieldValues) {
+    const DslTypedStruct& structure,
+    const std::vector<std::optional<quint64>>& fieldValues,
+    const DslContextValueResolver& contextValueResolver) {
     const auto invalidDefinition = [](const QString& message) {
         return ComputedEvaluationResult{
-            DslExecutionStatus::InvalidDefinition, {}, message};
+            DslExecutionStatus::InvalidDefinition, {}, message, std::nullopt};
     };
     const auto invalidSyntax = [](const QString& message) {
-        return ComputedEvaluationResult{DslExecutionStatus::InvalidSyntax, {}, message};
+        return ComputedEvaluationResult{
+            DslExecutionStatus::InvalidSyntax, {}, message, std::nullopt};
     };
     const auto unsignedResult = [](quint64 value) {
         return ComputedEvaluationResult{DslExecutionStatus::Materialized,
                                         {DslScalarType::U64, value, false},
-                                        {}};
+                                        {},
+                                        std::nullopt};
     };
     const auto booleanResult = [](bool value) {
         return ComputedEvaluationResult{DslExecutionStatus::Materialized,
                                         {DslScalarType::Bool, 0, value},
-                                        {}};
+                                        {},
+                                        std::nullopt};
     };
 
     switch (expression.kind) {
@@ -353,9 +522,53 @@ struct ComputedEvaluationResult final {
         }
         return unsignedResult(value);
     }
+    case DslTypedExpressionKind::ImportedContextReference: {
+        if (expression.contextImportIndex >= structure.contextImports.size()) {
+            return invalidDefinition(
+                QStringLiteral("Imported context reference is out of range"));
+        }
+        const DslTypedContextImport& import =
+            structure.contextImports.at(expression.contextImportIndex);
+        if (import.keyFieldIndex >= fieldValues.size() ||
+            !fieldValues.at(import.keyFieldIndex)) {
+            ComputedEvaluationResult failure = invalidDefinition(
+                QStringLiteral("Imported context key is unavailable"));
+            failure.diagnosticFieldIndex = import.keyFieldIndex;
+            return failure;
+        }
+        if (!contextValueResolver) {
+            ComputedEvaluationResult failure = invalidDefinition(
+                QStringLiteral("Imported context value resolver is unavailable"));
+            failure.diagnosticFieldIndex = import.keyFieldIndex;
+            return failure;
+        }
+        const DslContextValueResolution resolution = contextValueResolver({
+            expression.contextImportIndex,
+            import.kind,
+            *fieldValues.at(import.keyFieldIndex),
+            expression.contextDefinitionKind,
+            expression.contextStructureIndex,
+            expression.contextExportIndex,
+        });
+        if (!resolution.resolved()) {
+            ComputedEvaluationResult failure{
+                resolution.status,
+                {},
+                resolution.errorMessage.isEmpty()
+                    ? QStringLiteral("Imported context value is unavailable")
+                    : resolution.errorMessage,
+                import.keyFieldIndex,
+            };
+            return failure;
+        }
+        return unsignedResult(resolution.value);
+    }
     case DslTypedExpressionKind::Unary: {
         const ComputedEvaluationResult operand =
-            evaluateTypedExpression(expression.operands.front(), fieldValues);
+            evaluateTypedExpression(expression.operands.front(),
+                                    structure,
+                                    fieldValues,
+                                    contextValueResolver);
         return operand.complete() ? booleanResult(!operand.value.booleanValue) : operand;
     }
     case DslTypedExpressionKind::Binary:
@@ -365,7 +578,10 @@ struct ComputedEvaluationResult final {
     }
 
     const ComputedEvaluationResult left =
-        evaluateTypedExpression(expression.operands.at(0), fieldValues);
+        evaluateTypedExpression(expression.operands.at(0),
+                                structure,
+                                fieldValues,
+                                contextValueResolver);
     if (!left.complete()) {
         return left;
     }
@@ -378,7 +594,10 @@ struct ComputedEvaluationResult final {
         return booleanResult(true);
     }
     const ComputedEvaluationResult right =
-        evaluateTypedExpression(expression.operands.at(1), fieldValues);
+        evaluateTypedExpression(expression.operands.at(1),
+                                structure,
+                                fieldValues,
+                                contextValueResolver);
     if (!right.complete()) {
         return right;
     }
@@ -532,7 +751,8 @@ DslExecutionResult DslVirtualMachine::execute(
     quint64 logicalStart,
     core::AnalysisTree& tree,
     core::AnalysisNodeId parentId,
-    const DslExecutionOptions& options) {
+    const DslExecutionOptions& options,
+    const DslContextValueResolver& contextValueResolver) {
     DslExecutionResult result;
     if (structureIndex >= program.structs.size()) {
         result.errorMessage = QStringLiteral("Typed IR structure index is out of range");
@@ -576,6 +796,8 @@ DslExecutionResult DslVirtualMachine::execute(
         }
         const auto state = status == DslExecutionStatus::Cancelled
                                ? core::MaterializationState::Cancelled
+                           : status == DslExecutionStatus::DependencyUnavailable
+                               ? core::MaterializationState::WaitingDependency
                                : core::MaterializationState::Invalid;
         if (result.structureNode) {
             (void)tree.markPartial(*result.structureNode, state, std::move(diagnostic));
@@ -723,7 +945,7 @@ DslExecutionResult DslVirtualMachine::execute(
         if (lazyBytes) {
             if (field.type.bitWidth != 0 || field.type.endian != DslEndian::Big ||
                 field.type.enumIndex || field.equalsConstraint || field.rangeConstraint ||
-                field.computedExpression ||
+                field.computedExpression || field.bitWidthExpression ||
                 !field.lazyByteCountExpression) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Typed lazy byte region definition is invalid"),
@@ -735,6 +957,7 @@ DslExecutionResult DslVirtualMachine::execute(
             }
             TypedExpressionValidationState validation;
             if (!validateTypedExpression(*field.lazyByteCountExpression,
+                                         program,
                                          structure,
                                          fieldIndex,
                                          field.conditions,
@@ -767,6 +990,45 @@ DslExecutionResult DslVirtualMachine::execute(
                         std::nullopt,
                         false);
             return result;
+        }
+        if (field.bitWidthExpression) {
+            if (computedBoolean || computedUnsigned ||
+                field.kind != DslTypedFieldKind::Declared ||
+                field.type.kind != DslValueTypeKind::UnsignedBits ||
+                field.type.bitWidth != 0 || field.type.endian != DslEndian::Big ||
+                field.type.enumIndex || field.contextEligible ||
+                field.equalsConstraint || field.rangeConstraint ||
+                field.computedExpression) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed dynamic-width field definition is invalid"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            TypedExpressionValidationState validation;
+            validation.allowImportedContextReferences = true;
+            if (!validateTypedExpression(*field.bitWidthExpression,
+                                         program,
+                                         structure,
+                                         fieldIndex,
+                                         field.conditions,
+                                         1,
+                                         validation) ||
+                field.bitWidthExpression->type != DslScalarType::U64) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            validation.errorMessage.isEmpty()
+                                ? QStringLiteral(
+                                      "Typed dynamic bit-width expression is invalid")
+                                : validation.errorMessage,
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            continue;
         }
         if (!computedBoolean && !computedUnsigned) {
             if (field.computedExpression) {
@@ -805,6 +1067,7 @@ DslExecutionResult DslVirtualMachine::execute(
         }
         TypedExpressionValidationState validation;
         if (!validateTypedExpression(*field.computedExpression,
+                                     program,
                                      structure,
                                      fieldIndex,
                                      field.conditions,
@@ -837,69 +1100,24 @@ DslExecutionResult DslVirtualMachine::execute(
             return result;
         }
     }
-    const auto validContextField = [&structure](quint32 fieldIndex) {
-        if (fieldIndex >= structure.fields.size()) {
-            return false;
-        }
-        const DslTypedField& field = structure.fields.at(fieldIndex);
-        const bool unsignedScalar =
-            field.type.kind == DslValueTypeKind::UnsignedBits ||
-            field.type.kind == DslValueTypeKind::Enum ||
-            field.type.kind == DslValueTypeKind::UnsignedExpGolomb ||
-            field.type.kind == DslValueTypeKind::ComputedUnsigned;
-        return field.kind == DslTypedFieldKind::Declared &&
-               field.contextEligible && field.conditions.empty() && unsignedScalar;
-    };
-    const auto validContextKind = [](core::ContextDefinitionKind kind) {
-        switch (kind) {
-        case core::ContextDefinitionKind::H264SequenceParameterSet:
-        case core::ContextDefinitionKind::H264PictureParameterSet:
-        case core::ContextDefinitionKind::AacAudioSpecificConfig:
-        case core::ContextDefinitionKind::IsoBmffSampleDescription:
-            return true;
-        }
-        return false;
-    };
     if (structure.contextDefinition) {
-        const DslTypedContextDefinition& definition = *structure.contextDefinition;
-        if (definition.dependencies.size() >
-                DslTypedContextDefinition::maximumDependencies() ||
-            definition.exportFieldIndices.size() >
-                DslTypedContextDefinition::maximumExports() ||
-            !validContextKind(definition.kind) ||
-            !validContextField(definition.keyFieldIndex)) {
+        if (!validContextDefinitionHeader(structure)) {
             markFailure(DslExecutionStatus::InvalidDefinition,
                         QStringLiteral("Typed IR context definition is invalid"),
                         nullptr);
             return result;
         }
-        std::vector<quint32> checkedExports;
-        checkedExports.reserve(definition.exportFieldIndices.size());
-        for (const quint32 fieldIndex : definition.exportFieldIndices) {
-            if (!validContextField(fieldIndex) ||
-                std::find(checkedExports.begin(), checkedExports.end(), fieldIndex) !=
-                    checkedExports.end()) {
-                markFailure(DslExecutionStatus::InvalidDefinition,
-                            QStringLiteral("Typed IR context export is invalid"),
-                            nullptr);
-                return result;
-            }
-            checkedExports.push_back(fieldIndex);
+        if (!validContextDefinitionExports(structure)) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed IR context export is invalid"),
+                        nullptr);
+            return result;
         }
-        std::vector<std::pair<core::ContextDefinitionKind, quint32>> checkedDependencies;
-        checkedDependencies.reserve(definition.dependencies.size());
-        for (const DslTypedContextDependency& dependency : definition.dependencies) {
-            const auto identity = std::pair{dependency.kind, dependency.keyFieldIndex};
-            if (!validContextKind(dependency.kind) ||
-                !validContextField(dependency.keyFieldIndex) ||
-                std::find(checkedDependencies.begin(), checkedDependencies.end(), identity) !=
-                    checkedDependencies.end()) {
-                markFailure(DslExecutionStatus::InvalidDefinition,
-                            QStringLiteral("Typed IR context dependency is invalid"),
-                            nullptr);
-                return result;
-            }
-            checkedDependencies.push_back(identity);
+        if (!validContextDefinitionDependencies(structure)) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed IR context dependency is invalid"),
+                        nullptr);
+            return result;
         }
     }
     if (structure.contextImports.size() > DslTypedContextImport::maximumImports()) {
@@ -913,7 +1131,7 @@ DslExecutionResult DslVirtualMachine::execute(
     for (const DslTypedContextImport& import : structure.contextImports) {
         const auto identity = std::pair{import.kind, import.keyFieldIndex};
         if (!validContextKind(import.kind) ||
-            !validContextField(import.keyFieldIndex) ||
+            !validContextField(structure, import.keyFieldIndex) ||
             std::find(checkedImports.begin(), checkedImports.end(), identity) !=
                 checkedImports.end()) {
             markFailure(DslExecutionStatus::InvalidDefinition,
@@ -1099,7 +1317,12 @@ DslExecutionResult DslVirtualMachine::execute(
                 instruction.opcode == DslOpcode::ReadUnsignedExpGolomb;
             const DslTypedEnum* enumeration = nullptr;
             if (readsFixedBits) {
-                if (field.type.bitWidth == 0 || field.type.bitWidth > 64 ||
+                const bool dynamicWidth = field.bitWidthExpression.has_value();
+                if ((!dynamicWidth &&
+                     (field.type.bitWidth == 0 || field.type.bitWidth > 64)) ||
+                    (dynamicWidth &&
+                     (field.type.bitWidth != 0 ||
+                      field.type.endian != DslEndian::Big)) ||
                     (field.type.endian != DslEndian::Big &&
                      field.type.endian != DslEndian::Little) ||
                     (field.type.endian == DslEndian::Little && field.type.bitWidth % 8 != 0)) {
@@ -1181,6 +1404,46 @@ DslExecutionResult DslVirtualMachine::execute(
                 break;
             }
             const quint64 fieldStart = reader.position();
+            quint64 bitWidth = field.type.bitWidth;
+            if (readsFixedBits && field.bitWidthExpression) {
+                const ComputedEvaluationResult evaluated =
+                    evaluateTypedExpression(*field.bitWidthExpression,
+                                            structure,
+                                            fieldValues,
+                                            contextValueResolver);
+                if (!evaluated.complete()) {
+                    const DslTypedField* diagnosticField = &field;
+                    std::optional<quint64> diagnosticPosition;
+                    std::optional<quint64> diagnosticBits;
+                    if (evaluated.diagnosticFieldIndex &&
+                        *evaluated.diagnosticFieldIndex < structure.fields.size() &&
+                        fieldRanges.at(*evaluated.diagnosticFieldIndex)) {
+                        diagnosticField =
+                            &structure.fields.at(*evaluated.diagnosticFieldIndex);
+                        diagnosticPosition =
+                            fieldRanges.at(*evaluated.diagnosticFieldIndex)->start;
+                        diagnosticBits =
+                            fieldRanges.at(*evaluated.diagnosticFieldIndex)->bitCount;
+                    }
+                    markFailure(evaluated.status,
+                                evaluated.errorMessage,
+                                diagnosticField,
+                                diagnosticPosition,
+                                diagnosticBits);
+                    return result;
+                }
+                bitWidth = evaluated.value.unsignedValue;
+                if (bitWidth == 0 || bitWidth > 64) {
+                    markFailure(DslExecutionStatus::InvalidSyntax,
+                                QStringLiteral(
+                                    "Dynamic bit width must be in the range 1..64"),
+                                &field,
+                                fieldStart,
+                                std::min<quint64>(bitWidth,
+                                                  reader.remainingBits()));
+                    return result;
+                }
+            }
             if (readsFixedBits && field.type.endian == DslEndian::Little) {
                 const bool hasReadableBit = reader.remainingBits() != 0;
                 const auto firstBitLocation = hasReadableBit
@@ -1225,7 +1488,8 @@ DslExecutionResult DslVirtualMachine::execute(
             quint64 unsignedValue = 0;
             qlonglong signedValue = 0;
             if (readsFixedBits) {
-                const core::BitReadResult readResult = reader.readBits(field.type.bitWidth);
+                const core::BitReadResult readResult =
+                    reader.readBits(static_cast<unsigned int>(bitWidth));
                 result.bitsConsumed = reader.position();
                 if (!readResult.complete()) {
                     const DslExecutionStatus status = statusForRead(readResult.status);
@@ -1233,10 +1497,12 @@ DslExecutionResult DslVirtualMachine::execute(
                                 readResult.errorMessage.isEmpty()
                                     ? QStringLiteral("Unable to read complete syntax field")
                                     : readResult.errorMessage,
-                                &field);
+                                &field,
+                                fieldStart,
+                                bitWidth);
                     return result;
                 }
-                consumedBits = field.type.bitWidth;
+                consumedBits = bitWidth;
                 unsignedValue = decodeValue(readResult.value, field.type);
             } else {
                 const ExpGolombReadResult readResult =
@@ -1510,7 +1776,10 @@ DslExecutionResult DslVirtualMachine::execute(
                 return result;
             }
             const ComputedEvaluationResult evaluated =
-                evaluateTypedExpression(*field.computedExpression, fieldValues);
+                evaluateTypedExpression(*field.computedExpression,
+                                        structure,
+                                        fieldValues,
+                                        contextValueResolver);
             if (!evaluated.complete()) {
                 markFailure(evaluated.status,
                             evaluated.errorMessage,
@@ -1591,7 +1860,10 @@ DslExecutionResult DslVirtualMachine::execute(
             }
 
             const ComputedEvaluationResult evaluated =
-                evaluateTypedExpression(*field.lazyByteCountExpression, fieldValues);
+                evaluateTypedExpression(*field.lazyByteCountExpression,
+                                        structure,
+                                        fieldValues,
+                                        contextValueResolver);
             if (!evaluated.complete()) {
                 markFailure(evaluated.status,
                             evaluated.errorMessage,

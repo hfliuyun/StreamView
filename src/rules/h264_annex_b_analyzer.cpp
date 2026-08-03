@@ -553,6 +553,9 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
             case DslExecutionStatus::ResourceLimit:
                 diagnostic.code = core::DiagnosticCode::ResourceLimit;
                 break;
+            case DslExecutionStatus::DependencyUnavailable:
+                diagnostic.code = core::DiagnosticCode::DependencyUnavailable;
+                break;
             case DslExecutionStatus::InvalidSyntax:
             case DslExecutionStatus::InvalidDefinition:
             case DslExecutionStatus::Materialized:

@@ -939,10 +939,11 @@ private:
         if (matchIdentifier(QStringLiteral("bits"))) {
             field.encoding = DslFieldEncoding::Bits;
             expect(DslTokenKind::Less, QStringLiteral("'<' after bits"));
-            if (at(DslTokenKind::IntegerLiteral)) {
-                width = consume().integerValue;
+            DslExpression widthExpression = parseAdditiveExpression();
+            if (widthExpression.kind == DslExpressionKind::UnsignedLiteral) {
+                width = widthExpression.unsignedValue;
             } else {
-                error(DslDiagnosticCode::MissingToken, QStringLiteral("Expected bit width"));
+                field.widthExpression = std::move(widthExpression);
             }
             if (match(DslTokenKind::Comma)) {
                 QString endianName;
@@ -998,7 +999,8 @@ private:
         expect(DslTokenKind::Semicolon, QStringLiteral("';' after field"));
         field.width = width >= 1 && width <= 64 ? static_cast<quint8>(width) : 0;
         field.range = {fieldStart, lexResult_.tokens.at(index_ - 1).range.end};
-        if (field.encoding == DslFieldEncoding::Bits && field.width == 0) {
+        if (field.encoding == DslFieldEncoding::Bits && field.width == 0 &&
+            !field.widthExpression) {
             result_.diagnostics.push_back(
                 {DslDiagnosticCode::InvalidBitWidth,
                  QStringLiteral("Bit field width must be in the range 1..64"),

@@ -251,6 +251,380 @@ private slots:
         QVERIFY(imported.definitions.at(1).dependencies.empty());
     }
 
+    void evaluatesDynamicBitWidthsFromTheExactImportedGeneration() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps { bits<8> id; bits<8> width_minus4 @context_export; }
+            @context("h264-pps", id)
+            @context_dependency("h264-sps", sps_id)
+            struct Pps { bits<8> id; bits<8> sps_id; }
+            @context_import("h264-pps", pps_id)
+            struct Slice {
+                bits<8> pps_id;
+                bits<context_value(pps_id, h264_sps, width_minus4) + 4> frame_num;
+            }
+            entry Slice;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto spsIndex = *compiled.program->structureIndex(QStringLiteral("Sps"));
+        const auto ppsIndex = *compiled.program->structureIndex(QStringLiteral("Pps"));
+        const auto sliceIndex = *compiled.program->structureIndex(QStringLiteral("Slice"));
+        MemorySource source(bytes({3, 5, 7, 3, 7, 0x80, 0x80}));
+        const auto spsView = makeView(1, 0, 16);
+        const auto ppsView = makeView(2, 16, 16);
+        const auto sliceView = makeView(3, 32, 17);
+        QVERIFY(spsView.has_value());
+        QVERIFY(ppsView.has_value());
+        QVERIFY(sliceView.has_value());
+        auto tree = AnalysisTree::create(QStringLiteral("dynamic-imported-width"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        QVERIFY(session.run(makeRequest(source, spsIndex, *spsView, *tree))
+                    .materialized());
+        QVERIFY(session.run(makeRequest(source, ppsIndex, *ppsView, *tree))
+                    .materialized());
+        const auto slice =
+            session.run(makeRequest(source, sliceIndex, *sliceView, *tree));
+
+        QVERIFY(slice.materialized());
+        QCOMPARE(slice.execution.bitsConsumed, quint64(17));
+        QCOMPARE(slice.importedContexts.size(), std::size_t(1));
+        const auto structure = tree->node(*slice.execution.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(2));
+        const auto frameNum = tree->node(structure->children().at(1));
+        QVERIFY(frameNum.has_value());
+        QCOMPARE(frameNum->value().toULongLong(), qulonglong(257));
+        QCOMPARE(frameNum->location()->logicalRange().bitLength(), quint64(9));
+    }
+
+    void enforcesDynamicImportedBitWidthBoundsAndCheckedArithmetic() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps { bits<8> id; bits<8> width @context_export; }
+            @context_import("h264-sps", id)
+            struct Slice {
+                bits<8> id;
+                bits<context_value(id, h264_sps, width)> value;
+            }
+            entry Slice;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const quint32 spsIndex =
+            *compiled.program->structureIndex(QStringLiteral("Sps"));
+        const quint32 sliceIndex =
+            *compiled.program->structureIndex(QStringLiteral("Slice"));
+        struct Scenario final {
+            quint8 width = 0;
+            quint8 availableValueBits = 0;
+            RuleExecutionStatus expected = RuleExecutionStatus::InvalidSyntax;
+        };
+        const std::vector<Scenario> scenarios{
+            {1, 1, RuleExecutionStatus::Materialized},
+            {64, 64, RuleExecutionStatus::Materialized},
+            {0, 0, RuleExecutionStatus::InvalidSyntax},
+            {65, 0, RuleExecutionStatus::InvalidSyntax},
+            {9, 5, RuleExecutionStatus::TruncatedSource},
+        };
+        for (const Scenario scenario : scenarios) {
+            std::vector<std::byte> data{
+                std::byte{1}, static_cast<std::byte>(scenario.width), std::byte{1}};
+            const quint64 valueBits = scenario.availableValueBits;
+            data.resize(static_cast<std::size_t>((24U + valueBits + 7U) / 8U),
+                        std::byte{0});
+            if (scenario.width == 1) {
+                data.at(3) = std::byte{0x80};
+            }
+            MemorySource source(std::move(data));
+            const auto spsView = makeView(1, 0, 16);
+            const auto sliceView = makeView(2, 16, 8 + valueBits);
+            QVERIFY(spsView.has_value());
+            QVERIFY(sliceView.has_value());
+            auto tree = AnalysisTree::create(
+                QStringLiteral("dynamic-width-%1").arg(scenario.width));
+            QVERIFY(tree.has_value());
+            RuleExecutionSession session(*compiled.program);
+            QVERIFY(session.run(makeRequest(source, spsIndex, *spsView, *tree))
+                        .materialized());
+
+            const auto result =
+                session.run(makeRequest(source, sliceIndex, *sliceView, *tree));
+
+            QCOMPARE(result.status, scenario.expected);
+            if (scenario.expected == RuleExecutionStatus::Materialized) {
+                QCOMPARE(result.execution.bitsConsumed, quint64(8 + scenario.width));
+                const auto structure = tree->node(*result.execution.structureNode);
+                QVERIFY(structure.has_value());
+                const auto value = tree->node(structure->children().at(1));
+                QVERIFY(value.has_value());
+                QCOMPARE(value->location()->logicalRange().bitLength(),
+                         quint64(scenario.width));
+            } else {
+                QCOMPARE(result.execution.bitsConsumed, quint64(8));
+                QVERIFY(result.importedContexts.empty());
+                if (scenario.expected == RuleExecutionStatus::TruncatedSource) {
+                    const auto structure = tree->node(*result.execution.structureNode);
+                    QVERIFY(structure.has_value());
+                    QCOMPARE(structure->children().size(), std::size_t(1));
+                    QCOMPARE(structure->diagnostics().front()
+                                 .location->logicalRange().bitLength(),
+                             quint64(scenario.availableValueBits));
+                }
+            }
+        }
+
+        const auto overflowParsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps {
+                bits<8> id;
+                computed<u64> width = 18446744073709551615 @context_export;
+            }
+            @context_import("h264-sps", id)
+            struct Slice {
+                bits<8> id;
+                bits<context_value(id, h264_sps, width) + 1> value;
+            }
+            entry Slice;
+        )"));
+        QVERIFY(overflowParsed.succeeded());
+        const auto overflowCompiled = DslCompiler::compile(overflowParsed.program);
+        QVERIFY(overflowCompiled.succeeded());
+        MemorySource overflowSource(bytes({1, 1}));
+        const auto overflowSpsView = makeView(3, 0, 8);
+        const auto overflowSliceView = makeView(4, 8, 8);
+        QVERIFY(overflowSpsView.has_value());
+        QVERIFY(overflowSliceView.has_value());
+        auto overflowTree = AnalysisTree::create(QStringLiteral("dynamic-width-overflow"));
+        QVERIFY(overflowTree.has_value());
+        RuleExecutionSession overflowSession(*overflowCompiled.program);
+        QVERIFY(overflowSession
+                    .run(makeRequest(overflowSource,
+                                     *overflowCompiled.program->structureIndex(
+                                         QStringLiteral("Sps")),
+                                     *overflowSpsView,
+                                     *overflowTree))
+                    .materialized());
+        const auto overflow = overflowSession.run(makeRequest(
+            overflowSource,
+            *overflowCompiled.program->structureIndex(QStringLiteral("Slice")),
+            *overflowSliceView,
+            *overflowTree));
+        QCOMPARE(overflow.status, RuleExecutionStatus::InvalidSyntax);
+        QCOMPARE(overflow.execution.bitsConsumed, quint64(8));
+        QVERIFY(overflow.importedContexts.empty());
+    }
+
+    void reportsDynamicImportFailuresAtTheImportKey() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps { bits<8> id; bits<8> width @context_export; }
+            @context_import("h264-sps", id)
+            struct Slice {
+                bits<8> id;
+                bits<context_value(id, h264_sps, width)> value;
+            }
+            entry Slice;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const quint32 sliceIndex =
+            *compiled.program->structureIndex(QStringLiteral("Slice"));
+        MemorySource source(bytes({7}));
+        const auto view = makeView(1, 0, 8);
+        QVERIFY(view.has_value());
+        auto tree = AnalysisTree::create(QStringLiteral("missing-dynamic-import"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        const auto result =
+            session.run(makeRequest(source, sliceIndex, *view, *tree));
+
+        QCOMPARE(result.status, RuleExecutionStatus::DependencyUnavailable);
+        QCOMPARE(result.execution.bitsConsumed, quint64(8));
+        QVERIFY(result.importedContexts.empty());
+        const auto structure = tree->node(*result.execution.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->state(),
+                 streamview::core::MaterializationState::WaitingDependency);
+        QCOMPARE(structure->children().size(), std::size_t(1));
+        QCOMPARE(structure->diagnostics().size(), std::size_t(1));
+        QCOMPARE(structure->diagnostics().front().code,
+                 DiagnosticCode::DependencyUnavailable);
+        QCOMPARE(structure->diagnostics().front().fieldPath,
+                 QStringLiteral("Slice.id"));
+        QCOMPARE(structure->diagnostics().front().location->logicalRange().bitLength(),
+                 quint64(8));
+    }
+
+    void mapsDynamicImportedFieldsAcrossSourceSpans() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps { bits<8> id; bits<8> width_minus4 @context_export; }
+            @context_import("h264-sps", id)
+            struct Slice {
+                bits<8> id;
+                bits<context_value(id, h264_sps, width_minus4) + 4> frame_num;
+            }
+            entry Slice;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        MemorySource source(bytes({3, 5, 3, 0x80, 0, 0x08}));
+        const auto spsView = makeView(1, 0, 16);
+        const auto firstSliceSpan = SourceSpan::create(SourceBitAddress(16), 12);
+        const auto secondSliceSpan = SourceSpan::create(SourceBitAddress(40), 5);
+        const auto enclosing = SourceSpan::create(SourceBitAddress(16), 29);
+        QVERIFY(spsView.has_value());
+        QVERIFY(firstSliceSpan.has_value());
+        QVERIFY(secondSliceSpan.has_value());
+        QVERIFY(enclosing.has_value());
+        auto mapping = SourceMapping::create(
+            streamview::core::LogicalViewId(2),
+            {*firstSliceSpan, *secondSliceSpan});
+        QVERIFY(mapping.has_value());
+        const View sliceView{*enclosing, std::move(*mapping)};
+        auto tree = AnalysisTree::create(QStringLiteral("mapped-dynamic-width"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+        QVERIFY(session
+                    .run(makeRequest(source,
+                                     *compiled.program->structureIndex(
+                                         QStringLiteral("Sps")),
+                                     *spsView,
+                                     *tree))
+                    .materialized());
+
+        const auto slice = session.run(makeRequest(
+            source,
+            *compiled.program->structureIndex(QStringLiteral("Slice")),
+            sliceView,
+            *tree));
+
+        QVERIFY(slice.materialized());
+        const auto structure = tree->node(*slice.execution.structureNode);
+        QVERIFY(structure.has_value());
+        const auto frameNum = tree->node(structure->children().at(1));
+        QVERIFY(frameNum.has_value());
+        QCOMPARE(frameNum->value().toULongLong(), qulonglong(257));
+        QCOMPARE(frameNum->location()->sourceSpans().size(), std::size_t(2));
+        QCOMPARE(frameNum->location()->logicalRange().bitLength(), quint64(9));
+    }
+
+    void rejectsMalformedDynamicImportedWidthIrBeforeReadingSource() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps { bits<8> id; bits<8> width @context_export; }
+            @context("aac-asc", id)
+            struct Asc { bits<8> id; bits<8> width @context_export; }
+            @context_import("h264-sps", id)
+            struct Slice {
+                bits<8> id;
+                bits<context_value(id, h264_sps, width)> value;
+            }
+            entry Slice;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const quint32 sliceIndex =
+            *compiled.program->structureIndex(QStringLiteral("Slice"));
+        const quint32 ascIndex =
+            *compiled.program->structureIndex(QStringLiteral("Asc"));
+        std::vector<streamview::rules::DslTypedProgram> malformed;
+
+        auto badPublisherExport = *compiled.program;
+        badPublisherExport.structs.front()
+            .contextDefinition->exportFieldIndices.front() = 99;
+        malformed.push_back(std::move(badPublisherExport));
+
+        auto badPublisherKey = *compiled.program;
+        badPublisherKey.structs.front().contextDefinition->keyFieldIndex = 99;
+        malformed.push_back(std::move(badPublisherKey));
+
+        auto badPublisherDependency = *compiled.program;
+        badPublisherDependency.structs.front().contextDefinition->dependencies.push_back(
+            {ContextDefinitionKind::H264PictureParameterSet, 99});
+        malformed.push_back(std::move(badPublisherDependency));
+
+        auto duplicatePublisherExport = *compiled.program;
+        duplicatePublisherExport.structs.front()
+            .contextDefinition->exportFieldIndices.push_back(1);
+        malformed.push_back(std::move(duplicatePublisherExport));
+
+        auto badPublisherKind = *compiled.program;
+        const auto invalidKind = static_cast<ContextDefinitionKind>(0xff);
+        badPublisherKind.structs.front().contextDefinition->kind = invalidKind;
+        badPublisherKind.structs.at(sliceIndex)
+            .fields.at(1)
+            .bitWidthExpression->contextDefinitionKind = invalidKind;
+        malformed.push_back(std::move(badPublisherKind));
+
+        auto badImportIndex = *compiled.program;
+        badImportIndex.structs.at(sliceIndex)
+            .fields.at(1)
+            .bitWidthExpression->contextImportIndex = 99;
+        malformed.push_back(std::move(badImportIndex));
+
+        auto badStructureIndex = *compiled.program;
+        badStructureIndex.structs.at(sliceIndex)
+            .fields.at(1)
+            .bitWidthExpression->contextStructureIndex = 99;
+        malformed.push_back(std::move(badStructureIndex));
+
+        auto unrelatedTarget = *compiled.program;
+        unrelatedTarget.structs.at(sliceIndex)
+            .fields.at(1)
+            .bitWidthExpression->contextDefinitionKind =
+            ContextDefinitionKind::AacAudioSpecificConfig;
+        unrelatedTarget.structs.at(sliceIndex)
+            .fields.at(1)
+            .bitWidthExpression->contextStructureIndex = ascIndex;
+        malformed.push_back(std::move(unrelatedTarget));
+
+        auto badDynamicEndian = *compiled.program;
+        badDynamicEndian.structs.at(sliceIndex).fields.at(1).type.endian =
+            streamview::rules::DslEndian::Little;
+        malformed.push_back(std::move(badDynamicEndian));
+
+        auto importedComputed = *compiled.program;
+        auto importedExpression = *importedComputed.structs.at(sliceIndex)
+                                       .fields.at(1)
+                                       .bitWidthExpression;
+        auto& dynamicField = importedComputed.structs.at(sliceIndex).fields.at(1);
+        dynamicField.bitWidthExpression.reset();
+        dynamicField.type.kind =
+            streamview::rules::DslValueTypeKind::ComputedUnsigned;
+        dynamicField.computedExpression = std::move(importedExpression);
+        malformed.push_back(std::move(importedComputed));
+
+        for (std::size_t index = 0; index < malformed.size(); ++index) {
+            MemorySource source(bytes({1, 0}));
+            const auto view = makeView(index + 1, 0, 16);
+            QVERIFY(view.has_value());
+            auto tree = AnalysisTree::create(
+                QStringLiteral("malformed-dynamic-import-%1").arg(index));
+            QVERIFY(tree.has_value());
+            RuleExecutionSession session(std::move(malformed.at(index)));
+
+            const auto result =
+                session.run(makeRequest(source, sliceIndex, *view, *tree));
+
+            QCOMPARE(result.status, RuleExecutionStatus::InvalidDefinition);
+            QCOMPARE(source.readCount(), quint64(0));
+            QVERIFY(result.importedContexts.empty());
+        }
+    }
+
     void rejectsMissingContextImportWithoutReturningAPartialClosure() {
         const auto compiled = compileContextProgram();
         QVERIFY(compiled.succeeded());
