@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Bounded H.264 HRD parameters slice
-Next Action: Define the bounded H.264 slice-header and parameter-set dependency slice
-Last Verification: Commit e093de8 local dev/ci/sanitize passed 31/31; hosted run
-  30754634886 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Rule-declared context generations and SPS/PPS dependency prerequisite
+Next Action: Define rule-declared context import for the bounded H.264 slice-header slice
+Last Verification: Commit b035b9f local dev/ci/sanitize passed 32/32; hosted run
+  30837740934 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -512,3 +512,25 @@ Blockers: None
   `e093de848baf6ab3515c6f4704c524a25376b2b8` 在 Windows 2022 / Qt 6.10.1、macOS 15 /
   Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、Install、Upload 均成功。
   下一步界定并实现有界 H.264 slice-header 与 parameter-set dependency slice。
+- 2026-08-04：完成有界 H.264 slice-header 的 rule-declared context generation 与
+  parameter-set dependency 前置切片。ADR-0044（`24623ff`）固化 `@context`、最多 16 个
+  可重复 `@context_dependency` 与最多 64 个 field-level `@context_export`，只接受同一结构中
+  无条件、顶层、非数组的 unsigned `bits`、enum、`ue` 或 `computed<u64>`；重复 dependency、
+  未知 kind、guarded/repeated/array/signed key 或 export 均为静态错误。`b035b9f` 新增
+  move-only `RuleExecutionSession`，把一个 compiled program、analysis source/tree identity、
+  position-aware directory 与 rules-owned typed payload 关联起来；VM 在 source read 前验证
+  context typed IR，只返回声明的 key/dependency/export value 及精确 location，不暴露完整
+  local environment，也不从 presentation tree 回读。session 支持非零 logical-start suffix，
+  要求 context mapping 完全位于 non-empty enclosing source span 内，并且只在 materialization、
+  requested exact consumption、dependency resolution 与 payload preparation 全部成功后发布。
+  官方 H.264 package 更新到 `0.1.7`：SPS 发布 slice-header 所需字段，PPS 在自己的 NAL 之前
+  解析并绑定精确 SPS generation；missing/future/stale dependency 不回退，缺少 SPS 的 PPS
+  structure 保持 materialized，但 RBSP/NAL invalid、不发布 generation，scanner 继续后续 NAL。
+  `AnalysisTree` 增加跨 move 保持、copy 时更新且不返回零的 runtime instance identity，防止
+  session 跨分析复用。英中 DSL 规范、ADR 与正反例已同步；新增独立 session 测试 executable，
+  本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 32/32；hosted run
+  `30837740934` 对 `b035b9fd8c60a3b7baa1ffe81a45e929f4d39f0b` 在 Windows 2022 /
+  Qt 6.10.1、macOS 15 / Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、
+  Test、Install、Upload 均成功。完整 slice-header 项仍未完成；下一步定义 rule-declared
+  context import，再继续 dynamic `bits<expression>`、bounded sentinel loop 与 compressed
+  remaining-bit payload。
