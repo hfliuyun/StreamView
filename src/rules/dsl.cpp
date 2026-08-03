@@ -1302,11 +1302,50 @@ private:
         items.push_back(std::move(item));
     }
 
+    void parseCompressedPayload(std::vector<DslStructItem>& items,
+                                const std::vector<DslAnnotation>& leadingAnnotations) {
+        const DslSourcePosition start = consume().range.start;
+        if (!leadingAnnotations.empty()) {
+            result_.diagnostics.push_back(
+                {DslDiagnosticCode::InvalidAnnotation,
+                 QStringLiteral("compressed_payload does not accept leading annotations"),
+                 leadingAnnotations.front().range});
+        }
+
+        DslCompressedPayload payload;
+        if (!expectIdentifier(&payload.name, QStringLiteral("compressed payload name"))) {
+            recoverField();
+        }
+        if (match(DslTokenKind::LeftBracket)) {
+            result_.diagnostics.push_back(
+                {DslDiagnosticCode::InvalidArrayLength,
+                 QStringLiteral("Compressed payloads cannot be arrays"),
+                 lexResult_.tokens.at(index_ - 1).range});
+            while (!at(DslTokenKind::EndOfFile) && !at(DslTokenKind::RightBracket) &&
+                   !at(DslTokenKind::Semicolon) && !at(DslTokenKind::RightBrace)) {
+                consume();
+            }
+            match(DslTokenKind::RightBracket);
+        }
+        payload.annotations = parseAnnotations();
+        expect(DslTokenKind::Semicolon,
+               QStringLiteral("';' after compressed payload"));
+        payload.range = {start, lexResult_.tokens.at(index_ - 1).range.end};
+
+        DslStructItem item;
+        item.kind = DslStructItemKind::CompressedPayload;
+        item.compressedPayload = std::move(payload);
+        item.range = item.compressedPayload.range;
+        items.push_back(std::move(item));
+    }
+
     void parseStructItems(std::vector<DslStructItem>& items) {
         while (!at(DslTokenKind::RightBrace) && !at(DslTokenKind::EndOfFile)) {
             const std::vector<DslAnnotation> annotations = parseAnnotations(true);
             if (isIdentifier(QStringLiteral("rbsp_trailing_bits"))) {
                 parseRbspTrailingBits(items, annotations);
+            } else if (isIdentifier(QStringLiteral("compressed_payload"))) {
+                parseCompressedPayload(items, annotations);
             } else if (isLazyRegionIntroducer()) {
                 if (!annotations.empty()) {
                     result_.diagnostics.push_back(
@@ -1369,9 +1408,10 @@ private:
         match(DslTokenKind::Semicolon);
         structure.range = {start, lexResult_.tokens.at(index_ - 1).range.end};
         quint32 trailingBitsCount = 0;
-        const auto validateTrailingBits = [&](const auto& self,
-                                              const std::vector<DslStructItem>& items,
-                                              bool topLevel) -> void {
+        quint32 compressedPayloadCount = 0;
+        const auto validateTerminals = [&](const auto& self,
+                                           const std::vector<DslStructItem>& items,
+                                           bool topLevel) -> void {
             for (std::size_t itemIndex = 0; itemIndex < items.size(); ++itemIndex) {
                 const DslStructItem& item = items.at(itemIndex);
                 if (item.kind == DslStructItemKind::RbspTrailingBits) {
@@ -1381,6 +1421,18 @@ private:
                             {DslDiagnosticCode::InvalidRbspTrailingBits,
                              QStringLiteral(
                                  "rbsp_trailing_bits must occur once as the final top-level item"),
+                             item.range});
+                    }
+                    continue;
+                }
+                if (item.kind == DslStructItemKind::CompressedPayload) {
+                    ++compressedPayloadCount;
+                    if (!topLevel || itemIndex + 1 != items.size() ||
+                        compressedPayloadCount > 1) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidCompressedPayload,
+                             QStringLiteral(
+                                 "compressed_payload must occur once as the final top-level item"),
                              item.range});
                     }
                     continue;
@@ -1398,7 +1450,14 @@ private:
                 }
             }
         };
-        validateTrailingBits(validateTrailingBits, structure.items, true);
+        validateTerminals(validateTerminals, structure.items, true);
+        if (trailingBitsCount != 0 && compressedPayloadCount != 0) {
+            result_.diagnostics.push_back(
+                {DslDiagnosticCode::InvalidCompressedPayload,
+                 QStringLiteral(
+                     "compressed_payload and rbsp_trailing_bits are mutually exclusive"),
+                 structure.range});
+        }
         if (trailingBitsCount != 0) {
             for (const QString& reservedName : {QStringLiteral("rbsp_stop_one_bit"),
                                                 QStringLiteral("rbsp_alignment_zero_bit")}) {
@@ -2206,13 +2265,28 @@ private:
                     }
                 }
             };
+            const auto validateCompressedPayloadAnnotations =
+                [&](const DslCompressedPayload& payload) {
+                    validatePresentationAnnotations(payload.annotations);
+                    for (const DslAnnotation& annotation : payload.annotations) {
+                        if (annotation.name != QStringLiteral("description") &&
+                            annotation.name != QStringLiteral("spec")) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidAnnotation,
+                                 QStringLiteral(
+                                     "Compressed payloads accept only @description and @spec"),
+                                 annotation.range});
+                        }
+                    }
+                };
             const auto containsField = [](const auto& self,
                                           const std::vector<DslStructItem>& items) -> bool {
                 for (const DslStructItem& item : items) {
                     if (item.kind == DslStructItemKind::Field ||
                         item.kind == DslStructItemKind::Computed ||
                         item.kind == DslStructItemKind::LazyRegion ||
-                        item.kind == DslStructItemKind::RbspTrailingBits) {
+                        item.kind == DslStructItemKind::RbspTrailingBits ||
+                        item.kind == DslStructItemKind::CompressedPayload) {
                         return true;
                     }
                     if (item.kind == DslStructItemKind::Conditional &&
@@ -2241,6 +2315,21 @@ private:
                 -> std::optional<quint64> {
                 for (const DslStructItem& item : items) {
                     if (item.kind == DslStructItemKind::RbspTrailingBits) {
+                        continue;
+                    }
+                    if (item.kind == DslStructItemKind::CompressedPayload) {
+                        const DslCompressedPayload& payload = item.compressedPayload;
+                        validateCompressedPayloadAnnotations(payload);
+                        if (std::find(declaredFieldNames.begin(),
+                                      declaredFieldNames.end(),
+                                      payload.name) != declaredFieldNames.end()) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::DuplicateName,
+                                 QStringLiteral("Duplicate field name"),
+                                 payload.range});
+                        }
+                        declaredFieldNames.push_back(payload.name);
+                        fieldOffset = std::nullopt;
                         continue;
                     }
                     if (item.kind == DslStructItemKind::Conditional) {
@@ -2813,6 +2902,11 @@ private:
                 }
                 break;
             case DslStructItemKind::RbspTrailingBits:
+                break;
+            case DslStructItemKind::CompressedPayload:
+                if (item.compressedPayload.name == name) {
+                    return true;
+                }
                 break;
             case DslStructItemKind::Conditional:
                 if (declaresName(item.thenItems, name) || declaresName(item.elseItems, name)) {

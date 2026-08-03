@@ -236,6 +236,129 @@ private slots:
         QVERIFY(hasDiagnostic(compiledRejected, DslDiagnosticCode::InvalidArrayLength));
     }
 
+    void lowersCompressedPayloadToOneTypedFieldAndInstruction() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @spec("ITU-T H.264", "7.3.2")
+            struct Slice {
+                bits<3> prefix;
+                compressed_payload slice_data
+                    @description("Entropy-coded slice data.")
+                    @spec("ITU-T H.264", "7.3.2.10");
+            }
+            entry Slice;
+        )"));
+        QVERIFY(parsed.succeeded());
+
+        const auto first = DslCompiler::compile(parsed.program);
+        const auto second = DslCompiler::compile(parsed.program);
+        QVERIFY2(first.succeeded(),
+                 first.diagnostics.empty() ? "" : qPrintable(first.diagnostics.front().message));
+        QVERIFY(second.succeeded());
+        const auto& structure = first.program->structs.front();
+        QCOMPARE(structure.fields.size(), std::size_t(2));
+        const auto& payload = structure.fields.back();
+        QCOMPARE(payload.name, QStringLiteral("slice_data"));
+        QCOMPARE(payload.kind, streamview::rules::DslTypedFieldKind::Declared);
+        QCOMPARE(payload.type.kind, DslValueTypeKind::CompressedPayload);
+        QCOMPARE(payload.type.bitWidth, quint8(0));
+        QCOMPARE(payload.type.endian, DslEndian::Big);
+        QVERIFY(!payload.type.enumIndex.has_value());
+        QVERIFY(!payload.contextEligible);
+        QVERIFY(!payload.bitWidthExpression.has_value());
+        QVERIFY(!payload.computedExpression.has_value());
+        QVERIFY(!payload.lazyByteCountExpression.has_value());
+        QVERIFY(payload.conditions.empty());
+        QCOMPARE(payload.metadata.typeName, QStringLiteral("compressed_payload"));
+        QCOMPARE(payload.metadata.description, QStringLiteral("Entropy-coded slice data."));
+        QVERIFY(payload.metadata.specification.has_value());
+        QCOMPARE(payload.metadata.specification->clause, QStringLiteral("7.3.2.10"));
+
+        const std::vector<DslOpcode> expected{
+            DslOpcode::BeginStructure,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::RegisterCompressedPayload,
+            DslOpcode::EndStructure,
+        };
+        QCOMPARE(first.program->bytecode.size(), expected.size());
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            QCOMPARE(first.program->bytecode.at(index).opcode, expected.at(index));
+            QCOMPARE(first.program->bytecode.at(index).opcode,
+                     second.program->bytecode.at(index).opcode);
+            QCOMPARE(first.program->bytecode.at(index).operand,
+                     second.program->bytecode.at(index).operand);
+        }
+        QCOMPARE(first.program->bytecode.at(2).operand, quint32(1));
+        QCOMPARE(first.program->bytecode.at(2).immediate, quint64(0));
+    }
+
+    void countsCompressedPayloadAgainstTheStructureLimit() {
+        const auto accepted = DslParser::parse(QStringLiteral(
+            "struct P { bits<1> values[99998]; compressed_payload data; } entry P;"));
+        const auto rejected = DslParser::parse(QStringLiteral(
+            "struct P { bits<1> values[99999]; compressed_payload data; } entry P;"));
+        QVERIFY(accepted.succeeded());
+        QVERIFY(rejected.succeeded());
+
+        const auto compiledAccepted = DslCompiler::compile(accepted.program);
+        const auto compiledRejected = DslCompiler::compile(rejected.program);
+        QVERIFY(compiledAccepted.succeeded());
+        QCOMPARE(compiledAccepted.program->structs.front().fields.size(),
+                 std::size_t(99999));
+        QVERIFY(!compiledRejected.succeeded());
+        QVERIFY(hasDiagnostic(compiledRejected, DslDiagnosticCode::InvalidArrayLength));
+    }
+
+    void rejectsMalformedCompressedPayloadAst() {
+        const auto parse = []() {
+            return DslParser::parse(QStringLiteral(
+                "struct P { bits<1> prefix; compressed_payload data; } entry P;"));
+        };
+        std::vector<streamview::rules::DslProgram> malformed;
+
+        auto nonTerminal = parse().program;
+        nonTerminal.structs.front().items.push_back(
+            nonTerminal.structs.front().items.front());
+        malformed.push_back(std::move(nonTerminal));
+
+        auto duplicate = parse().program;
+        duplicate.structs.front().items.push_back(
+            duplicate.structs.front().items.back());
+        malformed.push_back(std::move(duplicate));
+
+        auto nested = parse().program;
+        streamview::rules::DslStructItem conditional;
+        conditional.kind = streamview::rules::DslStructItemKind::Conditional;
+        conditional.condition.fieldName = QStringLiteral("prefix");
+        conditional.condition.expectedValue = 1;
+        conditional.thenItems.push_back(nested.structs.front().items.back());
+        nested.structs.front().items.back() = std::move(conditional);
+        malformed.push_back(std::move(nested));
+
+        auto withTrailingBits = parse().program;
+        streamview::rules::DslStructItem trailing;
+        trailing.kind = streamview::rules::DslStructItemKind::RbspTrailingBits;
+        withTrailingBits.structs.front().items.push_back(std::move(trailing));
+        malformed.push_back(std::move(withTrailingBits));
+
+        auto badAnnotation = parse().program;
+        streamview::rules::DslAnnotation annotation;
+        annotation.name = QStringLiteral("equals");
+        badAnnotation.structs.front().items.back().compressedPayload.annotations.push_back(
+            std::move(annotation));
+        malformed.push_back(std::move(badAnnotation));
+
+        for (std::size_t index = 0; index < malformed.size(); ++index) {
+            const auto compiled = DslCompiler::compile(malformed.at(index));
+            QVERIFY(!compiled.succeeded());
+            if (index + 1 == malformed.size()) {
+                QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidAnnotation));
+            } else {
+                QVERIFY(hasDiagnostic(compiled,
+                                      DslDiagnosticCode::InvalidCompressedPayload));
+            }
+        }
+    }
+
     void compilesEnumAndExplicitEndianIntoTypedIr() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "enum NalUnitType { non_idr = 1; idr = 5; } "

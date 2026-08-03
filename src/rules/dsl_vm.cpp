@@ -261,6 +261,7 @@ constexpr quint64 maximumUnsignedExpGolombValue = std::numeric_limits<quint64>::
         return DslScalarType::Bool;
     case DslValueTypeKind::SignedExpGolomb:
     case DslValueTypeKind::LazyBytes:
+    case DslValueTypeKind::CompressedPayload:
         return std::nullopt;
     }
     return std::nullopt;
@@ -945,6 +946,28 @@ DslExecutionResult DslVirtualMachine::execute(
         const bool computedUnsigned =
             field.type.kind == DslValueTypeKind::ComputedUnsigned;
         const bool lazyBytes = field.type.kind == DslValueTypeKind::LazyBytes;
+        const bool compressedPayload =
+            field.type.kind == DslValueTypeKind::CompressedPayload;
+        if (compressedPayload) {
+            if (fieldIndex + 1 != structure.fields.size() ||
+                field.kind != DslTypedFieldKind::Declared || field.name.isEmpty() ||
+                field.type.bitWidth != 0 || field.type.endian != DslEndian::Big ||
+                field.type.enumIndex || field.contextEligible || field.equalsConstraint ||
+                field.rangeConstraint || field.bitWidthExpression ||
+                field.computedExpression || field.lazyByteCountExpression ||
+                !field.conditions.empty() ||
+                field.metadata.typeName != QStringLiteral("compressed_payload")) {
+                markFailure(
+                    DslExecutionStatus::InvalidDefinition,
+                    QStringLiteral("Typed compressed payload definition is invalid"),
+                    &field,
+                    std::nullopt,
+                    std::nullopt,
+                    false);
+                return result;
+            }
+            continue;
+        }
         if (lazyBytes) {
             if (field.type.bitWidth != 0 || field.type.endian != DslEndian::Big ||
                 field.type.enumIndex || field.equalsConstraint || field.rangeConstraint ||
@@ -1310,6 +1333,52 @@ DslExecutionResult DslVirtualMachine::execute(
             return result;
         }
         previousSentinelAssertionPosition = repeat.assertionFieldIndex;
+    }
+
+    const std::size_t bytecodeBegin = structure.bytecodeOffset;
+    const std::size_t bytecodeEnd = bytecodeBegin + structure.bytecodeLength;
+    const auto compressedField = std::find_if(
+        structure.fields.begin(),
+        structure.fields.end(),
+        [](const DslTypedField& field) {
+            return field.type.kind == DslValueTypeKind::CompressedPayload;
+        });
+    const auto compressedOpcodes = static_cast<std::size_t>(std::count_if(
+        program.bytecode.begin() + static_cast<std::ptrdiff_t>(bytecodeBegin),
+        program.bytecode.begin() + static_cast<std::ptrdiff_t>(bytecodeEnd),
+        [](const DslInstruction& instruction) {
+            return instruction.opcode == DslOpcode::RegisterCompressedPayload;
+        }));
+    if (compressedField == structure.fields.end()) {
+        if (compressedOpcodes != 0) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed compressed payload opcode has no field"),
+                        nullptr,
+                        std::nullopt,
+                        std::nullopt,
+                        false);
+            return result;
+        }
+    } else {
+        const quint32 fieldIndex = static_cast<quint32>(
+            std::distance(structure.fields.begin(), compressedField));
+        const bool validTail =
+            structure.bytecodeLength >= 3 && compressedOpcodes == 1 &&
+            program.bytecode.at(bytecodeEnd - 1).opcode == DslOpcode::EndStructure &&
+            program.bytecode.at(bytecodeEnd - 1).operand == structureIndex &&
+            program.bytecode.at(bytecodeEnd - 2).opcode ==
+                DslOpcode::RegisterCompressedPayload &&
+            program.bytecode.at(bytecodeEnd - 2).operand == fieldIndex &&
+            program.bytecode.at(bytecodeEnd - 2).immediate == 0;
+        if (!validTail) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed compressed payload bytecode is invalid"),
+                        &*compressedField,
+                        std::nullopt,
+                        std::nullopt,
+                        false);
+            return result;
+        }
     }
 
     const auto consumeInstruction = [&]() -> bool {
@@ -2077,6 +2146,108 @@ DslExecutionResult DslVirtualMachine::execute(
             result.bitsConsumed = reader.position();
             fieldValues.at(instruction.operand).reset();
             fieldRanges.at(instruction.operand) = MaterializedFieldRange{fieldStart, bitCount};
+            lastField = instruction.operand;
+            lastValue.reset();
+            lastFieldSkipped = false;
+            ++nextFieldIndex;
+            break;
+        }
+        case DslOpcode::RegisterCompressedPayload: {
+            if (!result.structureNode || instruction.operand != nextFieldIndex ||
+                instruction.operand >= structure.fields.size() ||
+                instruction.operand + 1 != structure.fields.size() ||
+                instruction.immediate != 0) {
+                markFailure(
+                    DslExecutionStatus::InvalidDefinition,
+                    QStringLiteral("Typed IR compressed payload instruction is invalid"),
+                    nullptr);
+                return result;
+            }
+            const DslTypedField& field = structure.fields.at(instruction.operand);
+            if (field.type.kind != DslValueTypeKind::CompressedPayload) {
+                markFailure(
+                    DslExecutionStatus::InvalidDefinition,
+                    QStringLiteral("Typed IR compressed payload definition is invalid"),
+                    &field,
+                    std::nullopt,
+                    std::nullopt,
+                    false);
+                return result;
+            }
+
+            const quint64 fieldStart = reader.position();
+            const quint64 bitCount = reader.remainingBits();
+            if (addWouldOverflow(logicalStart, fieldStart)) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Logical compressed payload offset overflows"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            const auto range = core::LogicalRange::create(
+                core::LogicalBitAddress(mapping.viewId(), logicalStart + fieldStart),
+                bitCount);
+            const auto location = range ? mapping.locate(*range) : std::nullopt;
+            if (!location) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Unable to map DSL compressed payload"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            const quint32 structureDepth = parentDepth + 1U;
+            if (structureDepth >= options.limits.maximumNodeDepth) {
+                markFailure(DslExecutionStatus::ResourceLimit,
+                            QStringLiteral("DSL analysis node depth limit exceeded"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            if (result.nodesCreated >= options.limits.maximumMaterializedNodes) {
+                markFailure(DslExecutionStatus::ResourceLimit,
+                            QStringLiteral("DSL materialized-node budget exceeded"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+
+            core::AnalysisNodeSpec fieldSpec;
+            fieldSpec.kind = core::AnalysisNodeKind::CompressedPayload;
+            fieldSpec.name = field.name;
+            fieldSpec.state = core::MaterializationState::Materialized;
+            fieldSpec.location = *location;
+            fieldSpec.metadata = field.metadata;
+            if (!tree.appendChild(*result.structureNode, std::move(fieldSpec))) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Unable to append compressed payload node"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            ++result.nodesCreated;
+            if (!reader.seek(reader.logicalBitLength())) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Unable to advance over compressed payload"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            result.bitsConsumed = reader.position();
+            fieldValues.at(instruction.operand).reset();
+            fieldRanges.at(instruction.operand) =
+                MaterializedFieldRange{fieldStart, bitCount};
             lastField = instruction.operand;
             lastValue.reset();
             lastFieldSkipped = false;

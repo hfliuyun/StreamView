@@ -31,7 +31,8 @@ void collectFields(const std::vector<DslStructItem>& items,
         if (item.kind == DslStructItemKind::Field ||
             item.kind == DslStructItemKind::Computed ||
             item.kind == DslStructItemKind::LazyRegion ||
-            item.kind == DslStructItemKind::RbspTrailingBits) {
+            item.kind == DslStructItemKind::RbspTrailingBits ||
+            item.kind == DslStructItemKind::CompressedPayload) {
             fields.push_back(&item);
         } else if (item.kind == DslStructItemKind::Conditional) {
             collectFields(item.thenItems, fields);
@@ -61,7 +62,8 @@ void collectFields(const std::vector<DslStructItem>& items,
         if (item.kind == DslStructItemKind::Field) {
             itemProjection = item.field.arrayLength.value_or(1);
         } else if (item.kind == DslStructItemKind::Computed ||
-                   item.kind == DslStructItemKind::LazyRegion) {
+                   item.kind == DslStructItemKind::LazyRegion ||
+                   item.kind == DslStructItemKind::CompressedPayload) {
             itemProjection = 1;
         } else if (item.kind == DslStructItemKind::RbspTrailingBits) {
             itemProjection = 8;
@@ -834,6 +836,53 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
 
     typed.structs.reserve(program.structs.size());
     for (const DslStruct& structure : program.structs) {
+        quint32 compressedPayloadCount = 0;
+        quint32 trailingBitsCount = 0;
+        const auto validateTerminals = [&](const auto& self,
+                                           const std::vector<DslStructItem>& items,
+                                           bool topLevel) -> void {
+            for (std::size_t itemIndex = 0; itemIndex < items.size(); ++itemIndex) {
+                const DslStructItem& item = items.at(itemIndex);
+                if (item.kind == DslStructItemKind::CompressedPayload) {
+                    ++compressedPayloadCount;
+                    if (!topLevel || itemIndex + 1 != items.size() ||
+                        compressedPayloadCount > 1) {
+                        addDiagnostic(
+                            result.diagnostics,
+                            DslDiagnosticCode::InvalidCompressedPayload,
+                            QStringLiteral(
+                                "compressed_payload must occur once as the final top-level item"),
+                            item.range);
+                    }
+                    continue;
+                }
+                if (item.kind == DslStructItemKind::RbspTrailingBits) {
+                    ++trailingBitsCount;
+                    continue;
+                }
+                if (item.kind == DslStructItemKind::Conditional) {
+                    self(self, item.thenItems, false);
+                    self(self, item.elseItems, false);
+                } else if (item.kind == DslStructItemKind::Switch) {
+                    for (const DslStructItem::SwitchArm& arm : item.switchArms) {
+                        self(self, arm.items, false);
+                    }
+                } else if (item.kind == DslStructItemKind::Repeat ||
+                           item.kind == DslStructItemKind::SentinelRepeat) {
+                    self(self, item.repeatItems, false);
+                }
+            }
+        };
+        validateTerminals(validateTerminals, structure.items, true);
+        if (compressedPayloadCount != 0 && trailingBitsCount != 0) {
+            addDiagnostic(
+                result.diagnostics,
+                DslDiagnosticCode::InvalidCompressedPayload,
+                QStringLiteral(
+                    "compressed_payload and rbsp_trailing_bits are mutually exclusive"),
+                structure.range);
+        }
+
         std::vector<const DslStructItem*> fieldDeclarations;
         collectFields(structure.items, fieldDeclarations);
         DslTypedStruct typedStruct;
@@ -919,16 +968,22 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             if (item->kind == DslStructItemKind::RbspTrailingBits) {
                 continue;
             }
-            const QString& name = item->kind == DslStructItemKind::Field
-                                      ? item->field.name
-                                      : item->kind == DslStructItemKind::Computed
-                                      ? item->computed.name
-                                      : item->lazyRegion.name;
-            const DslSourceRange& range = item->kind == DslStructItemKind::Field
-                                              ? item->field.range
-                                              : item->kind == DslStructItemKind::Computed
-                                              ? item->computed.range
-                                              : item->lazyRegion.range;
+            const QString& name =
+                item->kind == DslStructItemKind::Field
+                    ? item->field.name
+                    : item->kind == DslStructItemKind::Computed
+                    ? item->computed.name
+                    : item->kind == DslStructItemKind::LazyRegion
+                    ? item->lazyRegion.name
+                    : item->compressedPayload.name;
+            const DslSourceRange& range =
+                item->kind == DslStructItemKind::Field
+                    ? item->field.range
+                    : item->kind == DslStructItemKind::Computed
+                    ? item->computed.range
+                    : item->kind == DslStructItemKind::LazyRegion
+                    ? item->lazyRegion.range
+                    : item->compressedPayload.range;
             if (std::find(declaredFieldNames.begin(),
                           declaredFieldNames.end(),
                           name) != declaredFieldNames.end()) {
@@ -1820,6 +1875,49 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             typedStruct.fields.push_back(std::move(typedField));
             return std::nullopt;
         };
+        const auto compileCompressedPayload =
+            [&](const DslCompressedPayload& payload,
+                const std::vector<DslTypedFieldCondition>& conditions)
+            -> std::optional<quint64> {
+            if (!conditions.empty() || !repeatIndices.empty()) {
+                addDiagnostic(
+                    result.diagnostics,
+                    DslDiagnosticCode::InvalidCompressedPayload,
+                    QStringLiteral(
+                        "compressed_payload must be an unconditional top-level item"),
+                    payload.range);
+            }
+            if (payload.name.isEmpty()) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidCompressedPayload,
+                              QStringLiteral("compressed_payload requires a name"),
+                              payload.range);
+            }
+            if (typedStruct.fields.size() >= maximumExpandedFieldsPerStructure) {
+                addDiagnostic(
+                    result.diagnostics,
+                    DslDiagnosticCode::InvalidArrayLength,
+                    QStringLiteral(
+                        "Compressed payload exceeds the structure materialization limit"),
+                    payload.range);
+                return std::nullopt;
+            }
+            validatePresentationOnlyAnnotations(
+                payload.annotations, QStringLiteral("Compressed payloads"));
+
+            DslTypedField typedField;
+            typedField.name = payload.name;
+            typedField.type = {DslValueTypeKind::CompressedPayload,
+                               quint8(0),
+                               DslEndian::Big,
+                               std::nullopt};
+            typedField.metadata = metadataForAnnotations(
+                payload.annotations, typedStruct.metadata.specification);
+            typedField.metadata.typeName = QStringLiteral("compressed_payload");
+            typedField.range = payload.range;
+            typedStruct.fields.push_back(std::move(typedField));
+            return std::nullopt;
+        };
         const auto compileItems =
             [&](const auto& self, const std::vector<DslStructItem>& items,
                 const std::vector<DslTypedFieldCondition>& conditions,
@@ -1835,6 +1933,11 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 }
                 if (item.kind == DslStructItemKind::LazyRegion) {
                     fieldOffset = compileLazyRegion(item.lazyRegion, conditions, fieldOffset);
+                    continue;
+                }
+                if (item.kind == DslStructItemKind::CompressedPayload) {
+                    fieldOffset =
+                        compileCompressedPayload(item.compressedPayload, conditions);
                     continue;
                 }
                 if (item.kind == DslStructItemKind::RbspTrailingBits) {
@@ -2684,6 +2787,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     return DslOpcode::EvaluateComputed;
                 case DslValueTypeKind::LazyBytes:
                     return DslOpcode::RegisterLazyBytes;
+                case DslValueTypeKind::CompressedPayload:
+                    return DslOpcode::RegisterCompressedPayload;
                 }
                 return DslOpcode::ReadUnsignedBits;
             }();

@@ -941,6 +941,259 @@ private slots:
         QCOMPARE(tail->location()->logicalRange().start().bitOffset(), quint64(0));
     }
 
+    void registersMappedCompressedPayloadsWithoutReadingSource() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Slice { compressed_payload slice_data "
+            "@description(\"Entropy-coded slice data.\"); } entry Slice;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0xff, 0x00, 0xff}));
+        const auto mapping = mappingForSpans({{1, 5}, {16, 7}});
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *mapping);
+        auto tree = AnalysisTree::create(QStringLiteral("compressed-payload"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                       quint32(0),
+                                                       reader,
+                                                       *mapping,
+                                                       0,
+                                                       *tree,
+                                                       tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(12));
+        QCOMPARE(result.instructionsExecuted, quint64(3));
+        QCOMPARE(result.nodesCreated, quint64(2));
+        QCOMPARE(reader.position(), quint64(12));
+        QCOMPARE(source.readCount(), quint64(0));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(1));
+        const auto payload = tree->node(structure->children().front());
+        QVERIFY(payload.has_value());
+        QCOMPARE(payload->kind(), AnalysisNodeKind::CompressedPayload);
+        QCOMPARE(payload->state(), MaterializationState::Materialized);
+        QVERIFY(payload->value().isNull());
+        QVERIFY(payload->location().has_value());
+        QCOMPARE(payload->location()->logicalRange().start().bitOffset(), quint64(0));
+        QCOMPARE(payload->location()->logicalRange().bitLength(), quint64(12));
+        QCOMPARE(payload->location()->sourceSpans().size(), std::size_t(2));
+        QCOMPARE(payload->location()->sourceSpans().at(0).start().absoluteBitOffset(),
+                 quint64(1));
+        QCOMPARE(payload->location()->sourceSpans().at(0).bitLength(), quint64(5));
+        QCOMPARE(payload->location()->sourceSpans().at(1).start().absoluteBitOffset(),
+                 quint64(16));
+        QCOMPARE(payload->location()->sourceSpans().at(1).bitLength(), quint64(7));
+        QCOMPARE(payload->metadata().typeName, QStringLiteral("compressed_payload"));
+        QCOMPARE(payload->metadata().description,
+                 QStringLiteral("Entropy-coded slice data."));
+    }
+
+    void materializesAnEmptyCompressedPayloadWithoutReadingSource() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Empty { compressed_payload data; } entry Empty;"));
+        QVERIFY(parsed.succeeded());
+
+        MemorySource source({});
+        const auto mapping = streamview::core::SourceMapping::create(
+            streamview::core::LogicalViewId(1), {});
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *mapping);
+        auto tree = AnalysisTree::create(QStringLiteral("empty-compressed-payload"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(parsed.program,
+                                                       QStringLiteral("Empty"),
+                                                       reader,
+                                                       *mapping,
+                                                       0,
+                                                       *tree,
+                                                       tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(0));
+        QCOMPARE(result.nodesCreated, quint64(2));
+        QCOMPARE(source.readCount(), quint64(0));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        const auto payload = tree->node(structure->children().front());
+        QVERIFY(payload.has_value());
+        QCOMPARE(payload->kind(), AnalysisNodeKind::CompressedPayload);
+        QCOMPARE(payload->state(), MaterializationState::Materialized);
+        QCOMPARE(payload->location()->logicalRange().bitLength(), quint64(0));
+        QVERIFY(payload->location()->sourceSpans().empty());
+    }
+
+    void accountsForCompressedPayloadBudgetsAndCancellation() {
+        const auto terminal = DslParser::parse(QStringLiteral(
+            "struct P { compressed_payload data; } entry P;"));
+        const auto terminalProgram = DslCompiler::compile(terminal.program);
+        QVERIFY(terminal.succeeded());
+        QVERIFY(terminalProgram.succeeded());
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+
+        MemorySource instructionSource(bytes({0xff}));
+        BitReader instructionReader(instructionSource, *range);
+        auto instructionTree =
+            AnalysisTree::create(QStringLiteral("compressed-instruction-budget"));
+        QVERIFY(instructionTree.has_value());
+        DslExecutionOptions instructionOptions;
+        instructionOptions.limits.maximumInstructions = 2;
+        const auto instructionResult = DslExecutor::decodeStruct(
+            *terminalProgram.program,
+            quint32(0),
+            instructionReader,
+            *mapping,
+            0,
+            *instructionTree,
+            instructionTree->rootId(),
+            instructionOptions);
+        QCOMPARE(instructionResult.status, DslExecutionStatus::ResourceLimit);
+        QCOMPARE(instructionResult.instructionsExecuted, quint64(2));
+        QCOMPARE(instructionResult.bitsConsumed, quint64(8));
+        QCOMPARE(instructionResult.nodesCreated, quint64(2));
+        QCOMPARE(instructionSource.readCount(), quint64(0));
+
+        MemorySource nodeSource(bytes({0xff}));
+        BitReader nodeReader(nodeSource, *range);
+        auto nodeTree = AnalysisTree::create(QStringLiteral("compressed-node-budget"));
+        QVERIFY(nodeTree.has_value());
+        DslExecutionOptions nodeOptions;
+        nodeOptions.limits.maximumMaterializedNodes = 1;
+        const auto nodeResult = DslExecutor::decodeStruct(*terminalProgram.program,
+                                                          quint32(0),
+                                                          nodeReader,
+                                                          *mapping,
+                                                          0,
+                                                          *nodeTree,
+                                                          nodeTree->rootId(),
+                                                          nodeOptions);
+        QCOMPARE(nodeResult.status, DslExecutionStatus::ResourceLimit);
+        QCOMPARE(nodeResult.instructionsExecuted, quint64(2));
+        QCOMPARE(nodeResult.bitsConsumed, quint64(0));
+        QCOMPARE(nodeResult.nodesCreated, quint64(1));
+        QCOMPARE(nodeReader.position(), quint64(0));
+        QCOMPARE(nodeSource.readCount(), quint64(0));
+
+        const auto prefixed = DslParser::parse(QStringLiteral(
+            "struct P { bits<1> prefix; compressed_payload data; } entry P;"));
+        const auto prefixedProgram = DslCompiler::compile(prefixed.program);
+        QVERIFY(prefixed.succeeded());
+        QVERIFY(prefixedProgram.succeeded());
+        CancellationSource cancellation;
+        CancellingMemorySource cancellingSource(bytes({0xff}), cancellation);
+        BitReader cancellingReader(cancellingSource, *range);
+        auto cancellingTree = AnalysisTree::create(QStringLiteral("compressed-cancelled"));
+        QVERIFY(cancellingTree.has_value());
+        DslExecutionOptions cancellationOptions;
+        cancellationOptions.cancellation = cancellation.token();
+        cancellationOptions.limits.cancellationCheckInterval = 1;
+        const auto cancelled = DslExecutor::decodeStruct(*prefixedProgram.program,
+                                                         quint32(0),
+                                                         cancellingReader,
+                                                         *mapping,
+                                                         0,
+                                                         *cancellingTree,
+                                                         cancellingTree->rootId(),
+                                                         cancellationOptions);
+        QCOMPARE(cancelled.status, DslExecutionStatus::Cancelled);
+        QCOMPARE(cancelled.instructionsExecuted, quint64(2));
+        QCOMPARE(cancelled.bitsConsumed, quint64(1));
+        QCOMPARE(cancelled.nodesCreated, quint64(2));
+        QCOMPARE(cancellingReader.position(), quint64(1));
+        const auto cancelledStructure = cancellingTree->node(*cancelled.structureNode);
+        QVERIFY(cancelledStructure.has_value());
+        QCOMPARE(cancelledStructure->children().size(), std::size_t(1));
+    }
+
+    void rejectsMalformedCompressedPayloadIrBeforeReadingSource() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct P { bits<1> prefix; compressed_payload data; } entry P;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+        std::vector<DslTypedProgram> malformed;
+
+        const auto mutateField = [&](const auto& mutation) {
+            auto program = *compiled.program;
+            mutation(program.structs.front().fields.back());
+            malformed.push_back(std::move(program));
+        };
+        mutateField([](auto& field) { field.type.bitWidth = 1; });
+        mutateField([](auto& field) { field.type.endian = streamview::rules::DslEndian::Little; });
+        mutateField([](auto& field) { field.type.enumIndex = 0; });
+        mutateField([](auto& field) { field.contextEligible = true; });
+        mutateField([](auto& field) { field.equalsConstraint = 0; });
+        mutateField([](auto& field) {
+            DslTypedExpression literal;
+            literal.kind = DslTypedExpressionKind::UnsignedLiteral;
+            literal.type = DslScalarType::U64;
+            field.computedExpression = literal;
+        });
+        mutateField([](auto& field) {
+            field.conditions.push_back({0, 0, false, DslConditionOperator::Equal});
+        });
+        mutateField([](auto& field) { field.metadata.typeName = QStringLiteral("bytes"); });
+
+        auto nonTerminal = *compiled.program;
+        nonTerminal.structs.front().fields.push_back(
+            nonTerminal.structs.front().fields.front());
+        malformed.push_back(std::move(nonTerminal));
+
+        const auto opcode = std::find_if(
+            compiled.program->bytecode.cbegin(),
+            compiled.program->bytecode.cend(),
+            [](const auto& instruction) {
+                return instruction.opcode == DslOpcode::RegisterCompressedPayload;
+            });
+        QVERIFY(opcode != compiled.program->bytecode.cend());
+        const auto opcodeIndex = static_cast<std::size_t>(
+            std::distance(compiled.program->bytecode.cbegin(), opcode));
+        auto wrongOpcode = *compiled.program;
+        wrongOpcode.bytecode.at(opcodeIndex).opcode = DslOpcode::RegisterLazyBytes;
+        malformed.push_back(std::move(wrongOpcode));
+        auto wrongOperand = *compiled.program;
+        wrongOperand.bytecode.at(opcodeIndex).operand = 0;
+        malformed.push_back(std::move(wrongOperand));
+        auto wrongImmediate = *compiled.program;
+        wrongImmediate.bytecode.at(opcodeIndex).immediate = 1;
+        malformed.push_back(std::move(wrongImmediate));
+        auto strayOpcode = *compiled.program;
+        strayOpcode.bytecode.at(1).opcode = DslOpcode::RegisterCompressedPayload;
+        malformed.push_back(std::move(strayOpcode));
+
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        for (std::size_t index = 0; index < malformed.size(); ++index) {
+            MemorySource source(bytes({0xff}));
+            BitReader reader(source, *range);
+            auto tree = AnalysisTree::create(
+                QStringLiteral("malformed-compressed-%1").arg(index));
+            QVERIFY(tree.has_value());
+            const auto result = DslExecutor::decodeStruct(malformed.at(index),
+                                                          quint32(0),
+                                                          reader,
+                                                          *mapping,
+                                                          0,
+                                                          *tree,
+                                                          tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+            QCOMPARE(result.instructionsExecuted, quint64(0));
+            QCOMPARE(result.bitsConsumed, quint64(0));
+            QCOMPARE(result.nodesCreated, quint64(0));
+            QCOMPARE(reader.position(), quint64(0));
+            QCOMPARE(source.readCount(), quint64(0));
+            QVERIFY(!result.structureNode.has_value());
+        }
+    }
+
     void skipsGuardedLazyRegionsWithoutEvaluatingTheirExpressions() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "struct Header { bits<8> present; if (present == 1) { "

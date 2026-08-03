@@ -20,6 +20,7 @@ enum class DslValueTypeKind : quint8 {
     ComputedBool,
     ComputedUnsigned,
     LazyBytes,
+    CompressedPayload,
 };
 
 struct DslValueType final {
@@ -203,6 +204,7 @@ enum class DslOpcode : quint8 {
     ReadSignedExpGolomb,
     EvaluateComputed,
     RegisterLazyBytes,
+    RegisterCompressedPayload,
     ReadRbspTrailingBits,
     AssertEquals,
     AssertRangeMinimum,

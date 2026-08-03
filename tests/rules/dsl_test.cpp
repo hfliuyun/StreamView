@@ -387,6 +387,84 @@ private slots:
         }
     }
 
+    void parsesATerminalCompressedPayloadItem() {
+        const auto result = DslParser::parse(QStringLiteral(R"(
+            struct SliceLayerWithoutPartitioningRbsp {
+                bits<3> prefix;
+                compressed_payload slice_data
+                    @description("Entropy-coded slice data.")
+                    @spec("ITU-T H.264", "7.3.2.10");
+            }
+            entry SliceLayerWithoutPartitioningRbsp;
+        )"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& item = result.program.structs.front().items.back();
+        QCOMPARE(item.kind, DslStructItemKind::CompressedPayload);
+        QCOMPARE(item.compressedPayload.name, QStringLiteral("slice_data"));
+        QCOMPARE(item.compressedPayload.annotations.size(), std::size_t(2));
+        QCOMPARE(item.compressedPayload.annotations.at(0).name,
+                 QStringLiteral("description"));
+        QCOMPARE(item.compressedPayload.annotations.at(1).name, QStringLiteral("spec"));
+        QVERIFY(item.range.end.offset > item.range.start.offset);
+
+        const auto terminalOnly = DslParser::parse(QStringLiteral(
+            "struct Payload { compressed_payload data; } entry Payload;"));
+        QVERIFY(terminalOnly.succeeded());
+    }
+
+    void rejectsInvalidCompressedPayloadDeclarations() {
+        struct Case final {
+            QString source;
+            DslDiagnosticCode diagnostic;
+        };
+        const std::vector<Case> cases{
+            {QStringLiteral(
+                 "struct P { compressed_payload data; bits<1> tail; } entry P;"),
+             DslDiagnosticCode::InvalidCompressedPayload},
+            {QStringLiteral(
+                 "struct P { compressed_payload first; compressed_payload second; } entry P;"),
+             DslDiagnosticCode::InvalidCompressedPayload},
+            {QStringLiteral(
+                 "struct P { bits<1> flag; if (flag == 1) { compressed_payload data; } } "
+                 "entry P;"),
+             DslDiagnosticCode::InvalidCompressedPayload},
+            {QStringLiteral(
+                 "struct P { bits<1> flag; switch (flag) { case 0: { "
+                 "compressed_payload data; } } } entry P;"),
+             DslDiagnosticCode::InvalidCompressedPayload},
+            {QStringLiteral(
+                 "struct P { bits<1> count; repeat (count, 1) { "
+                 "compressed_payload data; } } entry P;"),
+             DslDiagnosticCode::InvalidCompressedPayload},
+            {QStringLiteral(
+                 "struct P { compressed_payload data; rbsp_trailing_bits; } entry P;"),
+             DslDiagnosticCode::InvalidCompressedPayload},
+            {QStringLiteral(
+                 "struct P { @description(\"bad\") compressed_payload data; } entry P;"),
+             DslDiagnosticCode::InvalidAnnotation},
+            {QStringLiteral(
+                 "struct P { compressed_payload data[2]; } entry P;"),
+             DslDiagnosticCode::InvalidArrayLength},
+            {QStringLiteral(
+                 "struct P { compressed_payload data @equals(1); } entry P;"),
+             DslDiagnosticCode::InvalidAnnotation},
+            {QStringLiteral(
+                 "struct P { bits<1> data; compressed_payload data; } entry P;"),
+             DslDiagnosticCode::DuplicateName},
+        };
+
+        for (const Case& testCase : cases) {
+            const auto result = DslParser::parse(testCase.source);
+            QVERIFY2(!result.succeeded(), qPrintable(testCase.source));
+            QVERIFY2(hasDiagnostic(result, testCase.diagnostic),
+                     qPrintable(testCase.source));
+        }
+    }
+
     void computesStaticAlignmentAcrossFixedLengthArrays() {
         const auto aligned = DslParser::parse(QStringLiteral(
             "struct Header { bits<4> prefix[2]; bits<16, little> value; } entry Header;"));
