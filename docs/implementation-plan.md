@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Bounded post-tested sentinel repeats with guarded static projections
-Next Action: Define the compressed remaining-bit payload terminal for the H.264 slice-header slice
-Last Verification: Commit 644651e local dev/ci/sanitize passed 32/32; hosted run
-  30857732349 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Define and implement the compressed remaining-bit payload terminal
+Next Action: Define the first bounded H.264 slice-header structure and dispatch it for VCL NAL units
+Last Verification: Commits 878aa5a and 9c832ba local dev/ci/sanitize each passed 32/32; hosted run
+  30861138810 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -579,3 +579,16 @@ Blockers: None
   Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、Install、Upload 均成功。
   bundled H.264 rule 尚未使用新语法，package version 保持不变；完整 slice-header 项仍未完成，
   下一步定义 compressed remaining-bit payload terminal。
+- 2026-08-04：完成 compressed remaining-bit payload terminal。ADR-0048 与英中 DSL reference
+  固化命名终结项 `compressed_payload name;`：它只能无条件位于结构顶层最终位置，与
+  `rbsp_trailing_bits` 互斥，不接受数组、前置 annotation、表达式、constraint、enum 或
+  context metadata；typed IR 降为一个 `CompressedPayload` field 与一条
+  `register-compressed-payload` instruction。VM 在读取 source 前拒绝 malformed field/opcode，
+  成功执行把当前 bounded reader 的全部剩余 bit 映射为一个 `Materialized`
+  `CompressedPayload` node，保留非 byte 对齐与 multi-span location，允许零长度，并在不读取
+  payload source 的情况下 seek 到逻辑末尾。实现提交为 `9c832ba`，文档提交为 `878aa5a`；本机
+  `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为 32/32；hosted run `30861138810`
+  在 Windows 2022 / Qt 6.10.1、macOS 15 / Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的
+  Configure、Build、Test、Install、Upload 均成功。官方 H.264 package 尚未接入该 terminal，
+  package version 保持 `0.1.7`；下一步定义首个有界 H.264 slice-header structure 并接入
+  VCL NAL dispatch。
