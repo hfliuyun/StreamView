@@ -57,6 +57,31 @@ class AnalysisModelTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void preservesInstanceIdentityOnlyAcrossMoves() {
+        auto original = AnalysisTree::create(QStringLiteral("identity"));
+        QVERIFY(original.has_value());
+        const quint64 originalIdentity = original->instanceIdentity();
+        QVERIFY(originalIdentity != 0);
+
+        AnalysisTree copy(*original);
+        QVERIFY(copy.instanceIdentity() != originalIdentity);
+        AnalysisTree copyAssigned = copy;
+        const quint64 copyAssignedIdentity = copyAssigned.instanceIdentity();
+        QVERIFY(copyAssignedIdentity != copy.instanceIdentity());
+        copyAssigned = *original;
+        QVERIFY(copyAssigned.instanceIdentity() != copyAssignedIdentity);
+        QVERIFY(copyAssigned.instanceIdentity() != originalIdentity);
+
+        AnalysisTree moved(std::move(*original));
+        QCOMPARE(moved.instanceIdentity(), originalIdentity);
+        QVERIFY(original->instanceIdentity() != originalIdentity);
+        auto moveAssigned = AnalysisTree::create(QStringLiteral("move-assigned"));
+        QVERIFY(moveAssigned.has_value());
+        *moveAssigned = std::move(moved);
+        QCOMPARE(moveAssigned->instanceIdentity(), originalIdentity);
+        QVERIFY(moved.instanceIdentity() != originalIdentity);
+    }
+
     void createsAnIndexingRootAndStableSnapshots() {
         const auto empty = AnalysisTree::create({});
         QVERIFY(!empty.has_value());

@@ -10,6 +10,7 @@
 #include <QtGlobal>
 
 #include <optional>
+#include <vector>
 
 namespace streamview::rules {
 
@@ -50,12 +51,24 @@ struct DslExecutionOptions final {
     std::optional<core::CancellationToken> cancellation;
 };
 
+struct DslExecutionContextValue final {
+    quint64 value = 0;
+    std::optional<core::FieldLocation> location;
+};
+
+struct DslExecutionContextValues final {
+    DslExecutionContextValue key;
+    std::vector<DslExecutionContextValue> dependencies;
+    std::vector<DslExecutionContextValue> exports;
+};
+
 struct DslExecutionResult final {
     DslExecutionStatus status = DslExecutionStatus::InvalidDefinition;
     std::optional<core::AnalysisNodeId> structureNode;
     quint64 bitsConsumed = 0;
     quint64 instructionsExecuted = 0;
     quint64 nodesCreated = 0;
+    std::optional<DslExecutionContextValues> contextValues;
     QString errorMessage;
 
     [[nodiscard]] bool materialized() const noexcept {

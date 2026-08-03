@@ -1022,8 +1022,9 @@ private slots:
     }
 
     void decodesTheSupportedPictureParameterSetBaseSyntax() {
-        MemorySource source(
-            bytes({0x00, 0x00, 0x01, 0x68, 0xce, 0x3c, 0x80}));
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x67,
+                                   0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+                                   0x00, 0x00, 0x01, 0x68, 0xce, 0x3c, 0x80}));
         QString errorMessage;
         auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
         QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
@@ -1031,8 +1032,8 @@ private slots:
         const auto batch = analyzer->analyzeBatch();
 
         QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
-        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
-        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.back());
         QVERIFY(nal.has_value());
         QCOMPARE(nal->state(), MaterializationState::Materialized);
         const auto rbsp = analyzer->tree().node(nal->children().at(2));
@@ -1081,13 +1082,15 @@ private slots:
         QCOMPARE(deblocking->value().toULongLong(), quint64(1));
         QCOMPARE(stop->value().toULongLong(), quint64(1));
         QCOMPARE(ppsId->location()->sourceSpans().front().start().absoluteBitOffset(),
-                 quint64(32));
+                 quint64(120));
         QCOMPARE(ppsId->location()->sourceSpans().front().bitLength(), quint64(1));
     }
 
     void decodesNonDefaultPictureParameterSetValues() {
-        MemorySource source(bytes(
-            {0x00, 0x00, 0x01, 0x68, 0x23, 0xed, 0x66, 0x8a, 0xe0}));
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x67,
+                                   0x42, 0x00, 0x1e, 0x7d, 0x02, 0x83, 0xf2,
+                                   0x00, 0x00, 0x01, 0x68,
+                                   0x23, 0xed, 0x66, 0x8a, 0xe0}));
         QString errorMessage;
         auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
         QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
@@ -1095,7 +1098,8 @@ private slots:
         const auto batch = analyzer->analyzeBatch();
 
         QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
-        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.back());
         QVERIFY(nal.has_value());
         QCOMPARE(nal->state(), MaterializationState::Materialized);
         const auto rbsp = analyzer->tree().node(nal->children().at(2));
@@ -1150,8 +1154,10 @@ private slots:
     }
 
     void warnsOnOutOfRangePictureParameterSetIdentifier() {
-        MemorySource source(
-            bytes({0x00, 0x00, 0x01, 0x68, 0x00, 0x80, 0xce, 0x3c, 0x80}));
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x67,
+                                   0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+                                   0x00, 0x00, 0x01, 0x68,
+                                   0x00, 0x80, 0xce, 0x3c, 0x80}));
         QString errorMessage;
         auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
         QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
@@ -1159,7 +1165,8 @@ private slots:
         const auto batch = analyzer->analyzeBatch();
 
         QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
-        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.back());
         QVERIFY(nal.has_value());
         QCOMPARE(nal->state(), MaterializationState::Materialized);
         const auto rbsp = analyzer->tree().node(nal->children().at(2));
@@ -1179,8 +1186,43 @@ private slots:
                  QStringLiteral("PictureParameterSetRbsp.pic_parameter_set_id"));
         QVERIFY(diagnostic.location.has_value());
         QCOMPARE(diagnostic.location->sourceSpans().front().start().absoluteBitOffset(),
-                 quint64(32));
+                 quint64(120));
         QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(17));
+    }
+
+    void rejectsPictureParameterSetWithoutPriorSequenceParameterSetAndContinues() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x68, 0xce, 0x3c, 0x80,
+                                   0x00, 0x00, 0x01, 0x09, 0x50}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+        const auto ppsNal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(ppsNal.has_value());
+        QCOMPARE(ppsNal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(ppsNal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        QCOMPARE(rbsp->state(), MaterializationState::Invalid);
+        const auto pps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(pps.has_value());
+        QCOMPARE(pps->state(), MaterializationState::Materialized);
+        QCOMPARE(pps->diagnostics().size(), std::size_t(1));
+        const auto& diagnostic = pps->diagnostics().front();
+        QCOMPARE(diagnostic.code,
+                 streamview::core::DiagnosticCode::DependencyUnavailable);
+        QCOMPARE(diagnostic.fieldPath,
+                 QStringLiteral("PictureParameterSetRbsp.seq_parameter_set_id"));
+        QVERIFY(diagnostic.location.has_value());
+        QCOMPARE(diagnostic.location->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(33));
+
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
     }
 
     void rejectsUnsupportedPictureParameterSetSliceGroupsAndContinues() {

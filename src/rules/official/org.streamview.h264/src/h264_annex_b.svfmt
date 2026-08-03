@@ -26,6 +26,7 @@ enum SpsProfileIdc {
 
 @spec("ITU-T H.264", "7.3.2.1.1")
 @description("The supported 8-bit 4:2:0 sequence parameter set core.")
+@context("h264-sps", seq_parameter_set_id)
 struct SequenceParameterSetRbsp {
     bits<8> profile_idc @enum(SpsProfileIdc)
         @description("Identifies the supported H.264 profile.");
@@ -47,18 +48,18 @@ struct SequenceParameterSetRbsp {
         bits<1> qpprime_y_zero_transform_bypass_flag @equals(0);
         bits<1> seq_scaling_matrix_present_flag @equals(0);
     }
-    ue log2_max_frame_num_minus4 @range(0, 12)
+    ue log2_max_frame_num_minus4 @range(0, 12) @context_export
         @spec("ITU-T H.264", "7.4.2.1.1")
         @description("Sets the frame-number wrap; conformant values are 0 to 12.");
-    ue pic_order_cnt_type @equals(0);
-    ue log2_max_pic_order_cnt_lsb_minus4 @range(0, 12)
+    ue pic_order_cnt_type @equals(0) @context_export;
+    ue log2_max_pic_order_cnt_lsb_minus4 @range(0, 12) @context_export
         @spec("ITU-T H.264", "7.4.2.1.1")
         @description("Sets the picture-order-count wrap; conformant values are 0 to 12.");
     ue max_num_ref_frames;
     bits<1> gaps_in_frame_num_value_allowed_flag;
     ue pic_width_in_mbs_minus1;
     ue pic_height_in_map_units_minus1;
-    bits<1> frame_mbs_only_flag;
+    bits<1> frame_mbs_only_flag @context_export;
     if (frame_mbs_only_flag == 0) {
         bits<1> mb_adaptive_frame_field_flag;
     }
@@ -181,6 +182,8 @@ enum WeightedBipredIdc {
 
 @spec("ITU-T H.264", "7.3.2.2")
 @description("The supported picture parameter set base syntax without slice groups or extensions.")
+@context("h264-pps", pic_parameter_set_id)
+@context_dependency("h264-sps", seq_parameter_set_id)
 struct PictureParameterSetRbsp {
     ue pic_parameter_set_id @range(0, 255)
         @spec("ITU-T H.264", "7.4.2.2")
@@ -188,21 +191,21 @@ struct PictureParameterSetRbsp {
     ue seq_parameter_set_id @range(0, 31)
         @spec("ITU-T H.264", "7.4.2.2")
         @description("Identifies the referenced sequence parameter set; conformant values are 0 to 31.");
-    bits<1> entropy_coding_mode_flag
+    bits<1> entropy_coding_mode_flag @context_export
         @description("Selects CAVLC or CABAC entropy coding for slices using this PPS.");
-    bits<1> bottom_field_pic_order_in_frame_present_flag
+    bits<1> bottom_field_pic_order_in_frame_present_flag @context_export
         @description("Signals bottom-field picture-order syntax in associated slice headers.");
     ue num_slice_groups_minus1 @equals(0)
         @description("The supported base syntax contains one slice group.");
-    ue num_ref_idx_l0_default_active_minus1 @range(0, 31)
+    ue num_ref_idx_l0_default_active_minus1 @range(0, 31) @context_export
         @spec("ITU-T H.264", "7.4.2.2")
         @description("Sets the default list 0 reference count; conformant values are 0 to 31.");
-    ue num_ref_idx_l1_default_active_minus1 @range(0, 31)
+    ue num_ref_idx_l1_default_active_minus1 @range(0, 31) @context_export
         @spec("ITU-T H.264", "7.4.2.2")
         @description("Sets the default list 1 reference count; conformant values are 0 to 31.");
-    bits<1> weighted_pred_flag
+    bits<1> weighted_pred_flag @context_export
         @description("Enables weighted prediction for P and SP slices using this PPS.");
-    bits<2> weighted_bipred_idc @enum(WeightedBipredIdc)
+    bits<2> weighted_bipred_idc @enum(WeightedBipredIdc) @context_export
         @description("Selects the supported weighted biprediction mode.");
     se pic_init_qp_minus26
         @description("Sets the initial luma quantization parameter relative to 26.");
@@ -210,11 +213,11 @@ struct PictureParameterSetRbsp {
         @description("Sets the initial SP/SI quantization parameter relative to 26.");
     se chroma_qp_index_offset
         @description("Sets the first chroma quantization-parameter index offset.");
-    bits<1> deblocking_filter_control_present_flag
+    bits<1> deblocking_filter_control_present_flag @context_export
         @description("Signals deblocking-filter control syntax in associated slice headers.");
     bits<1> constrained_intra_pred_flag
         @description("Restricts intra prediction to intra-coded neighboring macroblocks.");
-    bits<1> redundant_pic_cnt_present_flag
+    bits<1> redundant_pic_cnt_present_flag @context_export
         @description("Signals redundant-picture count syntax in associated slice headers.");
     rbsp_trailing_bits;
 }

@@ -86,6 +86,7 @@ enum class DslDiagnosticCode : quint8 {
     InvalidExpression,
     InvalidPayloadDispatch,
     InvalidRbspTrailingBits,
+    InvalidContext,
 };
 
 struct DslDiagnostic final {

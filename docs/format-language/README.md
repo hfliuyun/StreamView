@@ -115,6 +115,12 @@ The accepted H.264 trailing-bits slice adds the terminal
 the position-dependent zero padding of an RBSP without introducing a general
 alignment expression or unbounded loop.
 
+The accepted context-publication slice adds structure annotations
+`@context` and repeatable `@context_dependency`, plus the scalar-field
+annotation `@context_export`. A rules-owned execution session publishes
+completed definitions and their selected typed values to a position-aware
+directory without reading values back from presentation nodes.
+
 ## Minimum DSL 0.1 Subset
 
 The first executable subset uses the following grammar. Whitespace and `//` or
@@ -215,6 +221,20 @@ The static rules for this subset are:
   one node for the structure within the default 100,000-node materialization
   budget. The compiler rejects a larger projection before producing executable
   typed IR.
+- `@context(kind, key_field)` occurs at most once on a structure. `kind` is one
+  of `h264-sps`, `h264-pps`, `aac-asc`, or
+  `iso-bmff-sample-description`. `@context_dependency(kind, key_field)` is
+  valid only on a structure that also has `@context`; it may occur at most 16
+  times. An identical kind/field pair is a duplicate and is rejected rather
+  than coalesced.
+- Every context key and dependency key names an unconditional, top-level,
+  non-array unsigned scalar declared in that structure. Accepted scalar kinds
+  are `bits`, enum, `ue`, and `computed<u64>`. Signed fields, guarded or
+  repeated fields, array elements, lazy regions, and generated trailing-bit
+  fields are not context values.
+- `@context_export` takes no arguments, occurs at most once on a field, and is
+  valid only for the same unconditional unsigned scalar kinds in a structure
+  with `@context`. One definition exports at most 64 values.
 - Fixed-width arrays contribute `width * count` bits to static alignment.
   Every element of a little-endian array must therefore have a byte-multiple
   width and the first element must begin at a structure-relative byte boundary.
@@ -398,6 +418,16 @@ and, when present, constraint-check instructions. Conditional
 blocks are lowered into the same declaration-order field stream. Each possible
 field carries resolved presence guards that reference earlier typed-field
 indexes; no jump opcode or general control-flow bytecode is introduced.
+Context publication follows the same model: the compiler records each
+structure's context definition, ordered dependencies, and exported-value field
+indexes in typed IR. It emits no context-specific opcode. Before any source
+read, the VM validates every context index, scalar type, and cardinality even
+for typed programs supplied directly rather than produced by the compiler.
+After all selected fields execute successfully, it returns only the declared
+key, dependency keys, exports, and their exact locations to the execution
+session. Validation and collection use the existing instruction, expression,
+node, and cancellation budgets; context metadata cannot create an unbudgeted
+execution path.
 
 `rbsp_trailing_bits` lowers to one `read-rbsp-trailing-bits` instruction and
 eight generated typed-field slots: one `rbsp_stop_one_bit` and seven possible
@@ -672,8 +702,9 @@ conformance. Reserved fixed-width table values, nonzero SAR/timing values, timin
 ratios, level-dependent HRD bitrate/CPB/delay relationships, and the relationship
 between `max_num_reorder_frames`, `max_dec_frame_buffering`, and SPS-derived decoder
 limits remain unchecked where the stable DSL lacks the required fixed-width or
-relational constraint. A materialized SPS/VUI/HRD core does not imply SPS context
-registration or that later SEI timing consumers have been decoded.
+relational constraint. A materialized SPS/VUI/HRD core publishes an SPS context
+generation after exact RBSP consumption; it does not imply that later SEI timing
+consumers have been decoded.
 
 The declared VUI fields have the following bounded meanings:
 
@@ -737,16 +768,20 @@ identifiers or default reference-index counts retain the complete PPS with a
 field warning. A nonzero `num_slice_groups_minus1`, reserved
 `weighted_bipred_idc`, or extension syntax is `invalid-syntax` because the
 unsupported input changes or extends the declared layout. A materialized PPS
-does not yet imply that its referenced SPS generation exists, that the PPS was
-registered, or that a slice header may use it. Every other type keeps the
-uninterpreted `rbsp_payload` region unchanged.
+resolves the most recent available SPS with the declared identifier before the
+PPS NAL and binds that exact generation when it publishes its own generation.
+If no SPS is available, the PPS structure remains materialized but receives a
+source-located `dependency-unavailable` diagnostic; its RBSP and NAL are invalid,
+nothing is published, and later NAL units are still analyzed. Slice dispatch and
+context import remain unimplemented. Every other type keeps the uninterpreted
+`rbsp_payload` region unchanged.
 
 The declared PPS fields have the following bounded meanings:
 
 | Field | Meaning in this slice |
 | --- | --- |
 | `pic_parameter_set_id` | Identifies the PPS; clause 7.4.2.2 constrains it to `0..255`. |
-| `seq_parameter_set_id` | Names the referenced SPS without resolving it; clause 7.4.2.2 constrains it to `0..31`. |
+| `seq_parameter_set_id` | Selects the most recent available SPS generation before the PPS NAL; clause 7.4.2.2 constrains it to `0..31`. |
 | `entropy_coding_mode_flag` | Selects CAVLC or CABAC entropy coding for associated slices. |
 | `bottom_field_pic_order_in_frame_present_flag` | Signals bottom-field picture-order syntax in associated slice headers. |
 | `num_slice_groups_minus1` | Must be zero because this slice does not parse flexible macroblock ordering. |
@@ -977,6 +1012,26 @@ payload<rbsp> nal_units switch (nal_unit_type) {
 entry nal_units;
 ```
 
+Valid context-publication example:
+
+```cpp
+@context("h264-sps", sps_id)
+struct Sps {
+    ue sps_id;
+    ue log2_width @context_export;
+}
+
+@context("h264-pps", pps_id)
+@context_dependency("h264-sps", sps_id)
+struct Pps {
+    ue pps_id;
+    ue sps_id;
+    bits<1> entropy_mode @context_export;
+}
+
+entry Sps;
+```
+
 Invalid minimum examples include `bits<0> flag;`, `bits<65> flag;`,
 `bits<12, little> value;`, a little-endian field after an unaligned field,
 `se value @equals(0);`, `se value @enum(Type);`, `se value @range(0, 12);`,
@@ -1003,6 +1058,12 @@ fields, a repeat-local controller used by another iteration or after the
 repeat, a little-endian field after a repeat, `scan(other_scanner)`, two
 declarations with the same name, a program with no `entry`, or multiple `entry`
 declarations.
+
+Invalid context-publication examples include a second `@context` on one
+structure; an identical repeated `@context_dependency`; a dependency on a
+structure without `@context`; a guarded, repeated, array, signed, lazy, or
+generated key or export; `@context_export(1)`; more than 16 dependencies; and
+more than 64 exports. Unknown context kinds and key names are rejected as well.
 
 Invalid payload-dispatch examples include two payload declarations,
 `payload<ebsp>` or any other view kind, a dispatch naming a structure or an
@@ -1189,13 +1250,30 @@ It never terminates the sequence, and later elements continue to be analyzed.
 
 ## Position-Aware Context Directories
 
-The runtime infrastructure exposes a format-neutral context-directory type for
-completed definitions that later syntax may reference. The accepted kinds are
-H.264 SPS and PPS, AAC AudioSpecificConfig, and ISO BMFF sample descriptions. A
-key also contains a numeric scope so equal sample-description or parameter-set
-values in different tracks do not collide. This slice adds the core type, not
-session ownership or DSL syntax; typed format declarations, payload access, and
-runner integration arrive with the official format rules.
+`RuleExecutionSession` owns one exact compiled program, one format-neutral
+context directory, and the rules-owned typed payloads published by one analysis
+source and tree. Its first valid execution locks that analysis identity; reuse
+with another source or tree is invalid rule/runtime state. Moving the session or
+its containing analyzer preserves the identity and published generations. The
+accepted kinds are H.264 SPS and PPS, AAC AudioSpecificConfig, and ISO BMFF
+sample descriptions. A key also contains a numeric scope so equal
+sample-description or parameter-set values in different tracks do not collide.
+Standalone Annex B uses scope zero.
+
+The session can execute a complete logical view or the suffix beginning at a
+nonzero logical start. Its reader is backed by exactly that mapped slice, source
+locations retain the original logical coordinates, and exact consumption means
+consuming that slice rather than the mapping prefix. For a context definition,
+every mapped source span in that slice must lie inside the non-empty enclosing
+source span; a mismatch is rejected before source reads or analysis binding. A
+structure without context annotations uses the same execution path but publishes
+no directory effect.
+
+The compiler lowers every declared key, dependency, and export to a stable typed
+field index. Before reading source, the VM validates those indexes and types. It
+returns only the selected values and their exact source locations, not its full
+local environment; neither the session nor the analyzer walks presentation-tree
+children to recover runtime values.
 
 A definition is selectable only at source positions at or after its complete
 source span's exclusive end. Among such definitions for the same key, lookup
@@ -1212,10 +1290,23 @@ registration is transactional, and later cross-generation dependency cycles
 or dependency chains beyond 64 definitions produce dependency-unavailable
 results.
 
+Publication occurs only after successful materialization, requested exact
+consumption, dependency resolution, and complete typed-payload preparation.
+Payload and directory capacity are reserved before registration, so committing
+the prepared payload after successful directory mutation is a non-allocating
+move under the single-writer model. Malformed, truncated, cancelled,
+resource-limited, dependency-unavailable, or residual-bit executions publish
+nothing. A failed redefinition therefore does not hide the previous valid
+generation.
+
 The directory owns only key, span, analysis-node, and dependency identity. The
 rule owner retains the typed format payload. It performs no source reads and
 follows the single-writer analysis-worker model. See
 [ADR-0028](../adr/0028-resolve-context-generations-by-source-position.md).
+The publication contract is specified by
+[ADR-0044](../adr/0044-publish-rule-declared-context-generations.md). The
+bundled H.264 rule first uses it in package version `0.1.7`; slice context import
+is a later language slice.
 
 ## Sandbox And Resource Limits
 

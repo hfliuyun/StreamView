@@ -4,6 +4,7 @@
 #include <QTest>
 
 #include <algorithm>
+#include <vector>
 
 using streamview::rules::DslCompileResult;
 using streamview::rules::DslCompiler;
@@ -42,7 +43,10 @@ private slots:
             "bits<7> value; } "
             "@index(progressive) sequence<Header> units = scan(h264_start_code); "
             "entry units;"));
-        QVERIFY(parsed.succeeded());
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
 
         const auto first = DslCompiler::compile(parsed.program);
         const auto second = DslCompiler::compile(parsed.program);
@@ -1443,7 +1447,10 @@ private slots:
             }
             entry nal_units;
         )"));
-        QVERIFY(parsed.succeeded());
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
 
         const auto compiled = DslCompiler::compile(parsed.program);
 
@@ -1492,6 +1499,143 @@ private slots:
 
         QVERIFY(!compiled.succeeded());
         QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidPayloadDispatch));
+    }
+
+    void lowersRuleDeclaredContextDefinitionsToStableFieldIndexes() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", sps_id)
+            struct Sps {
+                ue sps_id;
+                ue frame_width @context_export;
+                computed<u64> frame_width_plus_one = frame_width + 1
+                    @context_export;
+            }
+            @context("h264-pps", pps_id)
+            @context_dependency("h264-sps", sps_id)
+            struct Pps {
+                ue pps_id;
+                ue sps_id;
+                bits<1> entropy_mode @context_export;
+            }
+            entry Sps;
+        )"));
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& sps = compiled.program->structs.at(0).contextDefinition;
+        QVERIFY(sps.has_value());
+        QCOMPARE(sps->kind,
+                 streamview::core::ContextDefinitionKind::H264SequenceParameterSet);
+        QCOMPARE(sps->keyFieldIndex, quint32(0));
+        QVERIFY(sps->dependencies.empty());
+        QCOMPARE(sps->exportFieldIndices, std::vector<quint32>({1, 2}));
+
+        const auto& pps = compiled.program->structs.at(1).contextDefinition;
+        QVERIFY(pps.has_value());
+        QCOMPARE(pps->kind,
+                 streamview::core::ContextDefinitionKind::H264PictureParameterSet);
+        QCOMPARE(pps->keyFieldIndex, quint32(0));
+        QCOMPARE(pps->dependencies.size(), std::size_t(1));
+        QCOMPARE(pps->dependencies.front().kind,
+                 streamview::core::ContextDefinitionKind::H264SequenceParameterSet);
+        QCOMPARE(pps->dependencies.front().keyFieldIndex, quint32(1));
+        QCOMPARE(pps->exportFieldIndices, std::vector<quint32>({2}));
+    }
+
+    void rejectsInvalidRuleDeclaredContextContracts() {
+        const std::vector<QString> invalidSources{
+            QStringLiteral(
+                "@context(\"h264-sps\", id) @context(\"h264-pps\", id) "
+                "struct C { bits<1> id; } entry C;"),
+            QStringLiteral(
+                "@context(\"h264-pps\", id) "
+                "@context_dependency(\"h264-sps\", dependency) "
+                "@context_dependency(\"h264-sps\", dependency) "
+                "struct C { bits<1> id; bits<1> dependency; } entry C;"),
+            QStringLiteral(
+                "@context(\"unknown\", id) struct C { bits<1> id; } entry C;"),
+            QStringLiteral(
+                "@context_dependency(\"h264-sps\", id) "
+                "struct C { bits<1> id; } entry C;"),
+            QStringLiteral(
+                "@context(\"h264-sps\", id) struct C { bits<1> id; "
+                "if (id == 1) { bits<1> value @context_export; } } entry C;"),
+            QStringLiteral(
+                "@context(\"h264-sps\", id) struct C { bits<1> id; "
+                "se value @context_export; } entry C;"),
+            QStringLiteral(
+                "@context(\"h264-sps\", id) struct C { bits<1> id; "
+                "bits<1> value[2] @context_export; } entry C;"),
+            QStringLiteral(
+                "@context(\"h264-sps\", id) struct C { bits<1> id; "
+                "bits<1> value @context_export(1); } entry C;"),
+            QStringLiteral(
+                "@context(\"h264-sps\") struct C { bits<1> id; } entry C;"),
+        };
+
+        for (const QString& source : invalidSources) {
+            const auto parsed = DslParser::parse(source);
+            QVERIFY2(parsed.succeeded(), qPrintable(source));
+            const auto compiled = DslCompiler::compile(parsed.program);
+            QVERIFY2(!compiled.succeeded(), qPrintable(source));
+            QVERIFY2(hasDiagnostic(compiled, DslDiagnosticCode::InvalidContext),
+                     qPrintable(source));
+        }
+
+        QString tooManyExports =
+            QStringLiteral("@context(\"h264-sps\", id) struct C { bits<8> id; ");
+        for (quint32 index = 0; index < 65; ++index) {
+            tooManyExports += QStringLiteral("bits<1> value%1 @context_export; ").arg(index);
+        }
+        tooManyExports += QStringLiteral("} entry C;");
+        const auto parsed = DslParser::parse(tooManyExports);
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(!compiled.succeeded());
+        QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidContext));
+
+        QString maximumDependencies =
+            QStringLiteral("@context(\"h264-pps\", id) " );
+        for (quint32 index = 0; index < 16; ++index) {
+            maximumDependencies += QStringLiteral(
+                "@context_dependency(\"h264-sps\", dependency%1) " ).arg(index);
+        }
+        maximumDependencies += QStringLiteral("struct C { bits<8> id; " );
+        for (quint32 index = 0; index < 16; ++index) {
+            maximumDependencies +=
+                QStringLiteral("bits<8> dependency%1; " ).arg(index);
+        }
+        maximumDependencies += QStringLiteral("} entry C;" );
+        const auto maximumParsed = DslParser::parse(maximumDependencies);
+        QVERIFY(maximumParsed.succeeded());
+        const auto maximumCompiled = DslCompiler::compile(maximumParsed.program);
+        QVERIFY2(maximumCompiled.succeeded(),
+                 maximumCompiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(maximumCompiled.diagnostics.front().message));
+        QCOMPARE(maximumCompiled.program->structs.front().contextDefinition->dependencies.size(),
+                 std::size_t(16));
+
+        QString tooManyDependencies = maximumDependencies;
+        tooManyDependencies.replace(
+            QStringLiteral("struct C {"),
+            QStringLiteral(
+                "@context_dependency(\"h264-sps\", dependency16) struct C {"));
+        tooManyDependencies.replace(QStringLiteral("} entry C;"),
+                                    QStringLiteral("bits<8> dependency16; } entry C;"));
+        const auto tooManyParsed = DslParser::parse(tooManyDependencies);
+        QVERIFY(tooManyParsed.succeeded());
+        const auto tooManyCompiled = DslCompiler::compile(tooManyParsed.program);
+        QVERIFY(!tooManyCompiled.succeeded());
+        QVERIFY(hasDiagnostic(tooManyCompiled, DslDiagnosticCode::InvalidContext));
     }
 };
 

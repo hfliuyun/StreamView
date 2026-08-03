@@ -1,6 +1,7 @@
 #pragma once
 
 #include <streamview/core/analysis_model.h>
+#include <streamview/core/context_directory.h>
 #include <streamview/rules/dsl.h>
 
 #include <QString>
@@ -103,11 +104,29 @@ struct DslTypedRepeatBound final {
     DslSourceRange range;
 };
 
+struct DslTypedContextDependency final {
+    core::ContextDefinitionKind kind =
+        core::ContextDefinitionKind::H264SequenceParameterSet;
+    quint32 keyFieldIndex = 0;
+};
+
+struct DslTypedContextDefinition final {
+    [[nodiscard]] static constexpr std::size_t maximumDependencies() noexcept { return 16; }
+    [[nodiscard]] static constexpr std::size_t maximumExports() noexcept { return 64; }
+
+    core::ContextDefinitionKind kind =
+        core::ContextDefinitionKind::H264SequenceParameterSet;
+    quint32 keyFieldIndex = 0;
+    std::vector<DslTypedContextDependency> dependencies;
+    std::vector<quint32> exportFieldIndices;
+};
+
 struct DslTypedStruct final {
     QString name;
     core::AnalysisNodeMetadata metadata;
     std::vector<DslTypedField> fields;
     std::vector<DslTypedRepeatBound> repeatBounds;
+    std::optional<DslTypedContextDefinition> contextDefinition;
     quint32 bytecodeOffset = 0;
     quint32 bytecodeLength = 0;
 };

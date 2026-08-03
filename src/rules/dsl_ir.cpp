@@ -221,6 +221,48 @@ void collectFields(const std::vector<DslStructItem>& items,
     return result;
 }
 
+[[nodiscard]] bool contextExportRequested(
+    const std::vector<DslAnnotation>& annotations,
+    std::vector<DslDiagnostic>& diagnostics) {
+    bool requested = false;
+    for (const DslAnnotation& annotation : annotations) {
+        if (annotation.name != QStringLiteral("context_export")) {
+            continue;
+        }
+        if (requested) {
+            addDiagnostic(diagnostics,
+                          DslDiagnosticCode::InvalidContext,
+                          QStringLiteral("@context_export may appear at most once on a field"),
+                          annotation.range);
+        }
+        requested = true;
+        if (!annotation.arguments.empty()) {
+            addDiagnostic(diagnostics,
+                          DslDiagnosticCode::InvalidContext,
+                          QStringLiteral("@context_export does not accept arguments"),
+                          annotation.range);
+        }
+    }
+    return requested;
+}
+
+[[nodiscard]] std::optional<core::ContextDefinitionKind>
+contextKindForName(const QString& name) noexcept {
+    if (name == QStringLiteral("h264-sps")) {
+        return core::ContextDefinitionKind::H264SequenceParameterSet;
+    }
+    if (name == QStringLiteral("h264-pps")) {
+        return core::ContextDefinitionKind::H264PictureParameterSet;
+    }
+    if (name == QStringLiteral("aac-asc")) {
+        return core::ContextDefinitionKind::AacAudioSpecificConfig;
+    }
+    if (name == QStringLiteral("iso-bmff-sample-description")) {
+        return core::ContextDefinitionKind::IsoBmffSampleDescription;
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] std::optional<quint32> findEnum(const DslTypedProgram& program,
                                               const QString& name) {
     for (quint32 index = 0; index < program.enums.size(); ++index) {
@@ -823,6 +865,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         };
         std::vector<DeclaredField> declaredFields;
         declaredFields.reserve(fieldDeclarations.size());
+        std::vector<quint32> contextExportFieldIndices;
         std::vector<quint64> repeatIndices;
         const auto sameCondition = [](const DslTypedFieldCondition& left,
                                       const DslTypedFieldCondition& right) {
@@ -1135,6 +1178,19 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             }
             const quint32 firstTypedIndex =
                 static_cast<quint32>(typedStruct.fields.size());
+            if (contextExportRequested(field.annotations, result.diagnostics)) {
+                if (field.arrayLength || !conditions.empty() || !repeatIndices.empty() ||
+                    isSignedExpGolomb) {
+                    addDiagnostic(
+                        result.diagnostics,
+                        DslDiagnosticCode::InvalidContext,
+                        QStringLiteral("@context_export requires an unconditional top-level "
+                                       "non-array unsigned scalar field"),
+                        field.range);
+                } else {
+                    contextExportFieldIndices.push_back(firstTypedIndex);
+                }
+            }
             if (field.arrayLength) {
                 for (quint64 elementIndex = 0; elementIndex < elementCount; ++elementIndex) {
                     DslTypedField element = typedField;
@@ -1270,8 +1326,15 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidType,
                               QStringLiteral("Computed field type is invalid"), field.range);
             }
-            validatePresentationOnlyAnnotations(
-                field.annotations, QStringLiteral("Computed fields"));
+            const bool contextExport =
+                contextExportRequested(field.annotations, result.diagnostics);
+            for (const DslAnnotation& annotation : field.annotations) {
+                if (annotation.name == QStringLiteral("context_export")) {
+                    continue;
+                }
+                validatePresentationOnlyAnnotations({annotation},
+                                                    QStringLiteral("Computed fields"));
+            }
             const ExpressionResolver resolveField =
                 [&](const QString& name,
                     const DslSourceRange& range) -> std::optional<DslTypedExpression> {
@@ -1311,6 +1374,19 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             typedField.range = field.range;
             const quint32 typedIndex = static_cast<quint32>(typedStruct.fields.size());
             typedStruct.fields.push_back(std::move(typedField));
+            if (contextExport) {
+                if (field.type != DslScalarType::U64 || !conditions.empty() ||
+                    !repeatIndices.empty()) {
+                    addDiagnostic(
+                        result.diagnostics,
+                        DslDiagnosticCode::InvalidContext,
+                        QStringLiteral("@context_export requires an unconditional top-level "
+                                       "unsigned computed field"),
+                        field.range);
+                } else {
+                    contextExportFieldIndices.push_back(typedIndex);
+                }
+            }
             declaredFields.push_back(
                 {field.name, nullptr, &field, field.type, typedIndex, conditions});
             return fieldOffset;
@@ -1679,6 +1755,152 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             return fieldOffset;
         };
         (void)compileItems(compileItems, structure.items, {}, quint64(0));
+
+        struct ContextAnnotation final {
+            core::ContextDefinitionKind kind =
+                core::ContextDefinitionKind::H264SequenceParameterSet;
+            QString keyFieldName;
+            DslSourceRange range;
+        };
+        const auto parseContextAnnotation =
+            [&result](const DslAnnotation& annotation,
+                      const QString& annotationName) -> std::optional<ContextAnnotation> {
+            if (annotation.arguments.size() != 2 ||
+                annotation.arguments.at(0).kind != DslAnnotationValueKind::String ||
+                annotation.arguments.at(1).kind != DslAnnotationValueKind::Identifier) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidContext,
+                              QStringLiteral("@%1 requires a context-kind string and a field name")
+                                  .arg(annotationName),
+                              annotation.range);
+                return std::nullopt;
+            }
+            const auto kind = contextKindForName(annotation.arguments.at(0).text);
+            if (!kind) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidContext,
+                              QStringLiteral("@%1 names an unsupported context kind")
+                                  .arg(annotationName),
+                              annotation.range);
+                return std::nullopt;
+            }
+            return ContextAnnotation{*kind,
+                                     annotation.arguments.at(1).text,
+                                     annotation.range};
+        };
+
+        std::optional<ContextAnnotation> contextAnnotation;
+        std::vector<ContextAnnotation> dependencyAnnotations;
+        for (const DslAnnotation& annotation : structure.annotations) {
+            if (annotation.name == QStringLiteral("context")) {
+                const auto parsed = parseContextAnnotation(annotation, annotation.name);
+                if (contextAnnotation) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidContext,
+                                  QStringLiteral("@context may appear at most once on a structure"),
+                                  annotation.range);
+                } else if (parsed) {
+                    contextAnnotation = *parsed;
+                }
+            } else if (annotation.name == QStringLiteral("context_dependency")) {
+                const auto parsed = parseContextAnnotation(annotation, annotation.name);
+                if (parsed) {
+                    dependencyAnnotations.push_back(*parsed);
+                }
+            }
+        }
+        if (dependencyAnnotations.size() >
+            DslTypedContextDefinition::maximumDependencies()) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidContext,
+                          QStringLiteral("A context definition may declare at most 16 dependencies"),
+                          structure.range);
+        }
+        if (contextExportFieldIndices.size() >
+            DslTypedContextDefinition::maximumExports()) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidContext,
+                          QStringLiteral("A context definition may export at most 64 values"),
+                          structure.range);
+        }
+        if (!contextAnnotation &&
+            (!dependencyAnnotations.empty() || !contextExportFieldIndices.empty())) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidContext,
+                          QStringLiteral("Context dependencies and exports require @context"),
+                          structure.range);
+        }
+
+        const auto resolveContextField =
+            [&typedStruct, &result](const ContextAnnotation& annotation,
+                                    const QString& role) -> std::optional<quint32> {
+            const auto found = std::find_if(
+                typedStruct.fields.begin(),
+                typedStruct.fields.end(),
+                [&annotation](const DslTypedField& field) {
+                    return field.name == annotation.keyFieldName;
+                });
+            if (found == typedStruct.fields.end()) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidContext,
+                              role + QStringLiteral(" field is not a top-level scalar field"),
+                              annotation.range);
+                return std::nullopt;
+            }
+            const bool unsignedScalar =
+                found->type.kind == DslValueTypeKind::UnsignedBits ||
+                found->type.kind == DslValueTypeKind::Enum ||
+                found->type.kind == DslValueTypeKind::UnsignedExpGolomb ||
+                found->type.kind == DslValueTypeKind::ComputedUnsigned;
+            if (found->kind != DslTypedFieldKind::Declared ||
+                !found->conditions.empty() || !unsignedScalar) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidContext,
+                              role + QStringLiteral(" field must be an unconditional unsigned scalar"),
+                              annotation.range);
+                return std::nullopt;
+            }
+            return static_cast<quint32>(
+                std::distance(typedStruct.fields.begin(), found));
+        };
+
+        if (contextAnnotation) {
+            const auto keyFieldIndex =
+                resolveContextField(*contextAnnotation, QStringLiteral("Context key"));
+            if (keyFieldIndex) {
+                DslTypedContextDefinition definition;
+                definition.kind = contextAnnotation->kind;
+                definition.keyFieldIndex = *keyFieldIndex;
+                definition.exportFieldIndices = contextExportFieldIndices;
+                for (const ContextAnnotation& dependency : dependencyAnnotations) {
+                    const auto dependencyKey = resolveContextField(
+                        dependency, QStringLiteral("Context dependency key"));
+                    if (dependencyKey &&
+                        definition.dependencies.size() <
+                            DslTypedContextDefinition::maximumDependencies()) {
+                        const auto duplicate = std::find_if(
+                            definition.dependencies.begin(),
+                            definition.dependencies.end(),
+                            [&dependency, dependencyKey](
+                                const DslTypedContextDependency& existing) {
+                                return existing.kind == dependency.kind &&
+                                       existing.keyFieldIndex == *dependencyKey;
+                            });
+                        if (duplicate != definition.dependencies.end()) {
+                            addDiagnostic(
+                                result.diagnostics,
+                                DslDiagnosticCode::InvalidContext,
+                                QStringLiteral("Duplicate context dependency"),
+                                dependency.range);
+                        } else {
+                            definition.dependencies.push_back(
+                                {dependency.kind, *dependencyKey});
+                        }
+                    }
+                }
+                typedStruct.contextDefinition = std::move(definition);
+            }
+        }
         typed.structs.push_back(std::move(typedStruct));
     }
 

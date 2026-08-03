@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace streamview::rules {
@@ -836,6 +837,71 @@ DslExecutionResult DslVirtualMachine::execute(
             return result;
         }
     }
+    const auto validContextField = [&structure](quint32 fieldIndex) {
+        if (fieldIndex >= structure.fields.size()) {
+            return false;
+        }
+        const DslTypedField& field = structure.fields.at(fieldIndex);
+        const bool unsignedScalar =
+            field.type.kind == DslValueTypeKind::UnsignedBits ||
+            field.type.kind == DslValueTypeKind::Enum ||
+            field.type.kind == DslValueTypeKind::UnsignedExpGolomb ||
+            field.type.kind == DslValueTypeKind::ComputedUnsigned;
+        return field.kind == DslTypedFieldKind::Declared &&
+               field.conditions.empty() && unsignedScalar;
+    };
+    const auto validContextKind = [](core::ContextDefinitionKind kind) {
+        switch (kind) {
+        case core::ContextDefinitionKind::H264SequenceParameterSet:
+        case core::ContextDefinitionKind::H264PictureParameterSet:
+        case core::ContextDefinitionKind::AacAudioSpecificConfig:
+        case core::ContextDefinitionKind::IsoBmffSampleDescription:
+            return true;
+        }
+        return false;
+    };
+    if (structure.contextDefinition) {
+        const DslTypedContextDefinition& definition = *structure.contextDefinition;
+        if (definition.dependencies.size() >
+                DslTypedContextDefinition::maximumDependencies() ||
+            definition.exportFieldIndices.size() >
+                DslTypedContextDefinition::maximumExports() ||
+            !validContextKind(definition.kind) ||
+            !validContextField(definition.keyFieldIndex)) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed IR context definition is invalid"),
+                        nullptr);
+            return result;
+        }
+        std::vector<quint32> checkedExports;
+        checkedExports.reserve(definition.exportFieldIndices.size());
+        for (const quint32 fieldIndex : definition.exportFieldIndices) {
+            if (!validContextField(fieldIndex) ||
+                std::find(checkedExports.begin(), checkedExports.end(), fieldIndex) !=
+                    checkedExports.end()) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR context export is invalid"),
+                            nullptr);
+                return result;
+            }
+            checkedExports.push_back(fieldIndex);
+        }
+        std::vector<std::pair<core::ContextDefinitionKind, quint32>> checkedDependencies;
+        checkedDependencies.reserve(definition.dependencies.size());
+        for (const DslTypedContextDependency& dependency : definition.dependencies) {
+            const auto identity = std::pair{dependency.kind, dependency.keyFieldIndex};
+            if (!validContextKind(dependency.kind) ||
+                !validContextField(dependency.keyFieldIndex) ||
+                std::find(checkedDependencies.begin(), checkedDependencies.end(), identity) !=
+                    checkedDependencies.end()) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR context dependency is invalid"),
+                            nullptr);
+                return result;
+            }
+            checkedDependencies.push_back(identity);
+        }
+    }
     quint32 previousRepeatPosition = 0;
     for (std::size_t repeatIndex = 0; repeatIndex < structure.repeatBounds.size();
          ++repeatIndex) {
@@ -918,6 +984,14 @@ DslExecutionResult DslVirtualMachine::execute(
     };
     std::vector<std::optional<MaterializedFieldRange>> fieldRanges(
         structure.fields.size());
+    std::optional<DslExecutionContextValues> stagedContextValues;
+    if (structure.contextDefinition) {
+        stagedContextValues.emplace();
+        stagedContextValues->dependencies.reserve(
+            structure.contextDefinition->dependencies.size());
+        stagedContextValues->exports.reserve(
+            structure.contextDefinition->exportFieldIndices.size());
+    }
     std::optional<quint32> lastField;
     std::optional<quint64> lastValue;
     std::optional<core::AnalysisNodeId> lastFieldNode;
@@ -1749,19 +1823,81 @@ DslExecutionResult DslVirtualMachine::execute(
                         controllerRange.has_value());
             return result;
         }
-        case DslOpcode::EndStructure:
+        case DslOpcode::EndStructure: {
             if (!result.structureNode || instruction.operand != structureIndex ||
-                nextFieldIndex != structure.fields.size() ||
-                !tree.transition(*result.structureNode,
+                nextFieldIndex != structure.fields.size()) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR end instruction is invalid"),
+                            nullptr);
+                return result;
+            }
+            if (structure.contextDefinition) {
+                const auto materializedContextValue =
+                    [&](quint32 fieldIndex) -> std::optional<DslExecutionContextValue> {
+                    if (fieldIndex >= fieldValues.size() || !fieldValues.at(fieldIndex)) {
+                        return std::nullopt;
+                    }
+                    DslExecutionContextValue value;
+                    value.value = *fieldValues.at(fieldIndex);
+                    if (fieldRanges.at(fieldIndex)) {
+                        const MaterializedFieldRange& range = *fieldRanges.at(fieldIndex);
+                        value.location = locationAt(mapping,
+                                                    logicalStart,
+                                                    range.start,
+                                                    range.bitCount,
+                                                    range.bitCount);
+                        if (!value.location) {
+                            return std::nullopt;
+                        }
+                    }
+                    return value;
+                };
+                const DslTypedContextDefinition& definition =
+                    *structure.contextDefinition;
+                const auto key = materializedContextValue(definition.keyFieldIndex);
+                if (!key) {
+                    markFailure(DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Typed IR context key value is unavailable"),
+                                nullptr);
+                    return result;
+                }
+                stagedContextValues->key = *key;
+                for (const DslTypedContextDependency& dependency :
+                     definition.dependencies) {
+                    const auto value =
+                        materializedContextValue(dependency.keyFieldIndex);
+                    if (!value) {
+                        markFailure(
+                            DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR context dependency value is unavailable"),
+                            nullptr);
+                        return result;
+                    }
+                    stagedContextValues->dependencies.push_back(*value);
+                }
+                for (const quint32 fieldIndex : definition.exportFieldIndices) {
+                    const auto value = materializedContextValue(fieldIndex);
+                    if (!value) {
+                        markFailure(DslExecutionStatus::InvalidDefinition,
+                                    QStringLiteral("Typed IR context export value is unavailable"),
+                                    nullptr);
+                        return result;
+                    }
+                    stagedContextValues->exports.push_back(*value);
+                }
+            }
+            if (!tree.transition(*result.structureNode,
                                  core::MaterializationState::Materialized)) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Typed IR end instruction is invalid"),
                             nullptr);
                 return result;
             }
+            result.contextValues = std::move(stagedContextValues);
             result.status = DslExecutionStatus::Materialized;
             ended = true;
             break;
+        }
         default:
             markFailure(DslExecutionStatus::InvalidDefinition,
                         QStringLiteral("Typed IR opcode is invalid"),

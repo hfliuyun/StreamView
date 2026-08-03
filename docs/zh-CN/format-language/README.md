@@ -97,6 +97,11 @@ payload 不含任何语法元素时绑定到 `empty`。决定 payload 使用哪�
 当前接受的 H.264 trailing-bits 切片新增终结结构项 `rbsp_trailing_bits;`。它会消费必需的
 stop bit 与依当前位置决定的 RBSP 补零，而不引入通用对齐表达式或无界 loop。
 
+当前接受的 context-publication 切片新增结构 annotation `@context`、可重复的
+`@context_dependency`，以及 scalar field annotation `@context_export`。rules-owned
+execution session 将完整 definition 及选中的 typed value 发布到 position-aware directory，
+不会从 presentation node 回读值。
+
 ## DSL 0.1 最小子集
 
 首个可执行子集使用以下语法。token 之间可以有空白，以及 `//` 或 `/* ... */`
@@ -182,6 +187,16 @@ primary       := integer | "true" | "false" | identifier
   不接受表达式、额外维度、结构数组或运行时长度。重复名称检查仍使用声明的基础字段名。
   一个结构展开后最多投影 99,999 个 scalar 字段，从而在默认 100,000 个物化节点预算内
   为结构节点保留一个名额；超过该上限时 compiler 不生成可执行 typed IR。
+- `@context(kind, key_field)` 在一个结构上至多出现一次。`kind` 只能是 `h264-sps`、
+  `h264-pps`、`aac-asc` 或 `iso-bmff-sample-description`。
+  `@context_dependency(kind, key_field)` 只允许出现在同时具有 `@context` 的结构上，最多
+  出现 16 次；相同 kind/field pair 是静态重复错误，不会合并。
+- 每个 context key 与 dependency key 都必须命名同一结构中无条件、顶层、非数组的
+  unsigned scalar。允许的 scalar kind 是 `bits`、enum、`ue` 和 `computed<u64>`；signed
+  field、guarded/repeated field、数组元素、lazy region 与生成的 trailing-bit field 都不是
+  context value。
+- `@context_export` 不接受参数，在一个 field 上至多出现一次，并且只允许标注具有
+  `@context` 的结构中同类无条件 unsigned scalar。一个 definition 最多 export 64 个值。
 - 固定宽度数组按 `width * count` bit 参与静态对齐。小端数组的每个元素宽度必须是 8 的
   倍数，并且首元素必须从结构内的字节边界开始。`ue` 或 `se` 数组的总宽度未知，因此其
   后续小端字段与单个 Exp-Golomb 字段之后的小端字段一样会被拒绝。
@@ -310,6 +325,12 @@ instruction。条件 block 被降低到同一条按声明顺序排列的字段�
 一般控制流 bytecode。switch case 字段携带一个正向等值 guard；default 字段携带全部 case
 guard 的否定合取，省略 default 时不会为未匹配路径生成字段。嵌套 switch 与条件的 guard
 按外层到内层追加。
+context publication 沿用同一模型：compiler 在 typed IR 中记录每个 structure 的 context
+definition、有序 dependency 与 exported-value field index，不生成 context 专用 opcode。VM 在
+读取任何 source 之前校验全部 context index、scalar type 与数量，即使 typed program 是直接
+构造而不是由 compiler 生成也一样。所有被选字段成功执行后，VM 只向 execution session 返回
+声明的 key、dependency key、export 及其精确 location。校验与收集沿用既有 instruction、
+expression、node 和 cancellation budget；context metadata 不能产生不计预算的执行路径。
 
 `rbsp_trailing_bits` 降低为一条 `read-rbsp-trailing-bits` instruction 与八个生成的 typed-field
 slot：一个 `rbsp_stop_one_bit` 和七个可能的 `rbsp_alignment_zero_bit[index]`。instruction 会在
@@ -500,7 +521,7 @@ materialized 只表示精确消费了被选中的已声明分支，不表示完�
 稳定 DSL 缺少所需 fixed-width 或 relational constraint 时，reserved fixed-width table 值、
 非零 SAR/timing 值、timing ratio、依赖 level 的 HRD bitrate/CPB/delay 关系，以及
 `max_num_reorder_frames`、`max_dec_frame_buffering` 与 SPS-derived decoder limit 的关系仍不
-检查。SPS/VUI/HRD core materialized 不表示 SPS 已注册到 context directory，也不表示已经
+检查。SPS/VUI/HRD core 精确消费完整 RBSP 后会发布 SPS context generation，但不表示已经
 解码后续 SEI timing consumer。
 
 已声明 VUI 字段具有以下有界含义：
@@ -561,8 +582,11 @@ materialized 只表示精确消费了被选中的已声明分支，不表示完�
 type `8` 解码 clause 7.3.2.2 的 base PPS，要求只有一个 slice group
 且不存在 PPS extension。PPS/SPS identifier 或默认 reference-index count 越界时，会用字段
 warning 保留完整 PPS；非零 `num_slice_groups_minus1`、reserved `weighted_bipred_idc` 或
-extension 语法会改变或扩展已声明布局，因此成为 `invalid-syntax`。PPS materialized 尚不表示
-被引用 SPS generation 存在、PPS 已注册或 slice header 可以使用它。其余所有 type 的
+extension 语法会改变或扩展已声明布局，因此成为 `invalid-syntax`。materialized PPS 会解析
+该 PPS NAL 之前具有声明 ID 的最近 available SPS，并在发布自身 generation 时绑定这个精确
+generation。若不存在 SPS，PPS structure 仍保持 materialized，但会收到带 source 位置的
+`dependency-unavailable` diagnostic；所属 RBSP 与 NAL 变为 invalid，不发布任何 generation，
+并继续分析后续 NAL。slice dispatch 与 context import 仍未实现。其余所有 type 的
 `rbsp_payload` region 保持原样。
 
 已声明 PPS 字段具有以下有界含义：
@@ -570,7 +594,7 @@ extension 语法会改变或扩展已声明布局，因此成为 `invalid-syntax
 | 字段 | 本切片中的含义 |
 | --- | --- |
 | `pic_parameter_set_id` | 标识 PPS；clause 7.4.2.2 将其约束为 `0..255`。 |
-| `seq_parameter_set_id` | 命名但不解析被引用 SPS；clause 7.4.2.2 将其约束为 `0..31`。 |
+| `seq_parameter_set_id` | 选择 PPS NAL 之前最近 available 的 SPS generation；clause 7.4.2.2 将其约束为 `0..31`。 |
 | `entropy_coding_mode_flag` | 为关联 slice 选择 CAVLC 或 CABAC entropy coding。 |
 | `bottom_field_pic_order_in_frame_present_flag` | 表示关联 slice header 中存在 bottom-field picture-order 语法。 |
 | `num_slice_groups_minus1` | 必须为零，因为本切片不解析 flexible macroblock ordering。 |
@@ -624,6 +648,26 @@ struct NalUnitHeader {
 @index(progressive)
 sequence<NalUnitHeader> nal_units = scan(h264_start_code);
 entry nal_units;
+```
+
+context publication 合法示例：
+
+```cpp
+@context("h264-sps", sps_id)
+struct Sps {
+    ue sps_id;
+    ue log2_width @context_export;
+}
+
+@context("h264-pps", pps_id)
+@context_dependency("h264-sps", sps_id)
+struct Pps {
+    ue pps_id;
+    ue sps_id;
+    bits<1> entropy_mode @context_export;
+}
+
+entry Sps;
 ```
 
 enum 与显式 endian 的合法示例：
@@ -808,6 +852,12 @@ repeat body、repeat 前的 annotation、投影后超过 99,999 字段、在其�
 使用 repeat-local controller、repeat 之后的小端字段、`scan(other_scanner)`、重复声明同名，
 以及没有 `entry` 或包含多个 `entry` 声明的程序。
 
+context publication 的非法示例包括：同一 structure 上出现第二个 `@context`、完全相同的
+`@context_dependency` 重复、没有 `@context` 的 structure 声明 dependency、使用 guarded、
+repeated、array、signed、lazy 或 generated field 作为 key/export、
+`@context_export(1)`、超过 16 个 dependency，以及超过 64 个 export。未知 context kind 与
+不存在的 key 名同样会被拒绝。
+
 payload 派发的非法示例包括：两个 payload 声明、`payload<ebsp>` 或其他 view kind、派发命名
 结构或未声明名称而非 sequence、所派发 sequence 没有 `entry`、未知 controller 名、以
 Exp-Golomb、计算字段、数组元素或 lazy region 作为 controller、controller 声明在 conditional、
@@ -962,12 +1012,22 @@ excluded region 和任何 framing region。它绝不终止 sequence，后续 ele
 
 ## 位置感知上下文目录
 
-runtime infrastructure 为供后续语法引用的 completed definition 暴露一个与具体格式
-无关的 context-directory 类型。当前接受的 kind 包含 H.264 SPS/PPS、AAC
-AudioSpecificConfig 和 ISO BMFF sample description。key 还包含数字 scope，防止不同
-track 中相同 sample-description 或 parameter-set value 冲突。本切片新增 core type，
-不新增 session ownership 或 DSL syntax；typed format declaration、payload access
-与 runner integration 随官方格式规则实现。
+`RuleExecutionSession` 拥有一个精确 compiled program、一个格式中立的 context directory，
+以及一个 analysis source/tree 发布的 rules-owned typed payload。首次有效执行会锁定 analysis
+identity；用另一个 source 或 tree 复用属于 invalid rule/runtime state。移动 session 或其所属
+analyzer 会保留 identity 与已发布 generation。当前接受的 kind 包含 H.264 SPS/PPS、AAC
+AudioSpecificConfig 和 ISO BMFF sample description。key 还包含数字 scope，防止不同 track
+中相同 sample-description 或 parameter-set value 冲突；standalone Annex B 使用 scope zero。
+
+session 可以执行完整 logical view，也可以执行从非零 logical start 开始的 suffix。reader 只由
+该 mapped slice backing，source location 保持原 logical coordinate；精确消费指消费该 slice，
+不包含 mapping prefix。对于 context definition，这个 slice 的每个 mapped source span 都必须
+位于非空 enclosing source span 内；不匹配会在读取 source 或绑定 analysis identity 前被拒绝。
+没有 context annotation 的结构仍走同一 execution path，但不产生 directory effect。
+
+compiler 把每个声明的 key、dependency 与 export 降低为稳定 typed field index。VM 在读取
+source 前验证这些 index 和类型，并且只返回选中值及其精确 source location，而不暴露完整
+local environment；session 与 analyzer 都不会遍历 presentation-tree child 来恢复运行值。
 
 definition 只有在查询 source position 到达或越过其完整 source span 的排他结束
 位置时才可选。同一 key 的多个可选 definition 中，lookup 选择结束位置最接近
@@ -982,9 +1042,18 @@ key 的更旧 generation，也不会猜测。malformed definition 不注册，�
 后续跨 generation dependency cycle 会产生 dependency-unavailable result，超过 64 个
 definition 的 dependency chain 也会得到同一结果。
 
+只有 structure 成功 materialize、满足请求的精确消费策略、完成 dependency resolution 和
+typed-payload 准备后才会发布。registration 前会预留 payload 与 directory 容量，因此成功
+mutation 后提交 prepared payload 是 single-writer 模型下不分配内存的 move。malformed、
+truncated、cancelled、resource-limited、dependency-unavailable 或残留 bit 的执行均不发布；
+失败的 redefinition 因而不会隐藏此前 valid generation。
+
 目录只持有 key、span、analysis-node 和 dependency identity，typed format payload 仍由
 rule owner 保存。目录不读取 source，并遵循 analysis-worker 单写者模型。详见
 [ADR-0028](../adr/0028-resolve-context-generations-by-source-position.md)。
+publication 合同见
+[ADR-0044](../adr/0044-publish-rule-declared-context-generations.md)。内置 H.264 rule 从 package
+version `0.1.7` 开始使用该合同；slice context import 属于后续语言切片。
 
 ## 沙箱与资源限制
 

@@ -2138,11 +2138,13 @@ private:
                     validatePresentationAnnotations(field.annotations);
                     for (const DslAnnotation& annotation : field.annotations) {
                         if (annotation.name != QStringLiteral("description") &&
-                            annotation.name != QStringLiteral("spec")) {
+                            annotation.name != QStringLiteral("spec") &&
+                            annotation.name != QStringLiteral("context_export")) {
                             result_.diagnostics.push_back(
                                 {DslDiagnosticCode::InvalidAnnotation,
                                  QStringLiteral(
-                                     "Computed fields accept only @description and @spec"),
+                                     "Computed fields accept only @description, @spec, and "
+                                     "@context_export"),
                                  annotation.range});
                         }
                     }

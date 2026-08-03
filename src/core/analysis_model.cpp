@@ -1,10 +1,52 @@
 #include <streamview/core/analysis_model.h>
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <utility>
 
 namespace streamview::core {
+namespace {
+
+std::atomic<quint64> nextAnalysisTreeIdentity{1};
+
+} // namespace
+
+quint64 AnalysisTree::nextInstanceIdentity() noexcept {
+    for (;;) {
+        const quint64 identity =
+            nextAnalysisTreeIdentity.fetch_add(1, std::memory_order_relaxed);
+        if (identity != 0) {
+            return identity;
+        }
+    }
+}
+
+AnalysisTree::AnalysisTree(const AnalysisTree& other)
+    : instanceIdentity_(nextInstanceIdentity()), nodes_(other.nodes_) {}
+
+AnalysisTree::AnalysisTree(AnalysisTree&& other) noexcept
+    : instanceIdentity_(other.instanceIdentity_), nodes_(std::move(other.nodes_)) {
+    other.instanceIdentity_ = nextInstanceIdentity();
+}
+
+AnalysisTree& AnalysisTree::operator=(const AnalysisTree& other) {
+    if (this != &other) {
+        std::vector<AnalysisNode> nodes(other.nodes_);
+        nodes_ = std::move(nodes);
+        instanceIdentity_ = nextInstanceIdentity();
+    }
+    return *this;
+}
+
+AnalysisTree& AnalysisTree::operator=(AnalysisTree&& other) noexcept {
+    if (this != &other) {
+        nodes_ = std::move(other.nodes_);
+        instanceIdentity_ = other.instanceIdentity_;
+        other.instanceIdentity_ = nextInstanceIdentity();
+    }
+    return *this;
+}
 
 std::optional<AnalysisTree> AnalysisTree::create(const QString& rootName) {
     if (rootName.isEmpty()) {

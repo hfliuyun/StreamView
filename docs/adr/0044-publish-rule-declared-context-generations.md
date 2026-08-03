@@ -64,6 +64,8 @@ only to the closed core kinds `h264-sps`, `h264-pps`, `aac-asc`, and
 and has the same argument shape. It is valid only when the structure also has
 `@context`. `@context_export` takes no arguments and selects at most 64 values
 for the private typed payload.
+An identical dependency kind and field pair is a static duplicate error rather
+than an idempotent declaration.
 
 Every key, dependency key, and exported value must be an unconditional,
 top-level, non-array unsigned scalar declared in the same structure. The first
@@ -99,6 +101,14 @@ does not hide the preceding valid generation, matching ADR-0028. Context
 registration metadata rejection is an invalid rule/runtime state rather than a
 media-syntax fallback.
 
+The first valid `run` locks the session to one source and one analysis-tree
+instance. Reuse with a different source or tree is invalid rule/runtime state;
+moving the session or containing analyzer preserves that identity. A nonzero
+logical start executes the mapped suffix beginning there, preserves the mapping's
+logical coordinates, and applies exact consumption to that suffix. Every source
+span mapped by a context execution suffix must be contained by its declared
+non-empty enclosing source span; a mismatch is rejected before reads or binding.
+
 The bundled SPS and PPS declarations adopt these annotations and publish the
 unsigned scalar values required by the planned bounded slice-header rule. The
 package coverage token remains `parameter-sets`; the rule source is published
@@ -131,4 +141,3 @@ or preserve slice data as a compressed payload. It does not persist live context
 state or typed payloads in SQLite or saved sessions, assign nonzero container
 track scopes, register malformed parameter sets, or open the core directory-kind
 enum to arbitrary installed rules.
-

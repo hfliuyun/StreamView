@@ -358,8 +358,8 @@ H264AnnexBAnalyzer::H264AnnexBAnalyzer(const core::RandomAccessSource& source,
                                        core::AnalysisTree tree)
     : source_(&source), scanner_(source, cancellation), cancellation_(std::move(cancellation)),
       mapperLimits_(mapperLimits), ruleIdentity_(std::move(ruleIdentity)),
-      program_(std::move(program)),
-      elementStructIndex_(elementStructIndex), tree_(std::move(tree)) {}
+      elementStructIndex_(elementStructIndex), tree_(std::move(tree)),
+      executionSession_(std::move(program)) {}
 
 bool H264AnnexBAnalyzer::resumeAfterCancellation(
     std::optional<core::CancellationToken> cancellation,
@@ -517,7 +517,7 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
     if (allowExecutionCancellation) {
         executionOptions.cancellation = cancellation_;
     }
-    const DslExecutionResult execution = DslExecutor::decodeStruct(program_,
+    const DslExecutionResult execution = DslExecutor::decodeStruct(executionSession_.program(),
                                                                     elementStructIndex_,
                                                                     reader,
                                                                     *mapping,
@@ -714,12 +714,13 @@ bool H264AnnexBAnalyzer::appendTrailingZeroRegion(const H264StartCodeRecord& rec
 
 std::optional<DslTypedPayloadCase> H264AnnexBAnalyzer::payloadCaseFor(
     quint64 nalUnitType) const {
-    if (!program_.payloadDispatch) {
+    const DslTypedProgram& program = executionSession_.program();
+    if (!program.payloadDispatch) {
         return std::nullopt;
     }
-    const DslTypedPayloadDispatch& dispatch = *program_.payloadDispatch;
-    if (dispatch.scanIndex >= program_.scans.size() ||
-        program_.scans.at(dispatch.scanIndex).elementStructIndex != elementStructIndex_) {
+    const DslTypedPayloadDispatch& dispatch = *program.payloadDispatch;
+    if (dispatch.scanIndex >= program.scans.size() ||
+        program.scans.at(dispatch.scanIndex).elementStructIndex != elementStructIndex_) {
         return std::nullopt;
     }
     const DslTypedPayloadCase* payloadCase = dispatch.find(nalUnitType);
@@ -767,20 +768,26 @@ bool H264AnnexBAnalyzer::decodePayloadStructure(PendingNalUnit& pending,
     }
 
     const quint32 structureIndex = *pending.payloadCase->structureIndex;
-    if (structureIndex >= program_.structs.size()) {
+    if (structureIndex >= executionSession_.program().structs.size()) {
         *errorMessage = QStringLiteral("H.264 payload dispatch names an unknown structure");
         return false;
     }
 
-    core::BitReader reader(*source_, mapping);
     DslExecutionOptions executionOptions;
     if (pending.allowExecutionCancellation) {
         executionOptions.cancellation = cancellation_;
     }
-    const DslExecutionResult execution = DslExecutor::decodeStruct(
-        program_, structureIndex, reader, mapping, 0, tree_, rbspNode, executionOptions);
+    RuleExecutionRequest request;
+    request.source = source_;
+    request.structureIndex = structureIndex;
+    request.mapping = &mapping;
+    request.tree = &tree_;
+    request.parentId = rbspNode;
+    request.enclosingSourceSpan = *pending.record.nalUnit;
+    request.options = executionOptions;
+    const RuleExecutionResult execution = executionSession_.run(request);
 
-    if (execution.materialized() && execution.bitsConsumed == payloadBits) {
+    if (execution.materialized()) {
         *payloadDecoded = true;
         return true;
     }
@@ -789,41 +796,39 @@ bool H264AnnexBAnalyzer::decodePayloadStructure(PendingNalUnit& pending,
     core::MaterializationState state = core::MaterializationState::Invalid;
     QString message;
     bool terminal = false;
-    if (execution.materialized()) {
-        message = QStringLiteral("H.264 RBSP payload retains %1 undeclared bits")
-                      .arg(payloadBits - execution.bitsConsumed);
-    } else {
-        message = execution.errorMessage.isEmpty()
-                      ? QStringLiteral("Unable to decode the H.264 RBSP payload")
-                      : execution.errorMessage;
-        switch (execution.status) {
-        case DslExecutionStatus::TruncatedSource:
+    message = execution.errorMessage.isEmpty()
+                  ? QStringLiteral("Unable to decode the H.264 RBSP payload")
+                  : execution.errorMessage;
+    switch (execution.status) {
+        case RuleExecutionStatus::TruncatedSource:
             code = core::DiagnosticCode::TruncatedSource;
             break;
-        case DslExecutionStatus::SourceError:
+        case RuleExecutionStatus::DependencyUnavailable:
+            code = core::DiagnosticCode::DependencyUnavailable;
+            break;
+        case RuleExecutionStatus::SourceError:
             code = core::DiagnosticCode::SourceError;
             *failureStatus = H264AnnexBAnalysisStatus::SourceError;
             terminal = true;
             break;
-        case DslExecutionStatus::Cancelled:
+        case RuleExecutionStatus::Cancelled:
             code = core::DiagnosticCode::Cancelled;
             state = core::MaterializationState::Cancelled;
             *failureStatus = H264AnnexBAnalysisStatus::Cancelled;
             terminal = true;
             break;
-        case DslExecutionStatus::ResourceLimit:
+        case RuleExecutionStatus::ResourceLimit:
             code = core::DiagnosticCode::ResourceLimit;
             *failureStatus = H264AnnexBAnalysisStatus::ResourceLimit;
             terminal = true;
             break;
-        case DslExecutionStatus::InvalidDefinition:
+        case RuleExecutionStatus::InvalidDefinition:
             *failureStatus = H264AnnexBAnalysisStatus::InvalidRule;
             terminal = true;
             break;
-        case DslExecutionStatus::InvalidSyntax:
-        case DslExecutionStatus::Materialized:
+        case RuleExecutionStatus::InvalidSyntax:
+        case RuleExecutionStatus::Materialized:
             break;
-        }
     }
     if (!reportPayload(code, state, message)) {
         *errorMessage = QStringLiteral("Unable to mark the H.264 RBSP payload as a partial result");

@@ -53,6 +53,7 @@ struct PictureParameterSetRbsp {
 `iso-bmff-sample-description`。`@context_dependency` 具有相同参数形状，最多可以重复 16 次，
 并且只允许出现在同时具有 `@context` 的结构上。`@context_export` 不接受参数，为私有 typed
 payload 选择最多 64 个值。
+相同 dependency kind 与 field pair 属于静态重复错误，而不是幂等 declaration。
 
 每个 key、dependency key 与 exported value 都必须是同一结构中无条件、顶层、非数组的
 unsigned scalar。首个切片接受 `bits`、enum、`ue` 与 unsigned computed field。conditional、
@@ -77,6 +78,12 @@ NAL 为 invalid，不发布 PPS generation 或 typed payload，并继续扫描�
 malformed、truncated、cancelled、resource-limited、未精确消费或其他 invalid 结构都不发布
 context。后续 malformed redefinition 不会隐藏此前 valid generation，与 ADR-0028 一致。
 context registration metadata 被拒绝属于 invalid rule/runtime state，不是 media-syntax fallback。
+
+第一次有效 `run` 会把 session 锁定到一个 source 和一个 analysis-tree instance。使用不同
+source 或 tree 复用属于 invalid rule/runtime state；移动 session 或所属 analyzer 会保留该
+identity。非零 logical start 会执行从该位置开始的 mapped suffix，保留 mapping 的 logical
+coordinate，并对这个 suffix 应用精确消费。context execution suffix 映射出的每个 source
+span 都必须包含在声明的非空 enclosing source span 中；不匹配会在读取或绑定前被拒绝。
 
 内置 SPS/PPS declaration 采用这些 annotation，并发布计划中的有界 slice-header 规则需要的
 unsigned scalar value。package coverage token 保持 `parameter-sets`；规则源码以 package

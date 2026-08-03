@@ -7,6 +7,7 @@
 #include <streamview/rules/h264_ebsp_rbsp_mapper.h>
 #include <streamview/rules/h264_start_code_scanner.h>
 #include <streamview/rules/rule_catalog.h>
+#include <streamview/rules/rule_execution_session.h>
 
 #include <QString>
 #include <QtGlobal>
@@ -136,9 +137,9 @@ private:
     std::optional<core::CancellationToken> cancellation_;
     H264EbspRbspMapLimits mapperLimits_;
     RuleEntryPointIdentity ruleIdentity_;
-    DslTypedProgram program_;
     quint32 elementStructIndex_ = 0;
     core::AnalysisTree tree_;
+    RuleExecutionSession executionSession_;
     std::deque<QueuedRecord> queuedRecords_;
     std::optional<PendingNalUnit> pendingNalUnit_;
     std::optional<StartCodeScanStatus> deferredScanStatus_;

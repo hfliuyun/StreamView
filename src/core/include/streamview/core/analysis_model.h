@@ -138,12 +138,13 @@ class AnalysisTree final {
 public:
     [[nodiscard]] static std::optional<AnalysisTree> create(const QString& rootName);
 
-    AnalysisTree(const AnalysisTree&) = default;
-    AnalysisTree(AnalysisTree&&) noexcept = default;
-    AnalysisTree& operator=(const AnalysisTree&) = default;
-    AnalysisTree& operator=(AnalysisTree&&) noexcept = default;
+    AnalysisTree(const AnalysisTree& other);
+    AnalysisTree(AnalysisTree&& other) noexcept;
+    AnalysisTree& operator=(const AnalysisTree& other);
+    AnalysisTree& operator=(AnalysisTree&& other) noexcept;
 
     [[nodiscard]] AnalysisNodeId rootId() const noexcept { return AnalysisNodeId(1); }
+    [[nodiscard]] quint64 instanceIdentity() const noexcept { return instanceIdentity_; }
     [[nodiscard]] std::size_t nodeCount() const noexcept { return nodes_.size(); }
     [[nodiscard]] std::optional<AnalysisNode> node(AnalysisNodeId id) const;
     /// Prefer depth, then smaller total source coverage, then the lower stable node ID.
@@ -164,7 +165,10 @@ public:
     [[nodiscard]] bool isFullyMaterialized() const noexcept;
 
 private:
-    explicit AnalysisTree(AnalysisNode root) { nodes_.push_back(std::move(root)); }
+    explicit AnalysisTree(AnalysisNode root) : instanceIdentity_(nextInstanceIdentity()) {
+        nodes_.push_back(std::move(root));
+    }
+    [[nodiscard]] static quint64 nextInstanceIdentity() noexcept;
 
     [[nodiscard]] AnalysisNode* nodeForMutation(AnalysisNodeId id) noexcept;
     [[nodiscard]] const AnalysisNode* nodeForRead(AnalysisNodeId id) const noexcept;
@@ -172,6 +176,7 @@ private:
                                              MaterializationState to) noexcept;
     [[nodiscard]] static bool isValidSpec(const AnalysisNodeSpec& spec) noexcept;
 
+    quint64 instanceIdentity_ = 0;
     std::vector<AnalysisNode> nodes_;
 };
 

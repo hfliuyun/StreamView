@@ -16,6 +16,7 @@ add_library(streamview_rules STATIC
     rule_package_directory.cpp
     rule_package_store.cpp
     rule_package.cpp
+    rule_execution_session.cpp
     include/streamview/rules/analysis_cache.h
     include/streamview/rules/analysis_cache_owner.h
     include/streamview/rules/analysis_cache_payload.h
@@ -31,6 +32,7 @@ add_library(streamview_rules STATIC
     include/streamview/rules/rule_catalog.h
     include/streamview/rules/rule_package.h
     include/streamview/rules/rule_package_store.h
+    include/streamview/rules/rule_execution_session.h
     language_version.cpp
 )
 
