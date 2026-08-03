@@ -120,6 +120,11 @@ The accepted H.264 trailing-bits slice adds the terminal
 the position-dependent zero padding of an RBSP without introducing a general
 alignment expression or unbounded loop.
 
+The accepted compressed-payload slice adds the named terminal
+`compressed_payload name;` structure item. It publishes every bit remaining in
+the bounded logical view as a materialized opaque payload and advances to the
+view end without reading or copying those bits.
+
 The accepted context-publication slice adds structure annotations
 `@context` and repeatable `@context_dependency`, plus the scalar-field
 annotation `@context_export`. A rules-owned execution session publishes
@@ -158,6 +163,7 @@ enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { struct_item } "}" [ ";" ]
 struct_item   := field | computed | lazy_region | rbsp_trailing_bits
+               | compressed_payload
                | conditional | switch | repeat
 field         := { annotation } field_type identifier [ "[" integer "]" ]
                  { annotation } ";"
@@ -167,6 +173,8 @@ computed      := { annotation } "computed" "<" scalar_type ">" identifier
 lazy_region   := "@" "lazy" "(" expression ")" "bytes" identifier
                  { presentation_annotation } ";"
 rbsp_trailing_bits := "rbsp_trailing_bits" ";"
+compressed_payload := "compressed_payload" identifier
+                      { presentation_annotation } ";"
 presentation_annotation := "@" "description" "(" string ")"
                          | "@" "spec" "(" string "," string ")"
 scalar_type   := "bool" | "u64"
@@ -208,8 +216,9 @@ The static rules for this subset are:
   sequence.
 - Structure, sequence, enum, and pure-function names share one top-level
   declaration namespace. Names are unique within a structure across syntax
-  fields, computed fields, and lazy byte regions, and a structure contains at
-  least one of those items or one terminal `rbsp_trailing_bits` item.
+  fields, computed fields, lazy byte regions, and compressed payloads, and a
+  structure contains at least one of those items or one terminal
+  `rbsp_trailing_bits` item.
 - Enum member names are unique within their enum. Distinct members may name the
   same integer value; aliases accept the same decoded numeric value.
 - A pure function declares a `bool` or `u64` return type, at most 16 uniquely
@@ -290,6 +299,16 @@ The static rules for this subset are:
   The compiler reserves all eight possible fields against the 99,999-field and
   100,000-node limits, while the VM uses one bytecode instruction and publishes
   only the consumed alignment fields.
+- `compressed_payload name;` is a named remaining-bit terminal. It may occur
+  once, unconditionally as the final top-level item, and is mutually exclusive
+  with `rbsp_trailing_bits`. It is rejected in conditional, switch, and repeat
+  bodies, cannot have a leading annotation or array suffix, and accepts only
+  trailing `@description` and `@spec`. Its name shares the structure-wide field
+  namespace. At runtime it maps every bit remaining in the current bounded
+  reader, publishes one materialized `CompressedPayload` node, and seeks to the
+  end without reading or copying payload data. Non-byte-aligned, multi-span, and
+  empty ranges are valid. The item has no scalar value and cannot be a
+  controller, expression dependency, or context value.
 - An equality-conditional controller must name an earlier scalar `bits`, enum,
   `ue`, or `computed<u64>` field guaranteed to have been materialized on every
   path reaching that condition. Arrays, `se`, `computed<bool>`, future or
@@ -450,7 +469,8 @@ The static rules for this subset are:
 
 `enum`, `big`, `little`, `ue`, `se`, `pure`, `return`, `bool`, `u64`,
 `computed`, `lazy`, `bytes`, `true`, `false`, `if`, `else`, `switch`, `case`,
-`default`, `repeat`, `until`, `payload`, `empty`, and `rbsp_trailing_bits` are contextual words in the
+`default`, `repeat`, `until`, `payload`, `empty`, `rbsp_trailing_bits`, and
+`compressed_payload` are contextual words in the
 positions shown by the grammar and remain ordinary identifiers elsewhere.
 Existing scalar declarations are unchanged, and `bits<N>` remains exactly
 equivalent to `bits<N, big>`; this slice deprecates no accepted 0.1 syntax.
@@ -460,7 +480,7 @@ static compiler resolves pure functions, enums, structures, sequences, and entry
 references into a typed program, preserves declaration order, and emits
 deterministic bytecode using `begin-structure`, `read-unsigned-bits`,
 `read-unsigned-exp-golomb`, `read-signed-exp-golomb`, `evaluate-computed`,
-`register-lazy-bytes`, `read-rbsp-trailing-bits`, `assert-equals`,
+`register-lazy-bytes`, `register-compressed-payload`, `read-rbsp-trailing-bits`, `assert-equals`,
 `assert-range-minimum`, `assert-range-maximum`, `assert-repeat-count`,
 `assert-sentinel-terminated`, and
 `end-structure` operations. Each field opcode must match the resolved field type.
@@ -492,6 +512,14 @@ reads. It publishes only the stop bit and the padding needed to reach the next
 logical-byte boundary, so unused slots create neither nodes nor source reads.
 The instruction remains one budgeted cancellation point; its eight individual
 one-bit reads and nodes are independently bounded.
+
+`compressed_payload` lowers to one typed field and one
+`register-compressed-payload` instruction. Before source access, the VM verifies
+that it is the final field and opcode, has only presentation metadata, and has
+no scalar-only properties. A selected instruction consumes one instruction,
+one node slot, and one cancellation point. It maps the reader's complete
+remaining range, appends a materialized compressed-payload node, and seeks to
+the exclusive end without issuing a source read.
 
 Switch
 case fields receive one positive equality guard. Default fields receive the
@@ -1450,6 +1478,10 @@ is specified by
 rule does not use imports until slice dispatch is added. Dynamic imported widths
 are specified by
 [ADR-0046](../adr/0046-evaluate-dynamic-bit-widths-from-imported-context-values.md).
+Bounded post-tested sentinel repeats are specified by
+[ADR-0047](../adr/0047-lower-bounded-sentinel-repeats-to-guarded-projections.md).
+The compressed remaining-bit terminal is specified by
+[ADR-0048](../adr/0048-register-a-compressed-remaining-bit-payload-terminal.md).
 
 ## Sandbox And Resource Limits
 
@@ -1535,6 +1567,11 @@ already bounded expression within that instruction and consumes one node slot
 only after its complete mapped boundary has been checked. Seeking over the
 region performs no source read. Lazy regions count toward the static
 99,999-item projection limit.
+
+Each compressed payload adds one `register-compressed-payload` instruction,
+one materialized-node slot, and one cancellation point. The instruction maps
+and seeks across the complete remaining reader range without source reads. The
+terminal counts as one item toward the static 99,999-field projection limit.
 
 Resuming a cancelled progressive index consumes no source work, node, or batch
 budget by itself. Every later batch uses the same positive record-count,

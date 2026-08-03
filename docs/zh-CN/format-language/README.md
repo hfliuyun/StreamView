@@ -101,6 +101,10 @@ payload 不含任何语法元素时绑定到 `empty`。决定 payload 使用哪�
 当前接受的 H.264 trailing-bits 切片新增终结结构项 `rbsp_trailing_bits;`。它会消费必需的
 stop bit 与依当前位置决定的 RBSP 补零，而不引入通用对齐表达式或无界 loop。
 
+当前接受的 compressed-payload 切片新增有名称的终结结构项
+`compressed_payload name;`。它把有界 logical view 中全部剩余 bit 发布为 materialized
+opaque payload，并在不读取或复制这些 bit 的情况下推进到 view 末尾。
+
 当前接受的 context-publication 切片新增结构 annotation `@context`、可重复的
 `@context_dependency`，以及 scalar field annotation `@context_export`。rules-owned
 execution session 将完整 definition 及选中的 typed value 发布到 position-aware directory，
@@ -134,6 +138,7 @@ enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { struct_item } "}" [ ";" ]
 struct_item   := field | computed | lazy_region | rbsp_trailing_bits
+               | compressed_payload
                | conditional | switch | repeat
 field         := { annotation } field_type identifier [ "[" integer "]" ]
                  { annotation } ";"
@@ -143,6 +148,8 @@ computed      := { annotation } "computed" "<" scalar_type ">" identifier
 lazy_region   := "@" "lazy" "(" expression ")" "bytes" identifier
                  { presentation_annotation } ";"
 rbsp_trailing_bits := "rbsp_trailing_bits" ";"
+compressed_payload := "compressed_payload" identifier
+                      { presentation_annotation } ";"
 presentation_annotation := "@" "description" "(" string ")"
                          | "@" "spec" "(" string "," string ")"
 scalar_type   := "bool" | "u64"
@@ -181,8 +188,8 @@ primary       := integer | "true" | "false" | identifier
 该子集的静态规则如下：
 
 - 程序必须且只能有一个 `entry`；target 必须是已声明的结构或 sequence。
-- 结构、sequence、enum 和纯函数名共用顶层声明命名空间。语法字段、计算字段与 lazy byte
-  region 的名称在结构内统一保持唯一；结构至少包含其中一个 item，或一个终结
+- 结构、sequence、enum 和纯函数名共用顶层声明命名空间。语法字段、计算字段、lazy byte
+  region 与 compressed payload 的名称在结构内统一保持唯一；结构至少包含其中一个 item，或一个终结
   `rbsp_trailing_bits` item。
 - enum member 名在所属 enum 内不能重复。不同 member 可以使用相同整数值；这些别名接受
   同一个解码数值。
@@ -238,6 +245,13 @@ primary       := integer | "true" | "false" | identifier
   缺失 bit 为 `truncated-source`；约束失败会在对应字段上报告 `invalid-syntax`。compiler 会把
   八个可能字段都计入 99,999-field 与 100,000-node 限制；VM 使用一条 bytecode instruction，
   且只发布实际消费的 alignment 字段。
+- `compressed_payload name;` 是有名称的剩余 bit 终结项。它在一个结构中至多出现一次，只能
+  无条件作为顶层最后一项，并与 `rbsp_trailing_bits` 互斥。conditional、switch 与 repeat body
+  中拒绝该 item；它不接受前置 annotation 或数组后缀，只接受尾随 `@description` 和
+  `@spec`。其名称进入结构统一字段命名空间。runtime 会映射当前有界 reader 中全部剩余 bit，
+  发布一个 materialized `CompressedPayload` node，并在不读取或复制 payload data 的情况下
+  seek 到末尾。不按 byte 对齐、multi-span 和空 range 都合法。item 不产生 scalar value，
+  不能作为 controller、expression dependency 或 context value。
 - 等值条件 controller 必须是此前声明、且在到达该条件的每条路径上都保证已经物化的
   scalar `bits`、enum、`ue` 或 `computed<u64>` 字段。数组、`se`、`computed<bool>`、
   未来或未知字段，以及离开所属保证分支后使用的 branch-local 字段都会被拒绝。整数字面量
@@ -347,7 +361,8 @@ primary       := integer | "true" | "false" | identifier
 
 `enum`、`big`、`little`、`ue`、`se`、`pure`、`return`、`bool`、`u64`、
 `computed`、`lazy`、`bytes`、`true`、`false`、`if`、`else`、`switch`、`case`、
-`default`、`repeat`、`until`、`payload`、`empty` 和 `rbsp_trailing_bits` 只在上述语法位置作为上下文关键字，其他位置仍可
+`default`、`repeat`、`until`、`payload`、`empty`、`rbsp_trailing_bits` 和
+`compressed_payload` 只在上述语法位置作为上下文关键字，其他位置仍可
 作为普通 identifier。既有 scalar 声明保持不变，`bits<N>` 仍与
 `bits<N, big>` 完全等价；本切片不弃用任何已接受的 0.1 语法。
 
@@ -355,6 +370,7 @@ parser 生成面向 source、用于诊断的声明模型。静态 compiler 把�
 sequence 和 entry 引用解析成 typed program，保留声明顺序，并确定性生成
 `begin-structure`、`read-unsigned-bits`、`read-unsigned-exp-golomb`、
 `read-signed-exp-golomb`、`evaluate-computed`、`register-lazy-bytes`、
+`register-compressed-payload`、
 `read-rbsp-trailing-bits`、`assert-equals`、`assert-range-minimum`、
 `assert-range-maximum`、`assert-repeat-count`、`assert-sentinel-terminated` 和
 `end-structure` bytecode。每个 field opcode
@@ -381,6 +397,12 @@ slot：一个 `rbsp_stop_one_bit` 和七个可能的 `rbsp_alignment_zero_bit[in
 logical-byte boundary 所需的 stop bit 和 padding，因此未用 slot 不创建 node，也不读取 source。
 该 instruction 是一个计入预算的 cancellation point；其八次独立的一 bit read 与 node 数量
 仍有明确上界。
+
+`compressed_payload` 降低为一个 typed field 和一条 `register-compressed-payload`
+instruction。VM 会在 source access 前验证它是最后的 field/opcode、只带 presentation
+metadata，且没有 scalar-only property。选中的 instruction 消耗一条 instruction、一个 node
+slot 与一个 cancellation point；它映射 reader 的完整剩余 range，追加 materialized compressed
+payload node，并在不发出 source read 的情况下 seek 到 exclusive end。
 
 repeat body 按 `maximum` 次投影到同一条 typed-field 流。第 `i` 次迭代中的每个字段在外层
 guard 之后追加一个正向 `count > i` guard；物化名称先追加当前各层 repeat index，再追加
@@ -1169,6 +1191,10 @@ version `0.1.7` 开始使用该合同。import 合同见
 [ADR-0045](../adr/0045-import-rule-declared-context-generations.md)；内置 rule 会在新增 slice
 dispatch 后才使用 import。dynamic imported width 合同见
 [ADR-0046](../adr/0046-evaluate-dynamic-bit-widths-from-imported-context-values.md)。
+有界 post-tested sentinel repeat 合同见
+[ADR-0047](../adr/0047-lower-bounded-sentinel-repeats-to-guarded-projections.md)。
+消费剩余 bit 的 compressed terminal 合同见
+[ADR-0048](../adr/0048-register-a-compressed-remaining-bit-payload-terminal.md)。
 
 ## 沙箱与资源限制
 
@@ -1236,6 +1262,11 @@ instruction 仍计入 instruction budget，并保留取消检查点。成功求�
 这一条 instruction 内计算已经受限的 expression；只有完整 mapped boundary 通过检查后才
 消耗一个 node 名额。seek 越过 region 不执行 source read。lazy region 计入静态 99,999-item
 projection limit。
+
+每个 compressed payload 增加一条 `register-compressed-payload` instruction、一个
+materialized-node slot 与一个 cancellation point。该 instruction 会映射并 seek 越过 reader 的
+完整剩余 range，但不读取 source；terminal 作为一个 item 计入静态 99,999-field projection
+limit。
 
 恢复 cancelled progressive index 本身不消耗 source work、node 或 batch budget。后续每轮
 batch 继续使用普通 batch 相同的正 record-count、inspected-position、mapped-byte limit 和
