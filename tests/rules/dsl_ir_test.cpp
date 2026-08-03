@@ -1517,6 +1517,12 @@ private slots:
                 ue sps_id;
                 bits<1> entropy_mode @context_export;
             }
+            @context_import("h264-pps", pps_id)
+            @context_import("h264-sps", sps_id)
+            struct Slice {
+                ue pps_id;
+                ue sps_id;
+            }
             entry Sps;
         )"));
         QVERIFY2(parsed.succeeded(),
@@ -1548,6 +1554,15 @@ private slots:
                  streamview::core::ContextDefinitionKind::H264SequenceParameterSet);
         QCOMPARE(pps->dependencies.front().keyFieldIndex, quint32(1));
         QCOMPARE(pps->exportFieldIndices, std::vector<quint32>({2}));
+
+        const auto& slice = compiled.program->structs.at(2).contextImports;
+        QCOMPARE(slice.size(), std::size_t(2));
+        QCOMPARE(slice.at(0).kind,
+                 streamview::core::ContextDefinitionKind::H264PictureParameterSet);
+        QCOMPARE(slice.at(0).keyFieldIndex, quint32(0));
+        QCOMPARE(slice.at(1).kind,
+                 streamview::core::ContextDefinitionKind::H264SequenceParameterSet);
+        QCOMPARE(slice.at(1).keyFieldIndex, quint32(1));
     }
 
     void rejectsInvalidRuleDeclaredContextContracts() {
@@ -1579,6 +1594,36 @@ private slots:
                 "bits<1> value @context_export(1); } entry C;"),
             QStringLiteral(
                 "@context(\"h264-sps\") struct C { bits<1> id; } entry C;"),
+            QStringLiteral(
+                "@context_import(\"h264-sps\", id) "
+                "@context_import(\"h264-sps\", id) "
+                "struct C { bits<1> id; } entry C;"),
+            QStringLiteral(
+                "@context_import(\"h264-sps\", missing) "
+                "struct C { bits<1> id; } entry C;"),
+            QStringLiteral(
+                "@context_import(\"h264-sps\", value) "
+                "struct C { bits<1> flag; if (flag == 1) { bits<1> value; } } "
+                "entry C;"),
+            QStringLiteral(
+                "@context_import(\"h264-sps\", value) "
+                "struct C { bits<1> value[2]; } entry C;"),
+            QStringLiteral(
+                "@context_import(\"h264-sps\", value) "
+                "struct C { se value; } entry C;"),
+            QStringLiteral(
+                "@context_import(\"h264-sps\", value) "
+                "struct C { bits<1> count; repeat (count, 1) { bits<1> value; } } "
+                "entry C;"),
+            QStringLiteral(
+                "@context_import(\"h264-sps\", value) "
+                "struct C { bits<8> count; @lazy(count) bytes value; } entry C;"),
+            QStringLiteral(
+                "@context_import(\"h264-sps\", rbsp_stop_one_bit) "
+                "struct C { rbsp_trailing_bits; } entry C;"),
+            QStringLiteral(
+                "@context_import(\"h264-sps\", value) "
+                "struct C { computed<bool> value = true; } entry C;"),
         };
 
         for (const QString& source : invalidSources) {
@@ -1636,6 +1681,41 @@ private slots:
         const auto tooManyCompiled = DslCompiler::compile(tooManyParsed.program);
         QVERIFY(!tooManyCompiled.succeeded());
         QVERIFY(hasDiagnostic(tooManyCompiled, DslDiagnosticCode::InvalidContext));
+
+        QString maximumImports;
+        for (quint32 index = 0; index < 16; ++index) {
+            maximumImports += QStringLiteral(
+                "@context_import(\"h264-sps\", import%1) ").arg(index);
+        }
+        maximumImports += QStringLiteral("struct I { ");
+        for (quint32 index = 0; index < 16; ++index) {
+            maximumImports += QStringLiteral("bits<8> import%1; ").arg(index);
+        }
+        maximumImports += QStringLiteral("} entry I;");
+        const auto maximumImportsParsed = DslParser::parse(maximumImports);
+        QVERIFY(maximumImportsParsed.succeeded());
+        const auto maximumImportsCompiled =
+            DslCompiler::compile(maximumImportsParsed.program);
+        QVERIFY2(maximumImportsCompiled.succeeded(),
+                 maximumImportsCompiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(maximumImportsCompiled.diagnostics.front().message));
+        QCOMPARE(maximumImportsCompiled.program->structs.front().contextImports.size(),
+                 std::size_t(16));
+
+        QString tooManyImports = maximumImports;
+        tooManyImports.replace(
+            QStringLiteral("struct I {"),
+            QStringLiteral("@context_import(\"h264-sps\", import16) struct I {"));
+        tooManyImports.replace(QStringLiteral("} entry I;"),
+                               QStringLiteral("bits<8> import16; } entry I;"));
+        const auto tooManyImportsParsed = DslParser::parse(tooManyImports);
+        QVERIFY(tooManyImportsParsed.succeeded());
+        const auto tooManyImportsCompiled =
+            DslCompiler::compile(tooManyImportsParsed.program);
+        QVERIFY(!tooManyImportsCompiled.succeeded());
+        QVERIFY(hasDiagnostic(tooManyImportsCompiled,
+                              DslDiagnosticCode::InvalidContext));
     }
 };
 

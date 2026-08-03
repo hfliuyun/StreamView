@@ -38,10 +38,28 @@ struct RuleExecutionRequest final {
     DslExecutionOptions options;
 };
 
+struct RuleImportedContextDefinition final {
+    core::ContextDefinitionId definitionId;
+    core::ContextDefinitionKind kind =
+        core::ContextDefinitionKind::H264SequenceParameterSet;
+    quint32 structureIndex = 0;
+    std::vector<quint64> values;
+    std::vector<core::ContextDefinitionId> dependencies;
+};
+
+struct RuleImportedContext final {
+    [[nodiscard]] static constexpr std::size_t maximumDefinitions() noexcept { return 64; }
+
+    DslExecutionContextValue key;
+    core::ContextDefinitionId definitionId;
+    std::vector<RuleImportedContextDefinition> definitions;
+};
+
 struct RuleExecutionResult final {
     RuleExecutionStatus status = RuleExecutionStatus::InvalidDefinition;
     DslExecutionResult execution;
     std::optional<core::ContextDefinitionId> publishedDefinition;
+    std::vector<RuleImportedContext> importedContexts;
     QString errorMessage;
 
     [[nodiscard]] bool materialized() const noexcept {
@@ -71,6 +89,9 @@ private:
         quint32 structureIndex = 0;
         std::vector<quint64> values;
     };
+
+    [[nodiscard]] const ContextPayload*
+    contextPayload(core::ContextDefinitionId id) const noexcept;
 
     DslTypedProgram program_;
     quint64 contextScopeId_ = 0;

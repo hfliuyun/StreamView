@@ -121,6 +121,12 @@ annotation `@context_export`. A rules-owned execution session publishes
 completed definitions and their selected typed values to a position-aware
 directory without reading values back from presentation nodes.
 
+The accepted context-import slice adds repeatable structure annotation
+`@context_import`. After a consumer structure materializes, the same session
+selects the declared generation at the consumer position and returns its
+rules-owned export payload plus the exact dependency closure. Imported values
+do not yet enter the expression namespace.
+
 ## Minimum DSL 0.1 Subset
 
 The first executable subset uses the following grammar. Whitespace and `//` or
@@ -235,6 +241,10 @@ The static rules for this subset are:
 - `@context_export` takes no arguments, occurs at most once on a field, and is
   valid only for the same unconditional unsigned scalar kinds in a structure
   with `@context`. One definition exports at most 64 values.
+- `@context_import(kind, key_field)` may occur at most 16 times on a structure.
+  It uses the same recognized kinds and unconditional unsigned scalar key-field
+  rules. Declaration order is preserved; an identical kind/field pair is a
+  duplicate and is rejected.
 - Fixed-width arrays contribute `width * count` bits to static alignment.
   Every element of a little-endian array must therefore have a byte-multiple
   width and the first element must begin at a structure-relative byte boundary.
@@ -418,16 +428,16 @@ and, when present, constraint-check instructions. Conditional
 blocks are lowered into the same declaration-order field stream. Each possible
 field carries resolved presence guards that reference earlier typed-field
 indexes; no jump opcode or general control-flow bytecode is introduced.
-Context publication follows the same model: the compiler records each
-structure's context definition, ordered dependencies, and exported-value field
-indexes in typed IR. It emits no context-specific opcode. Before any source
-read, the VM validates every context index, scalar type, and cardinality even
-for typed programs supplied directly rather than produced by the compiler.
-After all selected fields execute successfully, it returns only the declared
-key, dependency keys, exports, and their exact locations to the execution
-session. Validation and collection use the existing instruction, expression,
-node, and cancellation budgets; context metadata cannot create an unbudgeted
-execution path.
+Context publication and import follow the same model: the compiler records each
+structure's context definition, ordered dependencies, exported-value field
+indexes, and ordered import kind/key indexes in typed IR. It emits no
+context-specific opcode. Before any source read, the VM validates every context
+index, scalar type, duplicate, and cardinality even for typed programs supplied
+directly rather than produced by the compiler. After all selected fields
+execute successfully, it returns only the declared publication values and
+import keys with their exact locations to the execution session. Validation and
+collection use the existing instruction, expression, node, and cancellation
+budgets; context metadata cannot create an unbudgeted execution path.
 
 `rbsp_trailing_bits` lowers to one `read-rbsp-trailing-bits` instruction and
 eight generated typed-field slots: one `rbsp_stop_one_bit` and seven possible
@@ -772,9 +782,10 @@ resolves the most recent available SPS with the declared identifier before the
 PPS NAL and binds that exact generation when it publishes its own generation.
 If no SPS is available, the PPS structure remains materialized but receives a
 source-located `dependency-unavailable` diagnostic; its RBSP and NAL are invalid,
-nothing is published, and later NAL units are still analyzed. Slice dispatch and
-context import remain unimplemented. Every other type keeps the uninterpreted
-`rbsp_payload` region unchanged.
+nothing is published, and later NAL units are still analyzed. Generic context
+import is available, but slice dispatch and use of imported values in expressions
+remain unimplemented. Every other type keeps the uninterpreted `rbsp_payload`
+region unchanged.
 
 The declared PPS fields have the following bounded meanings:
 
@@ -1012,7 +1023,7 @@ payload<rbsp> nal_units switch (nal_unit_type) {
 entry nal_units;
 ```
 
-Valid context-publication example:
+Valid context publication and import example:
 
 ```cpp
 @context("h264-sps", sps_id)
@@ -1027,6 +1038,12 @@ struct Pps {
     ue pps_id;
     ue sps_id;
     bits<1> entropy_mode @context_export;
+}
+
+@context_import("h264-pps", pps_id)
+struct SliceHeader {
+    ue first_mb_in_slice;
+    ue pps_id;
 }
 
 entry Sps;
@@ -1064,6 +1081,9 @@ structure; an identical repeated `@context_dependency`; a dependency on a
 structure without `@context`; a guarded, repeated, array, signed, lazy, or
 generated key or export; `@context_export(1)`; more than 16 dependencies; and
 more than 64 exports. Unknown context kinds and key names are rejected as well.
+Invalid context-import examples include an identical repeated import, a guarded,
+repeated, array, signed, lazy, generated, or unknown key field, an unsupported
+kind, malformed arguments, and more than 16 imports.
 
 Invalid payload-dispatch examples include two payload declarations,
 `payload<ebsp>` or any other view kind, a dispatch naming a structure or an
@@ -1263,17 +1283,17 @@ Standalone Annex B uses scope zero.
 The session can execute a complete logical view or the suffix beginning at a
 nonzero logical start. Its reader is backed by exactly that mapped slice, source
 locations retain the original logical coordinates, and exact consumption means
-consuming that slice rather than the mapping prefix. For a context definition,
-every mapped source span in that slice must lie inside the non-empty enclosing
-source span; a mismatch is rejected before source reads or analysis binding. A
-structure without context annotations uses the same execution path but publishes
-no directory effect.
+consuming that slice rather than the mapping prefix. For a context definition or
+import, every mapped source span in that slice must lie inside the non-empty
+enclosing source span; a mismatch is rejected before source reads or analysis
+binding. A structure without context annotations uses the same execution path
+but publishes no directory effect.
 
-The compiler lowers every declared key, dependency, and export to a stable typed
-field index. Before reading source, the VM validates those indexes and types. It
-returns only the selected values and their exact source locations, not its full
-local environment; neither the session nor the analyzer walks presentation-tree
-children to recover runtime values.
+The compiler lowers every declared key, dependency, export, and import key to a
+stable typed-field index. Before reading source, the VM validates those indexes
+and types. It returns only the selected values and their exact source locations,
+not its full local environment; neither the session nor the analyzer walks
+presentation-tree children to recover runtime values.
 
 A definition is selectable only at source positions at or after its complete
 source span's exclusive end. Among such definitions for the same key, lookup
@@ -1290,6 +1310,18 @@ registration is transactional, and later cross-generation dependency cycles
 or dependency chains beyond 64 definitions produce dependency-unavailable
 results.
 
+After a consumer materializes and satisfies its requested exact-consumption
+policy, each import resolves at the consumer enclosing span's start. A missing,
+future, or stale generation adds a source-located `dependency-unavailable`
+diagnostic to the import key and returns no partial imported result. A successful
+import returns the root definition first, then its exact dependencies in
+declaration-order depth-first traversal, with each definition included once.
+Every entry retains the definition ID, kind, publishing structure index,
+ordered exported values, and exact dependency IDs. A closure contains at most
+64 definitions; a missing rules-owned payload is invalid runtime state. Import
+results create no analysis nodes and imported values are not yet identifiers in
+conditions, expressions, widths, or repeat bounds.
+
 Publication occurs only after successful materialization, requested exact
 consumption, dependency resolution, and complete typed-payload preparation.
 Payload and directory capacity are reserved before registration, so committing
@@ -1305,8 +1337,10 @@ follows the single-writer analysis-worker model. See
 [ADR-0028](../adr/0028-resolve-context-generations-by-source-position.md).
 The publication contract is specified by
 [ADR-0044](../adr/0044-publish-rule-declared-context-generations.md). The
-bundled H.264 rule first uses it in package version `0.1.7`; slice context import
-is a later language slice.
+bundled H.264 rule first uses it in package version `0.1.7`. The import contract
+is specified by
+[ADR-0045](../adr/0045-import-rule-declared-context-generations.md); the bundled
+rule does not use imports until slice dispatch is added.
 
 ## Sandbox And Resource Limits
 
@@ -1328,6 +1362,11 @@ The current VM applies these defaults to one structure materialization:
 Enum membership validation and byte-order conversion are part of the existing
 field-read operation. They do not add source reads or analysis nodes, and they
 use the same instruction-budget and cancellation boundaries.
+
+One structure declares at most 16 context imports. Import selection performs no
+source reads and creates no nodes. Each returned exact dependency closure is
+bounded to 64 definitions; exceeding that bound is `resource-limit` and exposes
+no partial imported result.
 
 Array syntax does not reserve a separate runtime budget. Every expanded
 element consumes one materialized node and one read instruction; `@equals`

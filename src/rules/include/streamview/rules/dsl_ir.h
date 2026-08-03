@@ -87,6 +87,7 @@ struct DslTypedField final {
     DslTypedFieldKind kind = DslTypedFieldKind::Declared;
     QString name;
     DslValueType type;
+    bool contextEligible = false;
     std::optional<quint64> equalsConstraint;
     std::optional<DslTypedUnsignedRange> rangeConstraint;
     std::optional<DslTypedExpression> computedExpression;
@@ -121,12 +122,21 @@ struct DslTypedContextDefinition final {
     std::vector<quint32> exportFieldIndices;
 };
 
+struct DslTypedContextImport final {
+    [[nodiscard]] static constexpr std::size_t maximumImports() noexcept { return 16; }
+
+    core::ContextDefinitionKind kind =
+        core::ContextDefinitionKind::H264SequenceParameterSet;
+    quint32 keyFieldIndex = 0;
+};
+
 struct DslTypedStruct final {
     QString name;
     core::AnalysisNodeMetadata metadata;
     std::vector<DslTypedField> fields;
     std::vector<DslTypedRepeatBound> repeatBounds;
     std::optional<DslTypedContextDefinition> contextDefinition;
+    std::vector<DslTypedContextImport> contextImports;
     quint32 bytecodeOffset = 0;
     quint32 bytecodeLength = 0;
 };

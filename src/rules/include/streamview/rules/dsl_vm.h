@@ -62,6 +62,12 @@ struct DslExecutionContextValues final {
     std::vector<DslExecutionContextValue> exports;
 };
 
+struct DslExecutionContextImport final {
+    core::ContextDefinitionKind kind =
+        core::ContextDefinitionKind::H264SequenceParameterSet;
+    DslExecutionContextValue key;
+};
+
 struct DslExecutionResult final {
     DslExecutionStatus status = DslExecutionStatus::InvalidDefinition;
     std::optional<core::AnalysisNodeId> structureNode;
@@ -69,6 +75,7 @@ struct DslExecutionResult final {
     quint64 instructionsExecuted = 0;
     quint64 nodesCreated = 0;
     std::optional<DslExecutionContextValues> contextValues;
+    std::vector<DslExecutionContextImport> contextImports;
     QString errorMessage;
 
     [[nodiscard]] bool materialized() const noexcept {

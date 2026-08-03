@@ -31,7 +31,7 @@ unsigned scalar key field。一个 structure 最多声明 16 个 import。compil
 VM 在读取 source 前验证 import metadata。字段成功执行后，它只返回每个被选择的 key value、
 精确 location 与 import descriptor，不暴露完整 local environment。
 
-`RuleExecutionSession` 在 consumer enclosing source span 的排他起点调用
+`RuleExecutionSession` 在 consumer enclosing source span 的起点调用
 `ContextDirectory::resolveBefore` 解析每个 import。它要求 execution mapped span 都位于该
 enclosing span 内；缺少或 stale dependency 不回退，并返回 `dependency-unavailable`，不发布
 context generation。找到 generation 后，result 按 `ContextDefinitionId` 附加 rules-owned

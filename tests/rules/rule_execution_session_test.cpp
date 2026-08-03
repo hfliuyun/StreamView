@@ -104,7 +104,9 @@ struct View final {
         "@context(\"h264-pps\", pps_id) "
         "@context_dependency(\"h264-sps\", sps_id) "
         "struct Pps { bits<8> pps_id; bits<8> sps_id; "
-        "bits<8> entropy_mode @context_export; } entry Sps;"));
+        "bits<8> entropy_mode @context_export; } "
+        "@context_import(\"h264-pps\", pps_id) "
+        "struct Slice { bits<8> marker; bits<8> pps_id; } entry Sps;"));
     return DslCompiler::compile(parsed.program);
 }
 
@@ -197,6 +199,137 @@ private slots:
         QCOMPARE(result.execution.contextValues->exports.front().value, quint64(12));
     }
 
+    void importsExactContextPayloadAndDependencyClosure() {
+        const auto compiled = compileContextProgram();
+        QVERIFY(compiled.succeeded());
+        const auto spsIndex = *compiled.program->structureIndex(QStringLiteral("Sps"));
+        const auto ppsIndex = *compiled.program->structureIndex(QStringLiteral("Pps"));
+        const auto sliceIndex = *compiled.program->structureIndex(QStringLiteral("Slice"));
+        MemorySource source(bytes({3, 12, 5, 3, 1, 0xaa, 5}));
+        const auto spsView = makeView(1, 0, 16);
+        const auto ppsView = makeView(2, 16, 24);
+        const auto sliceView = makeView(3, 40, 16);
+        QVERIFY(spsView.has_value());
+        QVERIFY(ppsView.has_value());
+        QVERIFY(sliceView.has_value());
+        auto tree = AnalysisTree::create(QStringLiteral("context-import"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        const auto sps =
+            session.run(makeRequest(source, spsIndex, *spsView, *tree));
+        const auto pps =
+            session.run(makeRequest(source, ppsIndex, *ppsView, *tree));
+        const auto slice =
+            session.run(makeRequest(source, sliceIndex, *sliceView, *tree));
+
+        QVERIFY(sps.materialized());
+        QVERIFY(pps.materialized());
+        QVERIFY(slice.materialized());
+        QCOMPARE(slice.execution.contextImports.size(), std::size_t(1));
+        QCOMPARE(slice.execution.contextImports.front().key.value, quint64(5));
+        QCOMPARE(slice.execution.contextImports.front().key.location->sourceSpans().front()
+                     .start().absoluteBitOffset(),
+                 quint64(48));
+        QCOMPARE(slice.importedContexts.size(), std::size_t(1));
+        const auto& imported = slice.importedContexts.front();
+        QCOMPARE(imported.definitionId, *pps.publishedDefinition);
+        QCOMPARE(imported.definitions.size(), std::size_t(2));
+        QCOMPARE(imported.definitions.at(0).definitionId, *pps.publishedDefinition);
+        QCOMPARE(imported.definitions.at(0).kind,
+                 ContextDefinitionKind::H264PictureParameterSet);
+        QCOMPARE(imported.definitions.at(0).structureIndex, ppsIndex);
+        QCOMPARE(imported.definitions.at(0).values, std::vector<quint64>({1}));
+        QCOMPARE(imported.definitions.at(0).dependencies,
+                 std::vector<streamview::core::ContextDefinitionId>(
+                     {*sps.publishedDefinition}));
+        QCOMPARE(imported.definitions.at(1).definitionId, *sps.publishedDefinition);
+        QCOMPARE(imported.definitions.at(1).kind,
+                 ContextDefinitionKind::H264SequenceParameterSet);
+        QCOMPARE(imported.definitions.at(1).structureIndex, spsIndex);
+        QCOMPARE(imported.definitions.at(1).values, std::vector<quint64>({12}));
+        QVERIFY(imported.definitions.at(1).dependencies.empty());
+    }
+
+    void rejectsMissingContextImportWithoutReturningAPartialClosure() {
+        const auto compiled = compileContextProgram();
+        QVERIFY(compiled.succeeded());
+        const auto sliceIndex = *compiled.program->structureIndex(QStringLiteral("Slice"));
+        MemorySource source(bytes({0xaa, 5}));
+        const auto view = makeView(1, 0, 16);
+        QVERIFY(view.has_value());
+        auto tree = AnalysisTree::create(QStringLiteral("missing-import"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        const auto result =
+            session.run(makeRequest(source, sliceIndex, *view, *tree));
+
+        QCOMPARE(result.status, RuleExecutionStatus::DependencyUnavailable);
+        QVERIFY(result.importedContexts.empty());
+        QVERIFY(result.execution.structureNode.has_value());
+        const auto structure = tree->node(*result.execution.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->diagnostics().size(), std::size_t(1));
+        QCOMPARE(structure->diagnostics().front().code,
+                 DiagnosticCode::DependencyUnavailable);
+        QCOMPARE(structure->diagnostics().front().fieldPath,
+                 QStringLiteral("Slice.pps_id"));
+        QCOMPARE(structure->diagnostics().front().location->sourceSpans().front()
+                     .start().absoluteBitOffset(),
+                 quint64(8));
+    }
+
+    void importFailureDoesNotReturnEarlierClosuresOrPublishAContext() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "@context(\"h264-sps\", id) struct Sps { bits<8> id; } "
+            "@context(\"aac-asc\", publish_id) "
+            "@context_import(\"h264-sps\", sps_id) "
+            "@context_import(\"h264-pps\", pps_id) "
+            "struct Combined { bits<8> publish_id; bits<8> sps_id; bits<8> pps_id; } "
+            "entry Combined;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const auto spsIndex = *compiled.program->structureIndex(QStringLiteral("Sps"));
+        const auto combinedIndex =
+            *compiled.program->structureIndex(QStringLiteral("Combined"));
+        MemorySource source(bytes({3, 9, 3, 5}));
+        const auto spsView = makeView(1, 0, 8);
+        const auto combinedView = makeView(2, 8, 24);
+        QVERIFY(spsView.has_value());
+        QVERIFY(combinedView.has_value());
+        auto tree = AnalysisTree::create(QStringLiteral("transactional-import"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        const auto sps =
+            session.run(makeRequest(source, spsIndex, *spsView, *tree));
+        const auto combined =
+            session.run(makeRequest(source, combinedIndex, *combinedView, *tree));
+
+        QVERIFY(sps.materialized());
+        QCOMPARE(combined.status, RuleExecutionStatus::DependencyUnavailable);
+        QCOMPARE(combined.execution.contextImports.size(), std::size_t(2));
+        QVERIFY(combined.importedContexts.empty());
+        QVERIFY(!combined.publishedDefinition.has_value());
+        QCOMPARE(session.contextDirectory().definitionCount(), std::size_t(1));
+        const ContextKey unpublishedKey{
+            ContextDefinitionKind::AacAudioSpecificConfig, 0, 9};
+        QCOMPARE(session.contextDirectory()
+                     .resolveBefore(unpublishedKey, SourceBitAddress(32))
+                     .status,
+                 ContextLookupStatus::NotFound);
+        const auto structure = tree->node(*combined.execution.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->diagnostics().size(), std::size_t(1));
+        QCOMPARE(structure->diagnostics().front().fieldPath,
+                 QStringLiteral("Combined.pps_id"));
+        QCOMPARE(structure->diagnostics().front().location->sourceSpans().front()
+                     .start().absoluteBitOffset(),
+                 quint64(24));
+    }
+
     void rejectsReuseAcrossAnalysisSourcesAndTrees() {
         const auto compiled = compileContextProgram();
         QVERIFY(compiled.succeeded());
@@ -233,13 +366,16 @@ private slots:
         QVERIFY(compiled.succeeded());
         const auto spsIndex = *compiled.program->structureIndex(QStringLiteral("Sps"));
         const auto ppsIndex = *compiled.program->structureIndex(QStringLiteral("Pps"));
-        MemorySource source(bytes({3, 12, 5, 3, 1, 3, 13}));
+        const auto sliceIndex = *compiled.program->structureIndex(QStringLiteral("Slice"));
+        MemorySource source(bytes({3, 12, 5, 3, 1, 3, 13, 0xaa, 5}));
         const auto firstSps = makeView(1, 0, 16);
         const auto pps = makeView(2, 16, 24);
         const auto secondSps = makeView(3, 40, 16);
+        const auto slice = makeView(4, 56, 16);
         QVERIFY(firstSps.has_value());
         QVERIFY(pps.has_value());
         QVERIFY(secondSps.has_value());
+        QVERIFY(slice.has_value());
         auto tree = AnalysisTree::create(QStringLiteral("context-redefinition"));
         QVERIFY(tree.has_value());
         RuleExecutionSession session(*compiled.program);
@@ -254,11 +390,44 @@ private slots:
         QVERIFY(dependent.materialized());
         QVERIFY(second.materialized());
 
+        const auto staleImport = session.run(
+            makeRequest(source, sliceIndex, *slice, *tree));
+
         const ContextKey ppsKey{ContextDefinitionKind::H264PictureParameterSet, 0, 5};
         QCOMPARE(session.contextDirectory().resolveBefore(ppsKey, SourceBitAddress(40)).status,
                  ContextLookupStatus::Found);
         QCOMPARE(session.contextDirectory().resolveBefore(ppsKey, SourceBitAddress(56)).status,
                  ContextLookupStatus::DependencyUnavailable);
+        QCOMPARE(staleImport.status, RuleExecutionStatus::DependencyUnavailable);
+        QVERIFY(staleImport.importedContexts.empty());
+    }
+
+    void doesNotImportAGenerationPublishedLaterInSourceOrder() {
+        const auto compiled = compileContextProgram();
+        QVERIFY(compiled.succeeded());
+        const auto spsIndex = *compiled.program->structureIndex(QStringLiteral("Sps"));
+        const auto sliceIndex = *compiled.program->structureIndex(QStringLiteral("Slice"));
+        MemorySource source(bytes({0xaa, 3, 3, 12}));
+        const auto consumerView = makeView(1, 0, 16);
+        const auto futureSpsView = makeView(2, 16, 16);
+        QVERIFY(consumerView.has_value());
+        QVERIFY(futureSpsView.has_value());
+        auto tree = AnalysisTree::create(QStringLiteral("future-import"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        const auto future = session.run(
+            makeRequest(source, spsIndex, *futureSpsView, *tree));
+        const auto consumer = session.run(
+            makeRequest(source, sliceIndex, *consumerView, *tree));
+
+        QVERIFY(future.materialized());
+        QCOMPARE(consumer.status, RuleExecutionStatus::DependencyUnavailable);
+        QVERIFY(consumer.importedContexts.empty());
+        const auto structure = tree->node(*consumer.execution.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->diagnostics().front().fieldPath,
+                 QStringLiteral("Slice.pps_id"));
     }
 
     void rejectsMissingDependencyWithoutPublishingPps() {
@@ -395,6 +564,66 @@ private slots:
         QCOMPARE(session.contextDirectory().definitionCount(), std::size_t(0));
     }
 
+    void rejectsMalformedContextImportIrBeforeReadingSource_data() {
+        QTest::addColumn<int>("mutation");
+
+        QTest::newRow("out-of-range-key-index") << 0;
+        QTest::newRow("invalid-kind") << 1;
+        QTest::newRow("duplicate-import") << 2;
+        QTest::newRow("seventeen-imports") << 3;
+        QTest::newRow("fixed-array-element-key") << 4;
+    }
+
+    void rejectsMalformedContextImportIrBeforeReadingSource() {
+        QFETCH(int, mutation);
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "@context_import(\"h264-pps\", key) "
+            "struct Consumer { bits<8> key; bits<8> values[2]; } entry Consumer;"));
+        QVERIFY(parsed.succeeded());
+        auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const auto consumerIndex =
+            *compiled.program->structureIndex(QStringLiteral("Consumer"));
+        auto& imports = compiled.program->structs.at(consumerIndex).contextImports;
+        switch (mutation) {
+        case 0:
+            imports.front().keyFieldIndex = 99;
+            break;
+        case 1:
+            imports.front().kind = static_cast<ContextDefinitionKind>(0xff);
+            break;
+        case 2:
+            imports.push_back(imports.front());
+            break;
+        case 3:
+            while (imports.size() <=
+                   streamview::rules::DslTypedContextImport::maximumImports()) {
+                imports.push_back(imports.front());
+            }
+            break;
+        case 4:
+            imports.front().keyFieldIndex = 1;
+            break;
+        default:
+            QFAIL("Unknown malformed context-import mutation");
+        }
+        MemorySource source(bytes({5, 6, 7}));
+        const auto view = makeView(1, 0, 24);
+        QVERIFY(view.has_value());
+        auto tree = AnalysisTree::create(QStringLiteral("malformed-import"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(std::move(*compiled.program));
+
+        const auto result =
+            session.run(makeRequest(source, consumerIndex, *view, *tree));
+
+        QCOMPARE(result.status, RuleExecutionStatus::InvalidDefinition);
+        QCOMPARE(result.execution.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(source.readCount(), quint64(0));
+        QVERIFY(result.importedContexts.empty());
+        QCOMPARE(session.contextDirectory().definitionCount(), std::size_t(0));
+    }
+
     void rejectsContextMappingOutsideItsEnclosingSpanBeforeReadingSource() {
         const auto compiled = compileContextProgram();
         QVERIFY(compiled.succeeded());
@@ -424,6 +653,127 @@ private slots:
             makeRequest(validSource, spsIndex, *mappingView, *validTree));
         QVERIFY(valid.materialized());
         QCOMPARE(session.contextDirectory().definitionCount(), std::size_t(1));
+    }
+
+    void boundsImportedContextDependencyClosures_data() {
+        QTest::addColumn<quint32>("leafCount");
+        QTest::addColumn<bool>("accepted");
+
+        QTest::newRow("exactly-64-definitions") << quint32(47) << true;
+        QTest::newRow("65-definitions") << quint32(48) << false;
+    }
+
+    void boundsImportedContextDependencyClosures() {
+        QFETCH(quint32, leafCount);
+        QFETCH(bool, accepted);
+        QString sourceText = QStringLiteral(
+            "@context(\"h264-sps\", id) struct Leaf { bits<8> id; } "
+            "@context(\"h264-pps\", id) ");
+        for (quint32 index = 0; index < 4; ++index) {
+            sourceText += QStringLiteral(
+                "@context_dependency(\"h264-sps\", dependency%1) ").arg(index);
+        }
+        sourceText += QStringLiteral("struct Middle { bits<8> id; ");
+        for (quint32 index = 0; index < 4; ++index) {
+            sourceText += QStringLiteral("bits<8> dependency%1; ").arg(index);
+        }
+        sourceText += QStringLiteral(
+            "} @context(\"aac-asc\", id) ");
+        for (quint32 index = 0; index < 16; ++index) {
+            sourceText += QStringLiteral(
+                "@context_dependency(\"h264-pps\", dependency%1) ").arg(index);
+        }
+        sourceText += QStringLiteral("struct Root { bits<8> id; ");
+        for (quint32 index = 0; index < 16; ++index) {
+            sourceText += QStringLiteral("bits<8> dependency%1; ").arg(index);
+        }
+        sourceText += QStringLiteral(
+            "} @context_import(\"aac-asc\", id) "
+            "struct Consumer { bits<8> id; } entry Consumer;");
+        const auto parsed = DslParser::parse(sourceText);
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto leafIndex = *compiled.program->structureIndex(QStringLiteral("Leaf"));
+        const auto middleIndex = *compiled.program->structureIndex(QStringLiteral("Middle"));
+        const auto rootIndex = *compiled.program->structureIndex(QStringLiteral("Root"));
+        const auto consumerIndex =
+            *compiled.program->structureIndex(QStringLiteral("Consumer"));
+
+        std::vector<std::byte> data;
+        for (quint32 leaf = 0; leaf < leafCount; ++leaf) {
+            data.push_back(static_cast<std::byte>(leaf));
+        }
+        for (quint32 middle = 0; middle < 16; ++middle) {
+            data.push_back(static_cast<std::byte>(middle));
+            for (quint32 dependency = 0; dependency < 4; ++dependency) {
+                data.push_back(static_cast<std::byte>(
+                    ((middle * 4) + dependency) % leafCount));
+            }
+        }
+        data.push_back(std::byte{1});
+        for (quint32 dependency = 0; dependency < 16; ++dependency) {
+            data.push_back(static_cast<std::byte>(dependency));
+        }
+        data.push_back(std::byte{1});
+        MemorySource source(std::move(data));
+        auto tree = AnalysisTree::create(QStringLiteral("bounded-import-closure"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+        quint64 sourceBit = 0;
+        quint64 viewId = 1;
+
+        for (quint32 leaf = 0; leaf < leafCount; ++leaf) {
+            const auto view = makeView(viewId++, sourceBit, 8);
+            QVERIFY(view.has_value());
+            const auto result =
+                session.run(makeRequest(source, leafIndex, *view, *tree));
+            QVERIFY(result.materialized());
+            sourceBit += 8;
+        }
+        for (quint32 middle = 0; middle < 16; ++middle) {
+            const auto view = makeView(viewId++, sourceBit, 40);
+            QVERIFY(view.has_value());
+            const auto result =
+                session.run(makeRequest(source, middleIndex, *view, *tree));
+            QVERIFY(result.materialized());
+            sourceBit += 40;
+        }
+        const auto rootView = makeView(viewId++, sourceBit, 136);
+        QVERIFY(rootView.has_value());
+        const auto root =
+            session.run(makeRequest(source, rootIndex, *rootView, *tree));
+        QVERIFY(root.materialized());
+        sourceBit += 136;
+        const auto consumerView = makeView(viewId, sourceBit, 8);
+        QVERIFY(consumerView.has_value());
+
+        const auto result =
+            session.run(makeRequest(source, consumerIndex, *consumerView, *tree));
+
+        if (accepted) {
+            QVERIFY(result.materialized());
+            QCOMPARE(result.importedContexts.size(), std::size_t(1));
+            QCOMPARE(result.importedContexts.front().definitions.size(),
+                     std::size_t(64));
+        } else {
+            QCOMPARE(result.status, RuleExecutionStatus::ResourceLimit);
+            QVERIFY(result.importedContexts.empty());
+            QVERIFY(result.execution.structureNode.has_value());
+            const auto consumer = tree->node(*result.execution.structureNode);
+            QVERIFY(consumer.has_value());
+            QCOMPARE(consumer->diagnostics().size(), std::size_t(1));
+            QCOMPARE(consumer->diagnostics().front().code,
+                     DiagnosticCode::ResourceLimit);
+            QCOMPARE(consumer->diagnostics().front().fieldPath,
+                     QStringLiteral("Consumer.id"));
+        }
     }
 };
 

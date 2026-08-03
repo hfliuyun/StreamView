@@ -848,7 +848,7 @@ DslExecutionResult DslVirtualMachine::execute(
             field.type.kind == DslValueTypeKind::UnsignedExpGolomb ||
             field.type.kind == DslValueTypeKind::ComputedUnsigned;
         return field.kind == DslTypedFieldKind::Declared &&
-               field.conditions.empty() && unsignedScalar;
+               field.contextEligible && field.conditions.empty() && unsignedScalar;
     };
     const auto validContextKind = [](core::ContextDefinitionKind kind) {
         switch (kind) {
@@ -901,6 +901,27 @@ DslExecutionResult DslVirtualMachine::execute(
             }
             checkedDependencies.push_back(identity);
         }
+    }
+    if (structure.contextImports.size() > DslTypedContextImport::maximumImports()) {
+        markFailure(DslExecutionStatus::InvalidDefinition,
+                    QStringLiteral("Typed IR declares too many context imports"),
+                    nullptr);
+        return result;
+    }
+    std::vector<std::pair<core::ContextDefinitionKind, quint32>> checkedImports;
+    checkedImports.reserve(structure.contextImports.size());
+    for (const DslTypedContextImport& import : structure.contextImports) {
+        const auto identity = std::pair{import.kind, import.keyFieldIndex};
+        if (!validContextKind(import.kind) ||
+            !validContextField(import.keyFieldIndex) ||
+            std::find(checkedImports.begin(), checkedImports.end(), identity) !=
+                checkedImports.end()) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed IR context import is invalid"),
+                        nullptr);
+            return result;
+        }
+        checkedImports.push_back(identity);
     }
     quint32 previousRepeatPosition = 0;
     for (std::size_t repeatIndex = 0; repeatIndex < structure.repeatBounds.size();
@@ -992,6 +1013,8 @@ DslExecutionResult DslVirtualMachine::execute(
         stagedContextValues->exports.reserve(
             structure.contextDefinition->exportFieldIndices.size());
     }
+    std::vector<DslExecutionContextImport> stagedContextImports;
+    stagedContextImports.reserve(structure.contextImports.size());
     std::optional<quint32> lastField;
     std::optional<quint64> lastValue;
     std::optional<core::AnalysisNodeId> lastFieldNode;
@@ -1831,7 +1854,7 @@ DslExecutionResult DslVirtualMachine::execute(
                             nullptr);
                 return result;
             }
-            if (structure.contextDefinition) {
+            if (structure.contextDefinition || !structure.contextImports.empty()) {
                 const auto materializedContextValue =
                     [&](quint32 fieldIndex) -> std::optional<DslExecutionContextValue> {
                     if (fieldIndex >= fieldValues.size() || !fieldValues.at(fieldIndex)) {
@@ -1852,38 +1875,51 @@ DslExecutionResult DslVirtualMachine::execute(
                     }
                     return value;
                 };
-                const DslTypedContextDefinition& definition =
-                    *structure.contextDefinition;
-                const auto key = materializedContextValue(definition.keyFieldIndex);
-                if (!key) {
-                    markFailure(DslExecutionStatus::InvalidDefinition,
-                                QStringLiteral("Typed IR context key value is unavailable"),
-                                nullptr);
-                    return result;
-                }
-                stagedContextValues->key = *key;
-                for (const DslTypedContextDependency& dependency :
-                     definition.dependencies) {
-                    const auto value =
-                        materializedContextValue(dependency.keyFieldIndex);
-                    if (!value) {
-                        markFailure(
-                            DslExecutionStatus::InvalidDefinition,
-                            QStringLiteral("Typed IR context dependency value is unavailable"),
-                            nullptr);
-                        return result;
-                    }
-                    stagedContextValues->dependencies.push_back(*value);
-                }
-                for (const quint32 fieldIndex : definition.exportFieldIndices) {
-                    const auto value = materializedContextValue(fieldIndex);
-                    if (!value) {
+                if (structure.contextDefinition) {
+                    const DslTypedContextDefinition& definition =
+                        *structure.contextDefinition;
+                    const auto key = materializedContextValue(definition.keyFieldIndex);
+                    if (!key) {
                         markFailure(DslExecutionStatus::InvalidDefinition,
-                                    QStringLiteral("Typed IR context export value is unavailable"),
+                                    QStringLiteral("Typed IR context key value is unavailable"),
                                     nullptr);
                         return result;
                     }
-                    stagedContextValues->exports.push_back(*value);
+                    stagedContextValues->key = *key;
+                    for (const DslTypedContextDependency& dependency :
+                         definition.dependencies) {
+                        const auto value =
+                            materializedContextValue(dependency.keyFieldIndex);
+                        if (!value) {
+                            markFailure(
+                                DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Typed IR context dependency value is unavailable"),
+                                nullptr);
+                            return result;
+                        }
+                        stagedContextValues->dependencies.push_back(*value);
+                    }
+                    for (const quint32 fieldIndex : definition.exportFieldIndices) {
+                        const auto value = materializedContextValue(fieldIndex);
+                        if (!value) {
+                            markFailure(
+                                DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Typed IR context export value is unavailable"),
+                                nullptr);
+                            return result;
+                        }
+                        stagedContextValues->exports.push_back(*value);
+                    }
+                }
+                for (const DslTypedContextImport& import : structure.contextImports) {
+                    const auto key = materializedContextValue(import.keyFieldIndex);
+                    if (!key) {
+                        markFailure(DslExecutionStatus::InvalidDefinition,
+                                    QStringLiteral("Typed IR context import key is unavailable"),
+                                    nullptr);
+                        return result;
+                    }
+                    stagedContextImports.push_back({import.kind, *key});
                 }
             }
             if (!tree.transition(*result.structureNode,
@@ -1894,6 +1930,7 @@ DslExecutionResult DslVirtualMachine::execute(
                 return result;
             }
             result.contextValues = std::move(stagedContextValues);
+            result.contextImports = std::move(stagedContextImports);
             result.status = DslExecutionStatus::Materialized;
             ended = true;
             break;

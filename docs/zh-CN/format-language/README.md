@@ -102,6 +102,11 @@ stop bit 与依当前位置决定的 RBSP 补零，而不引入通用对齐表�
 execution session 将完整 definition 及选中的 typed value 发布到 position-aware directory，
 不会从 presentation node 回读值。
 
+当前接受的 context-import 切片新增可重复 structure annotation `@context_import`。consumer
+structure materialize 后，同一 session 在 consumer position 选择声明的 generation，并返回
+其 rules-owned export payload 与精确 dependency closure。imported value 尚不进入 expression
+namespace。
+
 ## DSL 0.1 最小子集
 
 首个可执行子集使用以下语法。token 之间可以有空白，以及 `//` 或 `/* ... */`
@@ -197,6 +202,9 @@ primary       := integer | "true" | "false" | identifier
   context value。
 - `@context_export` 不接受参数，在一个 field 上至多出现一次，并且只允许标注具有
   `@context` 的结构中同类无条件 unsigned scalar。一个 definition 最多 export 64 个值。
+- `@context_import(kind, key_field)` 在一个 structure 上最多出现 16 次。它使用相同的已识别
+  kind 与无条件 unsigned scalar key-field 规则，保留 declaration order；相同 kind/field pair
+  是静态重复错误。
 - 固定宽度数组按 `width * count` bit 参与静态对齐。小端数组的每个元素宽度必须是 8 的
   倍数，并且首元素必须从结构内的字节边界开始。`ue` 或 `se` 数组的总宽度未知，因此其
   后续小端字段与单个 Exp-Golomb 字段之后的小端字段一样会被拒绝。
@@ -325,12 +333,13 @@ instruction。条件 block 被降低到同一条按声明顺序排列的字段�
 一般控制流 bytecode。switch case 字段携带一个正向等值 guard；default 字段携带全部 case
 guard 的否定合取，省略 default 时不会为未匹配路径生成字段。嵌套 switch 与条件的 guard
 按外层到内层追加。
-context publication 沿用同一模型：compiler 在 typed IR 中记录每个 structure 的 context
-definition、有序 dependency 与 exported-value field index，不生成 context 专用 opcode。VM 在
-读取任何 source 之前校验全部 context index、scalar type 与数量，即使 typed program 是直接
-构造而不是由 compiler 生成也一样。所有被选字段成功执行后，VM 只向 execution session 返回
-声明的 key、dependency key、export 及其精确 location。校验与收集沿用既有 instruction、
-expression、node 和 cancellation budget；context metadata 不能产生不计预算的执行路径。
+context publication 与 import 沿用同一模型：compiler 在 typed IR 中记录每个 structure 的
+context definition、有序 dependency、exported-value field index，以及有序 import kind/key
+index，不生成 context 专用 opcode。VM 在读取任何 source 前校验全部 context index、scalar
+type、重复项与数量，即使 typed program 是直接构造而不是由 compiler 生成也一样。所有被选
+字段成功执行后，VM 只向 execution session 返回声明的 publication value、import key 及其
+精确 location。校验与收集沿用既有 instruction、expression、node 和 cancellation budget；
+context metadata 不能产生不计预算的执行路径。
 
 `rbsp_trailing_bits` 降低为一条 `read-rbsp-trailing-bits` instruction 与八个生成的 typed-field
 slot：一个 `rbsp_stop_one_bit` 和七个可能的 `rbsp_alignment_zero_bit[index]`。instruction 会在
@@ -586,8 +595,8 @@ extension 语法会改变或扩展已声明布局，因此成为 `invalid-syntax
 该 PPS NAL 之前具有声明 ID 的最近 available SPS，并在发布自身 generation 时绑定这个精确
 generation。若不存在 SPS，PPS structure 仍保持 materialized，但会收到带 source 位置的
 `dependency-unavailable` diagnostic；所属 RBSP 与 NAL 变为 invalid，不发布任何 generation，
-并继续分析后续 NAL。slice dispatch 与 context import 仍未实现。其余所有 type 的
-`rbsp_payload` region 保持原样。
+并继续分析后续 NAL。通用 context import 已可用，但 slice dispatch 以及在 expression 中使用
+imported value 仍未实现。其余所有 type 的 `rbsp_payload` region 保持原样。
 
 已声明 PPS 字段具有以下有界含义：
 
@@ -650,7 +659,7 @@ sequence<NalUnitHeader> nal_units = scan(h264_start_code);
 entry nal_units;
 ```
 
-context publication 合法示例：
+context publication 与 import 合法示例：
 
 ```cpp
 @context("h264-sps", sps_id)
@@ -665,6 +674,12 @@ struct Pps {
     ue pps_id;
     ue sps_id;
     bits<1> entropy_mode @context_export;
+}
+
+@context_import("h264-pps", pps_id)
+struct SliceHeader {
+    ue first_mb_in_slice;
+    ue pps_id;
 }
 
 entry Sps;
@@ -857,6 +872,8 @@ context publication 的非法示例包括：同一 structure 上出现第二个 
 repeated、array、signed、lazy 或 generated field 作为 key/export、
 `@context_export(1)`、超过 16 个 dependency，以及超过 64 个 export。未知 context kind 与
 不存在的 key 名同样会被拒绝。
+context import 的非法示例包括：完全相同的 import 重复、guarded/repeated/array/signed/lazy/
+generated 或未知 key field、不支持的 kind、malformed argument，以及超过 16 个 import。
 
 payload 派发的非法示例包括：两个 payload 声明、`payload<ebsp>` 或其他 view kind、派发命名
 结构或未声明名称而非 sequence、所派发 sequence 没有 `entry`、未知 controller 名、以
@@ -1021,13 +1038,14 @@ AudioSpecificConfig 和 ISO BMFF sample description。key 还包含数字 scope�
 
 session 可以执行完整 logical view，也可以执行从非零 logical start 开始的 suffix。reader 只由
 该 mapped slice backing，source location 保持原 logical coordinate；精确消费指消费该 slice，
-不包含 mapping prefix。对于 context definition，这个 slice 的每个 mapped source span 都必须
-位于非空 enclosing source span 内；不匹配会在读取 source 或绑定 analysis identity 前被拒绝。
-没有 context annotation 的结构仍走同一 execution path，但不产生 directory effect。
+不包含 mapping prefix。对于 context definition 或 import，这个 slice 的每个 mapped source
+span 都必须位于非空 enclosing source span 内；不匹配会在读取 source 或绑定 analysis identity
+前被拒绝。没有 context annotation 的结构仍走同一 execution path，但不产生 directory effect。
 
-compiler 把每个声明的 key、dependency 与 export 降低为稳定 typed field index。VM 在读取
-source 前验证这些 index 和类型，并且只返回选中值及其精确 source location，而不暴露完整
-local environment；session 与 analyzer 都不会遍历 presentation-tree child 来恢复运行值。
+compiler 把每个声明的 key、dependency、export 与 import key 降低为稳定 typed field index。
+VM 在读取 source 前验证这些 index 和类型，并且只返回选中值及其精确 source location，而不
+暴露完整 local environment；session 与 analyzer 都不会遍历 presentation-tree child 来恢复
+运行值。
 
 definition 只有在查询 source position 到达或越过其完整 source span 的排他结束
 位置时才可选。同一 key 的多个可选 definition 中，lookup 选择结束位置最接近
@@ -1042,6 +1060,15 @@ key 的更旧 generation，也不会猜测。malformed definition 不注册，�
 后续跨 generation dependency cycle 会产生 dependency-unavailable result，超过 64 个
 definition 的 dependency chain 也会得到同一结果。
 
+consumer materialize 并满足 requested exact-consumption policy 后，每个 import 都在 consumer
+enclosing span 的起点解析。缺少、future 或 stale generation 会在 import key 上添加精确
+source 位置的 `dependency-unavailable` diagnostic，且不返回部分 imported result。成功 import
+先返回 root definition，再按 dependency declaration order 做 depth-first traversal；每个精确
+definition 只包含一次。每项保留 definition ID、kind、publishing structure index、有序 exported
+value 与精确 dependency ID。closure 最多 64 个 definition；rules-owned payload 缺失属于
+invalid runtime state。import result 不创建 analysis node，imported value 暂时也不能用作
+condition、expression、width 或 repeat bound 中的 identifier。
+
 只有 structure 成功 materialize、满足请求的精确消费策略、完成 dependency resolution 和
 typed-payload 准备后才会发布。registration 前会预留 payload 与 directory 容量，因此成功
 mutation 后提交 prepared payload 是 single-writer 模型下不分配内存的 move。malformed、
@@ -1053,7 +1080,9 @@ rule owner 保存。目录不读取 source，并遵循 analysis-worker 单写者
 [ADR-0028](../adr/0028-resolve-context-generations-by-source-position.md)。
 publication 合同见
 [ADR-0044](../adr/0044-publish-rule-declared-context-generations.md)。内置 H.264 rule 从 package
-version `0.1.7` 开始使用该合同；slice context import 属于后续语言切片。
+version `0.1.7` 开始使用该合同。import 合同见
+[ADR-0045](../adr/0045-import-rule-declared-context-generations.md)；内置 rule 会在新增 slice
+dispatch 后才使用 import。
 
 ## 沙箱与资源限制
 
@@ -1071,6 +1100,10 @@ version `0.1.7` 开始使用该合同；slice context import 属于后续语言�
 
 enum 成员检查和字节序转换都属于现有的字段读取操作，不增加 source 读取或 analysis node，
 并使用同一套 instruction budget 和取消检查边界。
+
+一个 structure 最多声明 16 个 context import。import selection 不读取 source，也不创建 node。
+每个返回的 exact dependency closure 最多包含 64 个 definition；超限得到 `resource-limit`，
+且不暴露部分 imported result。
 
 数组语法不另占运行时预算。每个展开元素消耗一个物化节点和一条 read instruction；每个
 `@equals` 元素再增加一条 assertion instruction，每个 `@range` 元素再增加两条
