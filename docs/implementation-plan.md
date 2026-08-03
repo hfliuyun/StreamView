@@ -2,10 +2,11 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Rule-declared context generations and SPS/PPS dependency prerequisite
-Next Action: Define rule-declared context import for the bounded H.264 slice-header slice
-Last Verification: Commit b035b9f local dev/ci/sanitize passed 32/32; hosted run
-  30837740934 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Rule-declared context import and exact dependency payload hand-off
+Next Action: Define dynamic `bits<expression>` over exact imported context values for the bounded
+  H.264 slice-header slice
+Last Verification: Commit 8b00e1c local dev/ci/sanitize passed 32/32; hosted run
+  30842615170 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -534,3 +535,20 @@ Blockers: None
   Test、Install、Upload 均成功。完整 slice-header 项仍未完成；下一步定义 rule-declared
   context import，再继续 dynamic `bits<expression>`、bounded sentinel loop 与 compressed
   remaining-bit payload。
+- 2026-08-04：完成有界 H.264 slice-header 的 rule-declared context import 前置切片。
+  ADR-0045（`2118632`）固化可重复 structure annotation `@context_import(kind, key)`：一个
+  structure 最多 16 个 import，只接受同结构中无条件、顶层、非数组的 unsigned `bits`、enum、
+  `ue` 或 `computed<u64>` key；重复 kind/key pair 静态拒绝。`8b00e1c` 在 typed field 中保留
+  context-key eligibility，使 VM 在 source read 前拒绝数组元素、非法 kind、重复、越界索引与
+  超量恶意 IR；成功执行只返回 import descriptor、key value 与精确 location，不暴露完整 local
+  environment。`RuleExecutionSession` 在 consumer enclosing span 起点选择 generation，
+  missing/future/stale 都不回退；成功结果按 root-first、dependency declaration-order DFS 返回
+  rules-owned exact payload closure，按 definition ID 去重并限制 64 项。import 与同结构 publication
+  保持事务性：后续 import 失败不泄漏先前 closure，也不发布 generation。英中 DSL 规范与正反例
+  已同步；回归覆盖 exact payload/dependency identity、位置重定义、future/stale/missing、64/65
+  closure 边界和 malformed typed IR。本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest
+  均为 32/32；hosted run `30842615170` 对 `8b00e1ccc8fd49ced57da2605e340e6af765a841`
+  在 Windows 2022 / Qt 6.10.1、macOS 15 / Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的
+  Configure、Build、Test、Install、Upload 均成功。完整 slice-header 项仍未完成；下一步定义
+  exact imported context value 的 expression namespace 与 dynamic `bits<expression>`，之后再做
+  bounded sentinel loop 和 compressed remaining-bit payload。
