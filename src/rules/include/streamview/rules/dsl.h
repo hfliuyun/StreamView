@@ -254,6 +254,7 @@ enum class DslStructItemKind : quint8 {
     Conditional,
     Switch,
     Repeat,
+    SentinelRepeat,
 };
 
 enum class DslSwitchArmKind : quint8 {
@@ -262,6 +263,10 @@ enum class DslSwitchArmKind : quint8 {
 };
 
 struct DslStructItem final {
+    [[nodiscard]] static constexpr quint64 maximumSentinelRepeatIterations() noexcept {
+        return 64;
+    }
+
     struct SwitchArm final {
         DslSwitchArmKind kind = DslSwitchArmKind::Case;
         quint64 caseValue = 0;
@@ -286,6 +291,10 @@ struct DslStructItem final {
     quint64 repeatMaximum = 0;
     DslSourceRange repeatMaximumRange;
     std::vector<DslStructItem> repeatItems;
+    QString sentinelFieldName;
+    DslSourceRange sentinelFieldRange;
+    quint64 sentinelValue = 0;
+    DslSourceRange sentinelValueRange;
     DslSourceRange range;
 };
 

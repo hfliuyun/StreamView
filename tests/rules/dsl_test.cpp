@@ -450,7 +450,7 @@ private slots:
         QVERIFY(hasDiagnostic(unknown, DslDiagnosticCode::UnknownReference));
         QVERIFY(hasDiagnostic(future, DslDiagnosticCode::UnknownReference));
         QVERIFY(hasDiagnostic(array, DslDiagnosticCode::InvalidType));
-        QVERIFY(hasDiagnostic(variable, DslDiagnosticCode::InvalidType));
+        QVERIFY(variable.succeeded());
         QVERIFY(hasDiagnostic(outOfRange, DslDiagnosticCode::ConstraintOutOfRange));
         QVERIFY(hasDiagnostic(unavailable, DslDiagnosticCode::InvalidCondition));
     }
@@ -504,10 +504,6 @@ private slots:
                  "case 0: { bits<1> value; } } } entry Header;"),
              DslDiagnosticCode::InvalidType},
             {QStringLiteral(
-                 "struct Header { ue code; switch (code) { case 0: { bits<1> value; } } } "
-                 "entry Header;"),
-             DslDiagnosticCode::InvalidType},
-            {QStringLiteral(
                  "struct Header { bits<1> kind; switch (kind) { "
                  "case 2: { bits<1> value; } } } entry Header;"),
              DslDiagnosticCode::ConstraintOutOfRange},
@@ -551,6 +547,11 @@ private slots:
             "struct Header { bits<1> kind; switch (kind) { "
             "case 0 { bits<1> value; } } } entry Header;"));
         QVERIFY(hasDiagnostic(missingColon, DslDiagnosticCode::MissingToken));
+
+        const auto unsignedExpGolomb = DslParser::parse(QStringLiteral(
+            "struct Header { ue code; switch (code) { "
+            "case 0: { bits<1> value; } } } entry Header;"));
+        QVERIFY(unsignedExpGolomb.succeeded());
     }
 
     void parsesNestedBoundedRepeatsAndPreservesSourceRanges() {
@@ -581,6 +582,83 @@ private slots:
         QVERIFY(items.at(1).repeatMaximumRange.end.offset >
                 items.at(1).repeatMaximumRange.start.offset);
         QVERIFY(items.at(1).range.end.offset > items.at(1).range.start.offset);
+    }
+
+    void parsesBoundedSentinelRepeatsAndPreservesSourceRanges() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct Header { repeat (4) { ue operation; "
+            "if (operation == 1) { ue argument; } "
+            "} until (operation == 0); bits<1> tail; } entry Header;"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& items = result.program.structs.front().items;
+        QCOMPARE(items.size(), std::size_t(2));
+        QCOMPARE(items.front().kind, DslStructItemKind::SentinelRepeat);
+        QCOMPARE(items.front().repeatMaximum, quint64(4));
+        QCOMPARE(items.front().repeatItems.size(), std::size_t(2));
+        QCOMPARE(items.front().sentinelFieldName, QStringLiteral("operation"));
+        QCOMPARE(items.front().sentinelValue, quint64(0));
+        QVERIFY(items.front().repeatMaximumRange.end.offset >
+                items.front().repeatMaximumRange.start.offset);
+        QVERIFY(items.front().sentinelFieldRange.end.offset >
+                items.front().sentinelFieldRange.start.offset);
+        QVERIFY(items.front().sentinelValueRange.end.offset >
+                items.front().sentinelValueRange.start.offset);
+        QVERIFY(items.front().range.end.offset > items.front().range.start.offset);
+    }
+
+    void rejectsInvalidBoundedSentinelRepeats() {
+        struct Case final {
+            QString source;
+            DslDiagnosticCode diagnostic;
+        };
+        const std::vector<Case> cases{
+            {QStringLiteral(
+                 "struct Header { repeat (0) { ue operation; } until (operation == 0); } "
+                 "entry Header;"),
+             DslDiagnosticCode::InvalidArrayLength},
+            {QStringLiteral(
+                 "struct Header { repeat (65) { ue operation; } until (operation == 0); } "
+                 "entry Header;"),
+             DslDiagnosticCode::InvalidArrayLength},
+            {QStringLiteral(
+                 "struct Header { repeat (2) { ue operation; } until (missing == 0); } "
+                 "entry Header;"),
+             DslDiagnosticCode::UnknownReference},
+            {QStringLiteral(
+                 "struct Header { repeat (2) { se operation; } until (operation == 0); } "
+                 "entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral(
+                 "struct Header { repeat (2) { bits<2> operation[2]; } "
+                 "until (operation == 0); } entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral(
+                 "struct Header { repeat (2) { bits<2> flag; "
+                 "if (flag == 1) { ue operation; } } until (operation == 0); } "
+                 "entry Header;"),
+             DslDiagnosticCode::UnknownReference},
+            {QStringLiteral(
+                 "struct Header { repeat (2) { bits<1> operation; } "
+                 "until (operation == 2); } entry Header;"),
+             DslDiagnosticCode::ConstraintOutOfRange},
+            {QStringLiteral(
+                 "struct Header { repeat (2) { } until (operation == 0); } entry Header;"),
+             DslDiagnosticCode::InvalidCondition},
+        };
+
+        for (const Case& testCase : cases) {
+            const auto result = DslParser::parse(testCase.source);
+            QVERIFY(!result.succeeded());
+            QVERIFY(hasDiagnostic(result, testCase.diagnostic));
+        }
+
+        const auto missingUntil = DslParser::parse(QStringLiteral(
+            "struct Header { repeat (2) { ue operation; } } entry Header;"));
+        QVERIFY(hasDiagnostic(missingUntil, DslDiagnosticCode::MissingToken));
     }
 
     void acceptsUnsignedExpGolombRepeatCountsAndScopesRepeatLocals() {

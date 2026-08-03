@@ -1222,16 +1222,19 @@ private:
     void parseRepeat(std::vector<DslStructItem>& items) {
         const DslSourcePosition start = consume().range.start;
         DslStructItem item;
-        item.kind = DslStructItemKind::Repeat;
         expect(DslTokenKind::LeftParen, QStringLiteral("'(' after repeat"));
         if (at(DslTokenKind::Identifier)) {
+            item.kind = DslStructItemKind::Repeat;
             item.repeatCountFieldRange = current().range;
             item.repeatCountFieldName = consume().lexeme;
+            expect(DslTokenKind::Comma,
+                   QStringLiteral("',' after repeat count field name"));
+        } else if (at(DslTokenKind::IntegerLiteral)) {
+            item.kind = DslStructItemKind::SentinelRepeat;
         } else {
             error(DslDiagnosticCode::MissingToken,
-                  QStringLiteral("Expected repeat count field name"));
+                  QStringLiteral("Expected repeat count field name or maximum"));
         }
-        expect(DslTokenKind::Comma, QStringLiteral("',' after repeat count field name"));
         if (at(DslTokenKind::IntegerLiteral)) {
             const DslToken maximum = consume();
             item.repeatMaximum = maximum.integerValue;
@@ -1246,6 +1249,36 @@ private:
             expect(DslTokenKind::RightBrace, QStringLiteral("'}' after repeat body"));
         } else {
             recoverField();
+        }
+        if (item.kind == DslStructItemKind::SentinelRepeat) {
+            if (!isIdentifier(QStringLiteral("until"))) {
+                error(DslDiagnosticCode::MissingToken,
+                      QStringLiteral("Expected until clause after sentinel repeat body"));
+            } else {
+                consume();
+            }
+            expect(DslTokenKind::LeftParen, QStringLiteral("'(' after until"));
+            if (at(DslTokenKind::Identifier)) {
+                item.sentinelFieldRange = current().range;
+                item.sentinelFieldName = consume().lexeme;
+            } else {
+                error(DslDiagnosticCode::MissingToken,
+                      QStringLiteral("Expected sentinel field name"));
+            }
+            expect(DslTokenKind::EqualEqual,
+                   QStringLiteral("'==' after sentinel field name"));
+            if (at(DslTokenKind::IntegerLiteral)) {
+                const DslToken value = consume();
+                item.sentinelValue = value.integerValue;
+                item.sentinelValueRange = value.range;
+            } else {
+                error(DslDiagnosticCode::MissingToken,
+                      QStringLiteral("Expected sentinel termination value"));
+            }
+            expect(DslTokenKind::RightParen,
+                   QStringLiteral("')' after sentinel termination value"));
+            expect(DslTokenKind::Semicolon,
+                   QStringLiteral("';' after sentinel repeat"));
         }
         item.range = {start, lexResult_.tokens.at(index_ - 1).range.end};
         items.push_back(std::move(item));
@@ -1359,7 +1392,8 @@ private:
                     for (const DslStructItem::SwitchArm& arm : item.switchArms) {
                         self(self, arm.items, false);
                     }
-                } else if (item.kind == DslStructItemKind::Repeat) {
+                } else if (item.kind == DslStructItemKind::Repeat ||
+                           item.kind == DslStructItemKind::SentinelRepeat) {
                     self(self, item.repeatItems, false);
                 }
             }
@@ -1942,12 +1976,12 @@ private:
                               ? found->type == DslScalarType::U64
                               : syntaxScalar &&
                                     (found->syntax->encoding == DslFieldEncoding::Bits ||
-                                     (use == ControllerUse::Repeat &&
-                                      found->syntax->encoding ==
-                                          DslFieldEncoding::UnsignedExpGolomb));
+                                     found->syntax->encoding ==
+                                         DslFieldEncoding::UnsignedExpGolomb);
                 if (!supported) {
                     QString message = QStringLiteral(
-                        "Controllers require a previous scalar bits, enum, or computed<u64> field");
+                        "Controllers require a previous scalar bits, enum, ue, or "
+                        "computed<u64> field");
                     if (use == ControllerUse::Repeat) {
                         message = QStringLiteral(
                             "Repeat counts require a previous scalar bits, enum, ue, or "
@@ -1990,6 +2024,15 @@ private:
                     result_.diagnostics.push_back(
                         {DslDiagnosticCode::ConstraintOutOfRange,
                          QStringLiteral("Condition value does not fit the controlling field"),
+                         range});
+                } else if (controller != nullptr && controller->syntax != nullptr &&
+                           controller->syntax->encoding ==
+                               DslFieldEncoding::UnsignedExpGolomb &&
+                           expectedValue == std::numeric_limits<quint64>::max()) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::ConstraintOutOfRange,
+                         QStringLiteral(
+                             "Condition value exceeds the supported ue domain"),
                          range});
                 }
             };
@@ -2183,7 +2226,8 @@ private:
                             }
                         }
                     }
-                    if (item.kind == DslStructItemKind::Repeat &&
+                    if ((item.kind == DslStructItemKind::Repeat ||
+                         item.kind == DslStructItemKind::SentinelRepeat) &&
                         self(self, item.repeatItems)) {
                         return true;
                     }
@@ -2351,6 +2395,80 @@ private:
                                  QStringLiteral(
                                      "A bounded repeat body must contain at least one field"),
                                  item.range});
+                        }
+                        const std::size_t scopeStart = declaredFields.size();
+                        (void)self(self, item.repeatItems, active, fieldOffset);
+                        declaredFields.resize(scopeStart);
+                        fieldOffset = std::nullopt;
+                        continue;
+                    }
+                    if (item.kind == DslStructItemKind::SentinelRepeat) {
+                        if (item.repeatMaximum == 0 ||
+                            item.repeatMaximum >
+                                DslStructItem::maximumSentinelRepeatIterations()) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidArrayLength,
+                                 QStringLiteral(
+                                     "Sentinel repeat maximum must be in the range 1..64"),
+                                 item.repeatMaximumRange});
+                        }
+                        if (!containsField(containsField, item.repeatItems)) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidCondition,
+                                 QStringLiteral(
+                                     "A sentinel repeat body must contain at least one field"),
+                                 item.range});
+                        }
+                        const DslBitField* sentinel = nullptr;
+                        for (const DslStructItem& bodyItem : item.repeatItems) {
+                            if (bodyItem.kind == DslStructItemKind::Field &&
+                                bodyItem.field.name == item.sentinelFieldName) {
+                                sentinel = &bodyItem.field;
+                                break;
+                            }
+                        }
+                        if (sentinel == nullptr) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::UnknownReference,
+                                 QStringLiteral(
+                                     "Sentinel field must be declared directly in the repeat "
+                                     "body"),
+                                 item.sentinelFieldRange});
+                        } else {
+                            const bool supported =
+                                !sentinel->arrayLength &&
+                                ((sentinel->encoding == DslFieldEncoding::Bits &&
+                                  sentinel->widthExpression == std::nullopt &&
+                                  sentinel->width != 0) ||
+                                 sentinel->encoding ==
+                                     DslFieldEncoding::UnsignedExpGolomb);
+                            if (!supported) {
+                                result_.diagnostics.push_back(
+                                    {DslDiagnosticCode::InvalidType,
+                                     QStringLiteral(
+                                         "Sentinel fields require a fixed-width scalar bits, "
+                                         "enum, or ue field"),
+                                     item.sentinelFieldRange});
+                            } else if (sentinel->encoding == DslFieldEncoding::Bits &&
+                                       sentinel->width < 64 &&
+                                       item.sentinelValue >=
+                                           (quint64{1} << sentinel->width)) {
+                                result_.diagnostics.push_back(
+                                    {DslDiagnosticCode::ConstraintOutOfRange,
+                                     QStringLiteral(
+                                         "Sentinel value does not fit the sentinel field"),
+                                     item.sentinelValueRange});
+                            } else if (
+                                sentinel->encoding ==
+                                    DslFieldEncoding::UnsignedExpGolomb &&
+                                item.sentinelValue >
+                                    std::numeric_limits<quint64>::max() - 1) {
+                                result_.diagnostics.push_back(
+                                    {DslDiagnosticCode::ConstraintOutOfRange,
+                                     QStringLiteral(
+                                         "Sentinel value exceeds the supported ue domain"),
+                                     item.sentinelValueRange});
+                            }
                         }
                         const std::size_t scopeStart = declaredFields.size();
                         (void)self(self, item.repeatItems, active, fieldOffset);
@@ -2709,6 +2827,7 @@ private:
                 }
                 break;
             case DslStructItemKind::Repeat:
+            case DslStructItemKind::SentinelRepeat:
                 if (declaresName(item.repeatItems, name)) {
                     return true;
                 }

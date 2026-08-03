@@ -899,6 +899,123 @@ private slots:
         }
     }
 
+    void lowersBoundedSentinelRepeatsToDeterministicGuardedProjections() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { repeat (3) { ue operation; "
+            "if (operation == 1) { ue argument; } "
+            "} until (operation == 0); bits<1> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto first = DslCompiler::compile(parsed.program);
+        const auto second = DslCompiler::compile(parsed.program);
+        QVERIFY2(first.succeeded(),
+                 first.diagnostics.empty()
+                     ? ""
+                     : qPrintable(first.diagnostics.front().message));
+        QVERIFY(second.succeeded());
+        const auto& structure = first.program->structs.front();
+        const std::vector<QString> expectedNames{
+            QStringLiteral("operation[0]"),
+            QStringLiteral("argument[0]"),
+            QStringLiteral("operation[1]"),
+            QStringLiteral("argument[1]"),
+            QStringLiteral("operation[2]"),
+            QStringLiteral("argument[2]"),
+            QStringLiteral("tail"),
+        };
+        QCOMPARE(structure.fields.size(), expectedNames.size());
+        for (std::size_t index = 0; index < expectedNames.size(); ++index) {
+            QCOMPARE(structure.fields.at(index).name, expectedNames.at(index));
+        }
+        QVERIFY(structure.fields.at(0).conditions.empty());
+        QCOMPARE(structure.fields.at(1).conditions.size(), std::size_t(1));
+        QCOMPARE(structure.fields.at(1).conditions.front().fieldIndex, quint32(0));
+        QCOMPARE(structure.fields.at(1).conditions.front().expectedValue, quint64(1));
+        QVERIFY(!structure.fields.at(1).conditions.front().negated);
+        QCOMPARE(structure.fields.at(2).conditions.size(), std::size_t(1));
+        QCOMPARE(structure.fields.at(2).conditions.front().fieldIndex, quint32(0));
+        QCOMPARE(structure.fields.at(2).conditions.front().expectedValue, quint64(0));
+        QVERIFY(structure.fields.at(2).conditions.front().negated);
+        QCOMPARE(structure.fields.at(3).conditions.size(), std::size_t(2));
+        QCOMPARE(structure.fields.at(3).conditions.at(1).fieldIndex, quint32(2));
+        QCOMPARE(structure.fields.at(4).conditions.size(), std::size_t(2));
+        QVERIFY(structure.fields.at(4).conditions.at(0).negated);
+        QVERIFY(structure.fields.at(4).conditions.at(1).negated);
+        QVERIFY(structure.fields.at(6).conditions.empty());
+
+        QCOMPARE(structure.sentinelRepeats.size(), std::size_t(1));
+        const auto& repeat = structure.sentinelRepeats.front();
+        QCOMPARE(repeat.firstFieldIndices,
+                 std::vector<quint32>({0, 2, 4}));
+        QCOMPARE(repeat.sentinelFieldIndices,
+                 std::vector<quint32>({0, 2, 4}));
+        QCOMPARE(repeat.assertionFieldIndex, quint32(6));
+        QCOMPARE(repeat.terminatingValue, quint64(0));
+        QVERIFY(repeat.conditions.empty());
+
+        const std::vector<DslOpcode> expectedOpcodes{
+            DslOpcode::BeginStructure,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::AssertSentinelTerminated,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::EndStructure,
+        };
+        QCOMPARE(first.program->bytecode.size(), expectedOpcodes.size());
+        QCOMPARE(first.program->bytecode.size(), second.program->bytecode.size());
+        for (std::size_t index = 0; index < expectedOpcodes.size(); ++index) {
+            QCOMPARE(first.program->bytecode.at(index).opcode,
+                     expectedOpcodes.at(index));
+            QCOMPARE(first.program->bytecode.at(index).opcode,
+                     second.program->bytecode.at(index).opcode);
+            QCOMPARE(first.program->bytecode.at(index).operand,
+                     second.program->bytecode.at(index).operand);
+            QCOMPARE(first.program->bytecode.at(index).immediate,
+                     second.program->bytecode.at(index).immediate);
+        }
+    }
+
+    void ordersNestedSentinelRepeatAssertionsAtSharedProjectionBoundaries() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { repeat (2) { bits<1> outer; repeat (2) { "
+            "bits<1> inner; } until (inner == 0); } until (outer == 0); "
+            "bits<1> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& structure = compiled.program->structs.front();
+        QCOMPARE(structure.sentinelRepeats.size(), std::size_t(3));
+        QCOMPARE(structure.sentinelRepeats.at(0).sentinelFieldIndices,
+                 std::vector<quint32>({1, 2}));
+        QCOMPARE(structure.sentinelRepeats.at(0).assertionFieldIndex, quint32(3));
+        QCOMPARE(structure.sentinelRepeats.at(1).sentinelFieldIndices,
+                 std::vector<quint32>({4, 5}));
+        QCOMPARE(structure.sentinelRepeats.at(1).assertionFieldIndex, quint32(6));
+        QCOMPARE(structure.sentinelRepeats.at(2).sentinelFieldIndices,
+                 std::vector<quint32>({0, 3}));
+        QCOMPARE(structure.sentinelRepeats.at(2).assertionFieldIndex, quint32(6));
+
+        std::vector<std::size_t> assertionOffsets;
+        std::vector<quint32> assertionOperands;
+        for (std::size_t index = 0; index < compiled.program->bytecode.size(); ++index) {
+            if (compiled.program->bytecode.at(index).opcode ==
+                DslOpcode::AssertSentinelTerminated) {
+                assertionOffsets.push_back(index);
+                assertionOperands.push_back(compiled.program->bytecode.at(index).operand);
+            }
+        }
+        QCOMPARE(assertionOffsets, std::vector<std::size_t>({4, 8, 9}));
+        QCOMPARE(assertionOperands, std::vector<quint32>({0, 1, 2}));
+    }
+
     void resolvesUnsignedExpGolombCountsAcrossNestedRepeatScopes() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "struct Header { bits<2> outer_count; repeat (outer_count, 2) { "
@@ -970,9 +1087,13 @@ private slots:
         const auto valid = DslParser::parse(QStringLiteral(
             "struct Header { bits<2> count; repeat (count, 2) { bits<1> value; } } "
             "entry Header;"));
+        const auto validSentinel = DslParser::parse(QStringLiteral(
+            "struct Header { repeat (2) { ue operation; } "
+            "until (operation == 0); } entry Header;"));
         QVERIFY(repeatedUnaligned.succeeded());
         QVERIFY(hasDiagnostic(tailUnaligned, DslDiagnosticCode::InvalidEndian));
         QVERIFY(valid.succeeded());
+        QVERIFY(validSentinel.succeeded());
 
         const auto badAlignment = DslCompiler::compile(repeatedUnaligned.program);
         QVERIFY(hasDiagnostic(badAlignment, DslDiagnosticCode::InvalidEndian));
@@ -981,6 +1102,12 @@ private slots:
         malformed.structs.front().items.at(1).repeatMaximum = 0;
         const auto malformedResult = DslCompiler::compile(malformed);
         QVERIFY(hasDiagnostic(malformedResult, DslDiagnosticCode::InvalidArrayLength));
+
+        auto malformedSentinel = validSentinel.program;
+        malformedSentinel.structs.front().items.front().repeatMaximum = 65;
+        const auto malformedSentinelResult = DslCompiler::compile(malformedSentinel);
+        QVERIFY(hasDiagnostic(malformedSentinelResult,
+                              DslDiagnosticCode::InvalidArrayLength));
     }
 
     void lowersEqualityConditionalBlocksToDeterministicGuardedFields() {
@@ -1091,10 +1218,6 @@ private slots:
             {QStringLiteral(
                  "struct Header { bits<1> flags[2]; "
                  "if (flags == 1) { bits<1> value; } } entry Header;"),
-             DslDiagnosticCode::InvalidType},
-            {QStringLiteral(
-                 "struct Header { ue code; if (code == 1) { bits<1> value; } } "
-                 "entry Header;"),
              DslDiagnosticCode::InvalidType},
             {QStringLiteral(
                  "struct Header { bits<1> flag; "

@@ -898,12 +898,15 @@ DslExecutionResult DslVirtualMachine::execute(
             const bool validController =
                 condition.op == DslConditionOperator::Equal
                     ? fixedController || computedUnsignedController ||
+                          unsignedExpGolombController ||
                           (computedBooleanController && condition.expectedValue == 1)
                     : fixedController || unsignedExpGolombController ||
                           computedUnsignedController;
             if (!validOperator || !validController ||
                 (fixedController &&
-                 !fitsUnsignedBits(condition.expectedValue, controller.type.bitWidth))) {
+                 !fitsUnsignedBits(condition.expectedValue, controller.type.bitWidth)) ||
+                (unsignedExpGolombController &&
+                 condition.expectedValue > maximumUnsignedExpGolombValue)) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Typed IR %1 condition has an invalid controller")
                                 .arg(subjectName),
@@ -1195,6 +1198,119 @@ DslExecutionResult DslVirtualMachine::execute(
         }
         previousRepeatPosition = repeat.firstFieldIndex;
     }
+    quint32 previousSentinelAssertionPosition = 0;
+    for (std::size_t repeatIndex = 0;
+         repeatIndex < structure.sentinelRepeats.size();
+         ++repeatIndex) {
+        const DslTypedSentinelRepeat& repeat =
+            structure.sentinelRepeats.at(repeatIndex);
+        const bool ordered =
+            repeatIndex == 0 ||
+            repeat.assertionFieldIndex >= previousSentinelAssertionPosition;
+        if (!ordered || repeat.sentinelFieldIndices.empty() ||
+            repeat.firstFieldIndices.size() !=
+                repeat.sentinelFieldIndices.size() ||
+            repeat.sentinelFieldIndices.size() >
+                DslTypedSentinelRepeat::maximumIterations() ||
+            repeat.assertionFieldIndex > structure.fields.size()) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed IR sentinel repeat is invalid"),
+                        nullptr);
+            return result;
+        }
+        std::vector<DslTypedFieldCondition> expectedConditions =
+            repeat.conditions;
+        quint32 previousSentinelFieldIndex = 0;
+        for (std::size_t sentinelIndex = 0;
+             sentinelIndex < repeat.sentinelFieldIndices.size();
+             ++sentinelIndex) {
+            const quint32 firstFieldIndex =
+                repeat.firstFieldIndices.at(sentinelIndex);
+            const quint32 fieldIndex =
+                repeat.sentinelFieldIndices.at(sentinelIndex);
+            const bool sentinelOrdered =
+                sentinelIndex == 0 ||
+                (firstFieldIndex > previousSentinelFieldIndex &&
+                 fieldIndex > previousSentinelFieldIndex);
+            const quint32 iterationEnd =
+                sentinelIndex + 1 < repeat.firstFieldIndices.size()
+                    ? repeat.firstFieldIndices.at(sentinelIndex + 1)
+                    : repeat.assertionFieldIndex;
+            if (!sentinelOrdered || firstFieldIndex > fieldIndex ||
+                fieldIndex >= iterationEnd ||
+                iterationEnd > repeat.assertionFieldIndex ||
+                fieldIndex >= structure.fields.size()) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral(
+                                "Typed IR sentinel repeat field index is invalid"),
+                            nullptr);
+                return result;
+            }
+            for (quint32 projectedFieldIndex = firstFieldIndex;
+                 projectedFieldIndex < iterationEnd;
+                 ++projectedFieldIndex) {
+                const DslTypedField& projected =
+                    structure.fields.at(projectedFieldIndex);
+                if (projected.conditions.size() < expectedConditions.size() ||
+                    !std::equal(expectedConditions.begin(),
+                                expectedConditions.end(),
+                                projected.conditions.begin(),
+                                [](const DslTypedFieldCondition& left,
+                                   const DslTypedFieldCondition& right) {
+                                    return sameCondition(left, right);
+                                })) {
+                    markFailure(
+                        DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral(
+                            "Typed IR sentinel repeat projection guard is invalid"),
+                        &projected);
+                    return result;
+                }
+            }
+            const DslTypedField& sentinel = structure.fields.at(fieldIndex);
+            const bool fixedSentinel = validFixedController(sentinel);
+            const bool unsignedExpGolombSentinel =
+                validUnsignedExpGolombController(sentinel);
+            const bool conditionsMatch =
+                sentinel.conditions.size() == expectedConditions.size() &&
+                std::equal(sentinel.conditions.begin(),
+                           sentinel.conditions.end(),
+                           expectedConditions.begin(),
+                           [](const DslTypedFieldCondition& left,
+                              const DslTypedFieldCondition& right) {
+                               return sameCondition(left, right);
+                           });
+            if ((!fixedSentinel && !unsignedExpGolombSentinel) ||
+                sentinel.contextEligible || !conditionsMatch ||
+                (fixedSentinel &&
+                 !fitsUnsignedBits(repeat.terminatingValue,
+                                   sentinel.type.bitWidth)) ||
+                (unsignedExpGolombSentinel &&
+                 repeat.terminatingValue >
+                     maximumUnsignedExpGolombValue)) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral(
+                                "Typed IR sentinel repeat field is invalid"),
+                            &sentinel);
+                return result;
+            }
+            expectedConditions.push_back(
+                {fieldIndex,
+                 repeat.terminatingValue,
+                 true,
+                 DslConditionOperator::Equal});
+            previousSentinelFieldIndex = fieldIndex;
+        }
+        const DslTypedField& firstSentinel =
+            structure.fields.at(repeat.sentinelFieldIndices.front());
+        if (!validateConditions(repeat.conditions,
+                                repeat.sentinelFieldIndices.front(),
+                                &firstSentinel,
+                                QStringLiteral("sentinel repeat"))) {
+            return result;
+        }
+        previousSentinelAssertionPosition = repeat.assertionFieldIndex;
+    }
 
     const auto consumeInstruction = [&]() -> bool {
         if (result.instructionsExecuted >= options.limits.maximumInstructions) {
@@ -1238,6 +1354,7 @@ DslExecutionResult DslVirtualMachine::execute(
     std::optional<core::AnalysisNodeId> lastFieldNode;
     bool lastFieldSkipped = false;
     quint32 nextFieldIndex = 0;
+    quint32 nextSentinelRepeatIndex = 0;
     bool ended = false;
     const auto conditionsPresent = [&](const std::vector<DslTypedFieldCondition>& conditions,
                                        const DslTypedField* subject,
@@ -2118,9 +2235,82 @@ DslExecutionResult DslVirtualMachine::execute(
                         controllerRange.has_value());
             return result;
         }
+        case DslOpcode::AssertSentinelTerminated: {
+            const DslTypedSentinelRepeat* repeat =
+                instruction.operand < structure.sentinelRepeats.size()
+                    ? &structure.sentinelRepeats.at(instruction.operand)
+                    : nullptr;
+            if (!result.structureNode || repeat == nullptr ||
+                instruction.operand != nextSentinelRepeatIndex ||
+                repeat->assertionFieldIndex != nextFieldIndex ||
+                repeat->terminatingValue != instruction.immediate) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral(
+                                "Typed IR sentinel repeat assertion is invalid"),
+                            nullptr);
+                return result;
+            }
+            ++nextSentinelRepeatIndex;
+            const DslTypedField& firstSentinel =
+                structure.fields.at(repeat->sentinelFieldIndices.front());
+            const std::optional<bool> repeatPresent = conditionsPresent(
+                repeat->conditions,
+                &firstSentinel,
+                QStringLiteral("sentinel repeat"));
+            if (!repeatPresent) {
+                return result;
+            }
+            if (!*repeatPresent) {
+                break;
+            }
+            const DslTypedField* lastSentinel = nullptr;
+            std::optional<MaterializedFieldRange> lastSentinelRange;
+            bool terminated = false;
+            for (const quint32 fieldIndex : repeat->sentinelFieldIndices) {
+                const std::optional<quint64>& value = fieldValues.at(fieldIndex);
+                if (!value) {
+                    markFailure(
+                        DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral(
+                            "Typed IR sentinel repeat field is unavailable"),
+                        &structure.fields.at(fieldIndex));
+                    return result;
+                }
+                lastSentinel = &structure.fields.at(fieldIndex);
+                lastSentinelRange = fieldRanges.at(fieldIndex);
+                if (*value == repeat->terminatingValue) {
+                    terminated = true;
+                    break;
+                }
+            }
+            if (terminated) {
+                break;
+            }
+            if (lastSentinel == nullptr) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral(
+                                "Typed IR sentinel repeat has no selected field"),
+                            nullptr);
+                return result;
+            }
+            markFailure(
+                DslExecutionStatus::InvalidSyntax,
+                QStringLiteral(
+                    "Sentinel repeat did not terminate within its declared maximum"),
+                lastSentinel,
+                lastSentinelRange
+                    ? std::optional<quint64>(lastSentinelRange->start)
+                    : std::nullopt,
+                lastSentinelRange
+                    ? std::optional<quint64>(lastSentinelRange->bitCount)
+                    : std::nullopt,
+                lastSentinelRange.has_value());
+            return result;
+        }
         case DslOpcode::EndStructure: {
             if (!result.structureNode || instruction.operand != structureIndex ||
-                nextFieldIndex != structure.fields.size()) {
+                nextFieldIndex != structure.fields.size() ||
+                nextSentinelRepeatIndex != structure.sentinelRepeats.size()) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Typed IR end instruction is invalid"),
                             nullptr);

@@ -112,6 +112,17 @@ struct DslTypedRepeatBound final {
     DslSourceRange range;
 };
 
+struct DslTypedSentinelRepeat final {
+    [[nodiscard]] static constexpr quint64 maximumIterations() noexcept { return 64; }
+
+    std::vector<quint32> firstFieldIndices;
+    std::vector<quint32> sentinelFieldIndices;
+    quint32 assertionFieldIndex = 0;
+    quint64 terminatingValue = 0;
+    std::vector<DslTypedFieldCondition> conditions;
+    DslSourceRange range;
+};
+
 struct DslTypedContextDependency final {
     core::ContextDefinitionKind kind =
         core::ContextDefinitionKind::H264SequenceParameterSet;
@@ -142,6 +153,7 @@ struct DslTypedStruct final {
     core::AnalysisNodeMetadata metadata;
     std::vector<DslTypedField> fields;
     std::vector<DslTypedRepeatBound> repeatBounds;
+    std::vector<DslTypedSentinelRepeat> sentinelRepeats;
     std::optional<DslTypedContextDefinition> contextDefinition;
     std::vector<DslTypedContextImport> contextImports;
     quint32 bytecodeOffset = 0;
@@ -196,6 +208,7 @@ enum class DslOpcode : quint8 {
     AssertRangeMinimum,
     AssertRangeMaximum,
     AssertRepeatCount,
+    AssertSentinelTerminated,
     EndStructure,
 };
 
