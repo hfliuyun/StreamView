@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Imported dynamic `bits<expression>` width evaluation over exact context values
-Next Action: Define the bounded sentinel loop for the H.264 slice-header slice
-Last Verification: Commit 4ff23ad local dev/ci/sanitize passed 32/32; hosted run
-  30850983789 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Bounded post-tested sentinel repeats with guarded static projections
+Next Action: Define the compressed remaining-bit payload terminal for the H.264 slice-header slice
+Last Verification: Commit 644651e local dev/ci/sanitize passed 32/32; hosted run
+  30857732349 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -564,3 +564,18 @@ Blockers: None
   hosted run `30850983789` 在 Windows 2022 / Qt 6.10.1、macOS 15 / Qt 6.11.1 与 Ubuntu
   24.04 / Qt 6.11.1 的 Configure、Build、Test、Install、Upload 均成功。完整 slice-header 项
   仍未完成；下一步定义 bounded sentinel loop，之后再实现 compressed remaining-bit payload。
+- 2026-08-04：完成 bounded post-tested sentinel repeat。ADR-0047 与英中 DSL reference 固化
+  `repeat (maximum) { ... } until (field == integer);`：maximum 限制为 1..64，sentinel 只能是
+  body 直接声明的无条件、顶层、非数组 fixed `bits`、enum 或 `ue` source scalar；body 至少
+  执行一次并保留终止项。compiler 以 guarded field projection 静态展开全部 iteration，typed IR
+  记录每轮起点/sentinel、enclosing guards 与 assertion position，并在共享边界稳定排序 nested
+  assertion；VM 在 source read 前验证 descriptor、完整 guard prefix、`ue` domain 和 64 项上限，
+  命中后后续 projection 只计 instruction/cancellation 而不读源或建 node，未命中则在最终
+  sentinel 上返回 `invalid-syntax` 并保留有界 prefix。parser/compiler/VM 回归覆盖第一/中间/
+  最后一轮终止、未终止、截断事务、外层 false guard、nested assertion 顺序、instruction/node/
+  cancellation 预算和 malformed typed IR；equality condition/switch 同步接受已解码 scalar `ue`。
+  实现提交为 `021eeb9`，文档提交为 `644651e`；本机 `dev`、`ci`、`sanitize` 重新配置、完整
+  构建与 CTest 均为 32/32；hosted run `30857732349` 在 Windows 2022 / Qt 6.10.1、macOS 15 /
+  Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、Install、Upload 均成功。
+  bundled H.264 rule 尚未使用新语法，package version 保持不变；完整 slice-header 项仍未完成，
+  下一步定义 compressed remaining-bit payload terminal。
