@@ -71,7 +71,7 @@ array value, container node, or array-specific opcode.
 
 The accepted conditional slice adds nested
 `if (previous_field == integer) { ... } else { ... }` blocks. `else` is
-optional. Equality accepts an earlier guaranteed scalar `bits`, enum, or
+optional. Equality accepts an earlier guaranteed scalar `bits`, enum, `ue`, or
 `computed<u64>` controller; the Boolean shorthand accepts an earlier guaranteed
 `computed<bool>`. Neither form is a general conditional expression.
 
@@ -85,6 +85,11 @@ The accepted bounded-repeat slice adds nested
 selects zero through `maximum` projected iterations. The positive literal
 `maximum` bounds both the compiled field projection and the accepted runtime
 count; this is not a general loop or count expression.
+
+The accepted bounded-sentinel slice adds post-tested
+`repeat (maximum) { ... } until (field == integer);` blocks. The body executes
+at least once, includes the terminating item in the materialized syntax, and
+uses a positive maximum in `1..64` to bound every projected iteration.
 
 The accepted computed-value slice adds top-level expression-bodied `pure`
 scalar functions and structure-local `computed<bool>` or `computed<u64>`
@@ -174,6 +179,8 @@ switch_case   := "case" integer ":" "{" { struct_item } "}"
 switch_default := "default" ":" "{" { struct_item } "}"
 repeat        := "repeat" "(" identifier "," integer ")"
                  "{" { struct_item } "}"
+               | "repeat" "(" integer ")" "{" { struct_item } "}"
+                 "until" "(" identifier "==" integer ")" ";"
 sequence      := "sequence" "<" identifier ">" identifier "="
                  "scan" "(" identifier ")" ";"
 payload       := "payload" "<" identifier ">" identifier
@@ -284,8 +291,8 @@ The static rules for this subset are:
   100,000-node limits, while the VM uses one bytecode instruction and publishes
   only the consumed alignment fields.
 - An equality-conditional controller must name an earlier scalar `bits`, enum,
-  or `computed<u64>` field guaranteed to have been materialized on every path
-  reaching that condition. Arrays, `ue`, `se`, `computed<bool>`, future or
+  `ue`, or `computed<u64>` field guaranteed to have been materialized on every
+  path reaching that condition. Arrays, `se`, `computed<bool>`, future or
   unknown fields, and a branch-local field used outside its guaranteeing branch
   are rejected. The integer must fit a source field's unsigned bit width;
   `computed<u64>` accepts the complete `u64` literal range. The shorthand
@@ -299,7 +306,7 @@ The static rules for this subset are:
   exit retains a known offset only when both paths end at the same known
   offset, with an omitted `else` treated as an empty path.
 - A switch controller follows the equality conditional's declaration-order and
-  path-availability rules and accepts scalar `bits`, enum, or `computed<u64>`,
+  path-availability rules and accepts scalar `bits`, enum, `ue`, or `computed<u64>`,
   but not `computed<bool>`. A switch contains at least one `case`. Each case
   accepts exactly one distinct unsigned integer literal that fits a source
   controller's width; `computed<u64>` accepts the complete `u64` range.
@@ -320,7 +327,7 @@ The static rules for this subset are:
   rejected. The `maximum` is a positive unsigned integer literal and must fit a
   fixed-width source controller; a computed controller accepts the complete
   `u64` range.
-  Count expressions, sentinel or EOF termination, and `break` are not accepted.
+  Count expressions, EOF termination, and `break` are not accepted.
   A repeat body must contain at least one syntax field, computed field, or lazy
   byte region and may contain those item forms, conditionals, switches, and
   nested repeats.
@@ -337,6 +344,20 @@ The static rules for this subset are:
   select any count from zero through `maximum`, the structure-relative offset
   after a repeat is considered unknown. A later little-endian field is rejected
   even when a future expression analysis might be able to prove it aligned.
+- A sentinel repeat has the post-tested form
+  `repeat (maximum) { ... } until (field == integer);`, with `maximum` in
+  `1..64`. Its sentinel must be declared directly in the body as an
+  unconditional, top-level, non-array fixed-width `bits`, enum, or `ue` field.
+  Dynamic-width fields, `se`, computed fields, lazy regions, nested declarations,
+  outside fields, and alternate comparisons are rejected. The value must fit
+  the fixed width or supported `ue` domain. The body executes at least once and
+  completes before the sentinel is tested; the terminating field is retained.
+  A missing sentinel after the maximum iteration is runtime `invalid-syntax` at
+  the final sentinel field. Fields from later projections are skipped without
+  source access or nodes after termination. Local names do not escape, every
+  projection counts toward 99,999 fields, and following static alignment is
+  unknown. There is no `break`, `continue`, EOF, remaining-bit, or expression
+  termination form.
 - A computed field declares `computed<bool>` or `computed<u64>` and one
   expression. It may reference earlier scalar unsigned `bits`, enum, `ue`, or
   computed fields guaranteed on every path reaching the declaration. Arrays,
@@ -429,7 +450,7 @@ The static rules for this subset are:
 
 `enum`, `big`, `little`, `ue`, `se`, `pure`, `return`, `bool`, `u64`,
 `computed`, `lazy`, `bytes`, `true`, `false`, `if`, `else`, `switch`, `case`,
-`default`, `repeat`, `payload`, `empty`, and `rbsp_trailing_bits` are contextual words in the
+`default`, `repeat`, `until`, `payload`, `empty`, and `rbsp_trailing_bits` are contextual words in the
 positions shown by the grammar and remain ordinary identifiers elsewhere.
 Existing scalar declarations are unchanged, and `bits<N>` remains exactly
 equivalent to `bits<N, big>`; this slice deprecates no accepted 0.1 syntax.
@@ -440,7 +461,8 @@ references into a typed program, preserves declaration order, and emits
 deterministic bytecode using `begin-structure`, `read-unsigned-bits`,
 `read-unsigned-exp-golomb`, `read-signed-exp-golomb`, `evaluate-computed`,
 `register-lazy-bytes`, `read-rbsp-trailing-bits`, `assert-equals`,
-`assert-range-minimum`, `assert-range-maximum`, `assert-repeat-count`, and
+`assert-range-minimum`, `assert-range-maximum`, `assert-repeat-count`,
+`assert-sentinel-terminated`, and
 `end-structure` operations. Each field opcode must match the resolved field type.
 The fixed-width read carries the resolved enum and byte-order information; the
 Exp-Golomb types have zero static bit width, default bit order, no enum
@@ -485,9 +507,18 @@ maximum, first body field, enclosing guards, and source range, and emits one
 guarded `assert-repeat-count` at the statement position before the first body
 read. This adds a greater-than presence comparison and a bound assertion, but
 no jump, back edge, mutable index, or alternate source-coordinate operation.
-Unsigned Exp-Golomb values are retained for repeat controllers without becoming
-valid equality-conditional or switch controllers. A program with any parser or
-compiler diagnostic has no executable typed IR.
+Unsigned Exp-Golomb values are retained for repeat, equality-conditional, and
+switch controllers. A program with any parser or compiler diagnostic has no
+executable typed IR.
+
+A sentinel repeat is projected to the same linear stream. Iteration zero
+inherits the enclosing guards; every later iteration additionally requires all
+earlier projected sentinel fields to differ from the terminating value. Typed
+IR records each iteration start and sentinel field, the assertion position,
+termination value, enclosing guards, and source range. One
+`assert-sentinel-terminated` instruction follows the projected body. The VM
+validates this descriptor and every projection's guard prefix before reading
+source, so malformed typed IR cannot make fields execute after termination.
 `svtool rule check` runs both stages. The bundled Annex B runner also compiles its rule
 once when the analyzer is created and executes the resolved structure index
 for every record.
@@ -1011,6 +1042,21 @@ struct SampleTable {
 entry SampleTable;
 ```
 
+Valid bounded-sentinel example:
+
+```cpp
+struct RefPicListModifications {
+    repeat (64) {
+        ue modification_of_pic_nums_idc;
+        if (modification_of_pic_nums_idc == 0) {
+            ue abs_diff_pic_num_minus1;
+        }
+    } until (modification_of_pic_nums_idc == 3);
+}
+
+entry RefPicListModifications;
+```
+
 Valid pure-function and computed-field example:
 
 ```cpp
@@ -1107,10 +1153,10 @@ second dimension in an array length, a structure projection above 99,999
 fields, a truncated array element, a truncated Exp-Golomb codeword, 64 leading
 zero bits, `@enum(Missing)`, an enum member value that does not fit its field,
 duplicate enum member names, a sequence without `@index(progressive)`,
-`if (future == 1)` before `future` is declared, an array or `ue`/`se` condition
+`if (future == 1)` before `future` is declared, an array or `se` condition
 controller, a condition integer outside the controller width, a branch-local
 controller used after its branch, `if (flag = 1)`, a switch over a future,
-array, or `ue`/`se` controller, an out-of-range or duplicate case value, a
+array, or `se` controller, an out-of-range or duplicate case value, a
 switch with no case, a repeated or non-final default, a missing case colon or
 braced arm body, `break`, fallthrough, multiple labels for one arm, a case
 range or enum member label, a repeat over an unknown, future, array, `se`, or
@@ -1121,6 +1167,11 @@ fields, a repeat-local controller used by another iteration or after the
 repeat, a little-endian field after a repeat, `scan(other_scanner)`, two
 declarations with the same name, a program with no `entry`, or multiple `entry`
 declarations.
+Invalid sentinel-repeat examples include `repeat (0)` or `repeat (65)`, a
+missing `until` clause, an unknown sentinel, a sentinel declared outside or in
+nested control flow, an array, `se`, dynamic-width, computed, or lazy sentinel,
+an out-of-range terminating value, and any comparison other than direct
+equality with an integer literal.
 
 Invalid context-publication examples include a second `@context` on one
 structure; an identical repeated `@context_dependency`; a dependency on a
@@ -1458,6 +1509,14 @@ toward the static 99,999-field limit, so a conservative maximum increases typed
 program size and possible instruction work even when the decoded count is
 small. A reached count above the declared maximum is `invalid-syntax`, not a
 resource-limit condition.
+
+Each sentinel repeat adds one `assert-sentinel-terminated` instruction after
+all projected field instructions. Skipped projections still charge their field
+instructions and cancellation points, but consume no source bits or nodes. The
+assertion is charged even when enclosing guards are false. If no selected
+sentinel equals the terminating value, the assertion returns `invalid-syntax`
+at the final sentinel field while preserving the bounded materialized prefix.
+The language-wide maximum of 64 bounds descriptor, guard, and assertion work.
 
 Each computed field adds one `evaluate-computed` instruction. That instruction
 counts toward the instruction budget and remains a cancellation point even when

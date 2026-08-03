@@ -62,7 +62,7 @@ location 覆盖完整编码码字，而不是固定 bit 数。
 
 当前接受的条件切片新增了可嵌套的
 `if (previous_field == integer) { ... } else { ... }` block，`else` 可以省略。
-等值形式接受此前且路径上保证存在的 scalar `bits`、enum 或 `computed<u64>` controller；
+等值形式接受此前且路径上保证存在的 scalar `bits`、enum、`ue` 或 `computed<u64>` controller；
 Boolean 简写接受此前且路径上保证存在的 `computed<bool>`。两种形式都不是一般条件表达式。
 
 当前接受的 switch 切片新增了可嵌套的
@@ -74,6 +74,10 @@ guard。
 `repeat (previous_count, maximum) { ... }` block。此前解码出的无符号计数选择零到
 `maximum` 次投影迭代；正整数字面量 `maximum` 同时约束编译后的字段投影与运行时可接受
 计数。这不是通用 loop 或计数表达式。
+
+当前接受的 bounded-sentinel 切片新增 post-tested
+`repeat (maximum) { ... } until (field == integer);` block。body 至少执行一次，终止项本身也会
+物化；`1..64` 范围内的正整数 maximum 限制全部 projected iteration。
 
 当前接受的计算值切片新增了顶层、表达式体的 scalar `pure` 函数，以及结构内的
 `computed<bool>` 或 `computed<u64>` 计算字段。pure call 会在编译期内联成有固定边界的
@@ -151,6 +155,8 @@ switch_case   := "case" integer ":" "{" { struct_item } "}"
 switch_default := "default" ":" "{" { struct_item } "}"
 repeat        := "repeat" "(" identifier "," integer ")"
                  "{" { struct_item } "}"
+               | "repeat" "(" integer ")" "{" { struct_item } "}"
+                 "until" "(" identifier "==" integer ")" ";"
 sequence      := "sequence" "<" identifier ">" identifier "="
                  "scan" "(" identifier ")" ";"
 payload       := "payload" "<" identifier ">" identifier
@@ -233,7 +239,7 @@ primary       := integer | "true" | "false" | identifier
   八个可能字段都计入 99,999-field 与 100,000-node 限制；VM 使用一条 bytecode instruction，
   且只发布实际消费的 alignment 字段。
 - 等值条件 controller 必须是此前声明、且在到达该条件的每条路径上都保证已经物化的
-  scalar `bits`、enum 或 `computed<u64>` 字段。数组、`ue`、`se`、`computed<bool>`、
+  scalar `bits`、enum、`ue` 或 `computed<u64>` 字段。数组、`se`、`computed<bool>`、
   未来或未知字段，以及离开所属保证分支后使用的 branch-local 字段都会被拒绝。整数字面量
   必须能由 source field 的无符号宽度表示；`computed<u64>` 接受完整 `u64` 字面量范围。
   简写 `if (flag)` 只接受此前且路径上保证存在的 `computed<bool>`，含义是与 `true` 相等。
@@ -242,7 +248,7 @@ primary       := integer | "true" | "false" | identifier
 - 字段名在结构的全部分支中仍必须唯一，所有可能的 branch field 都计入 99,999 字段投影
   上限。静态对齐沿两个分支分别跟踪；只有两条路径都在相同的已知 offset 结束时，条件出口
   才保留已知 offset，省略的 `else` 按空路径处理。
-- switch controller 遵守等值条件的声明顺序与路径可用性规则，接受 scalar `bits`、enum
+- switch controller 遵守等值条件的声明顺序与路径可用性规则，接受 scalar `bits`、enum、`ue`
   或 `computed<u64>`，但不接受 `computed<bool>`。switch 至少包含一个 `case`；每个 case
   只接受一个互不重复、能由 source controller 宽度表示的无符号整数字面量；
   `computed<u64>` 接受完整 `u64` 范围。`default` 可以省略，最多出现一次，并且必须是最后
@@ -256,7 +262,7 @@ primary       := integer | "true" | "false" | identifier
   scalar `bits`、enum、`ue` 或 `computed<u64>` 字段。数组、`se`、`computed<bool>`、未知
   或未来字段，以及离开所属保证分支后使用的 branch-local 字段都会被拒绝。`maximum`
   必须是正的无符号整数字面量；使用定宽 source controller 时，它必须能被该字段表示，
-  computed controller 则接受完整 `u64` 范围。不接受计数表达式、sentinel/EOF 终止或
+  computed controller 则接受完整 `u64` 范围。不接受计数表达式、EOF 终止或
   `break`。repeat body 必须至少包含一个语法字段、计算字段或 lazy byte region，并可包含
   这些 item、条件、switch 和嵌套 repeat。
 - compiler 会验证 repeat body，并将它精确投影 `maximum` 次。source 声明名在整个结构
@@ -267,6 +273,15 @@ primary       := integer | "true" | "false" | identifier
 - 静态对齐会沿每个投影迭代分别检查，因此 repeat body 内的固定对齐错误会被拒绝。运行时
   可以选择零到 `maximum` 次迭代，所以 repeat 之后的结构内 offset 被视为未知；即使未来
   的表达式分析可能证明对齐，当前切片仍拒绝 repeat 之后的小端字段。
+- sentinel repeat 使用 post-tested
+  `repeat (maximum) { ... } until (field == integer);`，maximum 为 `1..64`。sentinel 必须直接
+  声明在 body 中，并且是无条件、顶层、非数组的 fixed-width `bits`、enum 或 `ue` 字段；
+  dynamic-width field、`se`、computed field、lazy region、nested declaration、body 外字段和其他
+  comparison 都会被拒绝。value 必须能由 fixed width 或受支持的 `ue` domain 表示。body 至少
+  执行一次并在完成后检查 sentinel，终止字段会保留；达到 maximum 仍未命中时，在最终 sentinel
+  field 上产生 runtime `invalid-syntax`。命中后，后续 projection 不读取 source、不创建 node。
+  local name 不逸出，每个 projection 都计入 99,999-field 上限，statement 后 static alignment 为
+  unknown。不提供 `break`、`continue`、EOF、remaining-bit 或 expression termination。
 - 计算字段声明 `computed<bool>` 或 `computed<u64>` 和一条表达式。它可以引用此前声明、
   且在到达当前声明的每条路径上都保证存在的 scalar 无符号 `bits`、enum、`ue` 或计算字段。
   数组、`se`、未知或未来字段，以及路径上不可用的 branch-local 值都会被拒绝。计算字段
@@ -332,7 +347,7 @@ primary       := integer | "true" | "false" | identifier
 
 `enum`、`big`、`little`、`ue`、`se`、`pure`、`return`、`bool`、`u64`、
 `computed`、`lazy`、`bytes`、`true`、`false`、`if`、`else`、`switch`、`case`、
-`default`、`repeat`、`payload`、`empty` 和 `rbsp_trailing_bits` 只在上述语法位置作为上下文关键字，其他位置仍可
+`default`、`repeat`、`until`、`payload`、`empty` 和 `rbsp_trailing_bits` 只在上述语法位置作为上下文关键字，其他位置仍可
 作为普通 identifier。既有 scalar 声明保持不变，`bits<N>` 仍与
 `bits<N, big>` 完全等价；本切片不弃用任何已接受的 0.1 语法。
 
@@ -341,7 +356,8 @@ sequence 和 entry 引用解析成 typed program，保留声明顺序，并确�
 `begin-structure`、`read-unsigned-bits`、`read-unsigned-exp-golomb`、
 `read-signed-exp-golomb`、`evaluate-computed`、`register-lazy-bytes`、
 `read-rbsp-trailing-bits`、`assert-equals`、`assert-range-minimum`、
-`assert-range-maximum`、`assert-repeat-count` 和 `end-structure` bytecode。每个 field opcode
+`assert-range-maximum`、`assert-repeat-count`、`assert-sentinel-terminated` 和
+`end-structure` bytecode。每个 field opcode
 必须与字段类型匹配；Exp-Golomb typed field 的静态 bit width 为零、使用默认 bit order，且没有
 enum reference。无符号字段保留可选 equality 与 range constraint；有符号字段不带这两类
 constraint。固定数组按 source 顺序展开成名为 `name[0]` 到 `name[count - 1]` 的 typed field；
@@ -371,11 +387,17 @@ guard 之后追加一个正向 `count > i` guard；物化名称先追加当前�
 固定数组 index。每个投影后的 repeat 语句记录 controller、maximum、首个 body 字段、外层
 guard 和 source range，并在语句位置、首个 body read 之前生成一条带 guard 的
 `assert-repeat-count`。这种 lowering 只新增 greater-than presence 比较和边界断言，不新增
-jump、回边、可变 index 或替代 source-coordinate 操作。无符号 Exp-Golomb 值会保留下来
-作为 repeat controller，但不会因此成为等值条件或 switch 的合法 controller。parser 或
-compiler 出现任何诊断时都不生成可执行 typed IR。`svtool rule check` 会运行这两个阶段；
+jump、回边、可变 index 或替代 source-coordinate 操作。无符号 Exp-Golomb 值可以作为
+repeat、等值条件或 switch controller。parser 或 compiler 出现任何诊断时都不生成可执行
+typed IR。`svtool rule check` 会运行这两个阶段；
 内置 Annex B runner 也只在 analyzer 创建时编译一次规则，之后按已解析的结构索引执行每条
 记录。
+
+sentinel repeat 会投影到同一条线性 stream。iteration zero 继承 enclosing guard；后续每个
+iteration 还要求此前全部 projected sentinel 不等于 terminating value。typed IR 记录每轮起点、
+sentinel field、assertion position、termination value、enclosing guard 和 source range；全部 body
+projection 后发射一条 `assert-sentinel-terminated` instruction。VM 在 source read 前验证 descriptor
+和每个 projection 的 guard prefix，malformed typed IR 不能让终止后的字段继续执行。
 
 compiler 会独立 type-check 每个纯函数，再把每个 pure call 展开到使用它的计算字段中。
 得到的 typed expression 只包含字面量、此前 typed-field index，以及一元或二元 operator；
@@ -829,6 +851,21 @@ struct SampleTable {
 entry SampleTable;
 ```
 
+bounded sentinel 合法示例：
+
+```cpp
+struct RefPicListModifications {
+    repeat (64) {
+        ue modification_of_pic_nums_idc;
+        if (modification_of_pic_nums_idc == 0) {
+            ue abs_diff_pic_num_minus1;
+        }
+    } until (modification_of_pic_nums_idc == 3);
+}
+
+entry RefPicListModifications;
+```
+
 纯函数与计算字段合法示例：
 
 ```cpp
@@ -892,9 +929,9 @@ entry nal_units;
 变长字段之后的小端字段、`bits<1> flags[0];`、`bits<1> flags[];`、数组长度表达式或第二
 维、展开后超过 99,999 字段的结构、截断的数组元素、截断的 Exp-Golomb 码字、64 个前导零、`@enum(Missing)`、
 无法放入字段宽度的 enum member 值、重复 enum member 名、缺少 `@index(progressive)` 的
-sequence、在 `future` 声明前使用 `if (future == 1)`、以数组或 `ue`/`se` 作为条件
+sequence、在 `future` 声明前使用 `if (future == 1)`、以数组或 `se` 作为条件
 controller、条件整数超出 controller 宽度、离开分支后使用 branch-local controller、
-`if (flag = 1)`、使用未来字段、数组或 `ue`/`se` controller 的 switch、超出宽度或重复的
+`if (flag = 1)`、使用未来字段、数组或 `se` controller 的 switch、超出宽度或重复的
 case 值、没有 case 的 switch、重复或不位于最后的 default、缺少冒号或花括号 body 的 case、
 `break`、fallthrough、同一 arm 的多个 label、case 范围或 enum member label、
 使用未知、未来、数组、`se` 或路径上不可用的 branch-local controller 的 repeat、
@@ -902,6 +939,10 @@ case 值、没有 case 的 switch、重复或不位于最后的 default、缺少
 repeat body、repeat 前的 annotation、投影后超过 99,999 字段、在其他迭代或 repeat 之后
 使用 repeat-local controller、repeat 之后的小端字段、`scan(other_scanner)`、重复声明同名，
 以及没有 `entry` 或包含多个 `entry` 声明的程序。
+sentinel repeat 的非法示例包括 `repeat (0)` 或 `repeat (65)`、缺少 `until` clause、未知
+sentinel、sentinel 声明在 body 外或 nested control flow 内、以 array、`se`、dynamic-width、
+computed 或 lazy 项作为 sentinel、termination value 越界，以及使用直接等于整数字面量之外的
+任何比较。
 
 context publication 的非法示例包括：同一 structure 上出现第二个 `@context`、完全相同的
 `@context_dependency` 重复、没有 `@context` 的 structure 声明 dependency、使用 guarded、
@@ -1175,6 +1216,13 @@ switch arm 的字段都计入静态 99,999 字段投影上限。
 只有存在的迭代消耗 source bit 和物化节点名额。全部投影字段都计入静态 99,999 字段上限，
 因此保守的 maximum 即使面对较小的解码计数，也会增大 typed program 和可能执行的指令量。
 执行路径抵达的计数超过 maximum 时报告 `invalid-syntax`，不是 `resource-limit`。
+
+每个 sentinel repeat 在全部 projected field instruction 后增加一条
+`assert-sentinel-terminated`。被跳过 projection 的 field instruction 与 cancellation point 仍计入
+预算，但不消费 source bit 或 node；enclosing guard 为 false 时 assertion 也计费。若没有任何已选
+sentinel 等于 termination value，assertion 会在最后一个 sentinel field 上返回
+`invalid-syntax`，并保留有界 materialized prefix。language-wide maximum 64 同时限制 descriptor、
+guard 与 assertion work。
 
 每个计算字段增加一条 `evaluate-computed` instruction。即使 false guard 跳过求值，该
 instruction 仍计入 instruction budget，并保留取消检查点。成功求值消耗一个物化节点名额，
