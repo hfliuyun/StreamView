@@ -222,13 +222,18 @@ struct PictureParameterSetRbsp {
     rbsp_trailing_bits;
 }
 
+enum IdrAllISliceType {
+    i = 2;
+    all_i = 7;
+}
+
 @spec("ITU-T H.264", "7.3.2.8, 7.3.3")
 @description("The bounded all-I IDR slice header followed by an opaque slice-layer suffix.")
 @context_import("h264-pps", pic_parameter_set_id)
 struct IdrSliceLayerWithoutPartitioningRbsp {
     ue first_mb_in_slice
         @description("Identifies the first macroblock in this slice.");
-    ue slice_type @equals(2)
+    ue slice_type @enum(IdrAllISliceType)
         @description("Selects the supported all-I slice header form.");
     ue pic_parameter_set_id @range(0, 255)
         @description("Selects the active picture parameter set.");
