@@ -2,10 +2,11 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Define and implement the compressed remaining-bit payload terminal
-Next Action: Define the first bounded H.264 slice-header structure and dispatch it for VCL NAL units
-Last Verification: Commits 878aa5a and 9c832ba local dev/ci/sanitize each passed 32/32; hosted run
-  30861138810 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Decode the first bounded progressive IDR all-I slice header
+Next Action: Accept equivalent all-I slice_type 7, then declare imported-context branches for the
+  remaining IDR slice-header syntax
+Last Verification: Commits 7d44b2a and 3330cc7 local dev/ci/sanitize each passed 32/32; hosted run
+  30863800309 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -592,3 +593,23 @@ Blockers: None
   Configure、Build、Test、Install、Upload 均成功。官方 H.264 package 尚未接入该 terminal，
   package version 保持 `0.1.7`；下一步定义首个有界 H.264 slice-header structure 并接入
   VCL NAL dispatch。
+- 2026-08-04：完成首个有界 H.264 progressive IDR all-I slice-header 增量。ADR-0049 与英中
+  bundled-profile 文档提交 `7d44b2a` 固化 type `5`、`slice_type == 2`、progressive frame、
+  POC type 0、无 bottom-field POC/redundant-picture/deblocking-control 的窄支持边界，并明确
+  `compressed_payload slice_data` 表示包含 slice trailing bits 的完整 opaque RBSP suffix。实现
+  提交 `3330cc7` 新增 `IdrSliceLayerWithoutPartitioningRbsp`，通过精确 PPS import 及其绑定
+  SPS dependency 解码 `first_mb_in_slice`、`slice_type`、`pic_parameter_set_id`、dynamic-width
+  `frame_num`、`idr_pic_id`、dynamic-width `pic_order_cnt_lsb`、IDR marking flags 与
+  `slice_qp_delta`，再把剩余 bit 发布为非 byte 对齐的 materialized compressed payload。
+  layout prerequisite 在受影响字段读取前通过 checked dynamic-width expression 失败；
+  missing/future/stale parameter set 仍为 source-located `dependency-unavailable`，当前 NAL
+  失败后继续后续 NAL。官方 package 更新为 `0.1.8`、coverage depth 更新为
+  `idr-slice-header`；analyzer 正反例覆盖精确 context chain、4-bit imported width、7-bit
+  opaque span、missing PPS 和 deblocking prerequisite，GUI/CLI/mapper fixtures 同步改用未派发
+  type `1`。H.264 analyzer 为 53/53；本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与
+  CTest 均为 32/32；hosted run `30863800309` 对
+  `3330cc7073d92a663b568eac9b71d3e527e058c4` 在 Windows 2022 / Qt 6.10.1、macOS 15 /
+  Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、Install、Upload 均成功。
+  完整 Baseline/Main/High slice-header 项仍未完成；下一步接受等价 `slice_type == 7`，随后
+  声明 imported-context conditional branch，以实现 bottom-field POC、redundant-picture 与
+  deblocking-control syntax，再扩展 non-IDR/P/B reference-list 和 weighted-prediction 分支。
