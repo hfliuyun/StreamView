@@ -140,9 +140,12 @@ do not enter the general expression namespace.
 
 The accepted imported dynamic-width slice permits a checked unsigned arithmetic
 expression as the width of a big-endian `bits` field. The reserved
-`context_value(import_key, context_kind, exported_field)` form is available only
-in that width expression and resolves one scalar from the exact imported
-generation closure before the field is read.
+`context_value(import_key, context_kind, exported_field)` form resolves one
+scalar from the exact imported generation closure before the field is read.
+
+The accepted imported-condition slice also permits that reserved form as the
+left side of `context_value(...) == integer`. It remains a `u64` leaf rather
+than entering the general expression or controller namespace.
 
 ## Minimum DSL 0.1 Subset
 
@@ -179,9 +182,12 @@ compressed_payload := "compressed_payload" identifier
 presentation_annotation := "@" "description" "(" string ")"
                          | "@" "spec" "(" string "," string ")"
 scalar_type   := "bool" | "u64"
-conditional   := "if" "(" ( identifier "==" integer | identifier ) ")"
+conditional   := "if" "(" ( identifier "==" integer | identifier
+                               | context_value "==" integer ) ")"
                  "{" { struct_item } "}"
                  [ "else" "{" { struct_item } "}" ]
+context_value := "context_value" "(" identifier "," identifier ","
+                 identifier ")"
 switch        := "switch" "(" identifier ")" "{"
                  switch_case { switch_case } [ switch_default ] "}"
 switch_case   := "case" integer ":" "{" { struct_item } "}"
@@ -274,14 +280,17 @@ The static rules for this subset are:
   rules. Declaration order is preserved; an identical kind/field pair is a
   duplicate and is rejected.
 - `context_value(import_key, context_kind, exported_field)` is reserved for a
-  dynamic `bits` width. All three arguments are identifiers. `import_key` names
+  dynamic `bits` width or the left side of an imported equality conditional.
+  All three arguments are identifiers. `import_key` names
   an earlier context-eligible field that identifies exactly one import on the
   structure. The kind identifier is `h264_sps`, `h264_pps`, `aac_asc`, or
   `iso_bmff_sample_description`, and must name the imported root kind or a kind
   reachable through its declared dependency graph. Exactly one structure must
   publish that target kind, and it must export exactly one field with the named
-  declaration. The form is rejected in pure-function bodies, computed fields,
-  conditions, lazy sizes, repeat bounds, and every other expression position.
+  declaration. Except for the exact conditional form
+  `context_value(...) == integer`, it is rejected in pure-function bodies,
+  computed fields, conditions, lazy sizes, switch or repeat controllers, and
+  every other expression position.
 - Fixed-width arrays contribute `width * count` bits to static alignment.
   Every element of a little-endian array must therefore have a byte-multiple
   width and the first element must begin at a structure-relative byte boundary.
@@ -318,8 +327,13 @@ The static rules for this subset are:
   `computed<u64>` accepts the complete `u64` literal range. The shorthand
   `if (flag)` accepts only an earlier guaranteed `computed<bool>` and means
   equality with `true`. Conditions may nest, and both branches are statically
-  checked even though only one executes. General condition expressions,
-  Boolean combinations, `else if`, and other comparison forms are not accepted.
+  checked even though only one executes. An imported equality instead has the
+  exact form `context_value(import_key, context_kind, exported_field) == integer`;
+  its value is `u64`, so the literal may use the complete `u64` range. It uses
+  the static import, reachability, unique-publisher, and named-export contract
+  above. General condition expressions, arithmetic around an imported value,
+  Boolean combinations, imported shorthand, `!=`, ordering, `else if`, and
+  other comparison forms are not accepted.
 - Field names remain unique across all branches of a structure. Every possible
   branch field counts toward the 99,999-field projection limit. Static
   alignment is tracked independently through both branches; the conditional
@@ -416,9 +430,10 @@ The static rules for this subset are:
   match their parameters. Unsigned overflow or underflow, division by zero, and
   remainder by zero are runtime `invalid-syntax` failures at the computed field
   or lazy region path. The same checked arithmetic applies to a dynamic bit
-  width; `context_value` is its only additional leaf form and counts against the
-  same node and depth limits. The complete width expression remains subject to
-  the shared expansion-work limit. Enum fields contribute their decoded `u64`;
+  width; `context_value` is its only additional leaf form and is also accepted
+  as the exact left side of an imported equality conditional. It counts against
+  the same node and depth limits. The complete width expression remains subject
+  to the shared expansion-work limit. Enum fields contribute their decoded `u64`;
   enum member names are not expression values.
 - Every written pure-function body, computed-field expression, or lazy
   byte-count expression, and every corresponding fully inlined expression, has
@@ -573,6 +588,13 @@ The compiler proves the target kind is the import root or is reachable through
 declared context dependencies and makes every following exact static offset
 unknown.
 
+An imported equality conditional lowers the same canonical imported leaf into a
+field-presence guard with an expected `u64` literal and a positive or negated
+sense. Both branches remain linear field projections; no jump or conditional
+opcode is added. Guard identity includes the complete import, kind, publisher,
+and export descriptor, so nested conditions over different imported fields do
+not alias.
+
 A lazy declaration joins the same typed-field stream with kind `LazyBytes`, a
 required inlined `u64` byte-count expression, resolved presentation metadata,
 and the same outer guards and repeat indexes. It emits one
@@ -628,6 +650,15 @@ payload/schema mismatch, or malformed descriptor is an invalid definition.
 Checked arithmetic failure or a width outside `1..64` is `invalid-syntax` and
 consumes no bits for the dynamic field. A truncated read rolls back to the field
 start, while its diagnostic retains the available mapped prefix.
+
+Before any source read, the VM also validates every imported conditional guard
+as one canonical `u64` leaf with no operands and a complete exact
+import/publisher/export descriptor. When a guarded field is reached, the same
+session resolver supplies the scalar from the per-run closure. A matching guard
+selects the field; a nonmatching guard performs no source read, node creation,
+or field constraint check. Resolver failures use the dynamic-width statuses and
+are source-located at the import-key field. Even an unselected branch cannot
+hide malformed typed guard metadata.
 
 Before each field read, the VM validates and evaluates its presence guards in
 outer-to-inner order. A false guard skips the field without consuming source
@@ -1074,6 +1105,27 @@ struct Packet {
 entry Packet;
 ```
 
+Valid imported equality-conditional example:
+
+```cpp
+@context("h264-pps", id)
+struct Pps {
+    ue id;
+    bits<1> optional_present @context_export;
+}
+
+@context_import("h264-pps", id)
+struct Slice {
+    ue id;
+    if (context_value(id, h264_pps, optional_present) == 1) {
+        se optional_value;
+    }
+    bits<1> tail;
+}
+
+entry Slice;
+```
+
 Valid equality-switch example:
 
 ```cpp
@@ -1256,12 +1308,18 @@ Invalid context-import examples include an identical repeated import, a guarded,
 repeated, array, signed, lazy, generated, or unknown key field, an unsupported
 kind, malformed arguments, and more than 16 imports.
 Invalid imported dynamic-width examples include `context_value` outside a
-dynamic `bits` width, a missing or later import key, an unrelated target kind,
-zero or multiple publishers for the target kind, a missing export, and a dynamic
-little-endian, array, enum, constrained, context-key, dependency, import, or
-export field. Runtime results `0` and `65`, arithmetic overflow or underflow,
-division by zero, and remainder by zero are `invalid-syntax` before that field
-consumes input.
+dynamic `bits` width or imported equality conditional, a missing or later import
+key, an unrelated target kind, zero or multiple publishers for the target kind,
+a missing export, and a dynamic little-endian, array, enum, constrained,
+context-key, dependency, import, or export field. Runtime results `0` and `65`,
+arithmetic overflow or underflow, division by zero, and remainder by zero are
+`invalid-syntax` before that field consumes input.
+Invalid imported-condition examples include arithmetic or a call around
+`context_value`, `!=`, ordering, a Boolean combination, imported Boolean
+shorthand, a nonliteral right side, a missing or later import key, an unrelated
+target kind, zero or multiple publishers, and a missing export. Imported values
+remain invalid as switch or repeat controllers, sentinel conditions, computed
+or lazy expressions, array lengths, annotations, and payload dispatch values.
 
 Invalid payload-dispatch examples include two payload declarations,
 `payload<ebsp>` or any other view kind, a dispatch naming a structure or an
@@ -1499,9 +1557,10 @@ declaration-order depth-first traversal, with each definition included once.
 Every entry retains the definition ID, kind, publishing structure index,
 ordered exported values, and exact dependency IDs. A closure contains at most
 64 definitions; a missing rules-owned payload is invalid runtime state. Import
-results create no analysis nodes. Imported values are available only through the
-lowered `context_value` leaf in a dynamic width, not as identifiers in
-conditions, general expressions, lazy sizes, or repeat bounds.
+results create no analysis nodes. Imported values are available only through
+the lowered `context_value` leaf in a dynamic width or the exact
+`context_value(...) == integer` conditional. They are not identifiers in general
+expressions, lazy sizes, switch or repeat controllers, or repeat bounds.
 
 Publication occurs only after successful materialization, requested exact
 consumption, dependency resolution, and complete typed-payload preparation.
@@ -1524,6 +1583,8 @@ is specified by
 rule does not use imports until slice dispatch is added. Dynamic imported widths
 are specified by
 [ADR-0046](../adr/0046-evaluate-dynamic-bit-widths-from-imported-context-values.md).
+Imported equality guards are specified by
+[ADR-0052](../adr/0052-guard-fields-with-imported-context-values.md).
 Bounded post-tested sentinel repeats are specified by
 [ADR-0047](../adr/0047-lower-bounded-sentinel-repeats-to-guarded-projections.md).
 The compressed remaining-bit terminal is specified by
