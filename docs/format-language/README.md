@@ -955,18 +955,26 @@ dependency, then reads the following fields:
 | `frame_num` | Uses `log2_max_frame_num_minus4 + 4` bits from the bound SPS. |
 | `idr_pic_id` | Identifies the IDR picture. |
 | `pic_order_cnt_lsb` | Uses `log2_max_pic_order_cnt_lsb_minus4 + 4` bits from the bound POC-type-0 SPS. |
+| `delta_pic_order_cnt_bottom` | Carries the signed bottom-field POC delta when the bound PPS enables it. |
+| `redundant_pic_cnt` | Identifies the redundant representation when the bound PPS enables it; values outside `0..127` warn. |
 | `no_output_of_prior_pics_flag` | Controls output of pictures preceding the IDR picture. |
 | `long_term_reference_flag` | Marks the IDR picture as a long-term reference when set. |
 | `slice_qp_delta` | Adjusts the initial luma quantization parameter; its signed bound is deferred. |
+| `disable_deblocking_filter_idc` | Selects enabled, disabled, or within-slice deblocking when the bound PPS enables control syntax; reserved values are fatal. |
+| `slice_alpha_c0_offset_div2` | Carries the signed alpha/c0 deblocking offset when filtering is not disabled; its signed bound is deferred. |
+| `slice_beta_offset_div2` | Carries the signed beta deblocking offset when filtering is not disabled; its signed bound is deferred. |
 | `slice_data` | Materialized opaque suffix covering every remaining RBSP bit, including any slice trailing bits; CAVLC/CABAC is not decoded. |
 
-Dynamic widths reject non-progressive SPS, POC types other than 0, bottom-field
-POC, redundant-picture syntax, or deblocking controls before the affected field
-reads source. Missing/future/stale parameter-set generations remain
-`dependency-unavailable`; the partial header is retained and later NAL units are
-still analyzed. Non-IDR, P/B/SP/SI, field-picture, reference-list, weighted,
-adaptive-memory-management, deblocking, and slice-group branches are deferred.
-Package `0.1.9` advertises coverage depth `idr-slice-header`; this is not yet the
+Dynamic widths still reject non-progressive SPS and POC types other than 0
+before the affected field reads source. Exact imported PPS guards select
+bottom-field POC, redundant-picture count, and deblocking-control fields; a
+false guard consumes no bits and creates no node. Deblocking value 1 skips both
+offsets, values 0 and 2 read them, and reserved values fail at the controlling
+codeword. Missing/future/stale parameter-set generations remain
+`dependency-unavailable`; the partial header is retained and later NAL units
+are still analyzed. Non-IDR, P/B/SP/SI, field-picture, reference-list, weighted,
+adaptive-memory-management, and slice-group branches are deferred. Package
+`0.1.10` advertises coverage depth `idr-slice-header`; this is not yet the
 complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in

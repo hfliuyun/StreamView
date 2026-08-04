@@ -735,17 +735,24 @@ generation 以及该 PPS 的精确 SPS dependency，然后读取以下字段：
 | `frame_num` | 使用绑定 SPS 的 `log2_max_frame_num_minus4 + 4` bit。 |
 | `idr_pic_id` | 标识 IDR picture。 |
 | `pic_order_cnt_lsb` | 在绑定的 POC-type-0 SPS 下使用 `log2_max_pic_order_cnt_lsb_minus4 + 4` bit。 |
+| `delta_pic_order_cnt_bottom` | 在绑定 PPS 启用时携带 signed bottom-field POC delta。 |
+| `redundant_pic_cnt` | 在绑定 PPS 启用时标识 redundant representation；超出 `0..127` 时告警。 |
 | `no_output_of_prior_pics_flag` | 控制 IDR picture 之前 picture 的输出。 |
 | `long_term_reference_flag` | 设置时把 IDR picture 标记为 long-term reference。 |
 | `slice_qp_delta` | 调整初始 luma quantization parameter；signed bound 留待后续。 |
+| `disable_deblocking_filter_idc` | 在绑定 PPS 启用 control syntax 时选择 enabled、disabled 或 within-slice deblocking；reserved 值致命失败。 |
+| `slice_alpha_c0_offset_div2` | 在 filtering 未禁用时携带 signed alpha/c0 deblocking offset；signed bound 留待后续。 |
+| `slice_beta_offset_div2` | 在 filtering 未禁用时携带 signed beta deblocking offset；signed bound 留待后续。 |
 | `slice_data` | 覆盖全部剩余 RBSP bit 的 materialized opaque suffix，其中包括可能存在的 slice trailing bits；不解码 CAVLC/CABAC。 |
 
-dynamic width 会在受影响字段读取 source 前拒绝 non-progressive SPS、非零 POC type、
-bottom-field POC、redundant-picture 语法或 deblocking control。missing/future/stale parameter-set
-generation 仍报告 `dependency-unavailable`；保留 partial header，并继续分析后续 NAL。
-non-IDR、P/B/SP/SI、field-picture、reference-list、weighted、adaptive-memory-management、
-deblocking 与 slice-group 分支均留待后续。package `0.1.9` 发布 coverage depth
-`idr-slice-header`；这尚未完成 Baseline/Main/High slice-header 里程碑。
+dynamic width 仍会在受影响字段读取 source 前拒绝 non-progressive SPS 与非零 POC type。
+exact imported PPS guard 会选择 bottom-field POC、redundant-picture count 与 deblocking-control
+字段；false guard 不消费 bit，也不创建 node。deblocking 值 1 省略两个 offset，值 0 和 2 读取
+它们，reserved 值在 controller 码字处失败。missing/future/stale parameter-set generation 仍报告
+`dependency-unavailable`；保留 partial header，并继续分析后续 NAL。non-IDR、P/B/SP/SI、
+field-picture、reference-list、weighted、adaptive-memory-management 与 slice-group 分支均留待
+后续。package `0.1.10` 发布 coverage depth `idr-slice-header`；这尚未完成
+Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
 的 mapped-byte budget；默认每次最多处理 64 KiB EBSP source byte。预算耗尽时返回
