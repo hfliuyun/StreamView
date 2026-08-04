@@ -1551,10 +1551,11 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                        return annotation.name == name;
                                    });
             };
-            if (!isBits && hasAnnotation(QStringLiteral("enum"))) {
+            if (!isBits && !isUnsignedExpGolomb &&
+                hasAnnotation(QStringLiteral("enum"))) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidAnnotation,
-                              QStringLiteral("@enum is only supported on bits fields"),
+                              QStringLiteral("@enum is only supported on bits and ue fields"),
                               field.range);
             }
             if (isSignedExpGolomb && hasAnnotation(QStringLiteral("equals"))) {
@@ -1564,7 +1565,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                               field.range);
             }
             const std::optional<QString> enumName =
-                isBits && !isDynamicBits
+                ((isBits && !isDynamicBits) || isUnsignedExpGolomb)
                     ? enumTypeName(field, result.diagnostics)
                     : std::nullopt;
             if (isDynamicBits && hasAnnotation(QStringLiteral("enum"))) {
@@ -1581,10 +1582,27 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                   QStringLiteral("Field enum type is not declared"),
                                   field.range);
                 } else {
-                    typedField.type.kind = DslValueTypeKind::Enum;
+                    if (isBits) {
+                        typedField.type.kind = DslValueTypeKind::Enum;
+                    }
                     typedField.type.enumIndex = *enumIndex;
                     typedField.metadata.typeName = *enumName;
-                    if (field.width < 64) {
+                    if (isUnsignedExpGolomb) {
+                        const auto outsideDomain = std::find_if(
+                            typed.enums.at(*enumIndex).values.begin(),
+                            typed.enums.at(*enumIndex).values.end(),
+                            [](const DslTypedEnumValue& value) {
+                                return value.value > maximumUnsignedExpGolombValue;
+                            });
+                        if (outsideDomain != typed.enums.at(*enumIndex).values.end()) {
+                            addDiagnostic(
+                                result.diagnostics,
+                                DslDiagnosticCode::EnumValueOutOfRange,
+                                QStringLiteral(
+                                    "Enum member value exceeds the supported ue domain"),
+                                field.range);
+                        }
+                    } else if (field.width < 64) {
                         const quint64 exclusiveLimit = quint64{1} << field.width;
                         for (const DslTypedEnumValue& value : typed.enums.at(*enumIndex).values) {
                             if (value.value >= exclusiveLimit) {

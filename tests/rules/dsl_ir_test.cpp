@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <limits>
 #include <vector>
 
 using streamview::rules::DslCompileResult;
@@ -411,6 +412,55 @@ private slots:
         for (std::size_t index = 0; index < expected.size(); ++index) {
             QCOMPARE(compiled.program->bytecode.at(index).opcode, expected.at(index));
         }
+    }
+
+    void compilesUnsignedExpGolombEnumDomainsIntoTypedIrAndBytecode() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "enum IdrAllISliceType { i = 2; all_i = 7; } "
+            "struct Header { ue slice_type @enum(IdrAllISliceType) "
+            "@equals(7) @range(2, 7); } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& field = compiled.program->structs.front().fields.front();
+        QCOMPARE(field.type.kind, DslValueTypeKind::UnsignedExpGolomb);
+        QCOMPARE(field.type.enumIndex, std::optional<quint32>(0));
+        QCOMPARE(field.metadata.typeName, QStringLiteral("IdrAllISliceType"));
+        QVERIFY(field.contextEligible);
+        QCOMPARE(field.equalsConstraint, std::optional<quint64>(7));
+        QVERIFY(field.rangeConstraint.has_value());
+        QCOMPARE(field.rangeConstraint->minimum, quint64(2));
+        QCOMPARE(field.rangeConstraint->maximum, quint64(7));
+
+        const std::vector<DslOpcode> expected{
+            DslOpcode::BeginStructure,
+            DslOpcode::ReadUnsignedExpGolomb,
+            DslOpcode::AssertEquals,
+            DslOpcode::AssertRangeMinimum,
+            DslOpcode::AssertRangeMaximum,
+            DslOpcode::EndStructure,
+        };
+        QCOMPARE(compiled.program->bytecode.size(), expected.size());
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            QCOMPARE(compiled.program->bytecode.at(index).opcode, expected.at(index));
+        }
+    }
+
+    void rejectsUnsignedExpGolombEnumMembersOutsideTheEncodingRangeInCompiler() {
+        auto parsed = DslParser::parse(QStringLiteral(
+            "enum Type { valid = 0; } "
+            "struct Header { ue value @enum(Type); } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        parsed.program.enums.front().values.front().value =
+            std::numeric_limits<quint64>::max();
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(!compiled.succeeded());
+        QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::EnumValueOutOfRange));
     }
 
     void compilesUnsignedExpGolombEqualsAndConditionIntoTypedIr() {

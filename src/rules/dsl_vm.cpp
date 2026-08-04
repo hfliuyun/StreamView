@@ -129,6 +129,24 @@ constexpr quint64 maximumUnsignedExpGolombValue = std::numeric_limits<quint64>::
                        });
 }
 
+[[nodiscard]] bool validUnsignedExpGolombEnum(
+    const DslTypedProgram& program,
+    const std::optional<quint32>& enumIndex) noexcept {
+    if (!enumIndex) {
+        return true;
+    }
+    if (*enumIndex >= program.enums.size()) {
+        return false;
+    }
+    const DslTypedEnum& enumeration = program.enums.at(*enumIndex);
+    return !enumeration.values.empty() &&
+           std::none_of(enumeration.values.begin(),
+                        enumeration.values.end(),
+                        [](const DslTypedEnumValue& value) {
+                            return value.value > maximumUnsignedExpGolombValue;
+                        });
+}
+
 [[nodiscard]] bool validScalarType(DslScalarType type) noexcept {
     return type == DslScalarType::Bool || type == DslScalarType::U64;
 }
@@ -858,11 +876,12 @@ DslExecutionResult DslVirtualMachine::execute(
                (controller.type.endian != DslEndian::Little ||
                 controller.type.bitWidth % 8 == 0);
     };
-    const auto validUnsignedExpGolombController = [](const DslTypedField& controller) {
+    const auto validUnsignedExpGolombController = [&program](
+                                                       const DslTypedField& controller) {
         return controller.kind == DslTypedFieldKind::Declared &&
                controller.type.kind == DslValueTypeKind::UnsignedExpGolomb &&
                controller.type.bitWidth == 0 && controller.type.endian == DslEndian::Big &&
-               !controller.type.enumIndex;
+               validUnsignedExpGolombEnum(program, controller.type.enumIndex);
     };
     const auto validComputedController = [](const DslTypedField& controller,
                                             DslValueTypeKind expectedKind) {
@@ -1061,6 +1080,18 @@ DslExecutionResult DslVirtualMachine::execute(
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Source-backed typed field has a computed expression"),
                             &field);
+                return result;
+            }
+            if ((field.type.kind == DslValueTypeKind::UnsignedExpGolomb &&
+                 !validUnsignedExpGolombEnum(program, field.type.enumIndex)) ||
+                (field.type.kind == DslValueTypeKind::SignedExpGolomb &&
+                 field.type.enumIndex)) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed Exp-Golomb enum definition is invalid"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
                 return result;
             }
             if (field.type.kind == DslValueTypeKind::UnsignedExpGolomb &&
@@ -1337,6 +1368,40 @@ DslExecutionResult DslVirtualMachine::execute(
 
     const std::size_t bytecodeBegin = structure.bytecodeOffset;
     const std::size_t bytecodeEnd = bytecodeBegin + structure.bytecodeLength;
+    std::vector<quint32> unsignedExpGolombReadCounts(structure.fields.size());
+    std::vector<bool> conflictingEnumReads(structure.fields.size());
+    for (std::size_t instructionIndex = bytecodeBegin;
+         instructionIndex < bytecodeEnd;
+         ++instructionIndex) {
+        const DslInstruction& instruction = program.bytecode.at(instructionIndex);
+        if (instruction.operand >= structure.fields.size()) {
+            continue;
+        }
+        if (instruction.opcode == DslOpcode::ReadUnsignedExpGolomb) {
+            ++unsignedExpGolombReadCounts.at(instruction.operand);
+        } else if (instruction.opcode == DslOpcode::ReadUnsignedBits ||
+                   instruction.opcode == DslOpcode::ReadSignedExpGolomb) {
+            conflictingEnumReads.at(instruction.operand) = true;
+        }
+    }
+    for (std::size_t fieldIndex = 0; fieldIndex < structure.fields.size(); ++fieldIndex) {
+        const DslTypedField& field = structure.fields.at(fieldIndex);
+        if (field.type.kind != DslValueTypeKind::UnsignedExpGolomb ||
+            !field.type.enumIndex) {
+            continue;
+        }
+        if (unsignedExpGolombReadCounts.at(fieldIndex) != 1 ||
+            conflictingEnumReads.at(fieldIndex)) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral(
+                            "Typed unsigned Exp-Golomb enum bytecode is invalid"),
+                        &field,
+                        std::nullopt,
+                        std::nullopt,
+                        false);
+            return result;
+        }
+    }
     const auto compressedField = std::find_if(
         structure.fields.begin(),
         structure.fields.end(),
@@ -1568,13 +1633,19 @@ DslExecutionResult DslVirtualMachine::execute(
                     readsUnsignedExpGolomb ? DslValueTypeKind::UnsignedExpGolomb
                                            : DslValueTypeKind::SignedExpGolomb;
                 if (field.type.kind != expectedKind || field.type.bitWidth != 0 ||
-                    field.type.endian != DslEndian::Big || field.type.enumIndex ||
+                    field.type.endian != DslEndian::Big ||
+                    (!readsUnsignedExpGolomb && field.type.enumIndex) ||
+                    (readsUnsignedExpGolomb &&
+                     !validUnsignedExpGolombEnum(program, field.type.enumIndex)) ||
                     (!readsUnsignedExpGolomb &&
                      (field.equalsConstraint || field.rangeConstraint))) {
                     markFailure(DslExecutionStatus::InvalidDefinition,
                                 QStringLiteral("Typed Exp-Golomb field definition is invalid"),
                                 &field);
                     return result;
+                }
+                if (readsUnsignedExpGolomb && field.type.enumIndex) {
+                    enumeration = &program.enums.at(*field.type.enumIndex);
                 }
             }
             const std::optional<bool> fieldPresent =

@@ -212,6 +212,30 @@ private slots:
                  DslFieldEncoding::SignedExpGolomb);
     }
 
+    void acceptsEnumDomainsOnUnsignedExpGolombFields() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "enum IdrAllISliceType { i = 2; all_i = 7; } "
+            "struct Header { ue slice_type @enum(IdrAllISliceType); } entry Header;"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& field = result.program.structs.front().items.front().field;
+        QCOMPARE(field.encoding, DslFieldEncoding::UnsignedExpGolomb);
+        QCOMPARE(field.annotations.front().name, QStringLiteral("enum"));
+        QCOMPARE(field.annotations.front().arguments.front().text,
+                 QStringLiteral("IdrAllISliceType"));
+    }
+
+    void rejectsEnumDomainsOutsideTheExpGolombEncodingRange() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "enum Type { impossible = 18446744073709551615; } "
+            "struct Header { ue value @enum(Type); } entry Header;"));
+
+        QVERIFY(hasDiagnostic(result, DslDiagnosticCode::EnumValueOutOfRange));
+    }
+
     void rejectsFixedWidthAnnotationsAndAlignmentAfterExpGolombFields() {
         const auto annotations = DslParser::parse(QStringLiteral(
             "enum Type { value = 1; } struct Header { "

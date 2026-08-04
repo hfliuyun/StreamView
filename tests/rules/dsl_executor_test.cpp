@@ -2258,7 +2258,9 @@ private slots:
 
     void rollsBackAComponentExpGolombReadWhenTheCodewordIsTruncated() {
         const auto parsed = DslParser::parse(QStringLiteral(
-            "struct Header { bits<1> prefix; ue value; bits<1> suffix; } entry Header;"));
+            "enum Type { zero = 0; one = 1; } "
+            "struct Header { bits<1> prefix; ue value @enum(Type); "
+            "bits<1> suffix; } entry Header;"));
         QVERIFY(parsed.succeeded());
 
         MemorySource source(bytes({0b10100000}));
@@ -5050,6 +5052,192 @@ private slots:
         QCOMPARE(
             invalidStructure->diagnostics().front().location->sourceSpans().front().bitLength(),
             quint64(3));
+    }
+
+    void validatesUnsignedExpGolombEnumValuesWithCompleteCodewordLocations() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "enum IdrAllISliceType { i = 2; all_i = 7; } "
+            "struct Header { ue slice_type @enum(IdrAllISliceType) "
+            "@equals(7) @range(2, 7); bits<1> tail; } "
+            "entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+
+        MemorySource validSource(bytes({0x11}));
+        BitReader validReader(validSource, *range);
+        auto validTree = AnalysisTree::create(QStringLiteral("ue-enum-valid"));
+        QVERIFY(validTree.has_value());
+        const auto valid = DslExecutor::decodeStruct(*compiled.program,
+                                                      quint32(0),
+                                                      validReader,
+                                                      *mapping,
+                                                      0,
+                                                      *validTree,
+                                                      validTree->rootId());
+        QCOMPARE(valid.status, DslExecutionStatus::Materialized);
+        QCOMPARE(valid.bitsConsumed, quint64(8));
+        const auto validStructure = validTree->node(*valid.structureNode);
+        QVERIFY(validStructure.has_value());
+        const auto sliceType = validTree->node(validStructure->children().front());
+        QVERIFY(sliceType.has_value());
+        QCOMPARE(sliceType->value().toULongLong(), quint64(7));
+        QCOMPARE(sliceType->location()->sourceSpans().front().bitLength(), quint64(7));
+        QCOMPARE(sliceType->metadata().typeName, QStringLiteral("IdrAllISliceType"));
+
+        MemorySource invalidSource(bytes({0x24}));
+        BitReader invalidReader(invalidSource, *range);
+        auto invalidTree = AnalysisTree::create(QStringLiteral("ue-enum-invalid"));
+        QVERIFY(invalidTree.has_value());
+        const auto invalid = DslExecutor::decodeStruct(*compiled.program,
+                                                        quint32(0),
+                                                        invalidReader,
+                                                        *mapping,
+                                                        0,
+                                                        *invalidTree,
+                                                        invalidTree->rootId());
+        QCOMPARE(invalid.status, DslExecutionStatus::InvalidSyntax);
+        QCOMPARE(invalid.bitsConsumed, quint64(5));
+        const auto invalidStructure = invalidTree->node(*invalid.structureNode);
+        QVERIFY(invalidStructure.has_value());
+        QCOMPARE(invalidStructure->children().size(), std::size_t(1));
+        const auto unknown = invalidTree->node(invalidStructure->children().front());
+        QVERIFY(unknown.has_value());
+        QCOMPARE(unknown->value().toULongLong(), quint64(3));
+        QCOMPARE(unknown->location()->sourceSpans().front().bitLength(), quint64(5));
+        QCOMPARE(invalidStructure->diagnostics().front().fieldPath,
+                 QStringLiteral("Header.slice_type"));
+        QVERIFY(invalidStructure->diagnostics().front().location.has_value());
+        QCOMPARE(invalidStructure->diagnostics().front().location->sourceSpans().front()
+                     .bitLength(),
+                 quint64(5));
+    }
+
+    void usesUnsignedExpGolombEnumsAsControlFlowControllers() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "enum Binary { zero = 0; one = 1; } struct Header { "
+            "ue flag @enum(Binary); if (flag == 1) { bits<1> selected; } "
+            "switch (flag) { case 1: { bits<1> switched; } "
+            "default: { bits<1> fallback; } } "
+            "repeat (flag, 1) { bits<1> repeated; } } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0x5c}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 6);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("ue-enum-controllers"));
+        QVERIFY(tree.has_value());
+        const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                       quint32(0),
+                                                       reader,
+                                                       *mapping,
+                                                       0,
+                                                       *tree,
+                                                       tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(6));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        const std::vector<QString> names{QStringLiteral("flag"),
+                                         QStringLiteral("selected"),
+                                         QStringLiteral("switched"),
+                                         QStringLiteral("repeated[0]")};
+        QCOMPARE(structure->children().size(), names.size());
+        for (std::size_t index = 0; index < names.size(); ++index) {
+            QCOMPARE(tree->node(structure->children().at(index))->name(), names.at(index));
+        }
+    }
+
+    void usesUnsignedExpGolombEnumsAsSentinelControllers() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "enum Binary { zero = 0; one = 1; } struct Header { "
+            "repeat (2) { ue marker @enum(Binary); } until (marker == 1); "
+            "bits<1> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0xa8}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 5);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("ue-enum-sentinel"));
+        QVERIFY(tree.has_value());
+        const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                       quint32(0),
+                                                       reader,
+                                                       *mapping,
+                                                       0,
+                                                       *tree,
+                                                       tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(5));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(3));
+        QCOMPARE(tree->node(structure->children().at(0))->value().toULongLong(), quint64(0));
+        QCOMPARE(tree->node(structure->children().at(1))->value().toULongLong(), quint64(1));
+        QCOMPARE(tree->node(structure->children().at(2))->name(), QStringLiteral("tail"));
+    }
+
+    void rejectsMalformedUnsignedExpGolombEnumTypedIrBeforeReadingSource() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "enum Type { zero = 0; one = 1; } "
+            "struct Header { bits<1> prefix; ue value @enum(Type); } entry Header;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        std::vector<DslTypedProgram> malformed;
+        auto badIndex = *compiled.program;
+        badIndex.structs.front().fields.at(1).type.enumIndex = quint32(99);
+        malformed.push_back(std::move(badIndex));
+        auto emptyEnum = *compiled.program;
+        emptyEnum.enums.front().values.clear();
+        malformed.push_back(std::move(emptyEnum));
+        auto outsideDomain = *compiled.program;
+        outsideDomain.enums.front().values.front().value =
+            std::numeric_limits<quint64>::max();
+        malformed.push_back(std::move(outsideDomain));
+        auto signedEnum = *compiled.program;
+        signedEnum.structs.front().fields.at(1).type.kind =
+            DslValueTypeKind::SignedExpGolomb;
+        malformed.push_back(std::move(signedEnum));
+        auto wrongOpcode = *compiled.program;
+        wrongOpcode.bytecode.at(2).opcode = DslOpcode::ReadUnsignedBits;
+        malformed.push_back(std::move(wrongOpcode));
+
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        for (std::size_t index = 0; index < malformed.size(); ++index) {
+            MemorySource source(bytes({0x80}));
+            BitReader reader(source, *range);
+            auto tree = AnalysisTree::create(
+                QStringLiteral("malformed-ue-enum-%1").arg(index));
+            QVERIFY(tree.has_value());
+            const auto result = DslExecutor::decodeStruct(malformed.at(index),
+                                                           quint32(0),
+                                                           reader,
+                                                           *mapping,
+                                                           0,
+                                                           *tree,
+                                                           tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+            QCOMPARE(result.bitsConsumed, quint64(0));
+            QCOMPARE(source.readCount(), quint64(0));
+        }
     }
 
     void rejectsMalformedEnumAndEndianTypedIr() {

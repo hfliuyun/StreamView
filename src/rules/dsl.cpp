@@ -2121,10 +2121,11 @@ private:
                                  annotation.range});
                         }
                         enumSeen = true;
-                        if (field.encoding != DslFieldEncoding::Bits) {
+                        if (field.encoding != DslFieldEncoding::Bits &&
+                            field.encoding != DslFieldEncoding::UnsignedExpGolomb) {
                             result_.diagnostics.push_back(
                                 {DslDiagnosticCode::InvalidAnnotation,
-                                 QStringLiteral("@enum is only supported on bits fields"),
+                                 QStringLiteral("@enum is only supported on bits and ue fields"),
                                  annotation.range});
                             continue;
                         }
@@ -2149,6 +2150,21 @@ private:
                                 {DslDiagnosticCode::UnknownReference,
                                  QStringLiteral("Field enum type is not declared"),
                                  annotation.range});
+                        } else if (field.encoding == DslFieldEncoding::UnsignedExpGolomb) {
+                            const auto outsideDomain = std::find_if(
+                                found->values.begin(),
+                                found->values.end(),
+                                [](const DslEnumValue& value) {
+                                    return value.value ==
+                                           std::numeric_limits<quint64>::max();
+                                });
+                            if (outsideDomain != found->values.end()) {
+                                result_.diagnostics.push_back(
+                                    {DslDiagnosticCode::EnumValueOutOfRange,
+                                     QStringLiteral(
+                                         "Enum member value exceeds the supported ue domain"),
+                                     annotation.range});
+                            }
                         } else if (field.width != 0 && field.width < 64) {
                             const quint64 exclusiveLimit = quint64{1} << field.width;
                             for (const DslEnumValue& value : found->values) {
