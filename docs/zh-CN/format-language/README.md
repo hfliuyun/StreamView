@@ -697,14 +697,14 @@ type 的 `rbsp_payload` region 保持原样。
 | `constrained_intra_pred_flag` | 将 intra prediction 限制在 intra-coded 相邻 macroblock。 |
 | `redundant_pic_cnt_present_flag` | 表示关联 slice header 中存在 redundant-picture count 语法。 |
 
-type `5` 为有界 progressive `slice_type == 2` 形状解码
+type `5` 为有界 progressive all-I `slice_type` 值 2 和 7 解码
 `IdrSliceLayerWithoutPartitioningRbsp`。它导入 `pic_parameter_set_id` 选择的精确 PPS
 generation 以及该 PPS 的精确 SPS dependency，然后读取以下字段：
 
 | 字段 | 本切片中的含义 |
 | --- | --- |
 | `first_mb_in_slice` | 标识 slice 中的第一个 macroblock。 |
-| `slice_type` | 支持的 all-I 形状要求值为 2；等价值 7 留待后续。 |
+| `slice_type` | 命名支持的 all-I 形状：`i = 2` 或等价的 `all_i = 7`；其他值在该码字处致命失败。 |
 | `pic_parameter_set_id` | 选择此前精确 PPS generation，超出 `0..255` 时告警。 |
 | `frame_num` | 使用绑定 SPS 的 `log2_max_frame_num_minus4 + 4` bit。 |
 | `idr_pic_id` | 标识 IDR picture。 |
@@ -718,7 +718,7 @@ dynamic width 会在受影响字段读取 source 前拒绝 non-progressive SPS�
 bottom-field POC、redundant-picture 语法或 deblocking control。missing/future/stale parameter-set
 generation 仍报告 `dependency-unavailable`；保留 partial header，并继续分析后续 NAL。
 non-IDR、P/B/SP/SI、field-picture、reference-list、weighted、adaptive-memory-management、
-deblocking 与 slice-group 分支均留待后续。package `0.1.8` 发布 coverage depth
+deblocking 与 slice-group 分支均留待后续。package `0.1.9` 发布 coverage depth
 `idr-slice-header`；这尚未完成 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正

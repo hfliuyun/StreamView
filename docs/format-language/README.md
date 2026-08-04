@@ -912,14 +912,14 @@ The declared PPS fields have the following bounded meanings:
 | `redundant_pic_cnt_present_flag` | Signals redundant-picture count syntax in associated slice headers. |
 
 Type `5` decodes `IdrSliceLayerWithoutPartitioningRbsp` for the bounded
-progressive `slice_type == 2` form. It imports the exact PPS generation selected
-by `pic_parameter_set_id` and that PPS's exact SPS dependency, then reads the
-following fields:
+progressive all-I `slice_type` values 2 and 7. It imports the exact PPS
+generation selected by `pic_parameter_set_id` and that PPS's exact SPS
+dependency, then reads the following fields:
 
 | Field | Meaning in this slice |
 | --- | --- |
 | `first_mb_in_slice` | Identifies the first macroblock in the slice. |
-| `slice_type` | Must be 2 for the supported all-I form; equivalent value 7 is deferred. |
+| `slice_type` | Names the supported all-I form: `i = 2` or equivalent `all_i = 7`; other values are fatal at this codeword. |
 | `pic_parameter_set_id` | Selects the exact prior PPS generation and warns outside `0..255`. |
 | `frame_num` | Uses `log2_max_frame_num_minus4 + 4` bits from the bound SPS. |
 | `idr_pic_id` | Identifies the IDR picture. |
@@ -935,7 +935,7 @@ reads source. Missing/future/stale parameter-set generations remain
 `dependency-unavailable`; the partial header is retained and later NAL units are
 still analyzed. Non-IDR, P/B/SP/SI, field-picture, reference-list, weighted,
 adaptive-memory-management, deblocking, and slice-group branches are deferred.
-Package `0.1.8` advertises coverage depth `idr-slice-header`; this is not yet the
+Package `0.1.9` advertises coverage depth `idr-slice-header`; this is not yet the
 complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
