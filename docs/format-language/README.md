@@ -53,10 +53,11 @@ and lazy byte counts, and control flow remains limited to the conditional,
 switch, and bounded-repeat forms described below.
 
 The accepted M3 type slice adds declaration-order enums and an explicit byte
-order on `bits` fields. Enum declarations name unsigned integer values; a field
-uses `@enum(Type)` to associate those names with its decoded value. Byte order
-changes numeric interpretation only. Source bit addresses remain MSB-first and
-source locations remain the bits consumed by the field.
+order on `bits` fields. Enum declarations name unsigned integer values; a
+`bits` or `ue` field uses `@enum(Type)` to associate those names with its
+decoded value. Byte order changes numeric interpretation only. Source bit
+addresses remain MSB-first and source locations remain the bits consumed by the
+field.
 
 The accepted variable-length primitive slice adds H.264-style unsigned and
 signed Exp-Golomb fields with the contextual type words `ue` and `se`. These
@@ -450,11 +451,13 @@ The static rules for this subset are:
   `minimum <= maximum <= 2^64 - 2`. A field may carry both `@equals` and
   `@range`. Unlike every other checked constraint, a `@range` violation is not
   fatal: see the runtime semantics below.
-  An `@enum(Type)` annotation may appear at most once on a `bits` field and
-  requires a declared enum type. Every declared member value must fit the
-  field's bit width. Enum values are still decoded as unsigned integers; the
-  enum supplies names and validation for the decoded value. `se` rejects both
-  annotations and `ue` rejects `@enum`.
+  An `@enum(Type)` annotation may appear at most once on a `bits` or `ue` field
+  and requires a declared enum type. Every declared member value must fit a
+  `bits` field's bit width; a `ue` enum member must be in `0..2^64 - 2`. Enum
+  values are still decoded as unsigned integers; the enum supplies names and
+  fatal validation for the decoded value. A `ue` field may combine `@enum`,
+  `@equals`, and `@range`: membership and equality are checked fatally before
+  the non-fatal range bounds. `se` rejects all three annotations.
   `@description("text")` supplies project-authored presentation text, and
   `@spec("standard", "clause")` supplies a specification reference. Fields
   inherit their structure's specification unless they provide their own. An
@@ -1004,6 +1007,22 @@ struct PacketHeader {
 entry PacketHeader;
 ```
 
+Valid unsigned Exp-Golomb enum example:
+
+```cpp
+enum IdrAllISliceType {
+    i = 2;
+    all_i = 7;
+}
+
+struct SliceHeaderPrefix {
+    ue first_mb_in_slice;
+    ue slice_type @enum(IdrAllISliceType);
+}
+
+entry SliceHeaderPrefix;
+```
+
 Valid Exp-Golomb example:
 
 ```cpp
@@ -1206,6 +1225,7 @@ variable-length field, `bits<1> flags[0];`, `bits<1> flags[];`, an expression or
 second dimension in an array length, a structure projection above 99,999
 fields, a truncated array element, a truncated Exp-Golomb codeword, 64 leading
 zero bits, `@enum(Missing)`, an enum member value that does not fit its field,
+`ue value @enum(Type)` when `Type` contains `18446744073709551615`,
 duplicate enum member names, a sequence without `@index(progressive)`,
 `if (future == 1)` before `future` is declared, an array or `se` condition
 controller, a condition integer outside the controller width, a branch-local

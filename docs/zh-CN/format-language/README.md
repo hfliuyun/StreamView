@@ -49,7 +49,7 @@ struct NalUnitHeader {
 包含下述条件、switch 和有界 repeat 形式。
 
 当前接受的 M3 类型切片新增了按声明顺序保存的 enum，以及 `bits` 字段的显式字节序。
-enum 声明为无符号整数命名；字段通过 `@enum(Type)` 把这些名称关联到解码值。
+enum 声明为无符号整数命名；`bits` 或 `ue` 字段通过 `@enum(Type)` 把这些名称关联到解码值。
 字节序只改变数值解释，source bit 地址仍是 MSB-first，字段 source location 仍对应实际消耗的 bit。
 
 当前接受的变长 primitive 切片新增了 H.264 风格的无符号和有符号 Exp-Golomb
@@ -349,9 +349,11 @@ primary       := integer | "true" | "false" | identifier
   `@equals` 表达同一字段的不同约束层级，因此同一个 `ue` 字段可以同时带 `@equals` 和
   `@range`。与其他所有受检约束不同，`@range` 违规不属于结构性失败：它记录 H.264
   clause 7.4.2.1.1 这类值域规则，而这类违规不会破坏后续字段的 bit 位置。
-  `@enum(Type)` 只能出现在 `bits` 字段上，最多出现一次，参数必须是已声明 enum 类型，并且
-  它的每个 member 值都必须能由字段宽度表示。enum 字段仍解码为无符号整数，enum 为该数值
-  提供名称和有效值检查。`se` 拒绝这两个注解，`ue` 拒绝 `@enum`。`@description("text")` 提供项目编写的
+  `@enum(Type)` 只能出现在 `bits` 或 `ue` 字段上，最多出现一次，参数必须是已声明 enum 类型。
+  `bits` enum 的每个 member 值必须能由字段宽度表示；`ue` enum member 必须位于
+  `0..2^64 - 2`。enum 字段仍解码为无符号整数，enum 为该数值提供名称与致命有效值检查。
+  `ue` 字段可以同时带 `@enum`、`@equals` 与 `@range`：先执行致命 membership 与 equality
+  检查，再执行非致命 range bound。`se` 拒绝这三种注解。`@description("text")` 提供项目编写的
   展示说明，`@spec("standard", "clause")` 提供规范引用。字段默认继承所属结构的规范
   引用，也可以用自己的注解覆盖。数组声明解析出的类型、注解、metadata 和约束会分别
   应用到每个展开元素。计算字段可在声明前或表达式后使用 `@description` 和 `@spec`，但
@@ -805,6 +807,22 @@ struct PacketHeader {
 entry PacketHeader;
 ```
 
+unsigned Exp-Golomb enum 合法示例：
+
+```cpp
+enum IdrAllISliceType {
+    i = 2;
+    all_i = 7;
+}
+
+struct SliceHeaderPrefix {
+    ue first_mb_in_slice;
+    ue slice_type @enum(IdrAllISliceType);
+}
+
+entry SliceHeaderPrefix;
+```
+
 Exp-Golomb 合法示例：
 
 ```cpp
@@ -974,7 +992,8 @@ entry nal_units;
 `ue value @range(0);`、`ue value @range(0, 12) @range(0, 6);`、
 变长字段之后的小端字段、`bits<1> flags[0];`、`bits<1> flags[];`、数组长度表达式或第二
 维、展开后超过 99,999 字段的结构、截断的数组元素、截断的 Exp-Golomb 码字、64 个前导零、`@enum(Missing)`、
-无法放入字段宽度的 enum member 值、重复 enum member 名、缺少 `@index(progressive)` 的
+无法放入字段宽度的 enum member 值、`Type` 含 `18446744073709551615` 时的
+`ue value @enum(Type)`、重复 enum member 名、缺少 `@index(progressive)` 的
 sequence、在 `future` 声明前使用 `if (future == 1)`、以数组或 `se` 作为条件
 controller、条件整数超出 controller 宽度、离开分支后使用 branch-local controller、
 `if (flag = 1)`、使用未来字段、数组或 `se` controller 的 switch、超出宽度或重复的
