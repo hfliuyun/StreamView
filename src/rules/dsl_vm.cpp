@@ -285,11 +285,35 @@ constexpr quint64 maximumUnsignedExpGolombValue = std::numeric_limits<quint64>::
     return std::nullopt;
 }
 
+[[nodiscard]] bool sameTypedExpression(const DslTypedExpression& left,
+                                       const DslTypedExpression& right) noexcept {
+    if (left.kind != right.kind || left.type != right.type ||
+        left.unaryOperator != right.unaryOperator ||
+        left.binaryOperator != right.binaryOperator ||
+        left.unsignedValue != right.unsignedValue ||
+        left.booleanValue != right.booleanValue || left.fieldIndex != right.fieldIndex ||
+        left.contextImportIndex != right.contextImportIndex ||
+        left.contextDefinitionKind != right.contextDefinitionKind ||
+        left.contextStructureIndex != right.contextStructureIndex ||
+        left.contextExportIndex != right.contextExportIndex ||
+        left.operands.size() != right.operands.size()) {
+        return false;
+    }
+    return std::equal(left.operands.begin(), left.operands.end(), right.operands.begin(),
+                      [](const DslTypedExpression& leftOperand,
+                         const DslTypedExpression& rightOperand) {
+                          return sameTypedExpression(leftOperand, rightOperand);
+                      });
+}
+
 [[nodiscard]] bool sameCondition(const DslTypedFieldCondition& left,
                                  const DslTypedFieldCondition& right) noexcept {
     return left.fieldIndex == right.fieldIndex &&
            left.expectedValue == right.expectedValue && left.negated == right.negated &&
-           left.op == right.op;
+           left.op == right.op &&
+           ((!left.expression && !right.expression) ||
+            (left.expression && right.expression &&
+             sameTypedExpression(*left.expression, *right.expression)));
 }
 
 struct TypedExpressionValidationState final {
@@ -898,6 +922,29 @@ DslExecutionResult DslVirtualMachine::execute(
         for (std::size_t conditionIndex = 0; conditionIndex < conditions.size();
              ++conditionIndex) {
             const DslTypedFieldCondition& condition = conditions.at(conditionIndex);
+            if (condition.expression) {
+                TypedExpressionValidationState validation;
+                validation.allowImportedContextReferences = true;
+                if (condition.fieldIndex != 0 ||
+                    condition.op != DslConditionOperator::Equal ||
+                    condition.expression->kind !=
+                        DslTypedExpressionKind::ImportedContextReference ||
+                    !validateTypedExpression(*condition.expression,
+                                             program,
+                                             structure,
+                                             subjectFieldIndex,
+                                             conditions,
+                                             1,
+                                             validation) ||
+                    condition.expression->type != DslScalarType::U64) {
+                    markFailure(DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Typed IR %1 imported condition is invalid")
+                                    .arg(subjectName),
+                                subject);
+                    return false;
+                }
+                continue;
+            }
             if (condition.fieldIndex >= subjectFieldIndex ||
                 condition.fieldIndex >= structure.fields.size()) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
@@ -1352,7 +1399,8 @@ DslExecutionResult DslVirtualMachine::execute(
                 {fieldIndex,
                  repeat.terminatingValue,
                  true,
-                 DslConditionOperator::Equal});
+                 DslConditionOperator::Equal,
+                 std::nullopt});
             previousSentinelFieldIndex = fieldIndex;
         }
         const DslTypedField& firstSentinel =
@@ -1494,6 +1542,39 @@ DslExecutionResult DslVirtualMachine::execute(
                                        const DslTypedField* subject,
                                        const QString& subjectName) -> std::optional<bool> {
         for (const DslTypedFieldCondition& condition : conditions) {
+            if (condition.expression) {
+                const ComputedEvaluationResult evaluated = evaluateTypedExpression(
+                    *condition.expression, structure, fieldValues, contextValueResolver);
+                if (!evaluated.complete() || evaluated.value.type != DslScalarType::U64) {
+                    const DslTypedField* diagnosticField = subject;
+                    std::optional<quint64> diagnosticPosition;
+                    std::optional<quint64> diagnosticBits;
+                    if (evaluated.diagnosticFieldIndex &&
+                        *evaluated.diagnosticFieldIndex < structure.fields.size()) {
+                        diagnosticField =
+                            &structure.fields.at(*evaluated.diagnosticFieldIndex);
+                        if (const auto& range =
+                                fieldRanges.at(*evaluated.diagnosticFieldIndex)) {
+                            diagnosticPosition = range->start;
+                            diagnosticBits = range->bitCount;
+                        }
+                    }
+                    markFailure(evaluated.status,
+                                evaluated.errorMessage.isEmpty()
+                                    ? QStringLiteral("Imported condition value is unavailable")
+                                    : evaluated.errorMessage,
+                                diagnosticField,
+                                diagnosticPosition,
+                                diagnosticBits,
+                                diagnosticPosition.has_value());
+                    return std::nullopt;
+                }
+                const bool matches = evaluated.value.unsignedValue == condition.expectedValue;
+                if (condition.negated ? matches : !matches) {
+                    return false;
+                }
+                continue;
+            }
             const std::optional<quint64>& controllerValue =
                 fieldValues.at(condition.fieldIndex);
             if (!controllerValue) {

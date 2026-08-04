@@ -1112,31 +1112,39 @@ private:
         item.kind = DslStructItemKind::Conditional;
         expect(DslTokenKind::LeftParen, QStringLiteral("'(' after if"));
         const DslSourcePosition conditionStart = current().range.start;
-        expectIdentifier(&item.condition.fieldName, QStringLiteral("condition field name"));
-        if (match(DslTokenKind::EqualEqual)) {
-            if (at(DslTokenKind::IntegerLiteral)) {
-                item.condition.expectedValue = consume().integerValue;
-            } else {
-                error(DslDiagnosticCode::MissingToken,
-                      QStringLiteral("Expected integer condition value"));
-            }
-        } else if (at(DslTokenKind::RightParen)) {
+        if (at(DslTokenKind::Identifier) &&
+            lexResult_.tokens.at(index_ + 1).kind == DslTokenKind::RightParen) {
+            item.condition.fieldName = consume().lexeme;
             item.condition.booleanShorthand = true;
             item.condition.expectedValue = 1;
         } else {
-            if (match(DslTokenKind::Equals)) {
-                error(DslDiagnosticCode::UnexpectedToken,
+            if (at(DslTokenKind::Identifier) &&
+                lexResult_.tokens.at(index_ + 1).kind == DslTokenKind::Equals) {
+                error(DslDiagnosticCode::MissingToken,
                       QStringLiteral("Conditions require the '==' operator"));
-                if (at(DslTokenKind::IntegerLiteral)) {
-                    item.condition.expectedValue = consume().integerValue;
-                }
+            }
+            DslExpression expression = parseNestedExpression();
+            if (expression.kind == DslExpressionKind::Binary &&
+                expression.binaryOperator == DslBinaryOperator::Equal &&
+                expression.operands.size() == 2 &&
+                expression.operands.front().kind == DslExpressionKind::Identifier &&
+                expression.operands.back().kind == DslExpressionKind::UnsignedLiteral) {
+                item.condition.fieldName = expression.operands.front().name;
+                item.condition.expectedValue = expression.operands.back().unsignedValue;
             } else {
-                error(DslDiagnosticCode::MissingToken, QStringLiteral("'==' in condition"));
-                while (!at(DslTokenKind::EndOfFile) &&
-                       !at(DslTokenKind::RightParen) &&
-                       !at(DslTokenKind::LeftBrace)) {
-                    consume();
+                const bool importedEquality =
+                    expression.kind == DslExpressionKind::Binary &&
+                    expression.binaryOperator == DslBinaryOperator::Equal &&
+                    expression.operands.size() == 2 &&
+                    expression.operands.front().kind == DslExpressionKind::Call &&
+                    expression.operands.front().name == QStringLiteral("context_value") &&
+                    expression.operands.back().kind == DslExpressionKind::UnsignedLiteral;
+                if (!importedEquality) {
+                    error(DslDiagnosticCode::MissingToken,
+                          QStringLiteral(
+                              "Conditions require a field or context_value equality"));
                 }
+                item.condition.expression = std::move(expression);
             }
         }
         item.condition.range = {conditionStart, lexResult_.tokens.at(index_ - 1).range.end};
@@ -2097,6 +2105,9 @@ private:
             };
             const auto validateCondition = [&](const DslEqualityCondition& condition,
                                                const std::vector<ActiveCondition>& active) {
+                if (condition.expression) {
+                    return;
+                }
                 const ControllerUse use = condition.booleanShorthand
                                               ? ControllerUse::Boolean
                                               : ControllerUse::Equality;
@@ -2350,14 +2361,18 @@ private:
                     }
                     if (item.kind == DslStructItemKind::Conditional) {
                         validateCondition(item.condition, active);
+                        const QString conditionName = item.condition.expression
+                                                          ? QStringLiteral("@context:%1")
+                                                                .arg(item.condition.range.start.offset)
+                                                          : item.condition.fieldName;
                         std::vector<ActiveCondition> thenConditions = active;
-                        thenConditions.push_back({item.condition.fieldName,
+                        thenConditions.push_back({conditionName,
                                                   item.condition.expectedValue,
                                                   false});
                         const auto thenOffset =
                             self(self, item.thenItems, thenConditions, fieldOffset);
                         std::vector<ActiveCondition> elseConditions = active;
-                        elseConditions.push_back({item.condition.fieldName,
+                        elseConditions.push_back({conditionName,
                                                   item.condition.expectedValue,
                                                   true});
                         const auto elseOffset = item.elseItems.empty()

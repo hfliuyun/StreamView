@@ -248,6 +248,7 @@ struct DslCompressedPayload final {
 
 struct DslEqualityCondition final {
     QString fieldName;
+    std::optional<DslExpression> expression;
     quint64 expectedValue = 0;
     bool booleanShorthand = false;
     DslSourceRange range;

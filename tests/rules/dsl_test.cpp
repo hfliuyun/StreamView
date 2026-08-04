@@ -531,6 +531,48 @@ private slots:
         QVERIFY(items.at(1).range.end.offset > items.at(1).range.start.offset);
     }
 
+    void parsesImportedContextEqualityConditions() {
+        const auto result = DslParser::parse(QStringLiteral(R"(
+            @context("h264-pps", id)
+            struct Pps { bits<8> id; bits<1> present @context_export; }
+            @context_import("h264-pps", id)
+            struct Slice {
+                bits<8> id;
+                if (context_value(id, h264_pps, present) == 1) {
+                    ue optional_value;
+                }
+                bits<1> tail;
+            }
+            entry Slice;
+        )"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& conditional = result.program.structs.at(1).items.at(1);
+        QCOMPARE(conditional.kind, DslStructItemKind::Conditional);
+        QVERIFY(conditional.condition.expression.has_value());
+        const auto& expression = *conditional.condition.expression;
+        QCOMPARE(expression.kind, DslExpressionKind::Binary);
+        QCOMPARE(expression.binaryOperator, DslBinaryOperator::Equal);
+        QCOMPARE(expression.operands.at(0).kind, DslExpressionKind::Call);
+        QCOMPARE(expression.operands.at(0).name, QStringLiteral("context_value"));
+        QCOMPARE(expression.operands.at(1).unsignedValue, quint64(1));
+
+        const auto notEqual = DslParser::parse(QStringLiteral(R"(
+            @context("h264-pps", id)
+            struct Pps { bits<8> id; bits<1> present @context_export; }
+            @context_import("h264-pps", id)
+            struct Slice {
+                bits<8> id;
+                if (context_value(id, h264_pps, present) != 0) { bits<1> value; }
+            }
+            entry Slice;
+        )"));
+        QVERIFY(hasDiagnostic(notEqual, DslDiagnosticCode::MissingToken));
+    }
+
     void rejectsInvalidOrUnavailableConditionalControlFields() {
         const auto unknown = DslParser::parse(QStringLiteral(
             "struct Header { if (missing == 1) { bits<1> value; } } entry Header;"));

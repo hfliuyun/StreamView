@@ -46,14 +46,6 @@ enum class DslConditionOperator : quint8 {
     Equal,
     GreaterThan,
 };
-
-struct DslTypedFieldCondition final {
-    quint32 fieldIndex = 0;
-    quint64 expectedValue = 0;
-    bool negated = false;
-    DslConditionOperator op = DslConditionOperator::Equal;
-};
-
 enum class DslTypedExpressionKind : quint8 {
     UnsignedLiteral,
     BooleanLiteral,
@@ -77,6 +69,14 @@ struct DslTypedExpression final {
     quint32 contextStructureIndex = 0;
     quint32 contextExportIndex = 0;
     std::vector<DslTypedExpression> operands;
+};
+
+struct DslTypedFieldCondition final {
+    quint32 fieldIndex = 0;
+    quint64 expectedValue = 0;
+    bool negated = false;
+    DslConditionOperator op = DslConditionOperator::Equal;
+    std::optional<DslTypedExpression> expression;
 };
 
 enum class DslTypedFieldKind : quint8 {

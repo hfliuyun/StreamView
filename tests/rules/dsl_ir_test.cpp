@@ -1907,6 +1907,131 @@ private slots:
         QCOMPARE(imported.contextExportIndex, quint32(0));
     }
 
+    void lowersImportedContextEqualityConditionsIntoGuards() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-pps", id)
+            struct Pps {
+                bits<8> id;
+                bits<1> present @context_export;
+            }
+            @context_import("h264-pps", id)
+            struct Slice {
+                bits<8> id;
+                if (context_value(id, h264_pps, present) == 1) {
+                    ue optional_value;
+                } else {
+                    bits<1> absent_value;
+                }
+                bits<1> tail;
+            }
+            entry Slice;
+        )"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& fields = compiled.program->structs.at(1).fields;
+        QCOMPARE(fields.size(), std::size_t(4));
+        QCOMPARE(fields.at(1).conditions.size(), std::size_t(1));
+        QCOMPARE(fields.at(2).conditions.size(), std::size_t(1));
+        QVERIFY(fields.at(1).conditions.front().expression.has_value());
+        QVERIFY(fields.at(2).conditions.front().expression.has_value());
+        QVERIFY(!fields.at(1).conditions.front().negated);
+        QVERIFY(fields.at(2).conditions.front().negated);
+        const auto& imported = *fields.at(1).conditions.front().expression;
+        QCOMPARE(imported.kind, DslTypedExpressionKind::ImportedContextReference);
+        QCOMPARE(imported.contextImportIndex, quint32(0));
+        QCOMPARE(imported.contextDefinitionKind,
+                 streamview::core::ContextDefinitionKind::H264PictureParameterSet);
+        QCOMPARE(imported.contextStructureIndex, quint32(0));
+        QCOMPARE(imported.contextExportIndex, quint32(0));
+        QCOMPARE(fields.at(1).conditions.front().expectedValue, quint64(1));
+        QVERIFY(fields.at(3).conditions.empty());
+    }
+
+    void rejectsInvalidImportedContextEqualityConditionContracts() {
+        const std::vector<QString> invalidSources{
+            QStringLiteral(R"(
+                @context("h264-pps", id)
+                struct Pps { bits<8> id; bits<1> present @context_export; }
+                struct Slice {
+                    bits<8> id;
+                    if (context_value(id, h264_pps, present) == 1) { bits<1> value; }
+                }
+                entry Slice;
+            )"),
+            QStringLiteral(R"(
+                @context("h264-pps", id)
+                struct Pps { bits<8> id; bits<1> present @context_export; }
+                @context_import("h264-pps", id)
+                struct Slice {
+                    if (context_value(id, h264_pps, present) == 1) { bits<1> value; }
+                    bits<8> id;
+                }
+                entry Slice;
+            )"),
+            QStringLiteral(R"(
+                @context("h264-sps", id)
+                struct Sps { bits<8> id; bits<1> present @context_export; }
+                @context_import("aac-asc", id)
+                struct Slice {
+                    bits<8> id;
+                    if (context_value(id, h264_sps, present) == 1) { bits<1> value; }
+                }
+                entry Slice;
+            )"),
+            QStringLiteral(R"(
+                @context("h264-pps", id)
+                struct Pps { bits<8> id; bits<1> present; }
+                @context_import("h264-pps", id)
+                struct Slice {
+                    bits<8> id;
+                    if (context_value(id, h264_pps, present) == 1) { bits<1> value; }
+                }
+                entry Slice;
+            )"),
+            QStringLiteral(R"(
+                @context("h264-pps", id)
+                struct First { bits<8> id; bits<1> present @context_export; }
+                @context("h264-pps", id)
+                struct Second { bits<8> id; bits<1> present @context_export; }
+                @context_import("h264-pps", id)
+                struct Slice {
+                    bits<8> id;
+                    if (context_value(id, h264_pps, present) == 1) { bits<1> value; }
+                }
+                entry Slice;
+            )"),
+            QStringLiteral(R"(
+                @context("h264-pps", id)
+                struct Pps { bits<8> id; bits<1> present @context_export; }
+                @context("h264-sps", id)
+                struct Sps { bits<8> id; }
+                @context_import("h264-pps", id)
+                @context_import("h264-sps", id)
+                struct Slice {
+                    bits<8> id;
+                    if (context_value(id, h264_pps, present) == 1) { bits<1> value; }
+                }
+                entry Slice;
+            )"),
+        };
+
+        for (const QString& source : invalidSources) {
+            const auto parsed = DslParser::parse(source);
+            QVERIFY2(parsed.succeeded(),
+                     parsed.diagnostics.empty()
+                         ? ""
+                         : qPrintable(parsed.diagnostics.front().message));
+            const auto compiled = DslCompiler::compile(parsed.program);
+            QVERIFY(!compiled.succeeded());
+            QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidContext));
+        }
+    }
+
     void rejectsInvalidImportedDynamicBitWidthContracts() {
         const std::vector<QString> invalidSources{
             QStringLiteral(R"(

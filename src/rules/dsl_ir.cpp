@@ -406,6 +406,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         const QString&, const DslSourceRange&)>;
     std::function<std::optional<DslTypedExpression>(const DslExpression&)>
         contextValueResolver;
+    std::function<std::optional<DslTypedExpression>(const DslExpression&)>
+        importedContextResolver;
     const auto claimExpressionNode = [&](ExpressionBuildState& state,
                                          std::size_t depth,
                                          const DslSourceRange& range) {
@@ -508,7 +510,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                         result.diagnostics,
                         DslDiagnosticCode::InvalidContext,
                         QStringLiteral(
-                            "context_value is allowed only in a dynamic bits width"),
+                            "context_value is not available in this expression"),
                         expression.range);
                     return std::nullopt;
                 }
@@ -1020,9 +1022,34 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         std::vector<quint64> repeatIndices;
         const auto sameCondition = [](const DslTypedFieldCondition& left,
                                       const DslTypedFieldCondition& right) {
+            const auto sameExpression = [](const auto& self,
+                                           const DslTypedExpression& a,
+                                           const DslTypedExpression& b) -> bool {
+                if (a.kind != b.kind || a.type != b.type ||
+                    a.unaryOperator != b.unaryOperator ||
+                    a.binaryOperator != b.binaryOperator ||
+                    a.unsignedValue != b.unsignedValue ||
+                    a.booleanValue != b.booleanValue ||
+                    a.fieldIndex != b.fieldIndex ||
+                    a.contextImportIndex != b.contextImportIndex ||
+                    a.contextDefinitionKind != b.contextDefinitionKind ||
+                    a.contextStructureIndex != b.contextStructureIndex ||
+                    a.contextExportIndex != b.contextExportIndex ||
+                    a.operands.size() != b.operands.size()) {
+                    return false;
+                }
+                return std::equal(a.operands.begin(), a.operands.end(), b.operands.begin(),
+                                  [&self](const DslTypedExpression& leftOperand,
+                                          const DslTypedExpression& rightOperand) {
+                                      return self(self, leftOperand, rightOperand);
+                                  });
+            };
             return left.fieldIndex == right.fieldIndex &&
                    left.expectedValue == right.expectedValue &&
-                   left.negated == right.negated && left.op == right.op;
+                   left.negated == right.negated && left.op == right.op &&
+                   ((!left.expression && !right.expression) ||
+                    (left.expression && right.expression &&
+                     sameExpression(sameExpression, *left.expression, *right.expression)));
         };
         const auto resolveController = [&](const QString& fieldName,
                                            const DslSourceRange& range,
@@ -1125,10 +1152,55 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                               range);
                 return std::nullopt;
             }
-            return DslTypedFieldCondition{controller->fieldIndex, expectedValue, false};
+            return DslTypedFieldCondition{controller->fieldIndex,
+                                          expectedValue,
+                                          false,
+                                          DslConditionOperator::Equal,
+                                          std::nullopt};
         };
         const auto resolveCondition = [&](const DslEqualityCondition& condition,
                                           const std::vector<DslTypedFieldCondition>& active) {
+            if (condition.expression) {
+                const DslExpression& source = *condition.expression;
+                if (source.kind != DslExpressionKind::Binary ||
+                    source.binaryOperator != DslBinaryOperator::Equal ||
+                    source.operands.size() != 2 ||
+                    source.operands.at(0).kind != DslExpressionKind::Call ||
+                    source.operands.at(0).name != QStringLiteral("context_value") ||
+                    source.operands.at(1).kind != DslExpressionKind::UnsignedLiteral) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidCondition,
+                                  QStringLiteral(
+                                      "Imported conditions require context_value(...) == integer"),
+                                  condition.range);
+                    return std::optional<DslTypedFieldCondition>{};
+                }
+                contextValueResolver = importedContextResolver;
+                ExpressionBuildState state;
+                const ExpressionResolver noIdentifiers =
+                    [](const QString&, const DslSourceRange&) {
+                        return std::optional<DslTypedExpression>{};
+                    };
+                const auto expression = compileExpression(source.operands.front(),
+                                                          noIdentifiers,
+                                                          program.pureFunctions.size(),
+                                                          1,
+                                                          state);
+                contextValueResolver = {};
+                if (!expression ||
+                    expression->kind != DslTypedExpressionKind::ImportedContextReference ||
+                    expression->type != DslScalarType::U64 || !expression->operands.empty()) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidCondition,
+                                  QStringLiteral("Imported condition value must be an unsigned context_value"),
+                                  condition.range);
+                    return std::optional<DslTypedFieldCondition>{};
+                }
+                DslTypedFieldCondition resolved;
+                resolved.expectedValue = source.operands.at(1).unsignedValue;
+                resolved.expression = *expression;
+                return std::optional<DslTypedFieldCondition>{std::move(resolved)};
+            }
             const ControllerUse use = condition.booleanShorthand
                                           ? ControllerUse::Boolean
                                           : ControllerUse::Equality;
@@ -1191,6 +1263,155 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             reference.fieldIndex = *found->typedIndex;
             return reference;
         };
+        const auto resolveContextValue =
+            [&](const DslExpression& expression) -> std::optional<DslTypedExpression> {
+            if (expression.operands.size() != 3 ||
+                std::any_of(expression.operands.begin(), expression.operands.end(),
+                            [](const DslExpression& operand) {
+                                return operand.kind != DslExpressionKind::Identifier;
+                            })) {
+                addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidContext,
+                              QStringLiteral("context_value requires an import key, a context-kind identifier, and an exported field name"),
+                              expression.range);
+                return std::nullopt;
+            }
+            const QString& keyName = expression.operands.at(0).name;
+            const auto import = std::find_if(
+                importAnnotations.begin(), importAnnotations.end(),
+                [&keyName](const ContextAnnotation& candidate) {
+                    return candidate.keyFieldName == keyName;
+                });
+            if (import == importAnnotations.end() ||
+                std::find_if(std::next(import), importAnnotations.end(),
+                             [&keyName](const ContextAnnotation& candidate) {
+                                 return candidate.keyFieldName == keyName;
+                             }) != importAnnotations.end()) {
+                addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidContext,
+                              QStringLiteral("context_value import key must identify exactly one context import"),
+                              expression.operands.at(0).range);
+                return std::nullopt;
+            }
+            const auto key = std::find_if(
+                declaredFields.rbegin(), declaredFields.rend(),
+                [&keyName](const DeclaredField& declared) { return declared.name == keyName; });
+            if (key == declaredFields.rend() || !key->typedIndex ||
+                *key->typedIndex >= typedStruct.fields.size() ||
+                !typedStruct.fields.at(*key->typedIndex).contextEligible) {
+                addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidContext,
+                              QStringLiteral("context_value import key must be an earlier context-eligible field"),
+                              expression.operands.at(0).range);
+                return std::nullopt;
+            }
+            const auto targetKind = contextKindForIdentifier(expression.operands.at(1).name);
+            if (!targetKind) {
+                addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidContext,
+                              QStringLiteral("context_value names an unsupported context kind identifier"),
+                              expression.operands.at(1).range);
+                return std::nullopt;
+            }
+            const auto publishedKind = [](const DslStruct& candidate)
+                -> std::optional<core::ContextDefinitionKind> {
+                for (const DslAnnotation& annotation : candidate.annotations) {
+                    if (annotation.name != QStringLiteral("context") ||
+                        annotation.arguments.size() != 2 ||
+                        annotation.arguments.at(0).kind != DslAnnotationValueKind::String) {
+                        continue;
+                    }
+                    if (const auto kind = contextKindForName(annotation.arguments.at(0).text)) {
+                        return kind;
+                    }
+                }
+                return std::nullopt;
+            };
+            std::vector<core::ContextDefinitionKind> reachable{import->kind};
+            for (std::size_t i = 0; i < reachable.size(); ++i) {
+                for (const DslStruct& candidate : program.structs) {
+                    if (publishedKind(candidate) !=
+                        std::optional<core::ContextDefinitionKind>(reachable.at(i))) {
+                        continue;
+                    }
+                    for (const DslAnnotation& annotation : candidate.annotations) {
+                        if (annotation.name != QStringLiteral("context_dependency") ||
+                            annotation.arguments.size() != 2 ||
+                            annotation.arguments.at(0).kind != DslAnnotationValueKind::String) {
+                            continue;
+                        }
+                        if (const auto dependency =
+                                contextKindForName(annotation.arguments.at(0).text);
+                            dependency && std::find(reachable.begin(), reachable.end(), *dependency) ==
+                                              reachable.end()) {
+                            reachable.push_back(*dependency);
+                        }
+                    }
+                }
+            }
+            if (std::find(reachable.begin(), reachable.end(), *targetKind) == reachable.end()) {
+                addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidContext,
+                              QStringLiteral("context_value target kind is not reachable from the selected context import"),
+                              expression.operands.at(1).range);
+                return std::nullopt;
+            }
+            std::vector<quint32> publishers;
+            for (quint32 i = 0; i < program.structs.size(); ++i) {
+                if (publishedKind(program.structs.at(i)) == *targetKind) {
+                    publishers.push_back(i);
+                }
+            }
+            if (publishers.size() != 1) {
+                addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidContext,
+                              QStringLiteral("context_value target kind must have exactly one publishing structure"),
+                              expression.operands.at(1).range);
+                return std::nullopt;
+            }
+            const DslStruct& publisher = program.structs.at(publishers.front());
+            const QString& exportName = expression.operands.at(2).name;
+            quint32 exportOrdinal = 0;
+            std::optional<quint32> exportIndex;
+            for (const DslStructItem& item : publisher.items) {
+                const std::vector<DslAnnotation>* annotations = nullptr;
+                const QString* itemName = nullptr;
+                if (item.kind == DslStructItemKind::Field) {
+                    annotations = &item.field.annotations;
+                    itemName = &item.field.name;
+                } else if (item.kind == DslStructItemKind::Computed) {
+                    annotations = &item.computed.annotations;
+                    itemName = &item.computed.name;
+                }
+                if (annotations == nullptr) {
+                    continue;
+                }
+                if (std::any_of(annotations->begin(), annotations->end(),
+                                [](const DslAnnotation& annotation) {
+                                    return annotation.name == QStringLiteral("context_export");
+                                })) {
+                    if (*itemName == exportName) {
+                        if (exportIndex) {
+                            addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidContext,
+                                          QStringLiteral("context_value target must identify exactly one exported field"),
+                                          expression.operands.at(2).range);
+                            return std::nullopt;
+                        }
+                        exportIndex = exportOrdinal;
+                    }
+                    ++exportOrdinal;
+                }
+            }
+            if (!exportIndex) {
+                addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidContext,
+                              QStringLiteral("context_value target must identify exactly one exported field"),
+                              expression.operands.at(2).range);
+                return std::nullopt;
+            }
+            DslTypedExpression imported;
+            imported.kind = DslTypedExpressionKind::ImportedContextReference;
+            imported.type = DslScalarType::U64;
+            imported.contextImportIndex = static_cast<quint32>(std::distance(importAnnotations.begin(), import));
+            imported.contextDefinitionKind = *targetKind;
+            imported.contextStructureIndex = publishers.front();
+            imported.contextExportIndex = *exportIndex;
+            return imported;
+        };
+        importedContextResolver = resolveContextValue;
         const auto compileField = [&](const DslBitField& field,
                                       const std::vector<DslTypedFieldCondition>& conditions,
                                       std::optional<quint64> fieldOffset)
@@ -1332,202 +1553,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                         QStringLiteral(
                             "Dynamic bit widths require scalar unsigned fields"));
                 };
-                contextValueResolver = [&](const DslExpression& expression)
-                    -> std::optional<DslTypedExpression> {
-                    if (expression.operands.size() != 3 ||
-                        std::any_of(expression.operands.begin(),
-                                    expression.operands.end(),
-                                    [](const DslExpression& operand) {
-                                        return operand.kind != DslExpressionKind::Identifier;
-                                    })) {
-                        addDiagnostic(
-                            result.diagnostics,
-                            DslDiagnosticCode::InvalidContext,
-                            QStringLiteral("context_value requires an import key, a context-kind "
-                                           "identifier, and an exported field name"),
-                            expression.range);
-                        return std::nullopt;
-                    }
-                    const QString& importKeyName = expression.operands.at(0).name;
-                    const auto import = std::find_if(
-                        importAnnotations.begin(),
-                        importAnnotations.end(),
-                        [&importKeyName](const ContextAnnotation& candidate) {
-                            return candidate.keyFieldName == importKeyName;
-                        });
-                    if (import == importAnnotations.end() ||
-                        std::find_if(std::next(import),
-                                     importAnnotations.end(),
-                                     [&importKeyName](const ContextAnnotation& candidate) {
-                                         return candidate.keyFieldName == importKeyName;
-                                     }) != importAnnotations.end()) {
-                        addDiagnostic(
-                            result.diagnostics,
-                            DslDiagnosticCode::InvalidContext,
-                            QStringLiteral("context_value import key must identify exactly one "
-                                           "context import"),
-                            expression.operands.at(0).range);
-                        return std::nullopt;
-                    }
-                    const auto declaredKey = std::find_if(
-                        declaredFields.rbegin(),
-                        declaredFields.rend(),
-                        [&importKeyName](const DeclaredField& declared) {
-                            return declared.name == importKeyName;
-                        });
-                    if (declaredKey == declaredFields.rend() ||
-                        !declaredKey->typedIndex ||
-                        *declaredKey->typedIndex >= typedStruct.fields.size() ||
-                        !typedStruct.fields.at(*declaredKey->typedIndex).contextEligible) {
-                        addDiagnostic(result.diagnostics,
-                                      DslDiagnosticCode::InvalidContext,
-                                      QStringLiteral("context_value import key must be an earlier "
-                                                     "context-eligible field"),
-                                      expression.operands.at(0).range);
-                        return std::nullopt;
-                    }
-                    const auto targetKind =
-                        contextKindForIdentifier(expression.operands.at(1).name);
-                    if (!targetKind) {
-                        addDiagnostic(result.diagnostics,
-                                      DslDiagnosticCode::InvalidContext,
-                                      QStringLiteral("context_value names an unsupported context "
-                                                     "kind identifier"),
-                                      expression.operands.at(1).range);
-                        return std::nullopt;
-                    }
-
-                    const auto publishedKind = [](const DslStruct& candidate)
-                        -> std::optional<core::ContextDefinitionKind> {
-                        for (const DslAnnotation& annotation : candidate.annotations) {
-                            if (annotation.name != QStringLiteral("context") ||
-                                annotation.arguments.size() != 2 ||
-                                annotation.arguments.at(0).kind !=
-                                    DslAnnotationValueKind::String) {
-                                continue;
-                            }
-                            const auto kind = contextKindForName(
-                                annotation.arguments.at(0).text);
-                            if (kind) {
-                                return kind;
-                            }
-                        }
-                        return std::nullopt;
-                    };
-                    std::vector<core::ContextDefinitionKind> reachableKinds{
-                        import->kind};
-                    for (std::size_t reachableIndex = 0;
-                         reachableIndex < reachableKinds.size();
-                         ++reachableIndex) {
-                        for (const DslStruct& candidate : program.structs) {
-                            if (publishedKind(candidate) !=
-                                std::optional<core::ContextDefinitionKind>(
-                                    reachableKinds.at(reachableIndex))) {
-                                continue;
-                            }
-                            for (const DslAnnotation& annotation :
-                                 candidate.annotations) {
-                                if (annotation.name !=
-                                        QStringLiteral("context_dependency") ||
-                                    annotation.arguments.size() != 2 ||
-                                    annotation.arguments.at(0).kind !=
-                                        DslAnnotationValueKind::String) {
-                                    continue;
-                                }
-                                const auto dependencyKind = contextKindForName(
-                                    annotation.arguments.at(0).text);
-                                if (dependencyKind &&
-                                    std::find(reachableKinds.begin(),
-                                              reachableKinds.end(),
-                                              *dependencyKind) ==
-                                        reachableKinds.end()) {
-                                    reachableKinds.push_back(*dependencyKind);
-                                }
-                            }
-                        }
-                    }
-                    if (std::find(reachableKinds.begin(),
-                                  reachableKinds.end(),
-                                  *targetKind) == reachableKinds.end()) {
-                        addDiagnostic(
-                            result.diagnostics,
-                            DslDiagnosticCode::InvalidContext,
-                            QStringLiteral("context_value target kind is not reachable from the "
-                                           "selected context import"),
-                            expression.operands.at(1).range);
-                        return std::nullopt;
-                    }
-
-                    std::vector<quint32> publisherIndices;
-                    for (quint32 candidateIndex = 0;
-                         candidateIndex < program.structs.size();
-                         ++candidateIndex) {
-                        const DslStruct& candidate = program.structs.at(candidateIndex);
-                        if (publishedKind(candidate) == targetKind) {
-                            publisherIndices.push_back(candidateIndex);
-                        }
-                    }
-                    if (publisherIndices.size() != 1) {
-                        addDiagnostic(
-                            result.diagnostics,
-                            DslDiagnosticCode::InvalidContext,
-                            QStringLiteral("context_value target kind must have exactly one "
-                                           "publishing structure"),
-                            expression.operands.at(1).range);
-                        return std::nullopt;
-                    }
-                    const quint32 publisherIndex = publisherIndices.front();
-                    const DslStruct& publisher = program.structs.at(publisherIndex);
-                    const QString& exportName = expression.operands.at(2).name;
-                    std::vector<quint32> exportIndices;
-                    quint32 exportIndex = 0;
-                    for (const DslStructItem& item : publisher.items) {
-                        const std::vector<DslAnnotation>* annotations = nullptr;
-                        const QString* itemName = nullptr;
-                        if (item.kind == DslStructItemKind::Field) {
-                            annotations = &item.field.annotations;
-                            itemName = &item.field.name;
-                        } else if (item.kind == DslStructItemKind::Computed) {
-                            annotations = &item.computed.annotations;
-                            itemName = &item.computed.name;
-                        }
-                        if (annotations == nullptr) {
-                            continue;
-                        }
-                        const bool exported = std::any_of(
-                            annotations->begin(),
-                            annotations->end(),
-                            [](const DslAnnotation& annotation) {
-                                return annotation.name ==
-                                       QStringLiteral("context_export");
-                            });
-                        if (!exported) {
-                            continue;
-                        }
-                        if (*itemName == exportName) {
-                            exportIndices.push_back(exportIndex);
-                        }
-                        ++exportIndex;
-                    }
-                    if (exportIndices.size() != 1) {
-                        addDiagnostic(
-                            result.diagnostics,
-                            DslDiagnosticCode::InvalidContext,
-                            QStringLiteral("context_value target must identify exactly one "
-                                           "exported field"),
-                            expression.operands.at(2).range);
-                        return std::nullopt;
-                    }
-                    DslTypedExpression imported;
-                    imported.kind = DslTypedExpressionKind::ImportedContextReference;
-                    imported.type = DslScalarType::U64;
-                    imported.contextImportIndex = static_cast<quint32>(
-                        std::distance(importAnnotations.begin(), import));
-                    imported.contextDefinitionKind = *targetKind;
-                    imported.contextStructureIndex = publisherIndex;
-                    imported.contextExportIndex = exportIndices.front();
-                    return imported;
-                };
+                contextValueResolver = importedContextResolver;
                 ExpressionBuildState state;
                 typedField.bitWidthExpression = compileExpression(
                     *field.widthExpression,
@@ -2113,7 +2139,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                     {controller->fieldIndex,
                                      iteration,
                                      false,
-                                     DslConditionOperator::GreaterThan});
+                                     DslConditionOperator::GreaterThan,
+                                     std::nullopt});
                             }
                             repeatIndices.push_back(iteration);
                             fieldOffset =
@@ -2251,7 +2278,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                         {*projectedSentinel->typedIndex,
                                          item.sentinelValue,
                                          true,
-                                         DslConditionOperator::Equal});
+                                         DslConditionOperator::Equal,
+                                         std::nullopt});
                                 }
                             }
                             declaredFields.resize(scopeStart);

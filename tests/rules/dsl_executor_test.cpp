@@ -1136,7 +1136,8 @@ private slots:
             field.computedExpression = literal;
         });
         mutateField([](auto& field) {
-            field.conditions.push_back({0, 0, false, DslConditionOperator::Equal});
+            field.conditions.push_back(
+                {0, 0, false, DslConditionOperator::Equal, std::nullopt});
         });
         mutateField([](auto& field) { field.metadata.typeName = QStringLiteral("bytes"); });
 
@@ -1480,7 +1481,7 @@ private slots:
 
         auto skippedInvalidKind = *compiled.program;
         skippedInvalidKind.structs.front().fields.at(1).conditions.push_back(
-            {0, 0, false, DslConditionOperator::Equal});
+            {0, 0, false, DslConditionOperator::Equal, std::nullopt});
         skippedInvalidKind.structs.front().fields.at(1).lazyByteCountExpression->kind =
             static_cast<DslTypedExpressionKind>(255);
         malformed.push_back(std::move(skippedInvalidKind));
@@ -1905,7 +1906,7 @@ private slots:
 
         auto skippedInvalidKind = *compiled.program;
         skippedInvalidKind.structs.front().fields.at(2).conditions.push_back(
-            {0, 0, false, DslConditionOperator::Equal});
+            {0, 0, false, DslConditionOperator::Equal, std::nullopt});
         skippedInvalidKind.structs.front().fields.at(2).computedExpression->kind =
             static_cast<DslTypedExpressionKind>(255);
         malformed.push_back(std::move(skippedInvalidKind));
@@ -1928,7 +1929,7 @@ private slots:
 
         auto unavailableDependency = *compiled.program;
         unavailableDependency.structs.front().fields.at(1).conditions.push_back(
-            {0, 1, false, DslConditionOperator::Equal});
+            {0, 1, false, DslConditionOperator::Equal, std::nullopt});
         malformed.push_back(std::move(unavailableDependency));
 
         auto excessiveDepth = *compiled.program;

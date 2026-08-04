@@ -304,6 +304,270 @@ private slots:
         QCOMPARE(frameNum->location()->logicalRange().bitLength(), quint64(9));
     }
 
+    void evaluatesImportedContextEqualityConditionsWithoutReadingSkippedFields() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-pps", id)
+            struct Pps {
+                bits<8> id;
+                bits<1> outer_present @context_export;
+                bits<1> inner_present @context_export;
+                bits<6> reserved;
+            }
+            @context_import("h264-pps", id)
+            struct Slice {
+                bits<8> id;
+                if (context_value(id, h264_pps, outer_present) == 1) {
+                    bits<1> outer_value;
+                    if (context_value(id, h264_pps, inner_present) == 1) {
+                        bits<1> inner_value;
+                    }
+                }
+                bits<1> tail;
+            }
+            entry Slice;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const quint32 ppsIndex =
+            *compiled.program->structureIndex(QStringLiteral("Pps"));
+        const quint32 sliceIndex =
+            *compiled.program->structureIndex(QStringLiteral("Slice"));
+
+        struct Scenario final {
+            quint8 flags = 0;
+            quint8 suffix = 0;
+            quint64 sliceBits = 0;
+            std::size_t childCount = 0;
+            bool hasInner = false;
+        };
+        const std::vector<Scenario> scenarios{
+            {0xc0, 0xe0, 11, 4, true},
+            {0x80, 0xc0, 10, 3, false},
+            {0x40, 0x80, 9, 2, false},
+        };
+        for (const Scenario scenario : scenarios) {
+            MemorySource source(bytes({1, scenario.flags, 1, scenario.suffix}));
+            const auto ppsView = makeView(1, 0, 16);
+            const auto sliceView = makeView(2, 16, scenario.sliceBits);
+            QVERIFY(ppsView.has_value());
+            QVERIFY(sliceView.has_value());
+            auto tree = AnalysisTree::create(
+                QStringLiteral("imported-condition-%1").arg(scenario.flags));
+            QVERIFY(tree.has_value());
+            RuleExecutionSession session(*compiled.program);
+            QVERIFY(session.run(makeRequest(source, ppsIndex, *ppsView, *tree))
+                        .materialized());
+
+            const auto result =
+                session.run(makeRequest(source, sliceIndex, *sliceView, *tree));
+
+            QVERIFY(result.materialized());
+            QCOMPARE(result.execution.bitsConsumed, scenario.sliceBits);
+            QCOMPARE(result.importedContexts.size(), std::size_t(1));
+            const auto structure = tree->node(*result.execution.structureNode);
+            QVERIFY(structure.has_value());
+            QCOMPARE(structure->children().size(), scenario.childCount);
+            const bool innerPresent = std::any_of(
+                structure->children().begin(),
+                structure->children().end(),
+                [&tree](streamview::core::AnalysisNodeId childId) {
+                    const auto child = tree->node(childId);
+                    return child && child->name() == QStringLiteral("inner_value");
+                });
+            QCOMPARE(innerPresent, scenario.hasInner);
+            const auto tail = tree->node(structure->children().back());
+            QVERIFY(tail.has_value());
+            QCOMPARE(tail->name(), QStringLiteral("tail"));
+            QCOMPARE(tail->value().toULongLong(), qulonglong(1));
+            QCOMPARE(tail->location()->logicalRange().bitLength(), quint64(1));
+        }
+    }
+
+    void rejectsMalformedImportedConditionIrBeforeReadingSource() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-pps", id)
+            struct Pps { bits<8> id; bits<1> present @context_export; bits<7> reserved; }
+            @context_import("h264-pps", id)
+            struct Slice {
+                bits<8> id;
+                if (context_value(id, h264_pps, present) == 1) { bits<1> value; }
+                bits<1> tail;
+            }
+            entry Slice;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const quint32 sliceIndex =
+            *compiled.program->structureIndex(QStringLiteral("Slice"));
+        std::vector<streamview::rules::DslTypedProgram> malformed;
+
+        auto badImport = *compiled.program;
+        badImport.structs.at(sliceIndex)
+            .fields.at(1)
+            .conditions.front()
+            .expression->contextImportIndex = 99;
+        malformed.push_back(std::move(badImport));
+
+        auto badKind = *compiled.program;
+        badKind.structs.at(sliceIndex)
+            .fields.at(1)
+            .conditions.front()
+            .expression->kind = streamview::rules::DslTypedExpressionKind::UnsignedLiteral;
+        malformed.push_back(std::move(badKind));
+
+        auto badOperator = *compiled.program;
+        badOperator.structs.at(sliceIndex)
+            .fields.at(1)
+            .conditions.front()
+            .op = streamview::rules::DslConditionOperator::GreaterThan;
+        malformed.push_back(std::move(badOperator));
+
+        auto badFieldIndex = *compiled.program;
+        badFieldIndex.structs.at(sliceIndex).fields.at(1).conditions.front().fieldIndex = 1;
+        malformed.push_back(std::move(badFieldIndex));
+
+        auto badType = *compiled.program;
+        badType.structs.at(sliceIndex)
+            .fields.at(1)
+            .conditions.front()
+            .expression->type = streamview::rules::DslScalarType::Bool;
+        malformed.push_back(std::move(badType));
+
+        auto badOperands = *compiled.program;
+        badOperands.structs.at(sliceIndex)
+            .fields.at(1)
+            .conditions.front()
+            .expression->operands.push_back({});
+        malformed.push_back(std::move(badOperands));
+
+        auto badStructure = *compiled.program;
+        badStructure.structs.at(sliceIndex)
+            .fields.at(1)
+            .conditions.front()
+            .expression->contextStructureIndex = 99;
+        malformed.push_back(std::move(badStructure));
+
+        auto badExport = *compiled.program;
+        badExport.structs.at(sliceIndex)
+            .fields.at(1)
+            .conditions.front()
+            .expression->contextExportIndex = 99;
+        malformed.push_back(std::move(badExport));
+
+        auto malformedPublisher = *compiled.program;
+        malformedPublisher.structs.front().contextDefinition->exportFieldIndices.front() = 99;
+        malformed.push_back(std::move(malformedPublisher));
+
+        for (std::size_t index = 0; index < malformed.size(); ++index) {
+            MemorySource source(bytes({1, 0}));
+            const auto view = makeView(index + 1, 0, 16);
+            QVERIFY(view.has_value());
+            auto tree = AnalysisTree::create(
+                QStringLiteral("malformed-imported-condition-%1").arg(index));
+            QVERIFY(tree.has_value());
+            RuleExecutionSession session(std::move(malformed.at(index)));
+
+            const auto result =
+                session.run(makeRequest(source, sliceIndex, *view, *tree));
+
+            QCOMPARE(result.status, RuleExecutionStatus::InvalidDefinition);
+            QCOMPARE(source.readCount(), quint64(0));
+            QVERIFY(result.importedContexts.empty());
+        }
+    }
+
+    void reportsImportedConditionFailuresAtTheImportKey() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps { bits<8> id; bits<1> present @context_export; bits<7> reserved; }
+            @context("h264-pps", id)
+            @context_dependency("h264-sps", sps_id)
+            struct Pps { bits<8> id; bits<8> sps_id; }
+            @context_import("h264-pps", pps_id)
+            struct Slice {
+                bits<8> pps_id;
+                if (context_value(pps_id, h264_sps, present) == 1) { bits<1> value; }
+                bits<1> tail;
+            }
+            entry Slice;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const quint32 spsIndex =
+            *compiled.program->structureIndex(QStringLiteral("Sps"));
+        const quint32 ppsIndex =
+            *compiled.program->structureIndex(QStringLiteral("Pps"));
+        const quint32 sliceIndex =
+            *compiled.program->structureIndex(QStringLiteral("Slice"));
+
+        {
+            MemorySource source(bytes({7, 0x80}));
+            const auto sliceView = makeView(1, 0, 9);
+            QVERIFY(sliceView.has_value());
+            auto tree = AnalysisTree::create(QStringLiteral("missing-condition-import"));
+            QVERIFY(tree.has_value());
+            RuleExecutionSession session(*compiled.program);
+
+            const auto result =
+                session.run(makeRequest(source, sliceIndex, *sliceView, *tree));
+
+            QCOMPARE(result.status, RuleExecutionStatus::DependencyUnavailable);
+            QCOMPARE(result.execution.bitsConsumed, quint64(8));
+            QVERIFY(result.importedContexts.empty());
+            const auto structure = tree->node(*result.execution.structureNode);
+            QVERIFY(structure.has_value());
+            QCOMPARE(structure->children().size(), std::size_t(1));
+            QCOMPARE(structure->diagnostics().front().fieldPath,
+                     QStringLiteral("Slice.pps_id"));
+            QCOMPARE(structure->diagnostics().front().location->logicalRange().bitLength(),
+                     quint64(8));
+        }
+
+        {
+            MemorySource source(bytes({3, 0x80, 5, 3, 3, 0, 5, 0x80}));
+            const auto firstSps = makeView(2, 0, 16);
+            const auto pps = makeView(3, 16, 16);
+            const auto secondSps = makeView(4, 32, 16);
+            const auto slice = makeView(5, 48, 9);
+            QVERIFY(firstSps.has_value());
+            QVERIFY(pps.has_value());
+            QVERIFY(secondSps.has_value());
+            QVERIFY(slice.has_value());
+            auto tree = AnalysisTree::create(QStringLiteral("stale-condition-import"));
+            QVERIFY(tree.has_value());
+            RuleExecutionSession session(*compiled.program);
+            QVERIFY(session.run(makeRequest(source, spsIndex, *firstSps, *tree))
+                        .materialized());
+            QVERIFY(session.run(makeRequest(source, ppsIndex, *pps, *tree)).materialized());
+            QVERIFY(session.run(makeRequest(source, spsIndex, *secondSps, *tree))
+                        .materialized());
+
+            const auto result =
+                session.run(makeRequest(source, sliceIndex, *slice, *tree));
+
+            QCOMPARE(result.status, RuleExecutionStatus::DependencyUnavailable);
+            QCOMPARE(result.execution.bitsConsumed, quint64(8));
+            QVERIFY(result.importedContexts.empty());
+            const auto structure = tree->node(*result.execution.structureNode);
+            QVERIFY(structure.has_value());
+            QCOMPARE(structure->children().size(), std::size_t(1));
+            QCOMPARE(structure->diagnostics().front().fieldPath,
+                     QStringLiteral("Slice.pps_id"));
+            QCOMPARE(structure->diagnostics().front()
+                         .location->sourceSpans().front().start().absoluteBitOffset(),
+                     quint64(48));
+        }
+    }
+
     void enforcesDynamicImportedBitWidthBoundsAndCheckedArithmetic() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             @context("h264-sps", id)
