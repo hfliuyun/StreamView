@@ -2,11 +2,10 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Decode the first bounded progressive IDR all-I slice header
-Next Action: Accept equivalent all-I slice_type 7, then declare imported-context branches for the
-  remaining IDR slice-header syntax
-Last Verification: Commits 7d44b2a and 3330cc7 local dev/ci/sanitize each passed 32/32; hosted run
-  30863800309 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Accept equivalent progressive IDR all-I slice_type 7
+Next Action: Declare imported-context branches for the remaining IDR slice-header syntax
+Last Verification: Commit cab1dfa local dev/ci/sanitize each passed 32/32; hosted run 30866500351
+  passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -613,3 +612,13 @@ Blockers: None
   完整 Baseline/Main/High slice-header 项仍未完成；下一步接受等价 `slice_type == 7`，随后
   声明 imported-context conditional branch，以实现 bottom-field POC、redundant-picture 与
   deblocking-control syntax，再扩展 non-IDR/P/B reference-list 和 weighted-prediction 分支。
+- 2026-08-04：完成等价 progressive IDR all-I `slice_type == 7` 增量。ADR-0051 与英中文规则
+  文档记录 `IdrAllISliceType { i = 2; all_i = 7; }`，官方 H.264 package 更新为 `0.1.9`；
+  `slice_type` 改为通用 `ue @enum`，其余 header layout 与 `slice_data` opaque boundary 保持不变。
+  analyzer 新增合法 type-7 fixture（opaque suffix 从 absolute bit 197 起、长度 11）和非法
+  type-3 fixture（`slice_type` diagnostic 位于 absolute bit 33、长度 5，后续 AUD 继续 materialize）。
+  文档提交为 `c111429`，实现提交为 `cab1dfa`；H.264 analyzer 定向测试为 55/55，本机 `dev`、
+  `ci`、`sanitize` 重新配置、完整构建与 CTest 均为 32/32；hosted run `30866500351` 在
+  Windows 2022 / Qt 6.10.1、macOS 15 / Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的
+  Configure、Build、Test、Install、Upload 均成功。下一步声明 imported-context conditional
+  branches，先处理 bottom-field POC、redundant-picture 与 deblocking-control syntax。
