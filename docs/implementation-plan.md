@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Accept equivalent progressive IDR all-I slice_type 7
-Next Action: Declare imported-context branches for the remaining IDR slice-header syntax
-Last Verification: Commit cab1dfa local dev/ci/sanitize each passed 32/32; hosted run 30866500351
+Last Completed Step: Parse PPS-controlled IDR slice-header branches
+Next Action: Define a rule-owned type-5 nal_ref_idc prerequisite before non-IDR/P/B expansion
+Last Verification: Commit 892bef6 local dev/ci/sanitize each passed 32/32; hosted run 31113845900
   passed on Windows, macOS, and Ubuntu
 Blockers: None
 
@@ -622,3 +622,22 @@ Blockers: None
   Windows 2022 / Qt 6.10.1、macOS 15 / Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的
   Configure、Build、Test、Install、Upload 均成功。下一步声明 imported-context conditional
   branches，先处理 bottom-field POC、redundant-picture 与 deblocking-control syntax。
+- 2026-08-06：完成由 PPS 控制的剩余有界 progressive IDR all-I slice-header 分支。
+  ADR-0053 与英中文 bundled-profile 文档提交 `efc55bc` 决定以 ADR-0052 的 exact imported
+  equality guard 取代三个 dynamic-width division 拒绝占位：按 clause 7.3.3 顺序声明
+  `delta_pic_order_cnt_bottom`、带非致命 `@range(0, 127)` 的 `redundant_pic_cnt`，以及
+  deblocking-filter control。实现提交 `892bef6` 新增
+  `DisableDeblockingFilterIdc { enabled = 0; disabled = 1; enabled_within_slice = 2; }`；值 1
+  省略两个 offset，值 0/2 解码 signed alpha/beta offset，reserved 值在完整 controller
+  码字处致命失败。false imported guard 不读 source、不建节点，`slice_data` 继续从最后一个
+  selected field 后精确覆盖剩余 RBSP bit。官方 H.264 package 更新为 `0.1.10`，coverage
+  depth 保持 `idr-slice-header`。analyzer 回归覆盖三个 PPS presence flag、全部合法 deblocking
+  mode、reserved mode 后继续扫描、`redundant_pic_cnt == 128` warning、字段缺席以及逐 bit
+  source/payload boundary，定向套件为 59/59；`svtool rule check` 通过。本机 `dev`、`ci`、
+  `sanitize` 重新配置、完整构建与 CTest 均为 32/32；hosted run `31113845900` 对
+  `892bef62f186328ca9d77c654c6491b3545791b3` 在 Windows 2022 / Qt 6.10.1、macOS 15 /
+  Qt 6.11.1 与 Ubuntu 24.04 / Qt 6.11.1 的 Configure、Build、Test、Install、Upload 均成功，
+  三份 package artifact 均已生成。完整 Baseline/Main/High slice-header 项仍未完成。独立审计
+  还确认现有 type-5 dispatch 只按 `nal_unit_type` 选择 structure，尚不能由 rule 在无额外
+  presentation field 的情况下强制 `nal_ref_idc != 0`；下一步先定义这一 rule-owned conformance
+  prerequisite，再扩展 non-IDR/P/B reference-list 与 weighted-prediction 分支。
