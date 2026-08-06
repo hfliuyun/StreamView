@@ -227,6 +227,12 @@ enum IdrAllISliceType {
     all_i = 7;
 }
 
+enum DisableDeblockingFilterIdc {
+    enabled = 0;
+    disabled = 1;
+    enabled_within_slice = 2;
+}
+
 @spec("ITU-T H.264", "7.3.2.8, 7.3.3")
 @description("The bounded all-I IDR slice header followed by an opaque slice-layer suffix.")
 @context_import("h264-pps", pic_parameter_set_id)
@@ -247,23 +253,44 @@ struct IdrSliceLayerWithoutPartitioningRbsp {
     bits<(context_value(pic_parameter_set_id,
                         h264_sps,
                         log2_max_pic_order_cnt_lsb_minus4) + 4) /
-         (1 - context_value(pic_parameter_set_id, h264_sps, pic_order_cnt_type)) /
-         (1 - context_value(pic_parameter_set_id,
-                            h264_pps,
-                            bottom_field_pic_order_in_frame_present_flag))> pic_order_cnt_lsb
+         (1 - context_value(pic_parameter_set_id, h264_sps, pic_order_cnt_type))> pic_order_cnt_lsb
         @description("Carries the picture-order-count least-significant bits.");
-    bits<1 /
-         (1 - context_value(pic_parameter_set_id,
-                            h264_pps,
-                            redundant_pic_cnt_present_flag)) /
-         (1 - context_value(pic_parameter_set_id,
-                            h264_pps,
-                            deblocking_filter_control_present_flag))> no_output_of_prior_pics_flag
+    if (context_value(pic_parameter_set_id,
+                      h264_pps,
+                      bottom_field_pic_order_in_frame_present_flag) == 1) {
+        se delta_pic_order_cnt_bottom
+            @spec("ITU-T H.264", "7.3.3")
+            @description("Carries the bottom-field picture-order-count delta.");
+    }
+    if (context_value(pic_parameter_set_id,
+                      h264_pps,
+                      redundant_pic_cnt_present_flag) == 1) {
+        ue redundant_pic_cnt @range(0, 127)
+            @spec("ITU-T H.264", "7.3.3, 7.4.3")
+            @description("Identifies the redundant representation of this picture.");
+    }
+    bits<1> no_output_of_prior_pics_flag
         @description("Controls output of pictures preceding this IDR picture.");
     bits<1> long_term_reference_flag
         @description("Marks the IDR picture as a long-term reference when set.");
     se slice_qp_delta
         @description("Adjusts the initial luma quantization parameter for the slice.");
+    if (context_value(pic_parameter_set_id,
+                      h264_pps,
+                      deblocking_filter_control_present_flag) == 1) {
+        ue disable_deblocking_filter_idc @enum(DisableDeblockingFilterIdc)
+            @spec("ITU-T H.264", "7.3.3, 7.4.3")
+            @description("Selects the deblocking-filter mode for this slice.");
+        if (disable_deblocking_filter_idc == 1) {
+        } else {
+            se slice_alpha_c0_offset_div2
+                @spec("ITU-T H.264", "7.3.3, 7.4.3")
+                @description("Carries half the alpha and c0 deblocking-filter offset.");
+            se slice_beta_offset_div2
+                @spec("ITU-T H.264", "7.3.3, 7.4.3")
+                @description("Carries half the beta deblocking-filter offset.");
+        }
+    }
     compressed_payload slice_data
         @description("The opaque remaining slice-layer suffix, including slice trailing bits.")
         @spec("ITU-T H.264", "7.3.2.10");
