@@ -2,10 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Add source-anchored assertions and the H.264 type-5 nal_ref_idc prerequisite
-Next Action: Define and implement a bounded progressive non-IDR all-I slice-header branch, then isolate the first P-slice reference-list prerequisite
-Last Verification: Commits e394604 and 236b130 local dev/ci/sanitize each passed 32/32; hosted runs 31177484935 and 31177900565
-  passed on Windows, macOS, and Ubuntu
+Last Completed Step: Add the bounded progressive non-IDR all-I slice-header branch and type-1 nal_ref_idc prerequisite
+Next Action: Define and implement the first bounded progressive non-IDR P-slice reference-list prerequisite
+Last Verification: Commits 170d516 and 16ae093; local dev/ci/sanitize each passed 32/32; H.264 analyzer 62/62; svtool rule check passed; hosted run 31181671443 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -657,3 +656,17 @@ Blockers: None
   `31177484935` 与 `31177900565` 在 Windows 2022、macOS 15、Ubuntu 24.04 的 Build、Test、
   Install、Upload 均成功。完整 Baseline/Main/High slice-header 项仍未完成；下一步定义并实现
   progressive non-IDR all-I branch，再隔离首个 P-slice reference-list prerequisite。
+- 2026-08-07：完成有界 progressive non-IDR all-I slice-header 增量。新增 ADR-0055
+  及英中 format-language 参考，加入 `nal_unit_type == 1` 的 source-anchored
+  `nal_ref_idc == 0` prerequisite，并将 type 1 派发到
+  `NonIdrAllISliceLayerWithoutPartitioningRbsp`。该结构支持 `slice_type` 2/7、progressive
+  frame、POC type 0、精确 PPS/SPS generation、PPS-controlled bottom-field POC、redundant-picture
+  与 deblocking 分支，以及 opaque `slice_data`；IDR-only fields 和
+  `dec_ref_pic_marking` 保持排除。package 更新为 `0.1.12`、coverage depth 为
+  `all-i-slice-header`；旧 opaque fixtures 迁移到 type 12，回归覆盖合法字段/跨度、非零
+  reference priority 的 header-boundary failure 与后续 NAL 继续扫描。实现与测试提交为
+  `170d516`，双语文档提交为 `16ae093`。本机 `cmake --preset dev/ci/sanitize`、三套
+  build 与 `ctest` 均为 32/32，H.264 analyzer 为 62/62，`svtool rule check` 通过；
+  hosted run `31181671443` 的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、Test、
+  Install、Upload 全部成功。下一步定义并实现首个 bounded progressive non-IDR P-slice
+  reference-list prerequisite。
