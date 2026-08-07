@@ -783,8 +783,10 @@ type `1` 为有界 progressive non-reference I 与 P slice 解码
 值 0 则保留 PPS default。后续 `ref_pic_list_modification_flag_l0` 仍是必需字段。值 0
 不发布 modification field；值 1 进入有界 list 0 loop，其 operation code 选择 short-term
 subtraction、short-term addition、long-term selection 或 termination。imported PPS assertion 仍会在
-可选 loop 之后、`slice_qp_delta` 之前要求 `weighted_pred_flag == 0` 与
-`entropy_coding_mode_flag == 0`；all-I 值会短路这些 P-only prerequisite。IDR 专属的
+可选 loop 之后要求 `weighted_pred_flag == 0`。当精确 PPS 启用 entropy coding 时，P slice
+随后会在 `slice_qp_delta` 之前读取 `cabac_init_idc`；超出 `0..2` 的值会告警，但不会改变
+剩余 header boundary。即使 entropy coding 已启用，all-I 值也会短路这两项 P-only operation。
+IDR 专属的
 `idr_pic_id`、`no_output_of_prior_pics_flag` 与 `long_term_reference_flag` 不出现。
 
 type `5` 为有界 progressive all-I `slice_type` 值 2 和 7 解码
@@ -809,6 +811,7 @@ generation 以及该 PPS 的精确 SPS dependency。两个有界 shape 中声明
 | `uses_abs_diff_pic_num[index]` | operation code 为 0/1 时为 true 的 computed Boolean；没有 source location。 |
 | `abs_diff_pic_num_minus1[index]` | 在 operation code 0/1 下携带 short-term picture-number difference operand。 |
 | `long_term_pic_num[index]` | 在 operation code 2 下携带 long-term picture-number operand。 |
+| `cabac_init_idc` | 为 entropy-coded P slice 选择 CABAC context initialization table；超出 `0..2` 的值会告警。 |
 | `no_output_of_prior_pics_flag` | 控制 IDR picture 之前 picture 的输出。 |
 | `long_term_reference_flag` | 设置时把 IDR picture 标记为 long-term reference。 |
 | `slice_qp_delta` | 调整初始 luma quantization parameter；signed bound 留待后续。 |
@@ -823,9 +826,9 @@ exact imported PPS guard 会选择 bottom-field POC、redundant-picture count �
 它们，reserved 值在 controller 码字处失败。missing/future/stale parameter-set generation 仍报告
 `dependency-unavailable`；保留 partial header，并继续分析后续 NAL。reference type-1、
 B/SP/SI 与 list 1 modification、field-picture、decoded-picture-buffer validation、
-weighted-prediction、CABAC P-header、adaptive-memory-management 与 slice-group 分支均留待后续。
+weighted-prediction、CABAC slice-data 解码、adaptive-memory-management 与 slice-group 分支均留待后续。
 type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.15` 发布 coverage depth `i-p-slice-header`；这尚未完成
+`0.1.16` 发布 coverage depth `i-p-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
@@ -1420,6 +1423,8 @@ source-anchored assertion 中 imported value 的合同见
 [ADR-0058](../adr/0058-add-bounded-p-slice-reference-index-override.md)。
 有界 P-slice reference-list modification loop 合同见
 [ADR-0059](../adr/0059-add-bounded-p-slice-reference-list-modification-loop.md)。
+有界 P-slice CABAC initialization branch 合同见
+[ADR-0060](../adr/0060-add-bounded-p-slice-cabac-initialization-branch.md)。
 
 ## 沙箱与资源限制
 

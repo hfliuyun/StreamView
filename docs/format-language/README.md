@@ -1023,10 +1023,12 @@ distinguishes the two layouts. The direct-header assertion requires
 The following `ref_pic_list_modification_flag_l0` remains mandatory. Value zero
 publishes no modification fields; value one enters a bounded list 0 loop whose
 operation codes select short-term subtraction, short-term addition, long-term
-selection, or termination. Imported PPS assertions still require
-`weighted_pred_flag == 0` and `entropy_coding_mode_flag == 0` after the optional
-loop and before `slice_qp_delta`; all-I values short-circuit these P-only
-prerequisites. The structure omits the IDR-only `idr_pic_id`,
+selection, or termination. The imported PPS assertion still requires
+`weighted_pred_flag == 0` after the optional loop. When the exact PPS enables
+entropy coding, a P slice then reads `cabac_init_idc` before `slice_qp_delta`;
+values outside `0..2` warn without changing the remaining header boundary.
+All-I values short-circuit both P-only operations, even when entropy coding is
+enabled. The structure omits the IDR-only `idr_pic_id`,
 `no_output_of_prior_pics_flag`, and `long_term_reference_flag` fields.
 
 Type `5` decodes `IdrSliceLayerWithoutPartitioningRbsp` for the bounded
@@ -1053,6 +1055,7 @@ meanings:
 | `uses_abs_diff_pic_num[index]` | Computed Boolean that is true for operation codes 0 and 1; it has no source location. |
 | `abs_diff_pic_num_minus1[index]` | Carries the short-term picture-number difference operand for operation codes 0 and 1. |
 | `long_term_pic_num[index]` | Carries the long-term picture-number operand for operation code 2. |
+| `cabac_init_idc` | Selects the CABAC context initialization table for an entropy-coded P slice; values outside `0..2` warn. |
 | `no_output_of_prior_pics_flag` | Controls output of pictures preceding the IDR picture. |
 | `long_term_reference_flag` | Marks the IDR picture as a long-term reference when set. |
 | `slice_qp_delta` | Adjusts the initial luma quantization parameter; its signed bound is deferred. |
@@ -1070,9 +1073,10 @@ codeword. Missing/future/stale parameter-set generations remain
 `dependency-unavailable`; the partial header is retained and later NAL units
 are still analyzed. Reference type-1, B/SP/SI and list 1 modification,
 field-picture, decoded-picture-buffer validation, weighted-prediction, CABAC
-P-header, adaptive-memory-management, and slice-group branches are deferred.
+slice-data decoding, adaptive-memory-management, and slice-group branches are
+deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
-Package `0.1.15` advertises coverage depth `i-p-slice-header`; this is not yet the
+Package `0.1.16` advertises coverage depth `i-p-slice-header`; this is not yet the
 complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
@@ -1745,6 +1749,8 @@ The bounded P-slice reference-index override is specified by
 [ADR-0058](../adr/0058-add-bounded-p-slice-reference-index-override.md).
 The bounded P-slice reference-list modification loop is specified by
 [ADR-0059](../adr/0059-add-bounded-p-slice-reference-list-modification-loop.md).
+The bounded P-slice CABAC initialization branch is specified by
+[ADR-0060](../adr/0060-add-bounded-p-slice-cabac-initialization-branch.md).
 
 ## Sandbox And Resource Limits
 
