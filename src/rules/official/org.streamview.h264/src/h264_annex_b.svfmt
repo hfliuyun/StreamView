@@ -7,6 +7,7 @@ struct NalUnitHeader {
         @description("Indicates the reference priority of the NAL unit.");
     bits<5> nal_unit_type
         @description("Identifies the syntax carried by the NAL unit.");
+    assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
 }
 
 @spec("ITU-T H.264", "7.3.2.4")

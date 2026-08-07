@@ -290,6 +290,10 @@ private slots:
         QVERIFY(parsed.succeeded());
         QCOMPARE(parsed.program.structs.size(), std::size_t(5));
         QCOMPARE(parsed.program.structs.at(0).name, QStringLiteral("NalUnitHeader"));
+        QCOMPARE(parsed.program.structs.at(0).items.back().kind,
+                 streamview::rules::DslStructItemKind::Assertion);
+        QCOMPARE(parsed.program.structs.at(0).items.back().assertion.anchorFieldName,
+                 QStringLiteral("nal_ref_idc"));
         QCOMPARE(parsed.program.structs.at(1).name,
                  QStringLiteral("AccessUnitDelimiterRbsp"));
         QCOMPARE(parsed.program.structs.at(1).items.size(), std::size_t(2));
@@ -2408,6 +2412,70 @@ private slots:
         const auto root = analyzer->tree().node(analyzer->tree().rootId());
         QVERIFY(root.has_value());
         QCOMPARE(root->state(), MaterializationState::Materialized);
+    }
+
+    void rejectsAnIdrNalWithZeroReferencePriorityBeforePayloadMapping() {
+        MemorySource source(bytes({0x00, 0x00, 0x01, 0x05, 0xaa, 0xbb,
+                                   0x00, 0x00, 0x01, 0x0a}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+        QVERIFY(analyzer->tree().hasPartialResults());
+
+        const auto invalidNal = analyzer->tree().node(batch.nalUnitNodes.at(0));
+        QVERIFY(invalidNal.has_value());
+        QCOMPARE(invalidNal->state(), MaterializationState::Invalid);
+        QCOMPARE(invalidNal->children().size(), std::size_t(2));
+        QCOMPARE(invalidNal->diagnostics().size(), std::size_t(1));
+        const auto& nalDiagnostic = invalidNal->diagnostics().front();
+        QCOMPARE(nalDiagnostic.code, streamview::core::DiagnosticCode::InvalidSyntax);
+        QCOMPARE(nalDiagnostic.severity,
+                 streamview::core::DiagnosticSeverity::Error);
+        QCOMPARE(nalDiagnostic.message, QStringLiteral("Assertion condition is false"));
+        QCOMPARE(nalDiagnostic.fieldPath,
+                 QStringLiteral("NalUnitHeader.nal_ref_idc"));
+        QVERIFY(nalDiagnostic.location.has_value());
+        QCOMPARE(nalDiagnostic.location->sourceSpans().size(), std::size_t(1));
+        QCOMPARE(nalDiagnostic.location->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(25));
+        QCOMPARE(nalDiagnostic.location->sourceSpans().front().bitLength(), quint64(2));
+
+        const auto invalidHeader =
+            analyzer->tree().node(invalidNal->children().at(1));
+        QVERIFY(invalidHeader.has_value());
+        QCOMPARE(invalidHeader->name(), QStringLiteral("NalUnitHeader"));
+        QCOMPARE(invalidHeader->state(), MaterializationState::Invalid);
+        QCOMPARE(invalidHeader->children().size(), std::size_t(3));
+        QCOMPARE(invalidHeader->diagnostics().size(), std::size_t(1));
+        QCOMPARE(invalidHeader->diagnostics().front().fieldPath,
+                 QStringLiteral("NalUnitHeader.nal_ref_idc"));
+        for (const auto childId : invalidNal->children()) {
+            const auto child = analyzer->tree().node(childId);
+            QVERIFY(child.has_value());
+            QVERIFY(child->name() != QStringLiteral("rbsp_payload"));
+            QVERIFY(child->name() !=
+                    QStringLiteral("IdrSliceLayerWithoutPartitioningRbsp"));
+        }
+
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+        QCOMPARE(followingNal->children().size(), std::size_t(3));
+        const auto followingHeader =
+            analyzer->tree().node(followingNal->children().at(1));
+        QVERIFY(followingHeader.has_value());
+        QCOMPARE(followingHeader->state(), MaterializationState::Materialized);
+        QCOMPARE(followingHeader->children().size(), std::size_t(3));
+        QCOMPARE(followingHeader->children().size(), invalidHeader->children().size());
+        const auto followingRbsp =
+            analyzer->tree().node(followingNal->children().at(2));
+        QVERIFY(followingRbsp.has_value());
+        QCOMPARE(followingRbsp->name(), QStringLiteral("rbsp_payload"));
+        QCOMPARE(followingRbsp->state(), MaterializationState::Materialized);
     }
 
     void publishesAnEmptyFinalNalUnitAsTruncated() {
