@@ -383,9 +383,15 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
     assert(!is_p_slice ||
            context_value(pic_parameter_set_id, h264_pps, weighted_pred_flag) == 0)
         at pic_parameter_set_id;
-    assert(!is_p_slice ||
-           context_value(pic_parameter_set_id, h264_pps, entropy_coding_mode_flag) == 0)
-        at pic_parameter_set_id;
+    if (is_p_slice) {
+        if (context_value(pic_parameter_set_id,
+                          h264_pps,
+                          entropy_coding_mode_flag) == 1) {
+            ue cabac_init_idc @range(0, 2)
+                @spec("ITU-T H.264", "7.3.3, 7.4.3")
+                @description("Selects the CABAC context initialization table.");
+        }
+    }
     se slice_qp_delta
         @description("Adjusts the initial luma quantization parameter for the slice.");
     if (context_value(pic_parameter_set_id,

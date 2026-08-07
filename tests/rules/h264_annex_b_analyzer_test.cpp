@@ -1254,7 +1254,7 @@ private slots:
     void decodesTheBoundedNonIdrAllISliceHeaderAndKeepsSliceDataOpaque() {
         MemorySource source(bytes({
             0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
-            0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
+            0x00, 0x00, 0x01, 0x68, 0xee, 0x38, 0x80,
             0x00, 0x00, 0x01, 0x01, 0xba, 0x9e, 0xaa,
             0x00, 0x00, 0x01, 0x0a,
         }));
@@ -1338,6 +1338,7 @@ private slots:
         QVERIFY(!fieldNamed(QStringLiteral("long_term_reference_flag")).has_value());
         QVERIFY(!fieldNamed(QStringLiteral("delta_pic_order_cnt_bottom")).has_value());
         QVERIFY(!fieldNamed(QStringLiteral("redundant_pic_cnt")).has_value());
+        QVERIFY(!fieldNamed(QStringLiteral("cabac_init_idc")).has_value());
         QVERIFY(!fieldNamed(QStringLiteral("disable_deblocking_filter_idc")).has_value());
         QCOMPARE(payload->kind(), AnalysisNodeKind::CompressedPayload);
         QCOMPARE(payload->state(), MaterializationState::Materialized);
@@ -1435,6 +1436,7 @@ private slots:
         QVERIFY(qp.has_value());
         QVERIFY(payload.has_value());
         QVERIFY(!fieldNamed(QStringLiteral("num_ref_idx_l0_active_minus1")).has_value());
+        QVERIFY(!fieldNamed(QStringLiteral("cabac_init_idc")).has_value());
         QCOMPARE(sliceType->value().toULongLong(), quint64(0));
         QCOMPARE(sliceType->metadata().typeName, QStringLiteral("NonIdrSliceType"));
         QCOMPARE(isPSlice->kind(), AnalysisNodeKind::ComputedField);
@@ -1477,8 +1479,8 @@ private slots:
     void decodesTheEquivalentNonIdrPSliceTypeFive() {
         MemorySource source(bytes({
             0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
-            0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
-            0x00, 0x00, 0x01, 0x01, 0x9a, 0xa6, 0x6a,
+            0x00, 0x00, 0x01, 0x68, 0xee, 0x38, 0x80,
+            0x00, 0x00, 0x01, 0x01, 0x9a, 0xa6, 0x75,
             0x00, 0x00, 0x01, 0x0a,
         }));
         QString errorMessage;
@@ -1498,7 +1500,7 @@ private slots:
         QVERIFY(slice.has_value());
         QCOMPARE(slice->name(), QStringLiteral("NonIdrSliceLayerWithoutPartitioningRbsp"));
         QCOMPARE(slice->state(), MaterializationState::Materialized);
-        QCOMPARE(slice->children().size(), std::size_t(10));
+        QCOMPARE(slice->children().size(), std::size_t(11));
 
         const auto fieldNamed = [&](const QString& name) {
             const auto found = std::find_if(
@@ -1516,6 +1518,7 @@ private slots:
             fieldNamed(QStringLiteral("num_ref_idx_active_override_flag"));
         const auto modificationFlag =
             fieldNamed(QStringLiteral("ref_pic_list_modification_flag_l0"));
+        const auto cabacInitIdc = fieldNamed(QStringLiteral("cabac_init_idc"));
         const auto qp = fieldNamed(QStringLiteral("slice_qp_delta"));
         const auto payload = fieldNamed(QStringLiteral("slice_data"));
         QVERIFY(sliceType.has_value());
@@ -1523,6 +1526,7 @@ private slots:
         QVERIFY(ppsId.has_value());
         QVERIFY(overrideFlag.has_value());
         QVERIFY(modificationFlag.has_value());
+        QVERIFY(cabacInitIdc.has_value());
         QVERIFY(qp.has_value());
         QVERIFY(payload.has_value());
         QVERIFY(!fieldNamed(QStringLiteral("num_ref_idx_l0_active_minus1")).has_value());
@@ -1538,12 +1542,17 @@ private slots:
                  quint64(191));
         QCOMPARE(modificationFlag->location()->sourceSpans().front().start().absoluteBitOffset(),
                  quint64(192));
-        QCOMPARE(qp->location()->sourceSpans().front().start().absoluteBitOffset(),
+        QCOMPARE(cabacInitIdc->value().toULongLong(), quint64(0));
+        QCOMPARE(cabacInitIdc->location()->sourceSpans().front().start().absoluteBitOffset(),
                  quint64(193));
+        QCOMPARE(cabacInitIdc->location()->logicalRange().bitLength(), quint64(1));
+        QCOMPARE(qp->value().toLongLong(), qlonglong(0));
+        QCOMPARE(qp->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(194));
         QCOMPARE(payload->kind(), AnalysisNodeKind::CompressedPayload);
         QCOMPARE(payload->location()->sourceSpans().front().start().absoluteBitOffset(),
-                 quint64(194));
-        QCOMPARE(payload->location()->logicalRange().bitLength(), quint64(6));
+                 quint64(195));
+        QCOMPARE(payload->location()->logicalRange().bitLength(), quint64(5));
 
         const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
         QVERIFY(followingNal.has_value());
@@ -2345,11 +2354,184 @@ private slots:
         QCOMPARE(followingNal->state(), MaterializationState::Materialized);
     }
 
-    void rejectsCabacNonIdrPSliceAtPictureParameterSetAndContinues() {
+    void decodesCabacInitializationIdentifiersAndContinues() {
+        struct CabacCase {
+            quint64 value = 0;
+            std::vector<std::byte> data;
+            quint64 codewordLength = 0;
+            quint64 qpOffset = 0;
+            quint64 payloadOffset = 0;
+            quint64 payloadLength = 0;
+        };
+        const std::vector<CabacCase> cases{
+            {0,
+             bytes({
+                 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+                 0x00, 0x00, 0x01, 0x68, 0xee, 0x38, 0x80,
+                 0x00, 0x00, 0x01, 0x01, 0xea, 0x67,
+                 0x00, 0x00, 0x01, 0x0a,
+             }),
+             1,
+             190,
+             191,
+             1},
+            {1,
+             bytes({
+                 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+                 0x00, 0x00, 0x01, 0x68, 0xee, 0x38, 0x80,
+                 0x00, 0x00, 0x01, 0x01, 0xea, 0x62, 0xd5,
+                 0x00, 0x00, 0x01, 0x0a,
+             }),
+             3,
+             192,
+             193,
+             7},
+            {2,
+             bytes({
+                 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+                 0x00, 0x00, 0x01, 0x68, 0xee, 0x38, 0x80,
+                 0x00, 0x00, 0x01, 0x01, 0xea, 0x63, 0xd5,
+                 0x00, 0x00, 0x01, 0x0a,
+             }),
+             3,
+             192,
+             193,
+             7},
+        };
+
+        for (const auto& testCase : cases) {
+            MemorySource source(testCase.data);
+            QString errorMessage;
+            auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+            QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+            const auto batch = analyzer->analyzeBatch();
+
+            QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+            QCOMPARE(batch.nalUnitNodes.size(), std::size_t(4));
+            const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+            QVERIFY(nal.has_value());
+            QCOMPARE(nal->state(), MaterializationState::Materialized);
+            const auto rbsp = analyzer->tree().node(nal->children().at(2));
+            QVERIFY(rbsp.has_value());
+            const auto slice = analyzer->tree().node(rbsp->children().front());
+            QVERIFY(slice.has_value());
+            QCOMPARE(slice->state(), MaterializationState::Materialized);
+            QCOMPARE(slice->children().size(), std::size_t(11));
+
+            const auto cabacInitIdc = analyzer->tree().node(slice->children().at(8));
+            const auto qp = analyzer->tree().node(slice->children().at(9));
+            const auto payload = analyzer->tree().node(slice->children().at(10));
+            QVERIFY(cabacInitIdc.has_value());
+            QVERIFY(qp.has_value());
+            QVERIFY(payload.has_value());
+            QCOMPARE(cabacInitIdc->name(), QStringLiteral("cabac_init_idc"));
+            QCOMPARE(cabacInitIdc->value().toULongLong(), testCase.value);
+            QCOMPARE(cabacInitIdc->metadata().specification->clause,
+                     QStringLiteral("7.3.3, 7.4.3"));
+            QCOMPARE(cabacInitIdc->location()
+                         ->sourceSpans()
+                         .front()
+                         .start()
+                         .absoluteBitOffset(),
+                     quint64(189));
+            QCOMPARE(cabacInitIdc->location()->logicalRange().bitLength(),
+                     testCase.codewordLength);
+            QVERIFY(cabacInitIdc->diagnostics().empty());
+            QCOMPARE(qp->name(), QStringLiteral("slice_qp_delta"));
+            QCOMPARE(qp->value().toLongLong(), qlonglong(0));
+            QCOMPARE(qp->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     testCase.qpOffset);
+            QCOMPARE(payload->kind(), AnalysisNodeKind::CompressedPayload);
+            QCOMPARE(payload->name(), QStringLiteral("slice_data"));
+            QCOMPARE(payload->state(), MaterializationState::Materialized);
+            QCOMPARE(payload->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     testCase.payloadOffset);
+            QCOMPARE(payload->location()->logicalRange().bitLength(),
+                     testCase.payloadLength);
+
+            const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+            QVERIFY(followingNal.has_value());
+            QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+        }
+    }
+
+    void warnsForOutOfRangeCabacInitializationIdentifierAndContinues() {
+        MemorySource source(bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+            0x00, 0x00, 0x01, 0x68, 0xee, 0x3c, 0x80,
+            0x00, 0x00, 0x01, 0x01, 0xea, 0x61, 0x2a,
+            0x00, 0x00, 0x01, 0x0a,
+        }));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(4));
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Materialized);
+        QCOMPARE(slice->children().size(), std::size_t(12));
+        const auto cabacInitIdc = analyzer->tree().node(slice->children().at(8));
+        const auto qp = analyzer->tree().node(slice->children().at(9));
+        const auto deblockingMode = analyzer->tree().node(slice->children().at(10));
+        const auto payload = analyzer->tree().node(slice->children().at(11));
+        QVERIFY(cabacInitIdc.has_value());
+        QVERIFY(qp.has_value());
+        QVERIFY(deblockingMode.has_value());
+        QVERIFY(payload.has_value());
+        QCOMPARE(cabacInitIdc->name(), QStringLiteral("cabac_init_idc"));
+        QCOMPARE(cabacInitIdc->value().toULongLong(), quint64(3));
+        QCOMPARE(cabacInitIdc->state(), MaterializationState::Materialized);
+        QCOMPARE(cabacInitIdc->diagnostics().size(), std::size_t(1));
+        const auto& diagnostic = cabacInitIdc->diagnostics().front();
+        QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::InvalidSyntax);
+        QCOMPARE(diagnostic.severity, streamview::core::DiagnosticSeverity::Warning);
+        QCOMPARE(diagnostic.message,
+                 QStringLiteral("Field value is above its @range maximum"));
+        QCOMPARE(diagnostic.fieldPath,
+                 QStringLiteral("NonIdrSliceLayerWithoutPartitioningRbsp.cabac_init_idc"));
+        QVERIFY(diagnostic.location.has_value());
+        QCOMPARE(diagnostic.location->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(189));
+        QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(5));
+        QCOMPARE(cabacInitIdc->location()->logicalRange().bitLength(), quint64(5));
+        QCOMPARE(qp->value().toLongLong(), qlonglong(0));
+        QCOMPARE(qp->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(194));
+        QCOMPARE(deblockingMode->name(), QStringLiteral("disable_deblocking_filter_idc"));
+        QCOMPARE(deblockingMode->value().toULongLong(), quint64(1));
+        QCOMPARE(deblockingMode->location()
+                     ->sourceSpans()
+                     .front()
+                     .start()
+                     .absoluteBitOffset(),
+                 quint64(195));
+        QCOMPARE(deblockingMode->location()->logicalRange().bitLength(), quint64(3));
+        QCOMPARE(payload->kind(), AnalysisNodeKind::CompressedPayload);
+        QCOMPARE(payload->name(), QStringLiteral("slice_data"));
+        QCOMPARE(payload->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(198));
+        QCOMPARE(payload->location()->logicalRange().bitLength(), quint64(2));
+
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+    }
+
+    void rejectsTruncatedCabacInitializationIdentifierAndContinues() {
         MemorySource source(bytes({
             0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
             0x00, 0x00, 0x01, 0x68, 0xee, 0x38, 0x80,
-            0x00, 0x00, 0x01, 0x01, 0xea, 0x66, 0xaa,
+            0x00, 0x00, 0x01, 0x01, 0xea, 0x60,
             0x00, 0x00, 0x01, 0x0a,
         }));
         QString errorMessage;
@@ -2369,30 +2551,25 @@ private slots:
         QVERIFY(slice.has_value());
         QCOMPARE(slice->state(), MaterializationState::Invalid);
         QCOMPARE(slice->children().size(), std::size_t(8));
-        const auto overrideFlag = analyzer->tree().node(slice->children().at(6));
-        const auto modificationFlag = analyzer->tree().node(slice->children().at(7));
-        QVERIFY(overrideFlag.has_value());
-        QVERIFY(modificationFlag.has_value());
-        QCOMPARE(overrideFlag->name(), QStringLiteral("num_ref_idx_active_override_flag"));
-        QCOMPARE(overrideFlag->value().toULongLong(), quint64(0));
-        QCOMPARE(modificationFlag->name(),
-                 QStringLiteral("ref_pic_list_modification_flag_l0"));
-        QCOMPARE(modificationFlag->value().toULongLong(), quint64(0));
         QCOMPARE(slice->diagnostics().size(), std::size_t(1));
         const auto& diagnostic = slice->diagnostics().front();
-        QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::InvalidSyntax);
-        QCOMPARE(diagnostic.message, QStringLiteral("Assertion condition is false"));
+        QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::TruncatedSource);
+        QCOMPARE(diagnostic.severity, streamview::core::DiagnosticSeverity::Error);
         QCOMPARE(diagnostic.fieldPath,
-                 QStringLiteral(
-                     "NonIdrSliceLayerWithoutPartitioningRbsp.pic_parameter_set_id"));
+                 QStringLiteral("NonIdrSliceLayerWithoutPartitioningRbsp.cabac_init_idc"));
         QVERIFY(diagnostic.location.has_value());
         QCOMPARE(diagnostic.location->sourceSpans().front().start().absoluteBitOffset(),
-                 quint64(178));
-        QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(1));
+                 quint64(189));
+        QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(3));
 
         const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
         QVERIFY(followingNal.has_value());
         QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+        const auto followingHeader = analyzer->tree().node(followingNal->children().at(1));
+        QVERIFY(followingHeader.has_value());
+        const auto followingType = analyzer->tree().node(followingHeader->children().at(2));
+        QVERIFY(followingType.has_value());
+        QCOMPARE(followingType->value().toULongLong(), quint64(10));
     }
 
     void rejectsNonIdrReferenceNalBeforePayloadMapping() {
