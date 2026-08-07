@@ -246,6 +246,13 @@ struct DslCompressedPayload final {
     DslSourceRange range;
 };
 
+struct DslAssertion final {
+    DslExpression condition;
+    QString anchorFieldName;
+    DslSourceRange anchorFieldRange;
+    DslSourceRange range;
+};
+
 struct DslEqualityCondition final {
     QString fieldName;
     std::optional<DslExpression> expression;
@@ -260,6 +267,7 @@ enum class DslStructItemKind : quint8 {
     LazyRegion,
     RbspTrailingBits,
     CompressedPayload,
+    Assertion,
     Conditional,
     Switch,
     Repeat,
@@ -290,6 +298,7 @@ struct DslStructItem final {
     DslLazyRegion lazyRegion;
     DslRbspTrailingBits rbspTrailingBits;
     DslCompressedPayload compressedPayload;
+    DslAssertion assertion;
     DslEqualityCondition condition;
     std::vector<DslStructItem> thenItems;
     std::vector<DslStructItem> elseItems;

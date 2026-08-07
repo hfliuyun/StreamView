@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <vector>
 
@@ -16,6 +17,7 @@ using streamview::rules::DslEndian;
 using streamview::rules::DslEntryKind;
 using streamview::rules::DslOpcode;
 using streamview::rules::DslParser;
+using streamview::rules::DslScalarType;
 using streamview::rules::DslTypedExpressionKind;
 using streamview::rules::DslValueTypeKind;
 
@@ -89,6 +91,167 @@ private slots:
             QCOMPARE(first.program->bytecode.at(index).immediate,
                      second.program->bytecode.at(index).immediate);
         }
+    }
+
+    void lowersSourceAnchoredAssertionsAtTheirStatementPosition() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header {
+                bits<2> reference;
+                bits<5> type;
+                assert(type != 5 || reference != 0) at reference;
+                bits<1> tail;
+            }
+            entry Header;
+        )"));
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+
+        const auto first = DslCompiler::compile(parsed.program);
+        const auto second = DslCompiler::compile(parsed.program);
+        QVERIFY2(first.succeeded(),
+                 first.diagnostics.empty()
+                     ? ""
+                     : qPrintable(first.diagnostics.front().message));
+        QVERIFY(second.succeeded());
+
+        const auto& structure = first.program->structs.front();
+        QCOMPARE(structure.fields.size(), std::size_t(3));
+        QCOMPARE(structure.assertions.size(), std::size_t(1));
+        const auto& assertion = structure.assertions.front();
+        QCOMPARE(assertion.anchorFieldIndex, quint32(0));
+        QCOMPARE(assertion.assertionFieldIndex, quint32(2));
+        QCOMPARE(assertion.condition.kind, DslTypedExpressionKind::Binary);
+        QCOMPARE(assertion.condition.type, DslScalarType::Bool);
+        QCOMPARE(assertion.condition.binaryOperator,
+                 streamview::rules::DslBinaryOperator::LogicalOr);
+        QCOMPARE(assertion.condition.operands.at(0).operands.at(0).fieldIndex,
+                 quint32(1));
+        QCOMPARE(assertion.condition.operands.at(1).operands.at(0).fieldIndex,
+                 quint32(0));
+
+        const std::vector<DslOpcode> expected{
+            DslOpcode::BeginStructure,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::AssertExpression,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::EndStructure,
+        };
+        QCOMPARE(first.program->bytecode.size(), expected.size());
+        QCOMPARE(first.program->bytecode.size(), second.program->bytecode.size());
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            QCOMPARE(first.program->bytecode.at(index).opcode, expected.at(index));
+            QCOMPARE(first.program->bytecode.at(index).opcode,
+                     second.program->bytecode.at(index).opcode);
+            QCOMPARE(first.program->bytecode.at(index).operand,
+                     second.program->bytecode.at(index).operand);
+            QCOMPARE(first.program->bytecode.at(index).immediate,
+                     second.program->bytecode.at(index).immediate);
+        }
+        QCOMPARE(first.program->bytecode.at(3).operand, quint32(0));
+        QCOMPARE(first.program->bytecode.at(3).immediate, quint64(0));
+    }
+
+    void ordersAssertionsBetweenSentinelCompletionAndRepeatBounds() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header {
+                bits<1> count;
+                repeat (1) { bits<1> sentinel; } until (sentinel == 0);
+                assert(count == 0) at count;
+                repeat (count, 1) { bits<1> item; }
+            }
+            entry Header;
+        )"));
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+
+        const std::vector<DslOpcode> expected{
+            DslOpcode::BeginStructure,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::AssertSentinelTerminated,
+            DslOpcode::AssertExpression,
+            DslOpcode::AssertRepeatCount,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::EndStructure,
+        };
+        QCOMPARE(compiled.program->bytecode.size(), expected.size());
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            QCOMPARE(compiled.program->bytecode.at(index).opcode, expected.at(index));
+        }
+        QCOMPARE(compiled.program->structs.front().assertions.front().assertionFieldIndex,
+                 quint32(2));
+    }
+
+    void preservesSourceOrderForAssertionsAtTheSameFieldPosition() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> flag; assert(flag == 0) at flag; "
+            "assert(flag != 1) at flag; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const auto& structure = compiled.program->structs.front();
+        QCOMPARE(structure.assertions.size(), std::size_t(2));
+        QCOMPARE(structure.assertions.at(0).assertionFieldIndex, quint32(1));
+        QCOMPARE(structure.assertions.at(1).assertionFieldIndex, quint32(1));
+        const auto first = std::find_if(
+            compiled.program->bytecode.begin(),
+            compiled.program->bytecode.end(),
+            [](const auto& instruction) {
+                return instruction.opcode == DslOpcode::AssertExpression;
+            });
+        QVERIFY(first != compiled.program->bytecode.end());
+        QVERIFY(std::next(first) != compiled.program->bytecode.end());
+        QCOMPARE(first->operand, quint32(0));
+        QCOMPARE(std::next(first)->opcode, DslOpcode::AssertExpression);
+        QCOMPARE(std::next(first)->operand, quint32(1));
+    }
+
+    void boundsAssertionsPerStructure() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> flag; assert(true) at flag; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        auto program = parsed.program;
+        const auto assertion = program.structs.front().items.back();
+        program.structs.front().items.resize(1);
+        for (std::size_t index = 0;
+             index < streamview::rules::DslTypedAssertion::maximumPerStructure();
+             ++index) {
+            program.structs.front().items.push_back(assertion);
+        }
+
+        const auto atLimit = DslCompiler::compile(program);
+        QVERIFY2(atLimit.succeeded(),
+                 atLimit.diagnostics.empty()
+                     ? ""
+                     : qPrintable(atLimit.diagnostics.front().message));
+        QCOMPARE(atLimit.program->structs.front().assertions.size(),
+                 streamview::rules::DslTypedAssertion::maximumPerStructure());
+
+        program.structs.front().items.push_back(assertion);
+        const auto aboveLimit = DslCompiler::compile(program);
+        QVERIFY(!aboveLimit.succeeded());
+        const auto diagnostic = std::find_if(
+            aboveLimit.diagnostics.begin(),
+            aboveLimit.diagnostics.end(),
+            [](const auto& candidate) {
+                return candidate.code == DslDiagnosticCode::InvalidCondition &&
+                       candidate.message == QStringLiteral(
+                           "A structure may contain at most 1024 assertions");
+        });
+        QVERIFY(diagnostic != aboveLimit.diagnostics.end());
+        QCOMPARE(diagnostic->range.start.offset, assertion.range.start.offset);
+        QCOMPARE(diagnostic->range.end.offset, assertion.range.end.offset);
     }
 
     void lowersUnsignedExpGolombRangeConstraintsToBoundAssertions() {

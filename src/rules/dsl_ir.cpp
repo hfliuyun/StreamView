@@ -1020,6 +1020,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         declaredFields.reserve(fieldDeclarations.size());
         std::vector<quint32> contextExportFieldIndices;
         std::vector<quint64> repeatIndices;
+        std::size_t assertionCount = 0;
         const auto sameCondition = [](const DslTypedFieldCondition& left,
                                       const DslTypedFieldCondition& right) {
             const auto sameExpression = [](const auto& self,
@@ -1962,6 +1963,118 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             typedStruct.fields.push_back(std::move(typedField));
             return std::nullopt;
         };
+        const auto compileAssertion =
+            [&](const DslAssertion& assertion,
+                const std::vector<DslTypedFieldCondition>& conditions) {
+            ++assertionCount;
+            if (assertionCount > DslTypedAssertion::maximumPerStructure()) {
+                if (assertionCount ==
+                    DslTypedAssertion::maximumPerStructure() + 1) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidCondition,
+                                  QStringLiteral(
+                                      "A structure may contain at most 1024 assertions"),
+                                  assertion.range);
+                }
+                return;
+            }
+            const bool topLevel = conditions.empty() && repeatIndices.empty();
+            if (!topLevel) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidCondition,
+                              QStringLiteral(
+                                  "Assertions must be unconditional top-level items"),
+                              assertion.range);
+            }
+
+            std::optional<quint32> anchorFieldIndex;
+            const auto anchor = std::find_if(
+                declaredFields.rbegin(),
+                declaredFields.rend(),
+                [&assertion](const DeclaredField& declared) {
+                    return declared.name == assertion.anchorFieldName;
+                });
+            if (anchor == declaredFields.rend()) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::UnknownReference,
+                              QStringLiteral(
+                                  "Assertion anchor field must be declared earlier"),
+                              assertion.anchorFieldRange);
+            } else if (anchor->source == nullptr || anchor->source->arrayLength ||
+                       !anchor->typedIndex) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              QStringLiteral(
+                                  "Assertion anchors require a source-backed scalar field"),
+                              assertion.anchorFieldRange);
+            } else {
+                const bool available = std::all_of(
+                    anchor->conditions.begin(),
+                    anchor->conditions.end(),
+                    [&conditions, &sameCondition](
+                        const DslTypedFieldCondition& required) {
+                        return std::any_of(
+                            conditions.begin(),
+                            conditions.end(),
+                            [&required, &sameCondition](
+                                const DslTypedFieldCondition& candidate) {
+                                return sameCondition(required, candidate);
+                            });
+                    });
+                if (!available) {
+                    addDiagnostic(
+                        result.diagnostics,
+                        DslDiagnosticCode::InvalidCondition,
+                        QStringLiteral(
+                            "Assertion anchor field is not guaranteed on the current branch"),
+                        assertion.anchorFieldRange);
+                } else {
+                    anchorFieldIndex = *anchor->typedIndex;
+                }
+            }
+
+            const ExpressionResolver resolveField =
+                [&](const QString& name,
+                    const DslSourceRange& range) -> std::optional<DslTypedExpression> {
+                return resolveExpressionDependency(
+                    name,
+                    range,
+                    conditions,
+                    QStringLiteral("Assertion"),
+                    QStringLiteral(
+                        "Assertion expressions require scalar unsigned fields"));
+            };
+            ExpressionBuildState state;
+            const auto expression = compileExpression(assertion.condition,
+                                                      resolveField,
+                                                      program.pureFunctions.size(),
+                                                      1,
+                                                      state);
+            if (expression && expression->type != DslScalarType::Bool) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              QStringLiteral("Assertion conditions must be bool"),
+                              assertion.condition.range);
+            }
+            if (!topLevel || !anchorFieldIndex || !expression ||
+                expression->type != DslScalarType::Bool) {
+                return;
+            }
+            if (typedStruct.assertions.size() >=
+                DslTypedAssertion::maximumPerStructure()) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidCondition,
+                              QStringLiteral(
+                                  "A structure may contain at most 1024 assertions"),
+                              assertion.range);
+                return;
+            }
+            typedStruct.assertions.push_back(
+                {*expression,
+                 *anchorFieldIndex,
+                 static_cast<quint32>(typedStruct.fields.size()),
+                 assertion.range});
+        };
         const auto compileItems =
             [&](const auto& self, const std::vector<DslStructItem>& items,
                 const std::vector<DslTypedFieldCondition>& conditions,
@@ -1977,6 +2090,10 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 }
                 if (item.kind == DslStructItemKind::LazyRegion) {
                     fieldOffset = compileLazyRegion(item.lazyRegion, conditions, fieldOffset);
+                    continue;
+                }
+                if (item.kind == DslStructItemKind::Assertion) {
+                    compileAssertion(item.assertion, conditions);
                     continue;
                 }
                 if (item.kind == DslStructItemKind::CompressedPayload) {
@@ -2550,6 +2667,12 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                const DslTypedSentinelRepeat& right) {
                 return left.assertionFieldIndex < right.assertionFieldIndex;
             });
+        std::stable_sort(
+            typedStruct.assertions.begin(),
+            typedStruct.assertions.end(),
+            [](const DslTypedAssertion& left, const DslTypedAssertion& right) {
+                return left.assertionFieldIndex < right.assertionFieldIndex;
+            });
         typed.structs.push_back(std::move(typedStruct));
     }
 
@@ -2777,6 +2900,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         bool emitted = appendInstruction({DslOpcode::BeginStructure, structIndex, 0});
         std::size_t repeatBoundIndex = 0;
         std::size_t sentinelRepeatIndex = 0;
+        std::size_t assertionIndex = 0;
         for (std::size_t fieldIndex = 0; emitted && fieldIndex <= structure.fields.size();
              ++fieldIndex) {
             while (emitted &&
@@ -2789,6 +2913,15 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                      structure.sentinelRepeats.at(sentinelRepeatIndex)
                          .terminatingValue});
                 ++sentinelRepeatIndex;
+            }
+            while (emitted && assertionIndex < structure.assertions.size() &&
+                   structure.assertions.at(assertionIndex).assertionFieldIndex ==
+                       fieldIndex) {
+                emitted = appendInstruction(
+                    {DslOpcode::AssertExpression,
+                     static_cast<quint32>(assertionIndex),
+                     0});
+                ++assertionIndex;
             }
             while (emitted && repeatBoundIndex < structure.repeatBounds.size() &&
                    structure.repeatBounds.at(repeatBoundIndex).firstFieldIndex == fieldIndex) {
@@ -2870,6 +3003,13 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                           DslDiagnosticCode::InvalidCondition,
                           QStringLiteral(
                               "Typed sentinel repeat assertion position is invalid"),
+                          {});
+            emitted = false;
+        }
+        if (assertionIndex != structure.assertions.size()) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidCondition,
+                          QStringLiteral("Typed assertion position is invalid"),
                           {});
             emitted = false;
         }

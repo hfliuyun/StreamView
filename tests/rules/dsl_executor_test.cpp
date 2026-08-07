@@ -318,6 +318,610 @@ private slots:
         QCOMPARE(structure->state(), streamview::core::MaterializationState::Materialized);
     }
 
+    void executesSourceAnchoredAssertionsWithoutMaterializingNodes() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> reference; bits<5> type; "
+            "assert(type != 5 || reference != 0) at reference; bits<1> tail; } "
+            "entry Header;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+
+        MemorySource passingSource(bytes({0xca}));
+        BitReader passingReader(passingSource, *range);
+        auto passingTree = AnalysisTree::create(QStringLiteral("passing-assertion"));
+        QVERIFY(passingTree.has_value());
+        const auto passing = DslExecutor::decodeStruct(*compiled.program,
+                                                       quint32(0),
+                                                       passingReader,
+                                                       *mapping,
+                                                       0,
+                                                       *passingTree,
+                                                       passingTree->rootId());
+        QCOMPARE(passing.status, DslExecutionStatus::Materialized);
+        QCOMPARE(passing.bitsConsumed, quint64(8));
+        QCOMPARE(passing.instructionsExecuted, quint64(6));
+        QCOMPARE(passing.nodesCreated, quint64(4));
+        QCOMPARE(passingReader.position(), quint64(8));
+        const auto passingStructure = passingTree->node(*passing.structureNode);
+        QVERIFY(passingStructure.has_value());
+        QCOMPARE(passingStructure->state(), MaterializationState::Materialized);
+        QCOMPARE(passingStructure->children().size(), std::size_t(3));
+        QVERIFY(passingStructure->diagnostics().empty());
+
+        MemorySource failingSource(bytes({0x0b}));
+        BitReader failingReader(failingSource, *range);
+        auto failingTree = AnalysisTree::create(QStringLiteral("failing-assertion"));
+        QVERIFY(failingTree.has_value());
+        const auto failing = DslExecutor::decodeStruct(*compiled.program,
+                                                       quint32(0),
+                                                       failingReader,
+                                                       *mapping,
+                                                       0,
+                                                       *failingTree,
+                                                       failingTree->rootId());
+        QCOMPARE(failing.status, DslExecutionStatus::InvalidSyntax);
+        QCOMPARE(failing.errorMessage, QStringLiteral("Assertion condition is false"));
+        QCOMPARE(failing.bitsConsumed, quint64(7));
+        QCOMPARE(failing.instructionsExecuted, quint64(4));
+        QCOMPARE(failing.nodesCreated, quint64(3));
+        QCOMPARE(failingReader.position(), quint64(7));
+        const auto failingStructure = failingTree->node(*failing.structureNode);
+        QVERIFY(failingStructure.has_value());
+        QCOMPARE(failingStructure->state(), MaterializationState::Invalid);
+        QCOMPARE(failingStructure->children().size(), std::size_t(2));
+        QCOMPARE(failingStructure->diagnostics().size(), std::size_t(1));
+        const auto& diagnostic = failingStructure->diagnostics().front();
+        QCOMPARE(diagnostic.code, DiagnosticCode::InvalidSyntax);
+        QCOMPARE(diagnostic.severity, streamview::core::DiagnosticSeverity::Error);
+        QCOMPARE(diagnostic.message, QStringLiteral("Assertion condition is false"));
+        QCOMPARE(diagnostic.fieldPath, QStringLiteral("Header.reference"));
+        QVERIFY(diagnostic.location.has_value());
+        QCOMPARE(diagnostic.location->sourceSpans().size(), std::size_t(1));
+        QCOMPARE(diagnostic.location->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(0));
+        QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(2));
+    }
+
+    void preservesMappedAnchorSpansAcrossASourceGap() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> reference; bits<5> type; "
+            "assert(type != 5 || reference != 0) at reference; bits<1> tail; } "
+            "entry Header;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0x00, 0xff, 0x16}));
+        const auto mapping = mappingForSpans({{7, 1}, {16, 7}});
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *mapping);
+        auto tree = AnalysisTree::create(QStringLiteral("mapped-assertion-anchor"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                      quint32(0),
+                                                      reader,
+                                                      *mapping,
+                                                      0,
+                                                      *tree,
+                                                      tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::InvalidSyntax);
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->diagnostics().size(), std::size_t(1));
+        const auto& diagnostic = structure->diagnostics().front();
+        QVERIFY(diagnostic.location.has_value());
+        QCOMPARE(diagnostic.location->sourceSpans().size(), std::size_t(2));
+        QCOMPARE(diagnostic.location->sourceSpans().at(0).start().absoluteBitOffset(),
+                 quint64(7));
+        QCOMPARE(diagnostic.location->sourceSpans().at(0).bitLength(), quint64(1));
+        QCOMPARE(diagnostic.location->sourceSpans().at(1).start().absoluteBitOffset(),
+                 quint64(16));
+        QCOMPARE(diagnostic.location->sourceSpans().at(1).bitLength(), quint64(1));
+    }
+
+    void shortCircuitsAssertionConditions() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> type; bits<1> reference; "
+            "assert(type != 1 || (1 / reference) != 0) at reference; "
+            "bits<1> tail; } entry Header;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0x20}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 3);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("short-circuit-assertion"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                      quint32(0),
+                                                      reader,
+                                                      *mapping,
+                                                      0,
+                                                      *tree,
+                                                      tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(3));
+        QCOMPARE(result.nodesCreated, quint64(4));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QVERIFY(structure->diagnostics().empty());
+    }
+
+    void preservesSourceOrderForMultipleAssertionsAtOnePosition() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> reference; bits<5> type; "
+            "assert(reference != 0) at reference; assert(type != 5) at type; "
+            "bits<1> tail; } entry Header;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0x4b}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("ordered-assertions"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                      quint32(0),
+                                                      reader,
+                                                      *mapping,
+                                                      0,
+                                                      *tree,
+                                                      tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::InvalidSyntax);
+        QCOMPARE(result.bitsConsumed, quint64(7));
+        QCOMPARE(result.instructionsExecuted, quint64(5));
+        QCOMPARE(result.nodesCreated, quint64(3));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(2));
+        QCOMPARE(structure->diagnostics().size(), std::size_t(1));
+        const auto& diagnostic = structure->diagnostics().front();
+        QCOMPARE(diagnostic.fieldPath, QStringLiteral("Header.type"));
+        QVERIFY(diagnostic.location.has_value());
+        QCOMPARE(diagnostic.location->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(2));
+        QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(5));
+    }
+
+    void budgetsAndCancelsAtAssertionInstructions() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<2> reference; bits<5> type; "
+            "assert(type != 5 || reference != 0) at reference; bits<1> tail; } "
+            "entry Header;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+
+        MemorySource limitedSource(bytes({0xca}));
+        BitReader limitedReader(limitedSource, *range);
+        auto limitedTree = AnalysisTree::create(QStringLiteral("assertion-budget"));
+        QVERIFY(limitedTree.has_value());
+        DslExecutionOptions limitedOptions;
+        limitedOptions.limits.maximumInstructions = 4;
+        const auto limited = DslExecutor::decodeStruct(*compiled.program,
+                                                       quint32(0),
+                                                       limitedReader,
+                                                       *mapping,
+                                                       0,
+                                                       *limitedTree,
+                                                       limitedTree->rootId(),
+                                                       limitedOptions);
+        QCOMPARE(limited.status, DslExecutionStatus::ResourceLimit);
+        QCOMPARE(limited.instructionsExecuted, quint64(4));
+        QCOMPARE(limited.bitsConsumed, quint64(7));
+        QCOMPARE(limited.nodesCreated, quint64(3));
+
+        MemorySource blockedFailureSource(bytes({0x0b}));
+        BitReader blockedFailureReader(blockedFailureSource, *range);
+        auto blockedFailureTree =
+            AnalysisTree::create(QStringLiteral("assertion-budget-before-failure"));
+        QVERIFY(blockedFailureTree.has_value());
+        DslExecutionOptions blockedFailureOptions;
+        blockedFailureOptions.limits.maximumInstructions = 3;
+        const auto blockedFailure = DslExecutor::decodeStruct(
+            *compiled.program,
+            quint32(0),
+            blockedFailureReader,
+            *mapping,
+            0,
+            *blockedFailureTree,
+            blockedFailureTree->rootId(),
+            blockedFailureOptions);
+        QCOMPARE(blockedFailure.status, DslExecutionStatus::ResourceLimit);
+        QCOMPARE(blockedFailure.instructionsExecuted, quint64(3));
+        QCOMPARE(blockedFailure.bitsConsumed, quint64(7));
+        QCOMPARE(blockedFailure.nodesCreated, quint64(3));
+
+        MemorySource allowedFailureSource(bytes({0x0b}));
+        BitReader allowedFailureReader(allowedFailureSource, *range);
+        auto allowedFailureTree =
+            AnalysisTree::create(QStringLiteral("assertion-budget-at-failure"));
+        QVERIFY(allowedFailureTree.has_value());
+        DslExecutionOptions allowedFailureOptions;
+        allowedFailureOptions.limits.maximumInstructions = 4;
+        const auto allowedFailure = DslExecutor::decodeStruct(
+            *compiled.program,
+            quint32(0),
+            allowedFailureReader,
+            *mapping,
+            0,
+            *allowedFailureTree,
+            allowedFailureTree->rootId(),
+            allowedFailureOptions);
+        QCOMPARE(allowedFailure.status, DslExecutionStatus::InvalidSyntax);
+        QCOMPARE(allowedFailure.instructionsExecuted, quint64(4));
+        QCOMPARE(allowedFailure.bitsConsumed, quint64(7));
+        QCOMPARE(allowedFailure.nodesCreated, quint64(3));
+
+        CancellationSource cancellation;
+        CancellingMemorySource cancellingSource(bytes({0x0b}), cancellation);
+        BitReader cancellingReader(cancellingSource, *range);
+        auto cancellingTree = AnalysisTree::create(QStringLiteral("assertion-cancellation"));
+        QVERIFY(cancellingTree.has_value());
+        DslExecutionOptions cancellingOptions;
+        cancellingOptions.cancellation = cancellation.token();
+        cancellingOptions.limits.cancellationCheckInterval = 3;
+        const auto cancelled = DslExecutor::decodeStruct(*compiled.program,
+                                                         quint32(0),
+                                                         cancellingReader,
+                                                         *mapping,
+                                                         0,
+                                                         *cancellingTree,
+                                                         cancellingTree->rootId(),
+                                                         cancellingOptions);
+        QCOMPARE(cancelled.status, DslExecutionStatus::Cancelled);
+        QCOMPARE(cancelled.instructionsExecuted, quint64(3));
+        QCOMPARE(cancelled.bitsConsumed, quint64(7));
+        QCOMPARE(cancelled.nodesCreated, quint64(3));
+    }
+
+    void rejectsMalformedAssertionsBeforeReadingSource() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> source; computed<bool> flag = source == 1; "
+            "assert(flag) at source; bits<1> tail; } entry Header;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+
+        std::vector<DslTypedProgram> malformed;
+
+        auto computedAnchor = *compiled.program;
+        computedAnchor.structs.front().assertions.front().anchorFieldIndex = 1;
+        malformed.push_back(std::move(computedAnchor));
+
+        auto futureAnchor = *compiled.program;
+        futureAnchor.structs.front().assertions.front().anchorFieldIndex = 2;
+        malformed.push_back(std::move(futureAnchor));
+
+        auto invalidPosition = *compiled.program;
+        invalidPosition.structs.front().assertions.front().assertionFieldIndex = 4;
+        malformed.push_back(std::move(invalidPosition));
+
+        auto nonBoolean = *compiled.program;
+        nonBoolean.structs.front().assertions.front().condition.type = DslScalarType::U64;
+        malformed.push_back(std::move(nonBoolean));
+
+        auto futureDependency = *compiled.program;
+        futureDependency.structs.front().assertions.front().condition.fieldIndex = 2;
+        malformed.push_back(std::move(futureDependency));
+
+        auto missingDescriptor = *compiled.program;
+        missingDescriptor.structs.front().assertions.clear();
+        malformed.push_back(std::move(missingDescriptor));
+
+        auto extraDescriptor = *compiled.program;
+        extraDescriptor.structs.front().assertions.push_back(
+            extraDescriptor.structs.front().assertions.front());
+        malformed.push_back(std::move(extraDescriptor));
+
+        auto tooManyAssertions = *compiled.program;
+        tooManyAssertions.structs.front().assertions.resize(
+            streamview::rules::DslTypedAssertion::maximumPerStructure() + 1,
+            tooManyAssertions.structs.front().assertions.front());
+        malformed.push_back(std::move(tooManyAssertions));
+
+        auto invalidOpcodeOperand = *compiled.program;
+        const auto invalidOperandInstruction = std::find_if(
+            invalidOpcodeOperand.bytecode.begin(),
+            invalidOpcodeOperand.bytecode.end(),
+            [](const auto& instruction) {
+                return instruction.opcode == DslOpcode::AssertExpression;
+            });
+        QVERIFY(invalidOperandInstruction != invalidOpcodeOperand.bytecode.end());
+        invalidOperandInstruction->operand = 1;
+        malformed.push_back(std::move(invalidOpcodeOperand));
+
+        auto invalidOpcodeImmediate = *compiled.program;
+        const auto invalidImmediateInstruction = std::find_if(
+            invalidOpcodeImmediate.bytecode.begin(),
+            invalidOpcodeImmediate.bytecode.end(),
+            [](const auto& instruction) {
+                return instruction.opcode == DslOpcode::AssertExpression;
+            });
+        QVERIFY(invalidImmediateInstruction != invalidOpcodeImmediate.bytecode.end());
+        invalidImmediateInstruction->immediate = 1;
+        malformed.push_back(std::move(invalidOpcodeImmediate));
+
+        auto missingOpcode = *compiled.program;
+        const auto missingInstruction = std::find_if(
+            missingOpcode.bytecode.begin(),
+            missingOpcode.bytecode.end(),
+            [](const auto& instruction) {
+                return instruction.opcode == DslOpcode::AssertExpression;
+            });
+        QVERIFY(missingInstruction != missingOpcode.bytecode.end());
+        missingOpcode.bytecode.erase(missingInstruction);
+        --missingOpcode.structs.front().bytecodeLength;
+        malformed.push_back(std::move(missingOpcode));
+
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        for (std::size_t index = 0; index < malformed.size(); ++index) {
+            MemorySource source(bytes({0x80}));
+            BitReader reader(source, *range);
+            auto tree = AnalysisTree::create(
+                QStringLiteral("malformed-assertion-%1").arg(index));
+            QVERIFY(tree.has_value());
+            const auto result = DslExecutor::decodeStruct(malformed.at(index),
+                                                          quint32(0),
+                                                          reader,
+                                                          *mapping,
+                                                          0,
+                                                          *tree,
+                                                          tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+            QCOMPARE(result.instructionsExecuted, quint64(0));
+            QCOMPARE(result.bitsConsumed, quint64(0));
+            QCOMPARE(result.nodesCreated, quint64(0));
+            QCOMPARE(reader.position(), quint64(0));
+            QCOMPARE(source.readCount(), quint64(0));
+            QVERIFY(!result.structureNode.has_value());
+        }
+    }
+
+    void executesTheMaximumAssertionsPerStructure() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> flag; assert(true) at flag; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        auto program = parsed.program;
+        const auto assertion = program.structs.front().items.back();
+        program.structs.front().items.resize(1);
+        for (std::size_t index = 0;
+             index < streamview::rules::DslTypedAssertion::maximumPerStructure();
+             ++index) {
+            program.structs.front().items.push_back(assertion);
+        }
+        const auto compiled = DslCompiler::compile(program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+
+        MemorySource source(bytes({0x00}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 1);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("maximum-assertions"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                      quint32(0),
+                                                      reader,
+                                                      *mapping,
+                                                      0,
+                                                      *tree,
+                                                      tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.instructionsExecuted,
+                 quint64(streamview::rules::DslTypedAssertion::maximumPerStructure() +
+                         3));
+        QCOMPARE(result.bitsConsumed, quint64(1));
+        QCOMPARE(result.nodesCreated, quint64(2));
+        QCOMPARE(reader.position(), quint64(1));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(1));
+        QVERIFY(structure->diagnostics().empty());
+    }
+
+    void rejectsReorderedPositionedAssertionsBeforeReadingSource() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header {
+                bits<1> count;
+                repeat (1) { bits<1> sentinel; } until (sentinel == 0);
+                assert(count == 0) at count;
+                repeat (count, 1) { bits<1> item; }
+            }
+            entry Header;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+
+        std::vector<DslTypedProgram> malformed;
+        auto assertionBeforeSentinel = *compiled.program;
+        const auto sentinel = std::find_if(
+            assertionBeforeSentinel.bytecode.begin(),
+            assertionBeforeSentinel.bytecode.end(),
+            [](const auto& instruction) {
+                return instruction.opcode == DslOpcode::AssertSentinelTerminated;
+            });
+        const auto assertion = std::find_if(
+            assertionBeforeSentinel.bytecode.begin(),
+            assertionBeforeSentinel.bytecode.end(),
+            [](const auto& instruction) {
+                return instruction.opcode == DslOpcode::AssertExpression;
+            });
+        QVERIFY(sentinel != assertionBeforeSentinel.bytecode.end());
+        QVERIFY(assertion != assertionBeforeSentinel.bytecode.end());
+        std::iter_swap(sentinel, assertion);
+        malformed.push_back(std::move(assertionBeforeSentinel));
+
+        auto repeatBeforeAssertion = *compiled.program;
+        const auto expression = std::find_if(
+            repeatBeforeAssertion.bytecode.begin(),
+            repeatBeforeAssertion.bytecode.end(),
+            [](const auto& instruction) {
+                return instruction.opcode == DslOpcode::AssertExpression;
+            });
+        const auto repeat = std::find_if(
+            repeatBeforeAssertion.bytecode.begin(),
+            repeatBeforeAssertion.bytecode.end(),
+            [](const auto& instruction) {
+                return instruction.opcode == DslOpcode::AssertRepeatCount;
+            });
+        QVERIFY(expression != repeatBeforeAssertion.bytecode.end());
+        QVERIFY(repeat != repeatBeforeAssertion.bytecode.end());
+        std::iter_swap(expression, repeat);
+        malformed.push_back(std::move(repeatBeforeAssertion));
+
+        auto invalidSentinelImmediate = *compiled.program;
+        const auto sentinelWithInvalidImmediate = std::find_if(
+            invalidSentinelImmediate.bytecode.begin(),
+            invalidSentinelImmediate.bytecode.end(),
+            [](const auto& instruction) {
+                return instruction.opcode == DslOpcode::AssertSentinelTerminated;
+            });
+        QVERIFY(sentinelWithInvalidImmediate != invalidSentinelImmediate.bytecode.end());
+        ++sentinelWithInvalidImmediate->immediate;
+        malformed.push_back(std::move(invalidSentinelImmediate));
+
+        auto invalidRepeatImmediate = *compiled.program;
+        const auto repeatWithInvalidImmediate = std::find_if(
+            invalidRepeatImmediate.bytecode.begin(),
+            invalidRepeatImmediate.bytecode.end(),
+            [](const auto& instruction) {
+                return instruction.opcode == DslOpcode::AssertRepeatCount;
+            });
+        QVERIFY(repeatWithInvalidImmediate != invalidRepeatImmediate.bytecode.end());
+        ++repeatWithInvalidImmediate->immediate;
+        malformed.push_back(std::move(invalidRepeatImmediate));
+
+        auto reorderedSentinelOperands = *compiled.program;
+        reorderedSentinelOperands.structs.front().sentinelRepeats.push_back(
+            reorderedSentinelOperands.structs.front().sentinelRepeats.front());
+        const auto firstSentinel = std::find_if(
+            reorderedSentinelOperands.bytecode.begin(),
+            reorderedSentinelOperands.bytecode.end(),
+            [](const auto& instruction) {
+                return instruction.opcode == DslOpcode::AssertSentinelTerminated;
+            });
+        QVERIFY(firstSentinel != reorderedSentinelOperands.bytecode.end());
+        const auto firstSentinelIndex = static_cast<std::size_t>(std::distance(
+            reorderedSentinelOperands.bytecode.begin(), firstSentinel));
+        auto secondSentinel = *firstSentinel;
+        reorderedSentinelOperands.bytecode.at(firstSentinelIndex).operand = 1;
+        secondSentinel.operand = 0;
+        reorderedSentinelOperands.bytecode.insert(
+            reorderedSentinelOperands.bytecode.begin() +
+                static_cast<std::ptrdiff_t>(firstSentinelIndex + 1),
+            secondSentinel);
+        ++reorderedSentinelOperands.structs.front().bytecodeLength;
+        malformed.push_back(std::move(reorderedSentinelOperands));
+
+        auto reorderedRepeatOperands = *compiled.program;
+        reorderedRepeatOperands.structs.front().repeatBounds.push_back(
+            reorderedRepeatOperands.structs.front().repeatBounds.front());
+        const auto firstRepeat = std::find_if(
+            reorderedRepeatOperands.bytecode.begin(),
+            reorderedRepeatOperands.bytecode.end(),
+            [](const auto& instruction) {
+                return instruction.opcode == DslOpcode::AssertRepeatCount;
+            });
+        QVERIFY(firstRepeat != reorderedRepeatOperands.bytecode.end());
+        const auto firstRepeatIndex = static_cast<std::size_t>(std::distance(
+            reorderedRepeatOperands.bytecode.begin(), firstRepeat));
+        auto secondRepeat = *firstRepeat;
+        reorderedRepeatOperands.bytecode.at(firstRepeatIndex).operand = 1;
+        secondRepeat.operand = 0;
+        reorderedRepeatOperands.bytecode.insert(
+            reorderedRepeatOperands.bytecode.begin() +
+                static_cast<std::ptrdiff_t>(firstRepeatIndex + 1),
+            secondRepeat);
+        ++reorderedRepeatOperands.structs.front().bytecodeLength;
+        malformed.push_back(std::move(reorderedRepeatOperands));
+
+        auto missingSentinel = *compiled.program;
+        const auto missingSentinelInstruction = std::find_if(
+            missingSentinel.bytecode.begin(),
+            missingSentinel.bytecode.end(),
+            [](const auto& instruction) {
+                return instruction.opcode == DslOpcode::AssertSentinelTerminated;
+            });
+        QVERIFY(missingSentinelInstruction != missingSentinel.bytecode.end());
+        missingSentinel.bytecode.erase(missingSentinelInstruction);
+        --missingSentinel.structs.front().bytecodeLength;
+        malformed.push_back(std::move(missingSentinel));
+
+        auto missingRepeat = *compiled.program;
+        const auto missingRepeatInstruction = std::find_if(
+            missingRepeat.bytecode.begin(),
+            missingRepeat.bytecode.end(),
+            [](const auto& instruction) {
+                return instruction.opcode == DslOpcode::AssertRepeatCount;
+            });
+        QVERIFY(missingRepeatInstruction != missingRepeat.bytecode.end());
+        missingRepeat.bytecode.erase(missingRepeatInstruction);
+        --missingRepeat.structs.front().bytecodeLength;
+        malformed.push_back(std::move(missingRepeat));
+
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        for (std::size_t index = 0; index < malformed.size(); ++index) {
+            MemorySource source(bytes({0x00}));
+            BitReader reader(source, *range);
+            auto tree = AnalysisTree::create(
+                QStringLiteral("reordered-positioned-assertion-%1").arg(index));
+            QVERIFY(tree.has_value());
+            const auto result = DslExecutor::decodeStruct(malformed.at(index),
+                                                          quint32(0),
+                                                          reader,
+                                                          *mapping,
+                                                          0,
+                                                          *tree,
+                                                          tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+            QCOMPARE(result.instructionsExecuted, quint64(0));
+            QCOMPARE(result.bitsConsumed, quint64(0));
+            QCOMPARE(result.nodesCreated, quint64(0));
+            QCOMPARE(reader.position(), quint64(0));
+            QCOMPARE(source.readCount(), quint64(0));
+            QVERIFY(!result.structureNode.has_value());
+        }
+    }
+
     void materializesUnsignedExpGolombFieldsWithinTheirDeclaredRange() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "struct Header { ue log2_max_frame_num_minus4 @range(0, 12); } entry Header;"));

@@ -1347,6 +1347,41 @@ private:
         items.push_back(std::move(item));
     }
 
+    void parseAssertion(std::vector<DslStructItem>& items,
+                        const std::vector<DslAnnotation>& leadingAnnotations) {
+        const DslSourcePosition start = consume().range.start;
+        if (!leadingAnnotations.empty()) {
+            result_.diagnostics.push_back(
+                {DslDiagnosticCode::InvalidAnnotation,
+                 QStringLiteral("Annotations are not allowed before assertions"),
+                 leadingAnnotations.front().range});
+        }
+
+        DslAssertion assertion;
+        expect(DslTokenKind::LeftParen, QStringLiteral("'(' after assert"));
+        assertion.condition = parseExpression();
+        expect(DslTokenKind::RightParen, QStringLiteral("')' after assertion condition"));
+        if (!matchIdentifier(QStringLiteral("at"))) {
+            error(DslDiagnosticCode::MissingToken,
+                  QStringLiteral("Expected 'at' after assertion condition"));
+        }
+        if (at(DslTokenKind::Identifier)) {
+            assertion.anchorFieldRange = current().range;
+            assertion.anchorFieldName = consume().lexeme;
+        } else {
+            error(DslDiagnosticCode::MissingToken,
+                  QStringLiteral("Expected assertion anchor field name"));
+        }
+        expect(DslTokenKind::Semicolon, QStringLiteral("';' after assertion"));
+        assertion.range = {start, lexResult_.tokens.at(index_ - 1).range.end};
+
+        DslStructItem item;
+        item.kind = DslStructItemKind::Assertion;
+        item.assertion = std::move(assertion);
+        item.range = item.assertion.range;
+        items.push_back(std::move(item));
+    }
+
     void parseStructItems(std::vector<DslStructItem>& items) {
         while (!at(DslTokenKind::RightBrace) && !at(DslTokenKind::EndOfFile)) {
             const std::vector<DslAnnotation> annotations = parseAnnotations(true);
@@ -1354,6 +1389,8 @@ private:
                 parseRbspTrailingBits(items, annotations);
             } else if (isIdentifier(QStringLiteral("compressed_payload"))) {
                 parseCompressedPayload(items, annotations);
+            } else if (isIdentifier(QStringLiteral("assert"))) {
+                parseAssertion(items, annotations);
             } else if (isLazyRegionIntroducer()) {
                 if (!annotations.empty()) {
                     result_.diagnostics.push_back(
@@ -1441,6 +1478,16 @@ private:
                             {DslDiagnosticCode::InvalidCompressedPayload,
                              QStringLiteral(
                                  "compressed_payload must occur once as the final top-level item"),
+                             item.range});
+                    }
+                    continue;
+                }
+                if (item.kind == DslStructItemKind::Assertion) {
+                    if (!topLevel) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidCondition,
+                             QStringLiteral(
+                                 "Assertions must be unconditional top-level items"),
                              item.range});
                     }
                     continue;
@@ -2341,6 +2388,118 @@ private:
                                            std::optional<quint64> fieldOffset)
                 -> std::optional<quint64> {
                 for (const DslStructItem& item : items) {
+                    if (item.kind == DslStructItemKind::Assertion) {
+                        const DslAssertion& assertion = item.assertion;
+                        const auto anchor = std::find_if(
+                            declaredFields.rbegin(),
+                            declaredFields.rend(),
+                            [&assertion](const DeclaredField& declared) {
+                                return declared.name == assertion.anchorFieldName;
+                            });
+                        if (anchor == declaredFields.rend()) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::UnknownReference,
+                                 QStringLiteral(
+                                     "Assertion anchor field must be declared earlier"),
+                                 assertion.anchorFieldRange});
+                        } else if (anchor->syntax == nullptr ||
+                                   anchor->syntax->arrayLength) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidType,
+                                 QStringLiteral(
+                                     "Assertion anchors require a source-backed scalar field"),
+                                 assertion.anchorFieldRange});
+                        } else {
+                            const bool anchorAvailable = std::all_of(
+                                anchor->conditions.begin(),
+                                anchor->conditions.end(),
+                                [&active, &sameCondition](const ActiveCondition& required) {
+                                    return std::any_of(
+                                        active.begin(),
+                                        active.end(),
+                                        [&required, &sameCondition](
+                                            const ActiveCondition& candidate) {
+                                            return sameCondition(required, candidate);
+                                        });
+                                });
+                            if (!anchorAvailable) {
+                                result_.diagnostics.push_back(
+                                    {DslDiagnosticCode::InvalidCondition,
+                                     QStringLiteral(
+                                         "Assertion anchor field is not guaranteed on the current branch"),
+                                     assertion.anchorFieldRange});
+                            }
+                        }
+
+                        const auto resolveAssertionIdentifier =
+                            [&](const QString& name,
+                                const DslSourceRange& range)
+                            -> std::optional<DslScalarType> {
+                            const auto found = std::find_if(
+                                declaredFields.rbegin(),
+                                declaredFields.rend(),
+                                [&name](const DeclaredField& declared) {
+                                    return declared.name == name;
+                                });
+                            if (found == declaredFields.rend()) {
+                                result_.diagnostics.push_back(
+                                    {DslDiagnosticCode::UnknownReference,
+                                     QStringLiteral(
+                                         "Assertion dependency must be declared earlier"),
+                                     range});
+                                return std::nullopt;
+                            }
+                            const bool available = std::all_of(
+                                found->conditions.begin(),
+                                found->conditions.end(),
+                                [&active, &sameCondition](const ActiveCondition& required) {
+                                    return std::any_of(
+                                        active.begin(),
+                                        active.end(),
+                                        [&required, &sameCondition](
+                                            const ActiveCondition& candidate) {
+                                            return sameCondition(required, candidate);
+                                        });
+                                });
+                            if (!available) {
+                                result_.diagnostics.push_back(
+                                    {DslDiagnosticCode::InvalidCondition,
+                                     QStringLiteral(
+                                         "Assertion dependency is not guaranteed on the current branch"),
+                                     range});
+                                return std::nullopt;
+                            }
+                            if (found->computed != nullptr) {
+                                return found->type;
+                            }
+                            if (found->syntax == nullptr || found->syntax->arrayLength ||
+                                found->syntax->encoding ==
+                                    DslFieldEncoding::SignedExpGolomb) {
+                                result_.diagnostics.push_back(
+                                    {DslDiagnosticCode::InvalidType,
+                                     QStringLiteral(
+                                         "Assertion expressions require scalar unsigned fields"),
+                                     range});
+                                return std::nullopt;
+                            }
+                            return DslScalarType::U64;
+                        };
+                        std::size_t nodeCount = 0;
+                        const auto expressionType = validateExpression(
+                            validateExpression,
+                            assertion.condition,
+                            resolveAssertionIdentifier,
+                            result_.program.pureFunctions.size(),
+                            1,
+                            nodeCount);
+                        if (expressionType && *expressionType != DslScalarType::Bool) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidType,
+                                 QStringLiteral("Assertion conditions must be bool"),
+                                 assertion.condition.range});
+                        }
+                        continue;
+                    }
                     if (item.kind == DslStructItemKind::RbspTrailingBits) {
                         continue;
                     }
@@ -2938,6 +3097,8 @@ private:
                 if (item.compressedPayload.name == name) {
                     return true;
                 }
+                break;
+            case DslStructItemKind::Assertion:
                 break;
             case DslStructItemKind::Conditional:
                 if (declaresName(item.thenItems, name) || declaresName(item.elseItems, name)) {

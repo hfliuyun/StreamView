@@ -121,6 +121,82 @@ private slots:
         QCOMPARE(field.widthExpression->operands.at(1).unsignedValue, quint64(4));
     }
 
+    void parsesSourceAnchoredAssertionsWithoutCreatingFields() {
+        const auto result = DslParser::parse(QStringLiteral(R"(
+            struct NalUnitHeader {
+                bits<1> forbidden_zero_bit;
+                bits<2> nal_ref_idc;
+                bits<5> nal_unit_type;
+                assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
+            }
+            entry NalUnitHeader;
+        )"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& items = result.program.structs.front().items;
+        QCOMPARE(items.size(), std::size_t(4));
+        QCOMPARE(items.back().kind, DslStructItemKind::Assertion);
+        const auto& assertion = items.back().assertion;
+        QCOMPARE(assertion.anchorFieldName, QStringLiteral("nal_ref_idc"));
+        QVERIFY(assertion.anchorFieldRange.end.offset >
+                assertion.anchorFieldRange.start.offset);
+        QVERIFY(assertion.range.end.offset > assertion.range.start.offset);
+        QCOMPARE(assertion.condition.kind, DslExpressionKind::Binary);
+        QCOMPARE(assertion.condition.binaryOperator, DslBinaryOperator::LogicalOr);
+        QCOMPARE(assertion.condition.operands.size(), std::size_t(2));
+        for (const auto& operand : assertion.condition.operands) {
+            QCOMPARE(operand.kind, DslExpressionKind::Binary);
+            QCOMPARE(operand.binaryOperator, DslBinaryOperator::NotEqual);
+        }
+    }
+
+    void rejectsInvalidAssertionContractsAndRecoversAtTheNextField() {
+        const auto nonBoolean = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value; assert(value) at value; } entry Header;"));
+        QVERIFY(hasDiagnostic(nonBoolean, DslDiagnosticCode::InvalidType));
+
+        const auto unknownDependency = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value; assert(missing == 0) at value; } entry Header;"));
+        QVERIFY(hasDiagnostic(unknownDependency, DslDiagnosticCode::UnknownReference));
+
+        const auto futureAnchor = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value; assert(true) at tail; bits<1> tail; } entry Header;"));
+        QVERIFY(hasDiagnostic(futureAnchor, DslDiagnosticCode::UnknownReference));
+
+        const auto computedAnchor = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value; computed<u64> derived = value; "
+            "assert(true) at derived; } entry Header;"));
+        QVERIFY(hasDiagnostic(computedAnchor, DslDiagnosticCode::InvalidType));
+
+        const auto arrayAnchor = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> values[2]; assert(true) at values; } entry Header;"));
+        QVERIFY(hasDiagnostic(arrayAnchor, DslDiagnosticCode::InvalidType));
+
+        const auto nested = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value; if (value == 1) { "
+            "assert(true) at value; } } entry Header;"));
+        QVERIFY(hasDiagnostic(nested, DslDiagnosticCode::InvalidCondition));
+
+        const auto annotated = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value; @description(\"bad\") "
+            "assert(true) at value; } entry Header;"));
+        QVERIFY(hasDiagnostic(annotated, DslDiagnosticCode::InvalidAnnotation));
+
+        const auto malformed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value; assert(true) value; "
+            "bits<1> tail; } entry Header;"));
+        QVERIFY(hasDiagnostic(malformed, DslDiagnosticCode::MissingToken));
+        const auto& items = malformed.program.structs.front().items;
+        const auto tail = std::find_if(items.begin(), items.end(), [](const auto& item) {
+            return item.kind == DslStructItemKind::Field &&
+                   item.field.name == QStringLiteral("tail");
+        });
+        QVERIFY(tail != items.end());
+    }
+
     void parsesMinimumProgramIntoTypedIr() {
         const auto result = DslParser::parse(QStringLiteral(R"(
             @spec("ITU-T H.264", "7.3.1")

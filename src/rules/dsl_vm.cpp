@@ -885,6 +885,12 @@ DslExecutionResult DslVirtualMachine::execute(
         result.errorMessage = QStringLiteral("Typed IR bytecode range is invalid");
         return result;
     }
+    if (options.cancellation && options.cancellation->isCancellationRequested()) {
+        markFailure(DslExecutionStatus::Cancelled,
+                    QStringLiteral("DSL execution was cancelled"),
+                    nullptr);
+        return result;
+    }
 
     const auto validFixedController = [&program](const DslTypedField& controller) {
         const bool validUnsignedController = controller.kind == DslTypedFieldKind::Declared &&
@@ -1414,8 +1420,242 @@ DslExecutionResult DslVirtualMachine::execute(
         previousSentinelAssertionPosition = repeat.assertionFieldIndex;
     }
 
+    if (structure.assertions.size() >
+        DslTypedAssertion::maximumPerStructure()) {
+        markFailure(DslExecutionStatus::InvalidDefinition,
+                    QStringLiteral("Typed IR declares too many assertions"),
+                    nullptr,
+                    std::nullopt,
+                    std::nullopt,
+                    false);
+        return result;
+    }
+    quint32 previousAssertionPosition = 0;
+    for (std::size_t assertionIndex = 0;
+         assertionIndex < structure.assertions.size();
+         ++assertionIndex) {
+        if (options.cancellation &&
+            options.cancellation->isCancellationRequested()) {
+            markFailure(DslExecutionStatus::Cancelled,
+                        QStringLiteral("DSL execution was cancelled"),
+                        nullptr);
+            return result;
+        }
+        const DslTypedAssertion& assertion =
+            structure.assertions.at(assertionIndex);
+        const bool ordered = assertionIndex == 0 ||
+                             assertion.assertionFieldIndex >=
+                                 previousAssertionPosition;
+        if (!ordered || assertion.assertionFieldIndex > structure.fields.size() ||
+            assertion.anchorFieldIndex >= assertion.assertionFieldIndex ||
+            assertion.anchorFieldIndex >= structure.fields.size()) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed assertion position or anchor is invalid"),
+                        nullptr,
+                        std::nullopt,
+                        std::nullopt,
+                        false);
+            return result;
+        }
+        const DslTypedField& anchor =
+            structure.fields.at(assertion.anchorFieldIndex);
+        const bool sourceBacked =
+            anchor.type.kind == DslValueTypeKind::UnsignedBits ||
+            anchor.type.kind == DslValueTypeKind::Enum ||
+            anchor.type.kind == DslValueTypeKind::UnsignedExpGolomb ||
+            anchor.type.kind == DslValueTypeKind::SignedExpGolomb;
+        if (anchor.kind != DslTypedFieldKind::Declared || !sourceBacked ||
+            !anchor.conditions.empty()) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed assertion anchor is invalid"),
+                        &anchor,
+                        std::nullopt,
+                        std::nullopt,
+                        false);
+            return result;
+        }
+        TypedExpressionValidationState validation;
+        if (!validateTypedExpression(assertion.condition,
+                                     program,
+                                     structure,
+                                     assertion.assertionFieldIndex,
+                                     {},
+                                     1,
+                                     validation) ||
+            assertion.condition.type != DslScalarType::Bool) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        validation.errorMessage.isEmpty()
+                            ? QStringLiteral("Typed assertion condition is invalid")
+                            : validation.errorMessage,
+                        &anchor,
+                        std::nullopt,
+                        std::nullopt,
+                        false);
+            return result;
+        }
+        previousAssertionPosition = assertion.assertionFieldIndex;
+    }
+
     const std::size_t bytecodeBegin = structure.bytecodeOffset;
     const std::size_t bytecodeEnd = bytecodeBegin + structure.bytecodeLength;
+    std::size_t nextSentinelOpcodeIndex = 0;
+    std::size_t nextAssertionOpcodeIndex = 0;
+    std::size_t nextRepeatOpcodeIndex = 0;
+    quint32 assertionFieldPosition = 0;
+    bool assertionBytecodeBegan = false;
+    bool assertionBytecodeEnded = false;
+    const bool requiresPositionedAssertionPreflight = !structure.assertions.empty();
+    const auto sentinelPendingAtOrBefore = [&]() {
+        return nextSentinelOpcodeIndex < structure.sentinelRepeats.size() &&
+               structure.sentinelRepeats.at(nextSentinelOpcodeIndex)
+                       .assertionFieldIndex <= assertionFieldPosition;
+    };
+    const auto assertionPendingAtOrBefore = [&]() {
+        return nextAssertionOpcodeIndex < structure.assertions.size() &&
+               structure.assertions.at(nextAssertionOpcodeIndex)
+                       .assertionFieldIndex <= assertionFieldPosition;
+    };
+    const auto repeatPendingAtOrBefore = [&]() {
+        return nextRepeatOpcodeIndex < structure.repeatBounds.size() &&
+               structure.repeatBounds.at(nextRepeatOpcodeIndex).firstFieldIndex <=
+                   assertionFieldPosition;
+    };
+    const auto rejectPositionedAssertionBytecode = [&](const DslTypedField* field) {
+        markFailure(DslExecutionStatus::InvalidDefinition,
+                    QStringLiteral("Typed positioned assertion bytecode is invalid"),
+                    field,
+                    std::nullopt,
+                    std::nullopt,
+                    false);
+    };
+    for (std::size_t instructionIndex = bytecodeBegin;
+         instructionIndex < bytecodeEnd;
+         ++instructionIndex) {
+        if ((instructionIndex - bytecodeBegin) %
+                    options.limits.cancellationCheckInterval ==
+                0 &&
+            options.cancellation &&
+            options.cancellation->isCancellationRequested()) {
+            markFailure(DslExecutionStatus::Cancelled,
+                        QStringLiteral("DSL execution was cancelled"),
+                        nullptr);
+            return result;
+        }
+        const DslInstruction& instruction = program.bytecode.at(instructionIndex);
+        if (!requiresPositionedAssertionPreflight) {
+            if (instruction.opcode == DslOpcode::AssertExpression) {
+                rejectPositionedAssertionBytecode(nullptr);
+                return result;
+            }
+            continue;
+        }
+        if (assertionBytecodeEnded) {
+            rejectPositionedAssertionBytecode(nullptr);
+            return result;
+        }
+        switch (instruction.opcode) {
+        case DslOpcode::BeginStructure:
+            if (assertionBytecodeBegan || instructionIndex != bytecodeBegin ||
+                instruction.operand != structureIndex || instruction.immediate != 0) {
+                rejectPositionedAssertionBytecode(nullptr);
+                return result;
+            }
+            assertionBytecodeBegan = true;
+            break;
+        case DslOpcode::ReadUnsignedBits:
+        case DslOpcode::ReadUnsignedExpGolomb:
+        case DslOpcode::ReadSignedExpGolomb:
+        case DslOpcode::EvaluateComputed:
+        case DslOpcode::RegisterLazyBytes:
+        case DslOpcode::RegisterCompressedPayload:
+            if (!assertionBytecodeBegan || sentinelPendingAtOrBefore() ||
+                assertionPendingAtOrBefore() || repeatPendingAtOrBefore()) {
+                rejectPositionedAssertionBytecode(nullptr);
+                return result;
+            }
+            ++assertionFieldPosition;
+            break;
+        case DslOpcode::ReadRbspTrailingBits:
+            if (!assertionBytecodeBegan || sentinelPendingAtOrBefore() ||
+                assertionPendingAtOrBefore() || repeatPendingAtOrBefore()) {
+                rejectPositionedAssertionBytecode(nullptr);
+                return result;
+            }
+            assertionFieldPosition += 8;
+            break;
+        case DslOpcode::AssertExpression: {
+            const DslTypedAssertion* assertion =
+                nextAssertionOpcodeIndex < structure.assertions.size()
+                    ? &structure.assertions.at(nextAssertionOpcodeIndex)
+                    : nullptr;
+            if (!assertionBytecodeBegan || assertion == nullptr ||
+                instruction.operand != nextAssertionOpcodeIndex ||
+                instruction.immediate != 0 ||
+                assertion->assertionFieldIndex != assertionFieldPosition ||
+                sentinelPendingAtOrBefore()) {
+                rejectPositionedAssertionBytecode(
+                    assertion != nullptr
+                        ? &structure.fields.at(assertion->anchorFieldIndex)
+                        : nullptr);
+                return result;
+            }
+            ++nextAssertionOpcodeIndex;
+            break;
+        }
+        case DslOpcode::AssertRepeatCount: {
+            const DslTypedRepeatBound* repeat =
+                nextRepeatOpcodeIndex < structure.repeatBounds.size()
+                    ? &structure.repeatBounds.at(nextRepeatOpcodeIndex)
+                    : nullptr;
+            if (!assertionBytecodeBegan || repeat == nullptr ||
+                instruction.operand != nextRepeatOpcodeIndex ||
+                instruction.immediate != repeat->maximumCount ||
+                repeat->firstFieldIndex != assertionFieldPosition ||
+                sentinelPendingAtOrBefore() || assertionPendingAtOrBefore()) {
+                rejectPositionedAssertionBytecode(nullptr);
+                return result;
+            }
+            ++nextRepeatOpcodeIndex;
+            break;
+        }
+        case DslOpcode::AssertSentinelTerminated: {
+            const DslTypedSentinelRepeat* repeat =
+                nextSentinelOpcodeIndex < structure.sentinelRepeats.size()
+                    ? &structure.sentinelRepeats.at(nextSentinelOpcodeIndex)
+                    : nullptr;
+            if (!assertionBytecodeBegan || repeat == nullptr ||
+                instruction.operand != nextSentinelOpcodeIndex ||
+                instruction.immediate != repeat->terminatingValue ||
+                repeat->assertionFieldIndex != assertionFieldPosition) {
+                rejectPositionedAssertionBytecode(nullptr);
+                return result;
+            }
+            ++nextSentinelOpcodeIndex;
+            break;
+        }
+        case DslOpcode::EndStructure:
+            if (!assertionBytecodeBegan || instruction.operand != structureIndex ||
+                instruction.immediate != 0 || sentinelPendingAtOrBefore() ||
+                assertionPendingAtOrBefore() || repeatPendingAtOrBefore()) {
+                rejectPositionedAssertionBytecode(nullptr);
+                return result;
+            }
+            assertionBytecodeEnded = true;
+            break;
+        case DslOpcode::AssertEquals:
+        case DslOpcode::AssertRangeMinimum:
+        case DslOpcode::AssertRangeMaximum:
+            break;
+        }
+    }
+    if (requiresPositionedAssertionPreflight &&
+        (!assertionBytecodeBegan || !assertionBytecodeEnded ||
+         nextSentinelOpcodeIndex != structure.sentinelRepeats.size() ||
+         nextAssertionOpcodeIndex != structure.assertions.size() ||
+         nextRepeatOpcodeIndex != structure.repeatBounds.size())) {
+        rejectPositionedAssertionBytecode(nullptr);
+        return result;
+    }
     std::vector<quint32> unsignedExpGolombReadCounts(structure.fields.size());
     std::vector<bool> conflictingEnumReads(structure.fields.size());
     for (std::size_t instructionIndex = bytecodeBegin;
@@ -1537,6 +1777,7 @@ DslExecutionResult DslVirtualMachine::execute(
     bool lastFieldSkipped = false;
     quint32 nextFieldIndex = 0;
     quint32 nextSentinelRepeatIndex = 0;
+    quint32 nextAssertionIndex = 0;
     bool ended = false;
     const auto conditionsPresent = [&](const std::vector<DslTypedFieldCondition>& conditions,
                                        const DslTypedField* subject,
@@ -2406,6 +2647,73 @@ DslExecutionResult DslVirtualMachine::execute(
             ++nextFieldIndex;
             break;
         }
+        case DslOpcode::AssertExpression: {
+            const DslTypedAssertion* assertion =
+                instruction.operand < structure.assertions.size()
+                    ? &structure.assertions.at(instruction.operand)
+                    : nullptr;
+            if (!result.structureNode || assertion == nullptr ||
+                instruction.operand != nextAssertionIndex ||
+                instruction.immediate != 0 ||
+                assertion->assertionFieldIndex != nextFieldIndex) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed assertion instruction is invalid"),
+                            nullptr);
+                return result;
+            }
+            ++nextAssertionIndex;
+            const DslTypedField& anchor =
+                structure.fields.at(assertion->anchorFieldIndex);
+            const std::optional<MaterializedFieldRange>& anchorRange =
+                fieldRanges.at(assertion->anchorFieldIndex);
+            if (!anchorRange) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed assertion anchor range is unavailable"),
+                            &anchor,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            const ComputedEvaluationResult evaluated = evaluateTypedExpression(
+                assertion->condition, structure, fieldValues, contextValueResolver);
+            if (!evaluated.complete() || evaluated.value.type != DslScalarType::Bool) {
+                const DslTypedField* diagnosticField = &anchor;
+                std::optional<MaterializedFieldRange> diagnosticRange = anchorRange;
+                if (evaluated.diagnosticFieldIndex &&
+                    *evaluated.diagnosticFieldIndex < structure.fields.size()) {
+                    diagnosticField =
+                        &structure.fields.at(*evaluated.diagnosticFieldIndex);
+                    diagnosticRange =
+                        fieldRanges.at(*evaluated.diagnosticFieldIndex);
+                }
+                markFailure(
+                    evaluated.complete() ? DslExecutionStatus::InvalidDefinition
+                                         : evaluated.status,
+                    evaluated.errorMessage.isEmpty()
+                        ? QStringLiteral("Assertion condition evaluation failed")
+                        : evaluated.errorMessage,
+                    diagnosticField,
+                    diagnosticRange
+                        ? std::optional<quint64>(diagnosticRange->start)
+                        : std::nullopt,
+                    diagnosticRange
+                        ? std::optional<quint64>(diagnosticRange->bitCount)
+                        : std::nullopt,
+                    diagnosticRange.has_value());
+                return result;
+            }
+            if (evaluated.value.booleanValue) {
+                break;
+            }
+            markFailure(DslExecutionStatus::InvalidSyntax,
+                        QStringLiteral("Assertion condition is false"),
+                        &anchor,
+                        anchorRange->start,
+                        anchorRange->bitCount,
+                        true);
+            return result;
+        }
         case DslOpcode::AssertEquals: {
             const DslTypedField* field = instruction.operand < structure.fields.size()
                                              ? &structure.fields.at(instruction.operand)
@@ -2633,7 +2941,8 @@ DslExecutionResult DslVirtualMachine::execute(
         case DslOpcode::EndStructure: {
             if (!result.structureNode || instruction.operand != structureIndex ||
                 nextFieldIndex != structure.fields.size() ||
-                nextSentinelRepeatIndex != structure.sentinelRepeats.size()) {
+                nextSentinelRepeatIndex != structure.sentinelRepeats.size() ||
+                nextAssertionIndex != structure.assertions.size()) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Typed IR end instruction is invalid"),
                             nullptr);
