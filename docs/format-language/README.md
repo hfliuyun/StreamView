@@ -988,8 +988,8 @@ PPS NAL and binds that exact generation when it publishes its own generation.
 If no SPS is available, the PPS structure remains materialized but receives a
 source-located `dependency-unavailable` diagnostic; its RBSP and NAL are invalid,
 nothing is published, and later NAL units are still analyzed. Generic context
-import is used by the bounded type-5 IDR slice below. Every other type keeps the
-uninterpreted `rbsp_payload` region unchanged.
+import is used by the bounded type-1 and type-5 slice headers below. Every other
+type keeps the uninterpreted `rbsp_payload` region unchanged.
 
 The declared PPS fields have the following bounded meanings:
 
@@ -1011,31 +1011,39 @@ The declared PPS fields have the following bounded meanings:
 | `constrained_intra_pred_flag` | Restricts intra prediction to intra-coded neighboring macroblocks. |
 | `redundant_pic_cnt_present_flag` | Signals redundant-picture count syntax in associated slice headers. |
 
-Type `1` decodes `NonIdrAllISliceLayerWithoutPartitioningRbsp` for the bounded
-progressive non-reference all-I `slice_type` values 2 and 7. The direct-header
-assertion requires `nal_ref_idc == 0`, so the projection does not contain
-`dec_ref_pic_marking`. It imports the same exact PPS/SPS generations as the IDR
-shape and reads `first_mb_in_slice`, `slice_type`, `pic_parameter_set_id`,
-`frame_num`, `pic_order_cnt_lsb`, optional bottom-field POC and redundant-picture
-fields, `slice_qp_delta`, optional deblocking control, and the opaque
-`slice_data` suffix. It omits the IDR-only `idr_pic_id`,
-`no_output_of_prior_pics_flag`, and `long_term_reference_flag` fields.
+Type `1` decodes `NonIdrSliceLayerWithoutPartitioningRbsp` for bounded
+progressive non-reference I and P slices. `NonIdrSliceType` accepts I values 2
+and 7 and P values 0 and 5, while the visible `is_p_slice` computed field
+distinguishes the two layouts. The direct-header assertion requires
+`nal_ref_idc == 0`, so the projection does not contain
+`dec_ref_pic_marking`. P slices read the mandatory
+`num_ref_idx_active_override_flag` and
+`ref_pic_list_modification_flag_l0` bits and require both to be zero. Imported
+PPS assertions also require `weighted_pred_flag == 0` and
+`entropy_coding_mode_flag == 0` before `slice_qp_delta`; all-I values
+short-circuit these P-only prerequisites. The structure omits the IDR-only
+`idr_pic_id`, `no_output_of_prior_pics_flag`, and
+`long_term_reference_flag` fields.
 
 Type `5` decodes `IdrSliceLayerWithoutPartitioningRbsp` for the bounded
 progressive all-I `slice_type` values 2 and 7. It imports the exact PPS
 generation selected by `pic_parameter_set_id` and that PPS's exact SPS
-dependency, then reads the following fields:
+dependency. Across the two bounded forms, declared slice fields have these
+meanings:
 
 | Field | Meaning in this slice |
 | --- | --- |
 | `first_mb_in_slice` | Identifies the first macroblock in the slice. |
-| `slice_type` | Names the supported all-I form: `i = 2` or equivalent `all_i = 7`; other values are fatal at this codeword. |
+| `slice_type` | Type 1 accepts `p = 0`, `i = 2`, `all_p = 5`, and `all_i = 7`; type 5 accepts only the two all-I values. Other values are fatal at this codeword. |
+| `is_p_slice` | Type-1 computed Boolean that is true for values 0 and 5; it has no source location. |
 | `pic_parameter_set_id` | Selects the exact prior PPS generation and warns outside `0..255`. |
 | `frame_num` | Uses `log2_max_frame_num_minus4 + 4` bits from the bound SPS. |
 | `idr_pic_id` | Identifies the IDR picture. |
 | `pic_order_cnt_lsb` | Uses `log2_max_pic_order_cnt_lsb_minus4 + 4` bits from the bound POC-type-0 SPS. |
 | `delta_pic_order_cnt_bottom` | Carries the signed bottom-field POC delta when the bound PPS enables it. |
 | `redundant_pic_cnt` | Identifies the redundant representation when the bound PPS enables it; values outside `0..127` warn. |
+| `num_ref_idx_active_override_flag` | Mandatory for a supported P slice and must be zero; value 1 fails before the unsupported override count. |
+| `ref_pic_list_modification_flag_l0` | Mandatory for a supported P slice and must be zero; value 1 fails before the unsupported modification loop. |
 | `no_output_of_prior_pics_flag` | Controls output of pictures preceding the IDR picture. |
 | `long_term_reference_flag` | Marks the IDR picture as a long-term reference when set. |
 | `slice_qp_delta` | Adjusts the initial luma quantization parameter; its signed bound is deferred. |
@@ -1051,10 +1059,12 @@ false guard consumes no bits and creates no node. Deblocking value 1 skips both
 offsets, values 0 and 2 read them, and reserved values fail at the controlling
 codeword. Missing/future/stale parameter-set generations remain
 `dependency-unavailable`; the partial header is retained and later NAL units
-are still analyzed. Reference type-1, P/B/SP/SI, field-picture, reference-list,
-weighted, adaptive-memory-management, and slice-group branches are deferred.
+are still analyzed. Reference type-1, B/SP/SI, field-picture, nonzero
+reference-index override, reference-list modification, weighted-prediction,
+CABAC P-header, adaptive-memory-management, and slice-group branches are
+deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
-Package `0.1.12` advertises coverage depth `all-i-slice-header`; this is not yet the
+Package `0.1.13` advertises coverage depth `i-p-slice-header`; this is not yet the
 complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
@@ -1346,13 +1356,22 @@ struct Sps {
 struct Pps {
     ue pps_id;
     ue sps_id;
-    bits<1> entropy_mode @context_export;
+    bits<1> entropy_coding_mode_flag @context_export;
+    bits<1> weighted_pred_flag @context_export;
 }
 
 @context_import("h264-pps", pps_id)
 struct SliceHeader {
     ue first_mb_in_slice;
+    ue slice_type;
+    computed<bool> is_p_slice = slice_type == 0 || slice_type == 5;
     ue pps_id;
+    assert(!is_p_slice ||
+           context_value(pps_id, h264_pps, weighted_pred_flag) == 0)
+        at pps_id;
+    assert(!is_p_slice ||
+           context_value(pps_id, h264_pps, entropy_coding_mode_flag) == 0)
+        at pps_id;
     bits<context_value(pps_id,
                        h264_sps,
                        log2_max_frame_num_minus4) + 4> frame_num;
@@ -1700,6 +1719,8 @@ Imported values in source-anchored assertions are specified by
 [ADR-0056](../adr/0056-allow-imported-context-values-in-source-anchored-assertions.md).
 The bounded progressive non-IDR all-I slice is specified by
 [ADR-0055](../adr/0055-add-bounded-progressive-non-idr-all-i-slice-header.md).
+The bounded progressive non-IDR P-slice is specified by
+[ADR-0057](../adr/0057-add-bounded-progressive-non-idr-p-slice-header.md).
 
 ## Sandbox And Resource Limits
 

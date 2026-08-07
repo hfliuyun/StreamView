@@ -751,8 +751,8 @@ extension 语法会改变或扩展已声明布局，因此成为 `invalid-syntax
 该 PPS NAL 之前具有声明 ID 的最近 available SPS，并在发布自身 generation 时绑定这个精确
 generation。若不存在 SPS，PPS structure 仍保持 materialized，但会收到带 source 位置的
 `dependency-unavailable` diagnostic；所属 RBSP 与 NAL 变为 invalid，不发布任何 generation，
-并继续分析后续 NAL。下面的有界 type-5 IDR slice 会使用通用 context import；其余所有
-type 的 `rbsp_payload` region 保持原样。
+并继续分析后续 NAL。下面的有界 type-1 与 type-5 slice header 会使用通用 context import；
+其余所有 type 的 `rbsp_payload` region 保持原样。
 
 已声明 PPS 字段具有以下有界含义：
 
@@ -774,28 +774,32 @@ type 的 `rbsp_payload` region 保持原样。
 | `constrained_intra_pred_flag` | 将 intra prediction 限制在 intra-coded 相邻 macroblock。 |
 | `redundant_pic_cnt_present_flag` | 表示关联 slice header 中存在 redundant-picture count 语法。 |
 
-type `1` 为有界 progressive non-reference all-I `slice_type` 值 2 和 7 解码
-`NonIdrAllISliceLayerWithoutPartitioningRbsp`。direct-header assertion 要求
-`nal_ref_idc == 0`，因此 projection 不包含 `dec_ref_pic_marking`。它与 IDR shape 导入相同的
-精确 PPS/SPS generation，并读取 `first_mb_in_slice`、`slice_type`、`pic_parameter_set_id`、
-`frame_num`、`pic_order_cnt_lsb`、可选 bottom-field POC 与 redundant-picture 字段、
-`slice_qp_delta`、可选 deblocking control，以及 opaque `slice_data` suffix。IDR 专属的
+type `1` 为有界 progressive non-reference I 与 P slice 解码
+`NonIdrSliceLayerWithoutPartitioningRbsp`。`NonIdrSliceType` 接受 I 值 2/7 和 P 值 0/5，
+可见的 `is_p_slice` computed field 区分两种布局。direct-header assertion 要求
+`nal_ref_idc == 0`，因此 projection 不包含 `dec_ref_pic_marking`。P slice 会实际读取必需的
+`num_ref_idx_active_override_flag` 与 `ref_pic_list_modification_flag_l0` bit，并要求两者为零。
+imported PPS assertion 还会在 `slice_qp_delta` 前要求 `weighted_pred_flag == 0` 与
+`entropy_coding_mode_flag == 0`；all-I 值会短路这些 P-only prerequisite。IDR 专属的
 `idr_pic_id`、`no_output_of_prior_pics_flag` 与 `long_term_reference_flag` 不出现。
 
 type `5` 为有界 progressive all-I `slice_type` 值 2 和 7 解码
 `IdrSliceLayerWithoutPartitioningRbsp`。它导入 `pic_parameter_set_id` 选择的精确 PPS
-generation 以及该 PPS 的精确 SPS dependency，然后读取以下字段：
+generation 以及该 PPS 的精确 SPS dependency。两个有界 shape 中声明的 slice 字段含义如下：
 
 | 字段 | 本切片中的含义 |
 | --- | --- |
 | `first_mb_in_slice` | 标识 slice 中的第一个 macroblock。 |
-| `slice_type` | 命名支持的 all-I 形状：`i = 2` 或等价的 `all_i = 7`；其他值在该码字处致命失败。 |
+| `slice_type` | type 1 接受 `p = 0`、`i = 2`、`all_p = 5` 与 `all_i = 7`；type 5 只接受两个 all-I 值。其他值在该码字处致命失败。 |
+| `is_p_slice` | type-1 computed Boolean，值 0/5 时为 true；没有 source location。 |
 | `pic_parameter_set_id` | 选择此前精确 PPS generation，超出 `0..255` 时告警。 |
 | `frame_num` | 使用绑定 SPS 的 `log2_max_frame_num_minus4 + 4` bit。 |
 | `idr_pic_id` | 标识 IDR picture。 |
 | `pic_order_cnt_lsb` | 在绑定的 POC-type-0 SPS 下使用 `log2_max_pic_order_cnt_lsb_minus4 + 4` bit。 |
 | `delta_pic_order_cnt_bottom` | 在绑定 PPS 启用时携带 signed bottom-field POC delta。 |
 | `redundant_pic_cnt` | 在绑定 PPS 启用时标识 redundant representation；超出 `0..127` 时告警。 |
+| `num_ref_idx_active_override_flag` | 受支持 P slice 的必需字段，必须为零；值 1 会在尚未支持的 override count 前失败。 |
+| `ref_pic_list_modification_flag_l0` | 受支持 P slice 的必需字段，必须为零；值 1 会在尚未支持的 modification loop 前失败。 |
 | `no_output_of_prior_pics_flag` | 控制 IDR picture 之前 picture 的输出。 |
 | `long_term_reference_flag` | 设置时把 IDR picture 标记为 long-term reference。 |
 | `slice_qp_delta` | 调整初始 luma quantization parameter；signed bound 留待后续。 |
@@ -809,9 +813,10 @@ exact imported PPS guard 会选择 bottom-field POC、redundant-picture count �
 字段；false guard 不消费 bit，也不创建 node。deblocking 值 1 省略两个 offset，值 0 和 2 读取
 它们，reserved 值在 controller 码字处失败。missing/future/stale parameter-set generation 仍报告
 `dependency-unavailable`；保留 partial header，并继续分析后续 NAL。reference type-1、
-P/B/SP/SI、field-picture、reference-list、weighted、adaptive-memory-management 与 slice-group
-分支均留待后续。type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.12` 发布 coverage depth `all-i-slice-header`；这尚未完成
+B/SP/SI、field-picture、非零 reference-index override、reference-list modification、weighted-
+prediction、CABAC P-header、adaptive-memory-management 与 slice-group 分支均留待后续。
+type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
+`0.1.13` 发布 coverage depth `i-p-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
@@ -872,13 +877,22 @@ struct Sps {
 struct Pps {
     ue pps_id;
     ue sps_id;
-    bits<1> entropy_mode @context_export;
+    bits<1> entropy_coding_mode_flag @context_export;
+    bits<1> weighted_pred_flag @context_export;
 }
 
 @context_import("h264-pps", pps_id)
 struct SliceHeader {
     ue first_mb_in_slice;
+    ue slice_type;
+    computed<bool> is_p_slice = slice_type == 0 || slice_type == 5;
     ue pps_id;
+    assert(!is_p_slice ||
+           context_value(pps_id, h264_pps, weighted_pred_flag) == 0)
+        at pps_id;
+    assert(!is_p_slice ||
+           context_value(pps_id, h264_pps, entropy_coding_mode_flag) == 0)
+        at pps_id;
     bits<context_value(pps_id,
                        h264_sps,
                        log2_max_frame_num_minus4) + 4> frame_num;
@@ -1379,6 +1393,8 @@ source-anchored assertion 中 imported value 的合同见
 [ADR-0056](../adr/0056-allow-imported-context-values-in-source-anchored-assertions.md)。
 有界 progressive non-IDR all-I slice 合同见
 [ADR-0055](../adr/0055-add-bounded-progressive-non-idr-all-i-slice-header.md)。
+有界 progressive non-IDR P-slice 合同见
+[ADR-0057](../adr/0057-add-bounded-progressive-non-idr-p-slice-header.md)。
 
 ## 沙箱与资源限制
 
