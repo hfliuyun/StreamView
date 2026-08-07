@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Allow source-anchored assertions to reference exact imported context values
-Next Action: Define and implement the first bounded progressive non-IDR P-slice reference-list prerequisite
-Last Verification: Commits 5c98d84 and 613a53a; local dev/ci/sanitize each passed 32/32; svtool rule check passed; hosted run 31186610199 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Add a bounded progressive non-IDR P-slice header
+Next Action: Define and implement the bounded P-slice reference-index override branch
+Last Verification: Commits 362ac2a and 8a37db1; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 68/68; svtool rule check passed; hosted run 31189395918 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -683,3 +683,18 @@ Blockers: None
   `svtool rule check` 通过。hosted run `31186610199` 的 Windows 2022、macOS 15、Ubuntu 24.04
   Configure、Build、Test、Install、Upload 全部成功。下一步使用该能力界定并实现首个 bounded
   progressive non-IDR P-slice reference-list prerequisite。
+- 2026-08-07：完成首个有界 progressive non-IDR P-slice header 增量。ADR-0057 与英中文
+  bundled-profile 参考提交 `362ac2a` 固化 type-1 non-reference P 值 0/5、两个 mandatory
+  reference-list control bit、weighted-prediction/CABAC PPS prerequisite，以及通用
+  `NonIdrSliceType` / `NonIdrSliceLayerWithoutPartitioningRbsp` presentation 名。实现提交
+  `8a37db1` 新增可见 `is_p_slice` computed node；P 路径实际读取并要求
+  `num_ref_idx_active_override_flag == 0` 与 `ref_pic_list_modification_flag_l0 == 0`，再以
+  imported source-anchored assertion 要求精确 PPS 的 `weighted_pred_flag == 0` 和
+  `entropy_coding_mode_flag == 0`。all-I 值 2/7 会短路 P-only prerequisite；type-1 direct
+  header 继续要求 `nal_ref_idc == 0`，因此没有 `dec_ref_pic_marking`。package 更新为
+  `0.1.13`、coverage depth 为 `i-p-slice-header`；回归覆盖 P type 0/5、all-I child/order、
+  两个非零 control flag、weighted/CABAC assertion 的精确 source span，以及失败后继续扫描，
+  H.264 analyzer 定向套件为 68/68。`svtool rule check` 通过；本机 `dev`、`ci`、`sanitize`
+  重新配置、完整构建与 CTest 均为 32/32。hosted run `31189395918` 的 Windows 2022、macOS 15、
+  Ubuntu 24.04 Configure、Build、Test、Install、Upload 全部成功。完整 Baseline/Main/High
+  slice-header 项仍未完成；下一步定义并实现 bounded P-slice reference-index override 分支。
