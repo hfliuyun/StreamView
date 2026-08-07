@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Add a bounded P-slice reference-list modification loop
-Next Action: Define and implement a bounded non-reference P-slice CABAC initialization branch
-Last Verification: Commits b635cd7 and d16e932; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 77/77; svtool rule check passed; hosted run 31195600795 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Add a bounded non-reference P-slice CABAC initialization branch
+Next Action: Define and implement a bounded progressive non-reference B-slice prerequisite
+Last Verification: Commits c39677c and 75c04ae; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 79/79; svtool rule check passed; hosted run 31198302934 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -727,3 +727,19 @@ Blockers: None
   的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、Test、Install、Upload 全部成功。
   完整 Baseline/Main/High slice-header 项仍未完成；下一步定义并实现 bounded non-reference
   P-slice CABAC initialization branch。
+- 2026-08-07：完成有界 non-reference P-slice CABAC initialization branch 增量。ADR-0060
+  与英中文 bundled-profile 参考提交 `c39677c` 固化 clause 7.3.3 presence 条件：保留
+  weighted-prediction prerequisite，只在 coded P 值 0/5 且所选 PPS 的
+  `entropy_coding_mode_flag == 1` 时，于 `slice_qp_delta` 之前读取 `cabac_init_idc`；
+  entropy-enabled all-I 路径不消费该字段。实现提交 `75c04ae` 以 nested local/imported guard
+  取代旧 entropy assertion，并用 `ue @range(0, 2)` 报告非 layout-critical value-domain
+  warning；值 3 保留完整字段并继续 QP、deblocking 与 opaque payload，截断码字仍致命失败。
+  type-1 direct header 继续要求 `nal_ref_idc == 0`，因此没有 reference-picture marking。
+  package 更新为 `0.1.16`，coverage depth 保持 `i-p-slice-header`。回归覆盖 entropy-disabled
+  P 与 entropy-enabled all-I 字段缺席、coded P 值 0/5、合法 idc 0/1/2、值 3 warning 后的
+  deblocking/QP/payload 精确 boundary、截断码字及后续 NAL 恢复；H.264 analyzer 定向套件为
+  79/79。`svtool rule check` 通过；本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest
+  均为 32/32。hosted run `31198302934` 对 `75c04aedb7ca4b497580eaa6dad4febf9c8b1e1b`
+  的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、Test、Install、Upload 全部成功。
+  完整 Baseline/Main/High slice-header 项仍未完成；下一步定义并实现 bounded progressive
+  non-reference B-slice prerequisite。
