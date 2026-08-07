@@ -229,8 +229,10 @@ enum IdrAllISliceType {
     all_i = 7;
 }
 
-enum NonIdrAllISliceType {
+enum NonIdrSliceType {
+    p = 0;
     i = 2;
+    all_p = 5;
     all_i = 7;
 }
 
@@ -304,13 +306,14 @@ struct IdrSliceLayerWithoutPartitioningRbsp {
 }
 
 @spec("ITU-T H.264", "7.3.2.8, 7.3.3")
-@description("The bounded progressive all-I non-IDR slice header followed by an opaque suffix.")
+@description("The bounded progressive I/P non-IDR slice header followed by an opaque suffix.")
 @context_import("h264-pps", pic_parameter_set_id)
-struct NonIdrAllISliceLayerWithoutPartitioningRbsp {
+struct NonIdrSliceLayerWithoutPartitioningRbsp {
     ue first_mb_in_slice
         @description("Identifies the first macroblock in this slice.");
-    ue slice_type @enum(NonIdrAllISliceType)
-        @description("Selects the supported non-IDR all-I slice header form.");
+    ue slice_type @enum(NonIdrSliceType)
+        @description("Selects the supported non-IDR I or P slice header form.");
+    computed<bool> is_p_slice = slice_type == 0 || slice_type == 5;
     ue pic_parameter_set_id @range(0, 255)
         @description("Selects the active picture parameter set.");
     bits<(context_value(pic_parameter_set_id,
@@ -337,6 +340,20 @@ struct NonIdrAllISliceLayerWithoutPartitioningRbsp {
             @spec("ITU-T H.264", "7.3.3, 7.4.3")
             @description("Identifies the redundant representation of this picture.");
     }
+    if (is_p_slice) {
+        bits<1> num_ref_idx_active_override_flag @equals(0)
+            @spec("ITU-T H.264", "7.3.3")
+            @description("Keeps the PPS default list 0 reference count for this P slice.");
+        bits<1> ref_pic_list_modification_flag_l0 @equals(0)
+            @spec("ITU-T H.264", "7.3.3")
+            @description("Keeps list 0 reference-picture order unchanged for this P slice.");
+    }
+    assert(!is_p_slice ||
+           context_value(pic_parameter_set_id, h264_pps, weighted_pred_flag) == 0)
+        at pic_parameter_set_id;
+    assert(!is_p_slice ||
+           context_value(pic_parameter_set_id, h264_pps, entropy_coding_mode_flag) == 0)
+        at pic_parameter_set_id;
     se slice_qp_delta
         @description("Adjusts the initial luma quantization parameter for the slice.");
     if (context_value(pic_parameter_set_id,
@@ -366,7 +383,7 @@ sequence<NalUnitHeader> nal_units = scan(h264_start_code);
 @spec("ITU-T H.264", "7.3.1")
 @description("Selects the payload syntax carried by each NAL unit type.")
 payload<rbsp> nal_units switch (nal_unit_type) {
-    case 1: NonIdrAllISliceLayerWithoutPartitioningRbsp;
+    case 1: NonIdrSliceLayerWithoutPartitioningRbsp;
     case 5: IdrSliceLayerWithoutPartitioningRbsp;
     case 7: SequenceParameterSetRbsp;
     case 8: PictureParameterSetRbsp;
