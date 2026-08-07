@@ -128,7 +128,7 @@ private slots:
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         const QString path = writeFixture(
-            directory, QStringLiteral("many.264"), QByteArray::fromHex("0000016100000141"));
+            directory, QStringLiteral("many.264"), QByteArray::fromHex("0000016c0000014c"));
         QVERIFY(!path.isEmpty());
         MainWindow window;
         QString errorMessage;
@@ -154,7 +154,7 @@ private slots:
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         const QString path = writeFixture(
-            directory, QStringLiteral("current.264"), QByteArray::fromHex("00000141"));
+            directory, QStringLiteral("current.264"), QByteArray::fromHex("0000014c"));
         QVERIFY(!path.isEmpty());
         MainWindow window;
         QString errorMessage;
@@ -183,7 +183,7 @@ private slots:
         QCOMPARE(rawView->model()
                      ->data(rawView->model()->index(0, RawDataModel::FirstByte + 3))
                      .toString(),
-                 QStringLiteral("41"));
+                 QStringLiteral("4C"));
         QCOMPARE(rawView->model()->data(fourthByte, RawDataModel::SelectedBitsRole).toUInt(),
                  0x1FU);
         QCOMPARE(treeView->currentIndex(), nalUnitType);
@@ -380,7 +380,7 @@ private slots:
         const QString firstPath = writeFixture(
             directory, QStringLiteral("first.264"), QByteArray::fromHex("00000165"));
         const QString secondPath = writeFixture(
-            directory, QStringLiteral("second.264"), QByteArray::fromHex("00000141"));
+            directory, QStringLiteral("second.264"), QByteArray::fromHex("0000014c"));
         QVERIFY(!firstPath.isEmpty());
         QVERIFY(!secondPath.isEmpty());
         MainWindow window;
@@ -421,7 +421,7 @@ private slots:
         const QString firstPath = writeFixture(
             directory, QStringLiteral("first-cache.264"), QByteArray::fromHex("00000165"));
         const QString secondPath = writeFixture(
-            directory, QStringLiteral("second-cache.264"), QByteArray::fromHex("00000141"));
+            directory, QStringLiteral("second-cache.264"), QByteArray::fromHex("0000014c"));
         const QString cachePath = directory.filePath(QStringLiteral("analysis-cache.sqlite"));
         QVERIFY(!firstPath.isEmpty());
         QVERIFY(!secondPath.isEmpty());

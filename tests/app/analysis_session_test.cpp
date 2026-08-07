@@ -388,7 +388,7 @@ private slots:
         QVERIFY2(original != nullptr, qPrintable(errorMessage));
         QVERIFY2(original->saveSession(sessionPath, {}, &errorMessage), qPrintable(errorMessage));
         original.reset();
-        QVERIFY(writeFile(mediaPath, QByteArray::fromHex("00000141")));
+        QVERIFY(writeFile(mediaPath, QByteArray::fromHex("0000014c")));
 
         streamview::rules::RulePackageCatalog catalog;
         const auto restored = AnalysisSession::restoreSession(sessionPath, catalog);
@@ -587,7 +587,7 @@ private slots:
         const QString secondPath = directory.filePath(QStringLiteral("second.264"));
         const QString cachePath = directory.filePath(QStringLiteral("analysis-cache.sqlite"));
         QVERIFY(writeFile(firstPath, validAnnexBBytes()));
-        QVERIFY(writeFile(secondPath, QByteArray::fromHex("00000141")));
+        QVERIFY(writeFile(secondPath, QByteArray::fromHex("0000014c")));
 
         AnalysisSessionCacheOptions cacheOptions;
         cacheOptions.databasePath = cachePath;

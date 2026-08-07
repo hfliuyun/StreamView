@@ -90,7 +90,7 @@ private slots:
         const QString sourcePath = directory.filePath(QStringLiteral("sample.h264"));
         QFile sourceFile(sourcePath);
         QVERIFY(sourceFile.open(QIODevice::WriteOnly));
-        const QByteArray sourceBytes("\x00\x00\x01\x61", 4);
+        const QByteArray sourceBytes("\x00\x00\x01\x6c", 4);
         QCOMPARE(sourceFile.write(sourceBytes), static_cast<qint64>(sourceBytes.size()));
         sourceFile.close();
 
@@ -105,7 +105,7 @@ private slots:
         QVERIFY(standardOutput.contains(QStringLiteral("nal_unit[0]")));
         QVERIFY(standardOutput.contains(QStringLiteral("forbidden_zero_bit = 0")));
         QVERIFY(standardOutput.contains(QStringLiteral("nal_ref_idc = 3")));
-        QVERIFY(standardOutput.contains(QStringLiteral("nal_unit_type = 1")));
+        QVERIFY(standardOutput.contains(QStringLiteral("nal_unit_type = 12")));
         QVERIFY(standardOutput.contains(QStringLiteral("source bits [24, 25)")));
         QVERIFY(process.readAllStandardError().isEmpty());
     }

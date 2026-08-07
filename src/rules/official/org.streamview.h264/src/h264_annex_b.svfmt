@@ -8,6 +8,7 @@ struct NalUnitHeader {
     bits<5> nal_unit_type
         @description("Identifies the syntax carried by the NAL unit.");
     assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
+    assert(nal_unit_type != 1 || nal_ref_idc == 0) at nal_ref_idc;
 }
 
 @spec("ITU-T H.264", "7.3.2.4")
@@ -228,6 +229,11 @@ enum IdrAllISliceType {
     all_i = 7;
 }
 
+enum NonIdrAllISliceType {
+    i = 2;
+    all_i = 7;
+}
+
 enum DisableDeblockingFilterIdc {
     enabled = 0;
     disabled = 1;
@@ -297,12 +303,70 @@ struct IdrSliceLayerWithoutPartitioningRbsp {
         @spec("ITU-T H.264", "7.3.2.10");
 }
 
+@spec("ITU-T H.264", "7.3.2.8, 7.3.3")
+@description("The bounded progressive all-I non-IDR slice header followed by an opaque suffix.")
+@context_import("h264-pps", pic_parameter_set_id)
+struct NonIdrAllISliceLayerWithoutPartitioningRbsp {
+    ue first_mb_in_slice
+        @description("Identifies the first macroblock in this slice.");
+    ue slice_type @enum(NonIdrAllISliceType)
+        @description("Selects the supported non-IDR all-I slice header form.");
+    ue pic_parameter_set_id @range(0, 255)
+        @description("Selects the active picture parameter set.");
+    bits<(context_value(pic_parameter_set_id,
+                        h264_sps,
+                        log2_max_frame_num_minus4) + 4) /
+         context_value(pic_parameter_set_id, h264_sps, frame_mbs_only_flag)> frame_num
+        @description("Identifies the decoded picture within the frame-number wrap.");
+    bits<(context_value(pic_parameter_set_id,
+                        h264_sps,
+                        log2_max_pic_order_cnt_lsb_minus4) + 4) /
+         (1 - context_value(pic_parameter_set_id, h264_sps, pic_order_cnt_type))> pic_order_cnt_lsb
+        @description("Carries the picture-order-count least-significant bits.");
+    if (context_value(pic_parameter_set_id,
+                      h264_pps,
+                      bottom_field_pic_order_in_frame_present_flag) == 1) {
+        se delta_pic_order_cnt_bottom
+            @spec("ITU-T H.264", "7.3.3")
+            @description("Carries the bottom-field picture-order-count delta.");
+    }
+    if (context_value(pic_parameter_set_id,
+                      h264_pps,
+                      redundant_pic_cnt_present_flag) == 1) {
+        ue redundant_pic_cnt @range(0, 127)
+            @spec("ITU-T H.264", "7.3.3, 7.4.3")
+            @description("Identifies the redundant representation of this picture.");
+    }
+    se slice_qp_delta
+        @description("Adjusts the initial luma quantization parameter for the slice.");
+    if (context_value(pic_parameter_set_id,
+                      h264_pps,
+                      deblocking_filter_control_present_flag) == 1) {
+        ue disable_deblocking_filter_idc @enum(DisableDeblockingFilterIdc)
+            @spec("ITU-T H.264", "7.3.3, 7.4.3")
+            @description("Selects the deblocking-filter mode for this slice.");
+        if (disable_deblocking_filter_idc == 1) {
+        } else {
+            se slice_alpha_c0_offset_div2
+                @spec("ITU-T H.264", "7.3.3, 7.4.3")
+                @description("Carries half the alpha and c0 deblocking-filter offset.");
+            se slice_beta_offset_div2
+                @spec("ITU-T H.264", "7.3.3, 7.4.3")
+                @description("Carries half the beta deblocking-filter offset.");
+        }
+    }
+    compressed_payload slice_data
+        @description("The opaque remaining slice-layer suffix, including slice trailing bits.")
+        @spec("ITU-T H.264", "7.3.2.10");
+}
+
 @index(progressive)
 sequence<NalUnitHeader> nal_units = scan(h264_start_code);
 
 @spec("ITU-T H.264", "7.3.1")
 @description("Selects the payload syntax carried by each NAL unit type.")
 payload<rbsp> nal_units switch (nal_unit_type) {
+    case 1: NonIdrAllISliceLayerWithoutPartitioningRbsp;
     case 5: IdrSliceLayerWithoutPartitioningRbsp;
     case 7: SequenceParameterSetRbsp;
     case 8: PictureParameterSetRbsp;
