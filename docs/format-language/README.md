@@ -538,9 +538,10 @@ deterministic bytecode using `begin-structure`, `read-unsigned-bits`,
 `assert-range-minimum`, `assert-range-maximum`, `assert-repeat-count`,
 `assert-sentinel-terminated`, `assert-expression`, and
 `end-structure` operations. Each field opcode must match the resolved field type.
-The fixed-width read carries the resolved enum and byte-order information; the
-Exp-Golomb types have zero static bit width, default bit order, no enum
-reference. Unsigned fields preserve optional equality and range constraints;
+The fixed-width read carries the resolved enum and byte-order information.
+Exp-Golomb types have zero static bit width and default bit order; unsigned
+Exp-Golomb fields may also carry a resolved enum reference, while signed fields
+do not. Unsigned fields preserve optional equality and range constraints;
 signed fields have neither. A fixed array is expanded in source order into typed
 fields named `name[0]` through `name[count - 1]`; every element emits its own read
 and, when present, constraint-check instructions. Conditional
@@ -1019,12 +1020,14 @@ distinguishes the two layouts. The direct-header assertion requires
 `dec_ref_pic_marking`. P slices read the mandatory
 `num_ref_idx_active_override_flag`; value 1 selects a bounded
 `num_ref_idx_l0_active_minus1` override, while value 0 keeps the PPS default.
-The following `ref_pic_list_modification_flag_l0` remains mandatory and must
-be zero. Imported PPS assertions also require `weighted_pred_flag == 0` and
-`entropy_coding_mode_flag == 0` before `slice_qp_delta`; all-I values
-short-circuit these P-only prerequisites. The structure omits the IDR-only
-`idr_pic_id`, `no_output_of_prior_pics_flag`, and
-`long_term_reference_flag` fields.
+The following `ref_pic_list_modification_flag_l0` remains mandatory. Value zero
+publishes no modification fields; value one enters a bounded list 0 loop whose
+operation codes select short-term subtraction, short-term addition, long-term
+selection, or termination. Imported PPS assertions still require
+`weighted_pred_flag == 0` and `entropy_coding_mode_flag == 0` after the optional
+loop and before `slice_qp_delta`; all-I values short-circuit these P-only
+prerequisites. The structure omits the IDR-only `idr_pic_id`,
+`no_output_of_prior_pics_flag`, and `long_term_reference_flag` fields.
 
 Type `5` decodes `IdrSliceLayerWithoutPartitioningRbsp` for the bounded
 progressive all-I `slice_type` values 2 and 7. It imports the exact PPS
@@ -1045,7 +1048,11 @@ meanings:
 | `redundant_pic_cnt` | Identifies the redundant representation when the bound PPS enables it; values outside `0..127` warn. |
 | `num_ref_idx_active_override_flag` | Mandatory for a supported P slice; value 1 reads the list 0 active-reference override and value 0 keeps the PPS default. |
 | `num_ref_idx_l0_active_minus1` | Overrides the active list 0 entry count when selected; values outside `0..31` warn. |
-| `ref_pic_list_modification_flag_l0` | Mandatory for a supported P slice and must be zero; value 1 fails before the unsupported modification loop. |
+| `ref_pic_list_modification_flag_l0` | Mandatory for a supported P slice; value 1 selects the bounded list 0 modification loop and value 0 publishes no loop fields. |
+| `modification_of_pic_nums_idc[index]` | Selects short-term subtraction (0), short-term addition (1), a long-term picture number (2), or termination (3); other values are fatal. |
+| `uses_abs_diff_pic_num[index]` | Computed Boolean that is true for operation codes 0 and 1; it has no source location. |
+| `abs_diff_pic_num_minus1[index]` | Carries the short-term picture-number difference operand for operation codes 0 and 1. |
+| `long_term_pic_num[index]` | Carries the long-term picture-number operand for operation code 2. |
 | `no_output_of_prior_pics_flag` | Controls output of pictures preceding the IDR picture. |
 | `long_term_reference_flag` | Marks the IDR picture as a long-term reference when set. |
 | `slice_qp_delta` | Adjusts the initial luma quantization parameter; its signed bound is deferred. |
@@ -1061,11 +1068,11 @@ false guard consumes no bits and creates no node. Deblocking value 1 skips both
 offsets, values 0 and 2 read them, and reserved values fail at the controlling
 codeword. Missing/future/stale parameter-set generations remain
 `dependency-unavailable`; the partial header is retained and later NAL units
-are still analyzed. Reference type-1, B/SP/SI, field-picture, reference-list
-modification, weighted-prediction, CABAC P-header, adaptive-memory-management,
-and slice-group branches are deferred.
+are still analyzed. Reference type-1, B/SP/SI and list 1 modification,
+field-picture, decoded-picture-buffer validation, weighted-prediction, CABAC
+P-header, adaptive-memory-management, and slice-group branches are deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
-Package `0.1.14` advertises coverage depth `i-p-slice-header`; this is not yet the
+Package `0.1.15` advertises coverage depth `i-p-slice-header`; this is not yet the
 complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
@@ -1274,11 +1281,23 @@ entry SampleTable;
 Valid bounded-sentinel example:
 
 ```cpp
+enum ModificationOfPicNumsIdc {
+    subtract_short_term = 0;
+    add_short_term = 1;
+    long_term = 2;
+    end = 3;
+}
+
 struct RefPicListModifications {
     repeat (64) {
-        ue modification_of_pic_nums_idc;
-        if (modification_of_pic_nums_idc == 0) {
+        ue modification_of_pic_nums_idc @enum(ModificationOfPicNumsIdc);
+        computed<bool> uses_abs_diff_pic_num =
+            modification_of_pic_nums_idc == 0 || modification_of_pic_nums_idc == 1;
+        if (uses_abs_diff_pic_num) {
             ue abs_diff_pic_num_minus1;
+        }
+        if (modification_of_pic_nums_idc == 2) {
+            ue long_term_pic_num;
         }
     } until (modification_of_pic_nums_idc == 3);
 }
@@ -1724,6 +1743,8 @@ The bounded progressive non-IDR P-slice is specified by
 [ADR-0057](../adr/0057-add-bounded-progressive-non-idr-p-slice-header.md).
 The bounded P-slice reference-index override is specified by
 [ADR-0058](../adr/0058-add-bounded-p-slice-reference-index-override.md).
+The bounded P-slice reference-list modification loop is specified by
+[ADR-0059](../adr/0059-add-bounded-p-slice-reference-list-modification-loop.md).
 
 ## Sandbox And Resource Limits
 

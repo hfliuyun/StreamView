@@ -417,8 +417,9 @@ sequence 和 entry 引用解析成 typed program，保留声明顺序，并确�
 `read-rbsp-trailing-bits`、`assert-equals`、`assert-range-minimum`、
 `assert-range-maximum`、`assert-repeat-count`、`assert-sentinel-terminated`、
 `assert-expression` 和 `end-structure` bytecode。每个 field opcode
-必须与字段类型匹配；Exp-Golomb typed field 的静态 bit width 为零、使用默认 bit order，且没有
-enum reference。无符号字段保留可选 equality 与 range constraint；有符号字段不带这两类
+必须与字段类型匹配。Exp-Golomb typed field 的静态 bit width 为零并使用默认 bit order；
+unsigned Exp-Golomb 字段也可以携带已解析 enum reference，而 signed 字段不可以。无符号字段
+保留可选 equality 与 range constraint；有符号字段不带这两类
 constraint。固定数组按 source 顺序展开成名为 `name[0]` 到 `name[count - 1]` 的 typed field；
 每个元素各自产生 read instruction，并在存在 constraint 时各自产生对应 assertion
 instruction。条件 block 被降低到同一条按声明顺序排列的字段流，每个
@@ -779,8 +780,10 @@ type `1` 为有界 progressive non-reference I 与 P slice 解码
 可见的 `is_p_slice` computed field 区分两种布局。direct-header assertion 要求
 `nal_ref_idc == 0`，因此 projection 不包含 `dec_ref_pic_marking`。P slice 会实际读取必需的
 `num_ref_idx_active_override_flag`；值 1 会选择有界 `num_ref_idx_l0_active_minus1` override，
-值 0 则保留 PPS default。后续 `ref_pic_list_modification_flag_l0` 仍是必需字段并且必须为零。
-imported PPS assertion 还会在 `slice_qp_delta` 前要求 `weighted_pred_flag == 0` 与
+值 0 则保留 PPS default。后续 `ref_pic_list_modification_flag_l0` 仍是必需字段。值 0
+不发布 modification field；值 1 进入有界 list 0 loop，其 operation code 选择 short-term
+subtraction、short-term addition、long-term selection 或 termination。imported PPS assertion 仍会在
+可选 loop 之后、`slice_qp_delta` 之前要求 `weighted_pred_flag == 0` 与
 `entropy_coding_mode_flag == 0`；all-I 值会短路这些 P-only prerequisite。IDR 专属的
 `idr_pic_id`、`no_output_of_prior_pics_flag` 与 `long_term_reference_flag` 不出现。
 
@@ -801,7 +804,11 @@ generation 以及该 PPS 的精确 SPS dependency。两个有界 shape 中声明
 | `redundant_pic_cnt` | 在绑定 PPS 启用时标识 redundant representation；超出 `0..127` 时告警。 |
 | `num_ref_idx_active_override_flag` | 受支持 P slice 的必需字段；值 1 读取 list 0 active-reference override，值 0 保留 PPS default。 |
 | `num_ref_idx_l0_active_minus1` | 被选择时覆盖 active list 0 entry count；超出 `0..31` 时告警。 |
-| `ref_pic_list_modification_flag_l0` | 受支持 P slice 的必需字段，必须为零；值 1 会在尚未支持的 modification loop 前失败。 |
+| `ref_pic_list_modification_flag_l0` | 受支持 P slice 的必需字段；值 1 选择有界 list 0 modification loop，值 0 不发布 loop field。 |
+| `modification_of_pic_nums_idc[index]` | 选择 short-term subtraction (0)、short-term addition (1)、long-term picture number (2) 或 termination (3)；其他值致命失败。 |
+| `uses_abs_diff_pic_num[index]` | operation code 为 0/1 时为 true 的 computed Boolean；没有 source location。 |
+| `abs_diff_pic_num_minus1[index]` | 在 operation code 0/1 下携带 short-term picture-number difference operand。 |
+| `long_term_pic_num[index]` | 在 operation code 2 下携带 long-term picture-number operand。 |
 | `no_output_of_prior_pics_flag` | 控制 IDR picture 之前 picture 的输出。 |
 | `long_term_reference_flag` | 设置时把 IDR picture 标记为 long-term reference。 |
 | `slice_qp_delta` | 调整初始 luma quantization parameter；signed bound 留待后续。 |
@@ -815,10 +822,10 @@ exact imported PPS guard 会选择 bottom-field POC、redundant-picture count �
 字段；false guard 不消费 bit，也不创建 node。deblocking 值 1 省略两个 offset，值 0 和 2 读取
 它们，reserved 值在 controller 码字处失败。missing/future/stale parameter-set generation 仍报告
 `dependency-unavailable`；保留 partial header，并继续分析后续 NAL。reference type-1、
-B/SP/SI、field-picture、reference-list modification、weighted-prediction、CABAC P-header、
-adaptive-memory-management 与 slice-group 分支均留待后续。
+B/SP/SI 与 list 1 modification、field-picture、decoded-picture-buffer validation、
+weighted-prediction、CABAC P-header、adaptive-memory-management 与 slice-group 分支均留待后续。
 type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.14` 发布 coverage depth `i-p-slice-header`；这尚未完成
+`0.1.15` 发布 coverage depth `i-p-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
@@ -1051,11 +1058,23 @@ entry SampleTable;
 bounded sentinel 合法示例：
 
 ```cpp
+enum ModificationOfPicNumsIdc {
+    subtract_short_term = 0;
+    add_short_term = 1;
+    long_term = 2;
+    end = 3;
+}
+
 struct RefPicListModifications {
     repeat (64) {
-        ue modification_of_pic_nums_idc;
-        if (modification_of_pic_nums_idc == 0) {
+        ue modification_of_pic_nums_idc @enum(ModificationOfPicNumsIdc);
+        computed<bool> uses_abs_diff_pic_num =
+            modification_of_pic_nums_idc == 0 || modification_of_pic_nums_idc == 1;
+        if (uses_abs_diff_pic_num) {
             ue abs_diff_pic_num_minus1;
+        }
+        if (modification_of_pic_nums_idc == 2) {
+            ue long_term_pic_num;
         }
     } until (modification_of_pic_nums_idc == 3);
 }
@@ -1399,6 +1418,8 @@ source-anchored assertion 中 imported value 的合同见
 [ADR-0057](../adr/0057-add-bounded-progressive-non-idr-p-slice-header.md)。
 有界 P-slice reference-index override 合同见
 [ADR-0058](../adr/0058-add-bounded-p-slice-reference-index-override.md)。
+有界 P-slice reference-list modification loop 合同见
+[ADR-0059](../adr/0059-add-bounded-p-slice-reference-list-modification-loop.md)。
 
 ## 沙箱与资源限制
 
