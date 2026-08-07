@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Add the bounded progressive non-IDR all-I slice-header branch and type-1 nal_ref_idc prerequisite
+Last Completed Step: Allow source-anchored assertions to reference exact imported context values
 Next Action: Define and implement the first bounded progressive non-IDR P-slice reference-list prerequisite
-Last Verification: Commits 170d516 and 16ae093; local dev/ci/sanitize each passed 32/32; H.264 analyzer 62/62; svtool rule check passed; hosted run 31181671443 passed on Windows, macOS, and Ubuntu
+Last Verification: Commits 5c98d84 and 613a53a; local dev/ci/sanitize each passed 32/32; svtool rule check passed; hosted run 31186610199 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -670,3 +670,16 @@ Blockers: None
   hosted run `31181671443` 的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、Test、
   Install、Upload 全部成功。下一步定义并实现首个 bounded progressive non-IDR P-slice
   reference-list prerequisite。
+- 2026-08-07：完成 source-anchored assertion 引用 exact imported context value 的前置切片。
+  ADR-0056 与英中 format-language 参考提交 `613a53a` 把
+  `context_value(import_key, context_kind, exported_field)` 作为 `u64` leaf 开放给 assertion
+  condition，同时保持 pure-function body、computed field、lazy byte count 与其他一般 expression
+  position 的既有拒绝。实现提交 `5c98d84` 只在 parser assertion validation、compiler assertion
+  lowering 与 VM assertion typed-IR preflight 三处启用已有 imported-context 合同；descriptor、
+  bytecode 与 session resolver 均未新增类型。Boolean short-circuit 不解析未选 operand；condition
+  为 false 时 diagnostic 仍锚定 `at` 字段，missing/future/stale generation 则保留
+  `dependency-unavailable` 并定位 import key。parser、IR、executor 与 execution-session 定向套件
+  全部通过；本机 `cmake --preset dev/ci/sanitize`、三套完整 build 与 CTest 均为 32/32，
+  `svtool rule check` 通过。hosted run `31186610199` 的 Windows 2022、macOS 15、Ubuntu 24.04
+  Configure、Build、Test、Install、Upload 全部成功。下一步使用该能力界定并实现首个 bounded
+  progressive non-IDR P-slice reference-list prerequisite。
