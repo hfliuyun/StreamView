@@ -53,9 +53,9 @@ bounded loops, pure helpers, scope, name resolution, and specification
 annotations. The accepted minimum subset remains intentionally bounded:
 expressions are accepted only in pure-function return values, computed fields,
 lazy byte counts, dynamic bit widths, and assertion conditions. Imported values
-remain restricted to the dedicated width and equality-guard forms, and control
-flow remains limited to the conditional, switch, and bounded-repeat forms
-described below.
+remain restricted to dedicated dynamic-width, equality-guard, and
+source-anchored assertion-condition forms, and control flow remains limited to
+the conditional, switch, and bounded-repeat forms described below.
 
 The accepted M3 type slice adds declaration-order enums and an explicit byte
 order on `bits` fields. Enum declarations name unsigned integer values; a
@@ -156,6 +156,11 @@ The accepted source-anchored assertion slice adds the structure statement
 `assert(boolean_expression) at source_field;`. It lets a rule enforce a fatal
 relationship between fields without creating a presentation node. The `at`
 field supplies the diagnostic path and exact mapped source location.
+
+The accepted imported-assertion slice additionally permits the reserved
+`context_value(...)` leaf inside that Boolean condition. It uses the exact
+imported generation contract and remains unavailable in other general
+expression positions.
 
 ## Minimum DSL 0.1 Subset
 
@@ -292,17 +297,18 @@ The static rules for this subset are:
   rules. Declaration order is preserved; an identical kind/field pair is a
   duplicate and is rejected.
 - `context_value(import_key, context_kind, exported_field)` is reserved for a
-  dynamic `bits` width or the left side of an imported equality conditional.
+  dynamic `bits` width, the left side of an imported equality conditional, or
+  the Boolean condition of a source-anchored assertion.
   All three arguments are identifiers. `import_key` names
   an earlier context-eligible field that identifies exactly one import on the
   structure. The kind identifier is `h264_sps`, `h264_pps`, `aac_asc`, or
   `iso_bmff_sample_description`, and must name the imported root kind or a kind
   reachable through its declared dependency graph. Exactly one structure must
   publish that target kind, and it must export exactly one field with the named
-  declaration. Except for the exact conditional form
-  `context_value(...) == integer`, it is rejected in pure-function bodies,
-  computed fields, conditions, lazy sizes, switch or repeat controllers, and
-  every other expression position.
+  declaration. Outside a dynamic `bits` width, a source-anchored assertion
+  condition, and the exact conditional form `context_value(...) == integer`,
+  it is rejected in pure-function bodies, computed fields, conditions, lazy
+  sizes, switch or repeat controllers, and every other expression position.
 - Fixed-width arrays contribute `width * count` bits to static alignment.
   Every element of a little-endian array must therefore have a byte-multiple
   width and the first element must begin at a structure-relative byte boundary.
@@ -334,12 +340,12 @@ The static rules for this subset are:
 - `assert(condition) at anchor;` is an unannotated, unconditional top-level
   structure item. It is rejected inside a conditional, switch, count repeat,
   or sentinel repeat, and it cannot follow a terminal item. `condition` must be
-  `bool`; it uses the complete bounded expression and pure-function contract,
-  but cannot contain `context_value`. Its field dependencies must be earlier
-  scalar unsigned `bits`, enum, `ue`, `computed<u64>`, or `computed<bool>`
-  values guaranteed on the current path. Arrays, `se`, lazy regions, compressed
-  payloads, unknown or future fields, and unavailable branch-local values are
-  rejected as dependencies.
+  `bool`; it uses the complete bounded expression and pure-function contract
+  and may include the exact imported `context_value` leaf described above.
+  Its local field dependencies must be earlier scalar unsigned `bits`, enum,
+  `ue`, `computed<u64>`, or `computed<bool>` values guaranteed on the current
+  path. Arrays, `se`, lazy regions, compressed payloads, unknown or future
+  fields, and unavailable branch-local values are rejected as dependencies.
 - The assertion anchor names an earlier source-backed, non-array scalar syntax
   field guaranteed on the current path. Fixed or dynamic `bits`, enum, `ue`,
   and `se` fields can anchor a diagnostic; computed fields and generated or
@@ -458,11 +464,12 @@ The static rules for this subset are:
   remainder by zero are runtime `invalid-syntax` failures at the computed field,
   lazy region, dynamic field, or assertion anchor path. The same checked
   arithmetic applies to a dynamic bit width; `context_value` is its only
-  additional leaf form and is also accepted
-  as the exact left side of an imported equality conditional. It counts against
-  the same node and depth limits. The complete width expression remains subject
-  to the shared expansion-work limit. Enum fields contribute their decoded `u64`;
-  enum member names are not expression values.
+  additional leaf form and is also accepted as the exact left side of an
+  imported equality conditional and inside a source-anchored assertion
+  condition. It counts against the same node and depth limits. The complete
+  width or assertion expression remains subject to the shared expansion-work
+  limit. Enum fields contribute their decoded `u64`; enum member names are not
+  expression values.
 - Every written pure-function body, computed-field expression, lazy byte-count
   expression, dynamic width, or assertion condition, and every corresponding
   fully inlined expression, has
@@ -1392,7 +1399,8 @@ anchor that is unknown, declared later, an array, or unavailable on the current
 path; an `se` expression dependency; a computed, generated, lazy, compressed,
 or array anchor; an assertion inside conditional, switch, or repeat control
 flow; any leading annotation; missing parentheses, `at`, anchor, or semicolon;
-`context_value` in the condition; and a 1,025th assertion in one structure.
+a malformed `context_value` argument list, unresolved imported descriptor, or
+bare imported `u64` condition; and a 1,025th assertion in one structure.
 
 Invalid context-publication examples include a second `@context` on one
 structure; an identical repeated `@context_dependency`; a dependency on a
@@ -1403,12 +1411,13 @@ Invalid context-import examples include an identical repeated import, a guarded,
 repeated, array, signed, lazy, generated, or unknown key field, an unsupported
 kind, malformed arguments, and more than 16 imports.
 Invalid imported dynamic-width examples include `context_value` outside a
-dynamic `bits` width or imported equality conditional, a missing or later import
-key, an unrelated target kind, zero or multiple publishers for the target kind,
-a missing export, and a dynamic little-endian, array, enum, constrained,
-context-key, dependency, import, or export field. Runtime results `0` and `65`,
-arithmetic overflow or underflow, division by zero, and remainder by zero are
-`invalid-syntax` before that field consumes input.
+dynamic `bits` width, imported equality conditional, or source-anchored
+assertion condition; a missing or later import key; an unrelated target kind;
+zero or multiple publishers for the target kind; a missing export; and a
+dynamic little-endian, array, enum, constrained, context-key, dependency,
+import, or export field. Runtime results `0` and `65`, arithmetic overflow or
+underflow, division by zero, and remainder by zero are `invalid-syntax` before
+that field consumes input.
 Invalid imported-condition examples include arithmetic or a call around
 `context_value`, `!=`, ordering, a Boolean combination, imported Boolean
 shorthand, a nonliteral right side, a missing or later import key, an unrelated
@@ -1654,8 +1663,9 @@ ordered exported values, and exact dependency IDs. A closure contains at most
 64 definitions; a missing rules-owned payload is invalid runtime state. Import
 results create no analysis nodes. Imported values are available only through
 the lowered `context_value` leaf in a dynamic width or the exact
-`context_value(...) == integer` conditional. They are not identifiers in general
-expressions, lazy sizes, switch or repeat controllers, or repeat bounds.
+`context_value(...) == integer` conditional, or in a source-anchored assertion
+condition. They are not identifiers in general expressions, lazy sizes, switch
+or repeat controllers, or repeat bounds.
 
 Publication occurs only after successful materialization, requested exact
 consumption, dependency resolution, and complete typed-payload preparation.
@@ -1686,6 +1696,8 @@ The compressed remaining-bit terminal is specified by
 [ADR-0048](../adr/0048-register-a-compressed-remaining-bit-payload-terminal.md).
 Source-anchored assertion statements are specified by
 [ADR-0054](../adr/0054-add-source-anchored-assertion-statements.md).
+Imported values in source-anchored assertions are specified by
+[ADR-0056](../adr/0056-allow-imported-context-values-in-source-anchored-assertions.md).
 The bounded progressive non-IDR all-I slice is specified by
 [ADR-0055](../adr/0055-add-bounded-progressive-non-idr-all-i-slice-header.md).
 

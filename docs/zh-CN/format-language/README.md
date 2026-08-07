@@ -49,8 +49,8 @@ struct NalUnitHeader {
 最终参考文档必须分别定义基本类型、有无符号、字节序、bit 顺序、溢出行为、数组、枚举、
 结构、条件、分支、有界循环、纯函数、作用域、名称解析和规范注解。当前接受的最小子集
 仍有明确边界：表达式只能出现在纯函数返回值、计算字段、lazy byte count、dynamic bit width
-和 assertion condition 中；imported value 仍局限在专用 width 与 equality-guard 形式。控制流只
-包含下述条件、switch 和有界 repeat 形式。
+和 assertion condition 中；imported value 仍局限在专用 dynamic-width、equality-guard 与
+source-anchored assertion-condition 形式。控制流只包含下述条件、switch 和有界 repeat 形式。
 
 当前接受的 M3 类型切片新增了按声明顺序保存的 enum，以及 `bits` 字段的显式字节序。
 enum 声明为无符号整数命名；`bits` 或 `ue` 字段通过 `@enum(Type)` 把这些名称关联到解码值。
@@ -131,6 +131,10 @@ controller namespace。
 当前接受的 source-anchored assertion 切片新增 structure statement
 `assert(boolean_expression) at source_field;`。rule 可以用它强制字段间的致命关系，而不创建
 presentation node；`at` 字段提供 diagnostic path 与精确 mapped source location。
+
+当前接受的 imported-assertion 切片还允许该 Boolean condition 使用保留的
+`context_value(...)` leaf。它沿用 exact imported generation 合同，在其他一般 expression
+position 中仍不可用。
 
 ## DSL 0.1 最小子集
 
@@ -244,15 +248,16 @@ primary       := integer | "true" | "false" | identifier
 - `@context_import(kind, key_field)` 在一个 structure 上最多出现 16 次。它使用相同的已识别
   kind 与无条件 unsigned scalar key-field 规则，保留 declaration order；相同 kind/field pair
   是静态重复错误。
-- `context_value(import_key, context_kind, exported_field)` 保留给 dynamic `bits` width 或
-  imported equality conditional 左侧使用。三个参数都必须是 identifier。`import_key` 必须命名
+- `context_value(import_key, context_kind, exported_field)` 保留给 dynamic `bits` width、
+  imported equality conditional 左侧或 source-anchored assertion 的 Boolean condition 使用。
+  三个参数都必须是 identifier。`import_key` 必须命名
   此前 context-eligible 的字段，并且在该
   structure 上精确标识一个 import。kind identifier 只能是 `h264_sps`、`h264_pps`、
   `aac_asc` 或 `iso_bmff_sample_description`，而且必须命名 imported root kind，或从其声明的
   dependency graph 可达的 kind。该 target kind 必须恰好有一个 publishing structure，且该
-  structure 必须精确导出一个同名字段。除精确形式 `context_value(...) == integer` 外，
-  pure-function body、computed field、condition、lazy size、switch/repeat controller 与其他
-  expression position 都拒绝这一形式。
+  structure 必须精确导出一个同名字段。除 dynamic `bits` width、source-anchored assertion
+  condition 与精确形式 `context_value(...) == integer` 外，pure-function body、computed field、
+  condition、lazy size、switch/repeat controller 与其他 expression position 都拒绝这一形式。
 - 固定宽度数组按 `width * count` bit 参与静态对齐。小端数组的每个元素宽度必须是 8 的
   倍数，并且首元素必须从结构内的字节边界开始。`ue` 或 `se` 数组的总宽度未知，因此其
   后续小端字段与单个 Exp-Golomb 字段之后的小端字段一样会被拒绝。
@@ -274,9 +279,10 @@ primary       := integer | "true" | "false" | identifier
 - `assert(condition) at anchor;` 是不接受 annotation、无条件的顶层 structure item。
   conditional、switch、count repeat 或 sentinel repeat 内都拒绝 assertion，也不能把它写在
   terminal item 之后。`condition` 必须为 `bool`，沿用完整的 bounded expression 与 pure-function
-  合同，但不能包含 `context_value`。字段 dependency 必须是此前声明、当前路径保证存在的
-  scalar unsigned `bits`、enum、`ue`、`computed<u64>` 或 `computed<bool>`；array、`se`、lazy
-  region、compressed payload、未知/未来字段与不可用的 branch-local 值都会被拒绝。
+  合同，并且可以包含上文定义的 exact imported `context_value` leaf。本地字段 dependency
+  必须是此前声明、当前路径保证存在的 scalar unsigned `bits`、enum、`ue`、`computed<u64>` 或
+  `computed<bool>`；array、`se`、lazy region、compressed payload、未知/未来字段与不可用的
+  branch-local 值都会被拒绝。
 - assertion anchor 必须命名此前声明、当前路径保证存在且 source-backed 的非数组 scalar syntax
   field。fixed/dynamic `bits`、enum、`ue` 与 `se` 可以锚定 diagnostic；computed field、
   generated item 与 region item 不可以。assertion 不是字段，不引入 name 或 scalar value，不改变 static
@@ -355,11 +361,10 @@ primary       := integer | "true" | "false" | identifier
   比较要求 `u64`，逻辑运算要求 `bool`，等值运算两侧类型相同，函数实参必须与形参逐一
   匹配。无符号 overflow/underflow、除零和模零会在计算字段、lazy region、dynamic field 或
   assertion anchor path 上产生 runtime `invalid-syntax`。dynamic bit width 使用同一套 checked
-  arithmetic；`context_value`
-  是它唯一额外的 leaf form，也可以作为 imported equality conditional 的精确左侧，并计入
-  相同 node 与 depth 上限；完整的 width expression 仍受
-  共享 expansion-work 上限约束。enum 字段提供解码后的 `u64`；enum member 名不是本切片的
-  expression value。
+  arithmetic；`context_value` 是它唯一额外的 leaf form，也可以作为 imported equality
+  conditional 的精确左侧或用于 source-anchored assertion condition，并计入相同 node 与
+  depth 上限；完整的 width 或 assertion expression 仍受共享 expansion-work 上限约束。enum
+  字段提供解码后的 `u64`；enum member 名不是本切片的 expression value。
 - 每个写出的纯函数体、计算字段 expression、lazy byte-count expression、dynamic width 或
   assertion condition，以及对应的完全内联 expression，深度最多 64，节点最多 256。展开一个函数体或 expression 时，call、
   argument 与参数替换共享最多 4,096
@@ -1126,8 +1131,9 @@ computed 或 lazy 项作为 sentinel、termination value 越界，以及使用�
 assertion 的非法示例包括：condition 不是 Boolean；dependency 或 anchor 未知、声明得更晚、是
 array，或在当前 path 不可用；以 `se` 作为 expression dependency；以 computed、generated、
 lazy、compressed 或 array field 作为 anchor；在 conditional、switch 或 repeat control flow 内
-声明 assertion；任何前置 annotation；缺少括号、`at`、anchor 或分号；condition 中包含
-`context_value`；以及一个 structure 中的第 1,025 条 assertion。
+声明 assertion；任何前置 annotation；缺少括号、`at`、anchor 或分号；malformed
+`context_value` argument list、无法解析的 imported descriptor，或直接把 imported `u64` 当作
+condition；以及一个 structure 中的第 1,025 条 assertion。
 
 context publication 的非法示例包括：同一 structure 上出现第二个 `@context`、完全相同的
 `@context_dependency` 重复、没有 `@context` 的 structure 声明 dependency、使用 guarded、
@@ -1136,12 +1142,12 @@ repeated、array、signed、lazy 或 generated field 作为 key/export、
 不存在的 key 名同样会被拒绝。
 context import 的非法示例包括：完全相同的 import 重复、guarded/repeated/array/signed/lazy/
 generated 或未知 key field、不支持的 kind、malformed argument，以及超过 16 个 import。
-imported dynamic-width 的非法示例包括：在 dynamic `bits` width 或 imported equality
-conditional 之外使用 `context_value`、import key 缺失或声明得更晚、target kind 与 import
-closure 无关、target kind 没有 publisher 或存在多个 publisher、export 缺失，以及 dynamic
-little-endian、array、enum、constrained、context-key、dependency、import 或 export field。
-runtime 结果为 `0` 或 `65`、arithmetic overflow/underflow、除零或模零时，在该字段消费输入前
-报告 `invalid-syntax`。
+imported dynamic-width 的非法示例包括：在 dynamic `bits` width、imported equality
+conditional 或 source-anchored assertion condition 之外使用 `context_value`；import key 缺失
+或声明得更晚；target kind 与 import closure 无关；target kind 没有 publisher 或存在多个
+publisher；export 缺失；以及 dynamic little-endian、array、enum、constrained、context-key、
+dependency、import 或 export field。runtime 结果为 `0` 或 `65`、arithmetic
+overflow/underflow、除零或模零时，在该字段消费输入前报告 `invalid-syntax`。
 imported-condition 的非法示例包括：在 `context_value` 外包 arithmetic 或 call、`!=`、
 ordering、Boolean combination、imported Boolean shorthand、非 literal 右侧、缺失或较晚声明的
 import key、无关 target kind、零或多个 publisher，以及缺失 export。imported value 仍不能作为
@@ -1342,9 +1348,9 @@ depth-first traversal；每个精确
 definition 只包含一次。每项保留 definition ID、kind、publishing structure index、有序 exported
 value 与精确 dependency ID。closure 最多 64 个 definition；rules-owned payload 缺失属于
 invalid runtime state。import result 不创建 analysis node。imported value 只能通过 dynamic
-width 中 lower 后的 `context_value` leaf，或精确的 `context_value(...) == integer` conditional
-使用。它不能作为一般 expression、lazy size、switch/repeat controller 或 repeat bound 中的
-identifier。
+width 中 lower 后的 `context_value` leaf、精确的 `context_value(...) == integer` conditional，
+或 source-anchored assertion condition 使用。它不能作为一般 expression、lazy size、
+switch/repeat controller 或 repeat bound 中的 identifier。
 
 只有 structure 成功 materialize、满足请求的精确消费策略、完成 dependency resolution 和
 typed-payload 准备后才会发布。registration 前会预留 payload 与 directory 容量，因此成功
@@ -1369,6 +1375,8 @@ imported equality guard 合同见
 [ADR-0048](../adr/0048-register-a-compressed-remaining-bit-payload-terminal.md)。
 source-anchored assertion statement 合同见
 [ADR-0054](../adr/0054-add-source-anchored-assertion-statements.md)。
+source-anchored assertion 中 imported value 的合同见
+[ADR-0056](../adr/0056-allow-imported-context-values-in-source-anchored-assertions.md)。
 有界 progressive non-IDR all-I slice 合同见
 [ADR-0055](../adr/0055-add-bounded-progressive-non-idr-all-i-slice-header.md)。
 
