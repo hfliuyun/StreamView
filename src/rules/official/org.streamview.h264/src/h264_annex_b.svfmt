@@ -236,6 +236,13 @@ enum NonIdrSliceType {
     all_i = 7;
 }
 
+enum ModificationOfPicNumsIdc {
+    subtract_short_term = 0;
+    add_short_term = 1;
+    long_term = 2;
+    end = 3;
+}
+
 enum DisableDeblockingFilterIdc {
     enabled = 0;
     disabled = 1;
@@ -349,9 +356,29 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
                 @spec("ITU-T H.264", "7.3.3, 7.4.3")
                 @description("Overrides the active list 0 entry count for this P slice.");
         }
-        bits<1> ref_pic_list_modification_flag_l0 @equals(0)
+        bits<1> ref_pic_list_modification_flag_l0
             @spec("ITU-T H.264", "7.3.3")
-            @description("Keeps list 0 reference-picture order unchanged for this P slice.");
+            @description("Selects list 0 reference-picture modification syntax.");
+        if (ref_pic_list_modification_flag_l0 == 1) {
+            repeat (64) {
+                ue modification_of_pic_nums_idc @enum(ModificationOfPicNumsIdc)
+                    @spec("ITU-T H.264", "7.3.3, 7.4.3")
+                    @description("Selects the next list 0 modification operation.");
+                computed<bool> uses_abs_diff_pic_num =
+                    modification_of_pic_nums_idc == 0 ||
+                    modification_of_pic_nums_idc == 1;
+                if (uses_abs_diff_pic_num) {
+                    ue abs_diff_pic_num_minus1
+                        @spec("ITU-T H.264", "7.3.3, 7.4.3")
+                        @description("Carries the short-term picture-number difference.");
+                }
+                if (modification_of_pic_nums_idc == 2) {
+                    ue long_term_pic_num
+                        @spec("ITU-T H.264", "7.3.3, 7.4.3")
+                        @description("Selects a long-term reference picture.");
+                }
+            } until (modification_of_pic_nums_idc == 3);
+        }
     }
     assert(!is_p_slice ||
            context_value(pic_parameter_set_id, h264_pps, weighted_pred_flag) == 0)
