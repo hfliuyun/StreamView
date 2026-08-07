@@ -341,9 +341,14 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
             @description("Identifies the redundant representation of this picture.");
     }
     if (is_p_slice) {
-        bits<1> num_ref_idx_active_override_flag @equals(0)
+        bits<1> num_ref_idx_active_override_flag
             @spec("ITU-T H.264", "7.3.3")
-            @description("Keeps the PPS default list 0 reference count for this P slice.");
+            @description("Selects a slice-level list 0 active-reference count override.");
+        if (num_ref_idx_active_override_flag == 1) {
+            ue num_ref_idx_l0_active_minus1 @range(0, 31)
+                @spec("ITU-T H.264", "7.3.3, 7.4.3")
+                @description("Overrides the active list 0 entry count for this P slice.");
+        }
         bits<1> ref_pic_list_modification_flag_l0 @equals(0)
             @spec("ITU-T H.264", "7.3.3")
             @description("Keeps list 0 reference-picture order unchanged for this P slice.");
