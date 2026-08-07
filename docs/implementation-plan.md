@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Parse PPS-controlled IDR slice-header branches
-Next Action: Define a rule-owned type-5 nal_ref_idc prerequisite before non-IDR/P/B expansion
-Last Verification: Commit 892bef6 local dev/ci/sanitize each passed 32/32; hosted run 31113845900
+Last Completed Step: Add source-anchored assertions and the H.264 type-5 nal_ref_idc prerequisite
+Next Action: Define and implement a bounded progressive non-IDR all-I slice-header branch, then isolate the first P-slice reference-list prerequisite
+Last Verification: Commits e394604 and 236b130 local dev/ci/sanitize each passed 32/32; hosted runs 31177484935 and 31177900565
   passed on Windows, macOS, and Ubuntu
 Blockers: None
 
@@ -641,3 +641,19 @@ Blockers: None
   还确认现有 type-5 dispatch 只按 `nal_unit_type` 选择 structure，尚不能由 rule 在无额外
   presentation field 的情况下强制 `nal_ref_idc != 0`；下一步先定义这一 rule-owned conformance
   prerequisite，再扩展 non-IDR/P/B reference-list 与 weighted-prediction 分支。
+- 2026-08-07：完成 source-anchored DSL assertion statement 与 H.264 type-5 reference-priority
+  prerequisite。ADR-0054 及英中 DSL 参考定义 `assert(boolean_expression) at source_field;`：
+  assertion 只能是无 annotation 的 unconditional top-level item，condition 只引用此前可用的
+  unsigned/computed scalar，anchor 为此前 source-backed scalar，单 structure 上限为 1,024。
+  typed IR 保存 `DslTypedAssertion` 与 statement position，compiler 按 sentinel → expression →
+  repeat 顺序发射 `AssertExpression`；VM 在 source read 前严格验证 descriptor/opcode pairing，
+  assertion 不读取 source、不移动 cursor、不创建 node，false 返回 fatal `invalid-syntax` 并以
+  anchor 的完整 mapped range 定位。官方规则加入
+  `assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;`，package 更新到 `0.1.11`；
+  type-5 `nal_ref_idc == 0` 在 payload mapping 前失败，后续合法 NAL 继续 materialize。
+  实现提交为 `e394604`，H.264 规则提交为 `236b130`，双语文档与 ADR 提交为 `9d330e9`。
+  DSL executor 定向测试为 116/116，H.264 analyzer 定向测试为 60/60；本机 `dev`、`ci`、
+  `sanitize` 完整配置、构建与 CTest 均为 32/32，`svtool rule check` 通过。Hosted runs
+  `31177484935` 与 `31177900565` 在 Windows 2022、macOS 15、Ubuntu 24.04 的 Build、Test、
+  Install、Upload 均成功。完整 Baseline/Main/High slice-header 项仍未完成；下一步定义并实现
+  progressive non-IDR all-I branch，再隔离首个 P-slice reference-list prerequisite。
