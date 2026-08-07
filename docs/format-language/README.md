@@ -40,6 +40,7 @@ struct NalUnitHeader {
     bits<5> nal_unit_type;
 
     assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
+    assert(nal_unit_type != 1 || nal_ref_idc == 0) at nal_ref_idc;
 
     computed<bool> is_vcl =
         nal_unit_type >= 1 && nal_unit_type <= 5;
@@ -848,11 +849,14 @@ first eight payload bits and exposes `forbidden_zero_bit`, `nal_ref_idc`, and
 `nal_unit_type`.
 
 After all eight header bits are available, the official rule asserts the clause
-7.4.1 prerequisite `nal_unit_type != 5 || nal_ref_idc != 0`. A type-5 header with
-zero reference priority retains all three fields, fails with fatal
-`invalid-syntax` at the exact two-bit `nal_ref_idc` span, and never maps or
-materializes that NAL's `rbsp_payload`; scanning continues with the next NAL.
-Zero `nal_ref_idc` remains valid for non-type-5 headers under this assertion.
+7.4.1 prerequisite `nal_unit_type != 5 || nal_ref_idc != 0` and the bounded
+type-1 support prerequisite `nal_unit_type != 1 || nal_ref_idc == 0`. A type-5
+header with zero reference priority, or a type-1 header with nonzero reference
+priority, retains all three fields, fails with fatal `invalid-syntax` at the
+exact two-bit `nal_ref_idc` span, and never maps or materializes that NAL's
+`rbsp_payload`; scanning continues with the next NAL. The type-1 prerequisite
+keeps unsupported non-IDR reference-picture marking from being interpreted as
+later slice fields.
 
 After a successful direct header, an ordinary non-empty payload is mapped from
 EBSP to an RBSP logical view without copying bytes. Each complete `00 00 03`
@@ -865,8 +869,8 @@ coalesced into source spans. The NAL children appear in this order:
 headers that this profile does not yet parse, so their bytes after the direct
 header remain uninterpreted, are not passed to the mapper, and cannot dispatch.
 
-The bundled rule declares a payload dispatch for `nal_unit_type` values `5`,
-`7`, `8`, `9`, `10`, and `11`. A dispatched type is always mapped, even when its
+The bundled rule declares a payload dispatch for `nal_unit_type` values `1`,
+`5`, `7`, `8`, `9`, `10`, and `11`. A dispatched type is always mapped, even when its
 payload is empty, so `rbsp_payload` is present for every dispatched NAL. Type `9` decodes
 `AccessUnitDelimiterRbsp` as a child of `rbsp_payload`, exposing
 `primary_pic_type`, `rbsp_stop_one_bit`, and `rbsp_alignment_zero_bit[0]`
@@ -1000,6 +1004,16 @@ The declared PPS fields have the following bounded meanings:
 | `constrained_intra_pred_flag` | Restricts intra prediction to intra-coded neighboring macroblocks. |
 | `redundant_pic_cnt_present_flag` | Signals redundant-picture count syntax in associated slice headers. |
 
+Type `1` decodes `NonIdrAllISliceLayerWithoutPartitioningRbsp` for the bounded
+progressive non-reference all-I `slice_type` values 2 and 7. The direct-header
+assertion requires `nal_ref_idc == 0`, so the projection does not contain
+`dec_ref_pic_marking`. It imports the same exact PPS/SPS generations as the IDR
+shape and reads `first_mb_in_slice`, `slice_type`, `pic_parameter_set_id`,
+`frame_num`, `pic_order_cnt_lsb`, optional bottom-field POC and redundant-picture
+fields, `slice_qp_delta`, optional deblocking control, and the opaque
+`slice_data` suffix. It omits the IDR-only `idr_pic_id`,
+`no_output_of_prior_pics_flag`, and `long_term_reference_flag` fields.
+
 Type `5` decodes `IdrSliceLayerWithoutPartitioningRbsp` for the bounded
 progressive all-I `slice_type` values 2 and 7. It imports the exact PPS
 generation selected by `pic_parameter_set_id` and that PPS's exact SPS
@@ -1030,9 +1044,10 @@ false guard consumes no bits and creates no node. Deblocking value 1 skips both
 offsets, values 0 and 2 read them, and reserved values fail at the controlling
 codeword. Missing/future/stale parameter-set generations remain
 `dependency-unavailable`; the partial header is retained and later NAL units
-are still analyzed. Non-IDR, P/B/SP/SI, field-picture, reference-list, weighted,
-adaptive-memory-management, and slice-group branches are deferred. Package
-`0.1.11` advertises coverage depth `idr-slice-header`; this is not yet the
+are still analyzed. Reference type-1, P/B/SP/SI, field-picture, reference-list,
+weighted, adaptive-memory-management, and slice-group branches are deferred.
+Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
+Package `0.1.12` advertises coverage depth `all-i-slice-header`; this is not yet the
 complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
@@ -1085,6 +1100,7 @@ struct NalUnitHeader {
     bits<2> nal_ref_idc;
     bits<5> nal_unit_type;
     assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
+    assert(nal_unit_type != 1 || nal_ref_idc == 0) at nal_ref_idc;
 }
 
 @index(progressive)
@@ -1287,6 +1303,7 @@ struct NalUnitHeader {
     bits<2> nal_ref_idc;
     bits<5> nal_unit_type;
     assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
+    assert(nal_unit_type != 1 || nal_ref_idc == 0) at nal_ref_idc;
 }
 
 @spec("ITU-T H.264", "7.3.2.4")
@@ -1669,6 +1686,8 @@ The compressed remaining-bit terminal is specified by
 [ADR-0048](../adr/0048-register-a-compressed-remaining-bit-payload-terminal.md).
 Source-anchored assertion statements are specified by
 [ADR-0054](../adr/0054-add-source-anchored-assertion-statements.md).
+The bounded progressive non-IDR all-I slice is specified by
+[ADR-0055](../adr/0055-add-bounded-progressive-non-idr-all-i-slice-header.md).
 
 ## Sandbox And Resource Limits
 

@@ -39,6 +39,7 @@ struct NalUnitHeader {
     bits<5> nal_unit_type;
 
     assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
+    assert(nal_unit_type != 1 || nal_ref_idc == 0) at nal_ref_idc;
 
     computed<bool> is_vcl =
         nal_unit_type >= 1 && nal_unit_type <= 5;
@@ -635,10 +636,11 @@ DSL 语法。Annex B runner 为每条 scanner record 发布一个 `nal_unit[inde
 `forbidden_zero_bit`、`nal_ref_idc` 和 `nal_unit_type`。
 
 完整 8 bit header 可用后，official rule 会检查 clause 7.4.1 prerequisite
-`nal_unit_type != 5 || nal_ref_idc != 0`。reference priority 为零的 type-5 header 会保留三个
-字段，在精确的两 bit `nal_ref_idc` span 上返回致命 `invalid-syntax`，并且不映射或物化当前
-NAL 的 `rbsp_payload`；scanner 继续处理下一 NAL。该 assertion 不拒绝 non-type-5 header 的
-零 `nal_ref_idc`。
+`nal_unit_type != 5 || nal_ref_idc != 0`，以及有界 type-1 support prerequisite
+`nal_unit_type != 1 || nal_ref_idc == 0`。reference priority 为零的 type-5 header，或 reference
+priority 非零的 type-1 header，都会保留三个字段，在精确的两 bit `nal_ref_idc` span 上返回致命
+`invalid-syntax`，并且不映射或物化当前 NAL 的 `rbsp_payload`；scanner 继续处理下一 NAL。
+type-1 prerequisite 防止尚未支持的 non-IDR reference-picture marking 被误读成后续 slice 字段。
 
 direct header 成功后，普通非空 payload 会在不复制字节的情况下从 EBSP 映射为 RBSP logical
 view。每个完整的 `00 00 03` 都会排除其中的 `03`，并把它呈现为
@@ -648,7 +650,7 @@ view。每个完整的 `00 00 03` 都会排除其中的 `03`，并把它呈现�
 `trailing_zero_8bits`。NAL unit type `14`、`20`、`21` 需要当前 profile 尚未解析的 extension
 header，因此 direct header 之后的字节仍保持 uninterpreted，不会传给 mapper，也无法派发。
 
-内置规则为 `nal_unit_type` 值 `5`、`7`、`8`、`9`、`10`、`11` 声明了 payload 派发。被派发的 type 一定会经过
+内置规则为 `nal_unit_type` 值 `1`、`5`、`7`、`8`、`9`、`10`、`11` 声明了 payload 派发。被派发的 type 一定会经过
 映射，payload 为空时也不例外，因此每个被派发的 NAL 都存在 `rbsp_payload`。type `9` 把
 `AccessUnitDelimiterRbsp` 解码为 `rbsp_payload` 的子节点，公开 `primary_pic_type`、
 `rbsp_stop_one_bit` 以及 `rbsp_alignment_zero_bit[0]` 到 `rbsp_alignment_zero_bit[3]`。
@@ -767,6 +769,14 @@ type 的 `rbsp_payload` region 保持原样。
 | `constrained_intra_pred_flag` | 将 intra prediction 限制在 intra-coded 相邻 macroblock。 |
 | `redundant_pic_cnt_present_flag` | 表示关联 slice header 中存在 redundant-picture count 语法。 |
 
+type `1` 为有界 progressive non-reference all-I `slice_type` 值 2 和 7 解码
+`NonIdrAllISliceLayerWithoutPartitioningRbsp`。direct-header assertion 要求
+`nal_ref_idc == 0`，因此 projection 不包含 `dec_ref_pic_marking`。它与 IDR shape 导入相同的
+精确 PPS/SPS generation，并读取 `first_mb_in_slice`、`slice_type`、`pic_parameter_set_id`、
+`frame_num`、`pic_order_cnt_lsb`、可选 bottom-field POC 与 redundant-picture 字段、
+`slice_qp_delta`、可选 deblocking control，以及 opaque `slice_data` suffix。IDR 专属的
+`idr_pic_id`、`no_output_of_prior_pics_flag` 与 `long_term_reference_flag` 不出现。
+
 type `5` 为有界 progressive all-I `slice_type` 值 2 和 7 解码
 `IdrSliceLayerWithoutPartitioningRbsp`。它导入 `pic_parameter_set_id` 选择的精确 PPS
 generation 以及该 PPS 的精确 SPS dependency，然后读取以下字段：
@@ -793,9 +803,10 @@ dynamic width 仍会在受影响字段读取 source 前拒绝 non-progressive SP
 exact imported PPS guard 会选择 bottom-field POC、redundant-picture count 与 deblocking-control
 字段；false guard 不消费 bit，也不创建 node。deblocking 值 1 省略两个 offset，值 0 和 2 读取
 它们，reserved 值在 controller 码字处失败。missing/future/stale parameter-set generation 仍报告
-`dependency-unavailable`；保留 partial header，并继续分析后续 NAL。non-IDR、P/B/SP/SI、
-field-picture、reference-list、weighted、adaptive-memory-management 与 slice-group 分支均留待
-后续。package `0.1.11` 发布 coverage depth `idr-slice-header`；这尚未完成
+`dependency-unavailable`；保留 partial header，并继续分析后续 NAL。reference type-1、
+P/B/SP/SI、field-picture、reference-list、weighted、adaptive-memory-management 与 slice-group
+分支均留待后续。type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
+`0.1.12` 发布 coverage depth `all-i-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
@@ -834,6 +845,7 @@ struct NalUnitHeader {
     bits<2> nal_ref_idc;
     bits<5> nal_unit_type;
     assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
+    assert(nal_unit_type != 1 || nal_ref_idc == 0) at nal_ref_idc;
 }
 
 @index(progressive)
@@ -1065,6 +1077,7 @@ struct NalUnitHeader {
     bits<2> nal_ref_idc;
     bits<5> nal_unit_type;
     assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
+    assert(nal_unit_type != 1 || nal_ref_idc == 0) at nal_ref_idc;
 }
 
 @spec("ITU-T H.264", "7.3.2.4")
@@ -1356,6 +1369,8 @@ imported equality guard 合同见
 [ADR-0048](../adr/0048-register-a-compressed-remaining-bit-payload-terminal.md)。
 source-anchored assertion statement 合同见
 [ADR-0054](../adr/0054-add-source-anchored-assertion-statements.md)。
+有界 progressive non-IDR all-I slice 合同见
+[ADR-0055](../adr/0055-add-bounded-progressive-non-idr-all-i-slice-header.md)。
 
 ## 沙箱与资源限制
 
