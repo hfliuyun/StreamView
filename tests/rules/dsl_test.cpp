@@ -153,6 +153,45 @@ private slots:
         }
     }
 
+    void parsesImportedContextValuesInAssertionConditions() {
+        const auto result = DslParser::parse(QStringLiteral(R"(
+            @context("h264-pps", id)
+            struct Pps {
+                bits<8> id;
+                bits<1> weighted_pred_flag @context_export;
+            }
+            @context_import("h264-pps", pic_parameter_set_id)
+            struct Slice {
+                ue pic_parameter_set_id;
+                computed<bool> is_p_slice = true;
+                assert(!is_p_slice ||
+                       context_value(pic_parameter_set_id,
+                                     h264_pps,
+                                     weighted_pred_flag) == 0)
+                    at pic_parameter_set_id;
+            }
+            entry Slice;
+        )"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& assertion = result.program.structs.at(1).items.at(2).assertion;
+        QCOMPARE(assertion.condition.kind, DslExpressionKind::Binary);
+        QCOMPARE(assertion.condition.binaryOperator, DslBinaryOperator::LogicalOr);
+        const auto& equality = assertion.condition.operands.at(1);
+        QCOMPARE(equality.kind, DslExpressionKind::Binary);
+        QCOMPARE(equality.binaryOperator, DslBinaryOperator::Equal);
+        const auto& imported = equality.operands.at(0);
+        QCOMPARE(imported.kind, DslExpressionKind::Call);
+        QCOMPARE(imported.name, QStringLiteral("context_value"));
+        QCOMPARE(imported.operands.size(), std::size_t(3));
+        for (const auto& argument : imported.operands) {
+            QCOMPARE(argument.kind, DslExpressionKind::Identifier);
+        }
+    }
+
     void rejectsInvalidAssertionContractsAndRecoversAtTheNextField() {
         const auto nonBoolean = DslParser::parse(QStringLiteral(
             "struct Header { bits<1> value; assert(value) at value; } entry Header;"));
@@ -184,6 +223,38 @@ private slots:
             "struct Header { bits<1> value; @description(\"bad\") "
             "assert(true) at value; } entry Header;"));
         QVERIFY(hasDiagnostic(annotated, DslDiagnosticCode::InvalidAnnotation));
+
+        const auto missingContextArgument = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value; "
+            "assert(context_value(value, h264_pps) == 0) at value; } "
+            "entry Header;"));
+        QVERIFY(hasDiagnostic(missingContextArgument,
+                              DslDiagnosticCode::InvalidContext));
+
+        const auto nonIdentifierContextArgument = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value; "
+            "assert(context_value(value, h264_pps, 0) == 0) at value; } "
+            "entry Header;"));
+        QVERIFY(hasDiagnostic(nonIdentifierContextArgument,
+                              DslDiagnosticCode::InvalidContext));
+
+        const auto importedComputed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value; "
+            "computed<u64> derived = context_value(value, h264_pps, present); } "
+            "entry Header;"));
+        QVERIFY(hasDiagnostic(importedComputed, DslDiagnosticCode::UnknownReference));
+
+        const auto importedPureBody = DslParser::parse(QStringLiteral(
+            "pure u64 imported(u64 value) { "
+            "return context_value(value, h264_pps, present); } "
+            "struct Header { bits<1> value; } entry Header;"));
+        QVERIFY(hasDiagnostic(importedPureBody, DslDiagnosticCode::UnknownReference));
+
+        const auto importedLazySize = DslParser::parse(QStringLiteral(
+            "struct Header { bits<8> value; "
+            "@lazy(context_value(value, h264_pps, size)) bytes payload; } "
+            "entry Header;"));
+        QVERIFY(hasDiagnostic(importedLazySize, DslDiagnosticCode::UnknownReference));
 
         const auto malformed = DslParser::parse(QStringLiteral(
             "struct Header { bits<1> value; assert(true) value; "

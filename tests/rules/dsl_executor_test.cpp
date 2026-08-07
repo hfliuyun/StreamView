@@ -464,6 +464,60 @@ private slots:
         QVERIFY(structure->diagnostics().empty());
     }
 
+    void shortCircuitsImportedAssertionValues() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-pps", id)
+            struct Pps {
+                bits<8> id;
+                bits<1> present @context_export;
+            }
+            @context_import("h264-pps", id)
+            struct Header {
+                bits<1> bypass;
+                bits<7> id;
+                assert(bypass == 1 ||
+                       context_value(id, h264_pps, present) == 1)
+                    at id;
+            }
+            entry Header;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto headerIndex =
+            *compiled.program->structureIndex(QStringLiteral("Header"));
+        MemorySource source(bytes({0x80}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("short-circuit-imported-assertion"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                      headerIndex,
+                                                      reader,
+                                                      *mapping,
+                                                      0,
+                                                      *tree,
+                                                      tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(8));
+        QCOMPARE(result.nodesCreated, quint64(3));
+        QCOMPARE(reader.position(), quint64(8));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QVERIFY(structure->diagnostics().empty());
+    }
+
     void preservesSourceOrderForMultipleAssertionsAtOnePosition() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "struct Header { bits<2> reference; bits<5> type; "
@@ -705,6 +759,66 @@ private slots:
             QCOMPARE(source.readCount(), quint64(0));
             QVERIFY(!result.structureNode.has_value());
         }
+    }
+
+    void rejectsMalformedImportedAssertionReferencesBeforeReadingSource() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-pps", id)
+            struct Pps {
+                bits<8> id;
+                bits<1> present @context_export;
+            }
+            @context_import("h264-pps", id)
+            struct Header {
+                bits<8> id;
+                assert(context_value(id, h264_pps, present) == 1) at id;
+            }
+            entry Header;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+
+        auto malformed = *compiled.program;
+        const auto headerIndex =
+            *malformed.structureIndex(QStringLiteral("Header"));
+        auto& imported = malformed.structs.at(headerIndex)
+                             .assertions.front()
+                             .condition.operands.at(0);
+        QCOMPARE(imported.kind,
+                 DslTypedExpressionKind::ImportedContextReference);
+        imported.contextImportIndex = 99;
+
+        MemorySource source(bytes({1}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("malformed-imported-assertion"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(malformed,
+                                                      headerIndex,
+                                                      reader,
+                                                      *mapping,
+                                                      0,
+                                                      *tree,
+                                                      tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(result.instructionsExecuted, quint64(0));
+        QCOMPARE(result.bitsConsumed, quint64(0));
+        QCOMPARE(result.nodesCreated, quint64(0));
+        QCOMPARE(reader.position(), quint64(0));
+        QCOMPARE(source.readCount(), quint64(0));
+        QVERIFY(!result.structureNode.has_value());
     }
 
     void executesTheMaximumAssertionsPerStructure() {

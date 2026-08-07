@@ -1724,6 +1724,7 @@ private:
                                             const DslExpression& expression,
                                             const auto& resolveIdentifier,
                                             std::size_t availableFunctionCount,
+                                            bool allowImportedContextReference,
                                             std::size_t depth,
                                             std::size_t& nodeCount)
             -> std::optional<DslScalarType> {
@@ -1753,6 +1754,24 @@ private:
             case DslExpressionKind::Identifier:
                 return resolveIdentifier(expression.name, expression.range);
             case DslExpressionKind::Call: {
+                if (allowImportedContextReference &&
+                    expression.name == QStringLiteral("context_value")) {
+                    if (expression.operands.size() != 3 ||
+                        std::any_of(expression.operands.begin(),
+                                    expression.operands.end(),
+                                    [](const DslExpression& operand) {
+                                        return operand.kind !=
+                                               DslExpressionKind::Identifier;
+                                    })) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidContext,
+                             QStringLiteral(
+                                 "context_value requires three identifier arguments"),
+                             expression.range});
+                        return std::nullopt;
+                    }
+                    return DslScalarType::U64;
+                }
                 const auto functionsEnd = result_.program.pureFunctions.begin() +
                                           static_cast<std::ptrdiff_t>(availableFunctionCount);
                 const auto found = std::find_if(
@@ -1768,6 +1787,7 @@ private:
                                                  argument,
                                                  resolveIdentifier,
                                                  availableFunctionCount,
+                                                 allowImportedContextReference,
                                                  depth + 1,
                                                  nodeCount));
                 }
@@ -1808,6 +1828,7 @@ private:
                                               expression.operands.front(),
                                               resolveIdentifier,
                                               availableFunctionCount,
+                                              allowImportedContextReference,
                                               depth + 1,
                                               nodeCount);
                 if (operandType && *operandType != DslScalarType::Bool) {
@@ -1833,12 +1854,14 @@ private:
                                        expression.operands.at(0),
                                        resolveIdentifier,
                                        availableFunctionCount,
+                                       allowImportedContextReference,
                                        depth + 1,
                                        nodeCount);
             const auto rightType = self(self,
                                         expression.operands.at(1),
                                         resolveIdentifier,
                                         availableFunctionCount,
+                                        allowImportedContextReference,
                                         depth + 1,
                                         nodeCount);
             const auto requireOperands = [&](DslScalarType required,
@@ -1955,6 +1978,7 @@ private:
                                                            function.expression,
                                                            resolveParameter,
                                                            index,
+                                                           false,
                                                            1,
                                                            nodeCount);
             if (expressionType && *expressionType != function.returnType) {
@@ -2490,6 +2514,7 @@ private:
                             assertion.condition,
                             resolveAssertionIdentifier,
                             result_.program.pureFunctions.size(),
+                            true,
                             1,
                             nodeCount);
                         if (expressionType && *expressionType != DslScalarType::Bool) {
@@ -2827,6 +2852,7 @@ private:
                             region.byteCountExpression,
                             resolveLazyIdentifier,
                             result_.program.pureFunctions.size(),
+                            false,
                             1,
                             nodeCount);
                         if (expressionType && *expressionType != DslScalarType::U64) {
@@ -2919,6 +2945,7 @@ private:
                             field.expression,
                             resolveComputedIdentifier,
                             result_.program.pureFunctions.size(),
+                            false,
                             1,
                             nodeCount);
                         if (expressionType && *expressionType != field.type) {

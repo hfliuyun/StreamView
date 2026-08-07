@@ -154,6 +154,125 @@ private slots:
         QCOMPARE(first.program->bytecode.at(3).immediate, quint64(0));
     }
 
+    void lowersImportedContextValuesInSourceAnchoredAssertions() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            pure bool is_disabled(u64 value) {
+                return value == 0;
+            }
+            @context("h264-pps", id)
+            struct Pps {
+                bits<8> id;
+                bits<1> weighted_pred_flag @context_export;
+                bits<7> reserved;
+            }
+            @context_import("h264-pps", pic_parameter_set_id)
+            struct Slice {
+                bits<8> pic_parameter_set_id;
+                assert(is_disabled(
+                           context_value(pic_parameter_set_id,
+                                         h264_pps,
+                                         weighted_pred_flag)))
+                    at pic_parameter_set_id;
+                bits<1> tail;
+            }
+            entry Slice;
+        )"));
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+
+        const auto first = DslCompiler::compile(parsed.program);
+        const auto second = DslCompiler::compile(parsed.program);
+        QVERIFY2(first.succeeded(),
+                 first.diagnostics.empty()
+                     ? ""
+                     : qPrintable(first.diagnostics.front().message));
+        QVERIFY(second.succeeded());
+
+        const auto sliceIndex =
+            *first.program->structureIndex(QStringLiteral("Slice"));
+        const auto& structure = first.program->structs.at(sliceIndex);
+        QCOMPARE(structure.fields.size(), std::size_t(2));
+        QCOMPARE(structure.assertions.size(), std::size_t(1));
+        const auto& assertion = structure.assertions.front();
+        QCOMPARE(assertion.anchorFieldIndex, quint32(0));
+        QCOMPARE(assertion.assertionFieldIndex, quint32(1));
+        QCOMPARE(assertion.condition.kind, DslTypedExpressionKind::Binary);
+        QCOMPARE(assertion.condition.type, DslScalarType::Bool);
+        QCOMPARE(assertion.condition.binaryOperator,
+                 streamview::rules::DslBinaryOperator::Equal);
+        const auto& imported = assertion.condition.operands.at(0);
+        QCOMPARE(imported.kind,
+                 DslTypedExpressionKind::ImportedContextReference);
+        QCOMPARE(imported.type, DslScalarType::U64);
+        QCOMPARE(imported.contextImportIndex, quint32(0));
+        QCOMPARE(imported.contextDefinitionKind,
+                 streamview::core::ContextDefinitionKind::H264PictureParameterSet);
+        QCOMPARE(imported.contextStructureIndex, quint32(0));
+        QCOMPARE(imported.contextExportIndex, quint32(0));
+
+        const std::size_t offset = structure.bytecodeOffset;
+        const std::vector<DslOpcode> expected{
+            DslOpcode::BeginStructure,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::AssertExpression,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::EndStructure,
+        };
+        QCOMPARE(structure.bytecodeLength, expected.size());
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            QCOMPARE(first.program->bytecode.at(offset + index).opcode,
+                     expected.at(index));
+            QCOMPARE(first.program->bytecode.at(offset + index).opcode,
+                     second.program->bytecode.at(offset + index).opcode);
+            QCOMPARE(first.program->bytecode.at(offset + index).operand,
+                     second.program->bytecode.at(offset + index).operand);
+            QCOMPARE(first.program->bytecode.at(offset + index).immediate,
+                     second.program->bytecode.at(offset + index).immediate);
+        }
+        QCOMPARE(first.program->bytecode.at(offset + 2).operand, quint32(0));
+        QCOMPARE(first.program->bytecode.at(offset + 2).immediate, quint64(0));
+    }
+
+    void rejectsInvalidImportedContextAssertionContracts() {
+        const std::vector<QString> invalidSources{
+            QStringLiteral(R"(
+                @context("h264-pps", id)
+                struct Pps {
+                    bits<8> id;
+                    bits<1> present @context_export;
+                }
+                struct Slice {
+                    bits<8> id;
+                    assert(context_value(id, h264_pps, present) == 1) at id;
+                }
+                entry Slice;
+            )"),
+            QStringLiteral(R"(
+                @context("h264-pps", id)
+                struct Pps { bits<8> id; bits<1> present; }
+                @context_import("h264-pps", id)
+                struct Slice {
+                    bits<8> id;
+                    assert(context_value(id, h264_pps, present) == 1) at id;
+                }
+                entry Slice;
+            )"),
+        };
+
+        for (const QString& source : invalidSources) {
+            const auto parsed = DslParser::parse(source);
+            QVERIFY2(parsed.succeeded(),
+                     parsed.diagnostics.empty()
+                         ? ""
+                         : qPrintable(parsed.diagnostics.front().message));
+            const auto compiled = DslCompiler::compile(parsed.program);
+            QVERIFY(!compiled.succeeded());
+            QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidContext));
+        }
+    }
+
     void ordersAssertionsBetweenSentinelCompletionAndRepeatBounds() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             struct Header {

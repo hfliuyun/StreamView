@@ -2044,12 +2044,14 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     QStringLiteral(
                         "Assertion expressions require scalar unsigned fields"));
             };
+            contextValueResolver = importedContextResolver;
             ExpressionBuildState state;
             const auto expression = compileExpression(assertion.condition,
                                                       resolveField,
                                                       program.pureFunctions.size(),
                                                       1,
                                                       state);
+            contextValueResolver = {};
             if (expression && expression->type != DslScalarType::Bool) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidType,
