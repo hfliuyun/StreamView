@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Add a bounded progressive non-IDR P-slice header
-Next Action: Define and implement the bounded P-slice reference-index override branch
-Last Verification: Commits 362ac2a and 8a37db1; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 68/68; svtool rule check passed; hosted run 31189395918 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Add a bounded P-slice reference-index override
+Next Action: Define and implement a bounded P-slice reference-list modification loop
+Last Verification: Commits 7ded7ba and 9a9e81d; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 72/72; svtool rule check passed; hosted run 31192254742 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -698,3 +698,17 @@ Blockers: None
   重新配置、完整构建与 CTest 均为 32/32。hosted run `31189395918` 的 Windows 2022、macOS 15、
   Ubuntu 24.04 Configure、Build、Test、Install、Upload 全部成功。完整 Baseline/Main/High
   slice-header 项仍未完成；下一步定义并实现 bounded P-slice reference-index override 分支。
+- 2026-08-07：完成有界 P-slice reference-index override 增量。ADR-0058 与英中文
+  bundled-profile 参考提交 `7ded7ba` 固化 optional list-0 override：
+  `num_ref_idx_active_override_flag == 1` 时按 clause 顺序读取带非致命
+  `@range(0, 31)` 的 `num_ref_idx_l0_active_minus1`；flag 为零时该字段缺席，后续
+  `ref_pic_list_modification_flag_l0`、QP 与 opaque `slice_data` 边界保持不变。实现提交
+  `9a9e81d` 把官方 package 更新为 `0.1.14`，coverage depth 保持
+  `i-p-slice-header`；回归覆盖 P type 0/5 的非默认 override、zero-flag 字段缺席、
+  count 32 warning 后 payload 不错位、截断 count、override 后仍不支持的 list
+  modification，以及精确 source span 与后续 NAL 恢复。H.264 analyzer 定向套件为
+  72/72，`svtool rule check` 通过；本机 `dev`、`ci`、`sanitize` 重新配置、完整构建
+  与 CTest 均为 32/32。hosted run `31192254742` 的 Windows 2022、macOS 15、Ubuntu 24.04
+  Configure、Build、Test、Install、Upload 全部成功。完整 Baseline/Main/High
+  slice-header 项仍未完成；下一步定义并实现 bounded P-slice reference-list
+  modification loop。
