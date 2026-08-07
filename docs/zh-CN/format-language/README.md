@@ -778,7 +778,8 @@ type `1` 为有界 progressive non-reference I 与 P slice 解码
 `NonIdrSliceLayerWithoutPartitioningRbsp`。`NonIdrSliceType` 接受 I 值 2/7 和 P 值 0/5，
 可见的 `is_p_slice` computed field 区分两种布局。direct-header assertion 要求
 `nal_ref_idc == 0`，因此 projection 不包含 `dec_ref_pic_marking`。P slice 会实际读取必需的
-`num_ref_idx_active_override_flag` 与 `ref_pic_list_modification_flag_l0` bit，并要求两者为零。
+`num_ref_idx_active_override_flag`；值 1 会选择有界 `num_ref_idx_l0_active_minus1` override，
+值 0 则保留 PPS default。后续 `ref_pic_list_modification_flag_l0` 仍是必需字段并且必须为零。
 imported PPS assertion 还会在 `slice_qp_delta` 前要求 `weighted_pred_flag == 0` 与
 `entropy_coding_mode_flag == 0`；all-I 值会短路这些 P-only prerequisite。IDR 专属的
 `idr_pic_id`、`no_output_of_prior_pics_flag` 与 `long_term_reference_flag` 不出现。
@@ -798,7 +799,8 @@ generation 以及该 PPS 的精确 SPS dependency。两个有界 shape 中声明
 | `pic_order_cnt_lsb` | 在绑定的 POC-type-0 SPS 下使用 `log2_max_pic_order_cnt_lsb_minus4 + 4` bit。 |
 | `delta_pic_order_cnt_bottom` | 在绑定 PPS 启用时携带 signed bottom-field POC delta。 |
 | `redundant_pic_cnt` | 在绑定 PPS 启用时标识 redundant representation；超出 `0..127` 时告警。 |
-| `num_ref_idx_active_override_flag` | 受支持 P slice 的必需字段，必须为零；值 1 会在尚未支持的 override count 前失败。 |
+| `num_ref_idx_active_override_flag` | 受支持 P slice 的必需字段；值 1 读取 list 0 active-reference override，值 0 保留 PPS default。 |
+| `num_ref_idx_l0_active_minus1` | 被选择时覆盖 active list 0 entry count；超出 `0..31` 时告警。 |
 | `ref_pic_list_modification_flag_l0` | 受支持 P slice 的必需字段，必须为零；值 1 会在尚未支持的 modification loop 前失败。 |
 | `no_output_of_prior_pics_flag` | 控制 IDR picture 之前 picture 的输出。 |
 | `long_term_reference_flag` | 设置时把 IDR picture 标记为 long-term reference。 |
@@ -813,10 +815,10 @@ exact imported PPS guard 会选择 bottom-field POC、redundant-picture count �
 字段；false guard 不消费 bit，也不创建 node。deblocking 值 1 省略两个 offset，值 0 和 2 读取
 它们，reserved 值在 controller 码字处失败。missing/future/stale parameter-set generation 仍报告
 `dependency-unavailable`；保留 partial header，并继续分析后续 NAL。reference type-1、
-B/SP/SI、field-picture、非零 reference-index override、reference-list modification、weighted-
-prediction、CABAC P-header、adaptive-memory-management 与 slice-group 分支均留待后续。
+B/SP/SI、field-picture、reference-list modification、weighted-prediction、CABAC P-header、
+adaptive-memory-management 与 slice-group 分支均留待后续。
 type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.13` 发布 coverage depth `i-p-slice-header`；这尚未完成
+`0.1.14` 发布 coverage depth `i-p-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
@@ -1395,6 +1397,8 @@ source-anchored assertion 中 imported value 的合同见
 [ADR-0055](../adr/0055-add-bounded-progressive-non-idr-all-i-slice-header.md)。
 有界 progressive non-IDR P-slice 合同见
 [ADR-0057](../adr/0057-add-bounded-progressive-non-idr-p-slice-header.md)。
+有界 P-slice reference-index override 合同见
+[ADR-0058](../adr/0058-add-bounded-p-slice-reference-index-override.md)。
 
 ## 沙箱与资源限制
 

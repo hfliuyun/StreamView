@@ -1017,9 +1017,10 @@ and 7 and P values 0 and 5, while the visible `is_p_slice` computed field
 distinguishes the two layouts. The direct-header assertion requires
 `nal_ref_idc == 0`, so the projection does not contain
 `dec_ref_pic_marking`. P slices read the mandatory
-`num_ref_idx_active_override_flag` and
-`ref_pic_list_modification_flag_l0` bits and require both to be zero. Imported
-PPS assertions also require `weighted_pred_flag == 0` and
+`num_ref_idx_active_override_flag`; value 1 selects a bounded
+`num_ref_idx_l0_active_minus1` override, while value 0 keeps the PPS default.
+The following `ref_pic_list_modification_flag_l0` remains mandatory and must
+be zero. Imported PPS assertions also require `weighted_pred_flag == 0` and
 `entropy_coding_mode_flag == 0` before `slice_qp_delta`; all-I values
 short-circuit these P-only prerequisites. The structure omits the IDR-only
 `idr_pic_id`, `no_output_of_prior_pics_flag`, and
@@ -1042,7 +1043,8 @@ meanings:
 | `pic_order_cnt_lsb` | Uses `log2_max_pic_order_cnt_lsb_minus4 + 4` bits from the bound POC-type-0 SPS. |
 | `delta_pic_order_cnt_bottom` | Carries the signed bottom-field POC delta when the bound PPS enables it. |
 | `redundant_pic_cnt` | Identifies the redundant representation when the bound PPS enables it; values outside `0..127` warn. |
-| `num_ref_idx_active_override_flag` | Mandatory for a supported P slice and must be zero; value 1 fails before the unsupported override count. |
+| `num_ref_idx_active_override_flag` | Mandatory for a supported P slice; value 1 reads the list 0 active-reference override and value 0 keeps the PPS default. |
+| `num_ref_idx_l0_active_minus1` | Overrides the active list 0 entry count when selected; values outside `0..31` warn. |
 | `ref_pic_list_modification_flag_l0` | Mandatory for a supported P slice and must be zero; value 1 fails before the unsupported modification loop. |
 | `no_output_of_prior_pics_flag` | Controls output of pictures preceding the IDR picture. |
 | `long_term_reference_flag` | Marks the IDR picture as a long-term reference when set. |
@@ -1059,12 +1061,11 @@ false guard consumes no bits and creates no node. Deblocking value 1 skips both
 offsets, values 0 and 2 read them, and reserved values fail at the controlling
 codeword. Missing/future/stale parameter-set generations remain
 `dependency-unavailable`; the partial header is retained and later NAL units
-are still analyzed. Reference type-1, B/SP/SI, field-picture, nonzero
-reference-index override, reference-list modification, weighted-prediction,
-CABAC P-header, adaptive-memory-management, and slice-group branches are
-deferred.
+are still analyzed. Reference type-1, B/SP/SI, field-picture, reference-list
+modification, weighted-prediction, CABAC P-header, adaptive-memory-management,
+and slice-group branches are deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
-Package `0.1.13` advertises coverage depth `i-p-slice-header`; this is not yet the
+Package `0.1.14` advertises coverage depth `i-p-slice-header`; this is not yet the
 complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
@@ -1721,6 +1722,8 @@ The bounded progressive non-IDR all-I slice is specified by
 [ADR-0055](../adr/0055-add-bounded-progressive-non-idr-all-i-slice-header.md).
 The bounded progressive non-IDR P-slice is specified by
 [ADR-0057](../adr/0057-add-bounded-progressive-non-idr-p-slice-header.md).
+The bounded P-slice reference-index override is specified by
+[ADR-0058](../adr/0058-add-bounded-p-slice-reference-index-override.md).
 
 ## Sandbox And Resource Limits
 
