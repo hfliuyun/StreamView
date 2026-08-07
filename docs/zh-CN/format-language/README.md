@@ -38,6 +38,8 @@ struct NalUnitHeader {
     bits<2> nal_ref_idc;
     bits<5> nal_unit_type;
 
+    assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
+
     computed<bool> is_vcl =
         nal_unit_type >= 1 && nal_unit_type <= 5;
 }
@@ -45,7 +47,8 @@ struct NalUnitHeader {
 
 最终参考文档必须分别定义基本类型、有无符号、字节序、bit 顺序、溢出行为、数组、枚举、
 结构、条件、分支、有界循环、纯函数、作用域、名称解析和规范注解。当前接受的最小子集
-仍有明确边界：表达式只能出现在纯函数返回值、计算字段和 lazy byte count 中，控制流只
+仍有明确边界：表达式只能出现在纯函数返回值、计算字段、lazy byte count、dynamic bit width
+和 assertion condition 中；imported value 仍局限在专用 width 与 equality-guard 形式。控制流只
 包含下述条件、switch 和有界 repeat 形式。
 
 当前接受的 M3 类型切片新增了按声明顺序保存的 enum，以及 `bits` 字段的显式字节序。
@@ -124,6 +127,10 @@ generation closure 解析一个 scalar。
 `context_value(...) == integer` 的左侧。它仍是 `u64` leaf，不进入一般 expression 或
 controller namespace。
 
+当前接受的 source-anchored assertion 切片新增 structure statement
+`assert(boolean_expression) at source_field;`。rule 可以用它强制字段间的致命关系，而不创建
+presentation node；`at` 字段提供 diagnostic path 与精确 mapped source location。
+
 ## DSL 0.1 最小子集
 
 首个可执行子集使用以下语法。token 之间可以有空白，以及 `//` 或 `/* ... */`
@@ -141,7 +148,8 @@ parameter     := scalar_type identifier
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { struct_item } "}" [ ";" ]
-struct_item   := field | computed | lazy_region | rbsp_trailing_bits
+struct_item   := field | computed | lazy_region | assertion
+               | rbsp_trailing_bits
                | compressed_payload
                | conditional | switch | repeat
 field         := { annotation } field_type identifier [ "[" integer "]" ]
@@ -151,6 +159,7 @@ computed      := { annotation } "computed" "<" scalar_type ">" identifier
                  "=" expression { annotation } ";"
 lazy_region   := "@" "lazy" "(" expression ")" "bytes" identifier
                  { presentation_annotation } ";"
+assertion     := "assert" "(" expression ")" "at" identifier ";"
 rbsp_trailing_bits := "rbsp_trailing_bits" ";"
 compressed_payload := "compressed_payload" identifier
                       { presentation_annotation } ";"
@@ -261,6 +270,17 @@ primary       := integer | "true" | "false" | identifier
   发布一个 materialized `CompressedPayload` node，并在不读取或复制 payload data 的情况下
   seek 到末尾。不按 byte 对齐、multi-span 和空 range 都合法。item 不产生 scalar value，
   不能作为 controller、expression dependency 或 context value。
+- `assert(condition) at anchor;` 是不接受 annotation、无条件的顶层 structure item。
+  conditional、switch、count repeat 或 sentinel repeat 内都拒绝 assertion，也不能把它写在
+  terminal item 之后。`condition` 必须为 `bool`，沿用完整的 bounded expression 与 pure-function
+  合同，但不能包含 `context_value`。字段 dependency 必须是此前声明、当前路径保证存在的
+  scalar unsigned `bits`、enum、`ue`、`computed<u64>` 或 `computed<bool>`；array、`se`、lazy
+  region、compressed payload、未知/未来字段与不可用的 branch-local 值都会被拒绝。
+- assertion anchor 必须命名此前声明、当前路径保证存在且 source-backed 的非数组 scalar syntax
+  field。fixed/dynamic `bits`、enum、`ue` 与 `se` 可以锚定 diagnostic；computed field、
+  generated item 与 region item 不可以。assertion 不是字段，不引入 name 或 scalar value，不改变 static
+  alignment，也不计入 99,999-field projection；它不能作为 controller 或 context value。一个
+  structure 最多声明 1,024 条 assertion。
 - 等值条件 controller 必须是此前声明、且在到达该条件的每条路径上都保证已经物化的
   scalar `bits`、enum、`ue` 或 `computed<u64>` 字段。数组、`se`、`computed<bool>`、
   未来或未知字段，以及离开所属保证分支后使用的 branch-local 字段都会被拒绝。整数字面量
@@ -332,14 +352,15 @@ primary       := integer | "true" | "false" | identifier
   `!`、checked `*`、`/`、`%`、`+`、`-`、同类型 `==` 和 `!=`、无符号大小比较，以及
   short-circuit Boolean `&&` 和 `||`，优先级如 grammar 所示。不存在隐式转换：算术和大小
   比较要求 `u64`，逻辑运算要求 `bool`，等值运算两侧类型相同，函数实参必须与形参逐一
-  匹配。无符号 overflow/underflow、除零和模零会在计算字段或 lazy region path 上产生
-  runtime `invalid-syntax`。dynamic bit width 使用同一套 checked arithmetic；`context_value`
+  匹配。无符号 overflow/underflow、除零和模零会在计算字段、lazy region、dynamic field 或
+  assertion anchor path 上产生 runtime `invalid-syntax`。dynamic bit width 使用同一套 checked
+  arithmetic；`context_value`
   是它唯一额外的 leaf form，也可以作为 imported equality conditional 的精确左侧，并计入
   相同 node 与 depth 上限；完整的 width expression 仍受
   共享 expansion-work 上限约束。enum 字段提供解码后的 `u64`；enum member 名不是本切片的
   expression value。
-- 每个写出的纯函数体、计算字段 expression 或 lazy byte-count expression，以及对应的完全
-  内联 expression，深度最多 64，节点最多 256。展开一个函数体或 expression 时，call、
+- 每个写出的纯函数体、计算字段 expression、lazy byte-count expression、dynamic width 或
+  assertion condition，以及对应的完全内联 expression，深度最多 64，节点最多 256。展开一个函数体或 expression 时，call、
   argument 与参数替换共享最多 4,096
   个 work step；即使 callee
   没有使用某个参数，该参数仍计入上限。pure call 在编译期展开，不引入 runtime call、递归、
@@ -377,8 +398,8 @@ primary       := integer | "true" | "false" | identifier
 
 `enum`、`big`、`little`、`ue`、`se`、`pure`、`return`、`bool`、`u64`、
 `computed`、`lazy`、`bytes`、`true`、`false`、`if`、`else`、`switch`、`case`、
-`default`、`repeat`、`until`、`payload`、`empty`、`rbsp_trailing_bits` 和
-`compressed_payload` 只在上述语法位置作为上下文关键字，其他位置仍可
+`default`、`repeat`、`until`、`assert`、`at`、`payload`、`empty`、
+`rbsp_trailing_bits` 和 `compressed_payload` 只在上述语法位置作为上下文关键字，其他位置仍可
 作为普通 identifier。既有 scalar 声明保持不变，`bits<N>` 仍与
 `bits<N, big>` 完全等价；本切片不弃用任何已接受的 0.1 语法。
 
@@ -388,8 +409,8 @@ sequence 和 entry 引用解析成 typed program，保留声明顺序，并确�
 `read-signed-exp-golomb`、`evaluate-computed`、`register-lazy-bytes`、
 `register-compressed-payload`、
 `read-rbsp-trailing-bits`、`assert-equals`、`assert-range-minimum`、
-`assert-range-maximum`、`assert-repeat-count`、`assert-sentinel-terminated` 和
-`end-structure` bytecode。每个 field opcode
+`assert-range-maximum`、`assert-repeat-count`、`assert-sentinel-terminated`、
+`assert-expression` 和 `end-structure` bytecode。每个 field opcode
 必须与字段类型匹配；Exp-Golomb typed field 的静态 bit width 为零、使用默认 bit order，且没有
 enum reference。无符号字段保留可选 equality 与 range constraint；有符号字段不带这两类
 constraint。固定数组按 source 顺序展开成名为 `name[0]` 到 `name[count - 1]` 的 typed field；
@@ -436,6 +457,14 @@ iteration 还要求此前全部 projected sentinel 不等于 terminating value�
 sentinel field、assertion position、termination value、enclosing guard 和 source range；全部 body
 projection 后发射一条 `assert-sentinel-terminated` instruction。VM 在 source read 前验证 descriptor
 和每个 projection 的 guard prefix，malformed typed IR 不能让终止后的字段继续执行。
+
+assertion 会降低成一条 declaration-order `DslTypedAssertion` descriptor，包含 typed Boolean
+condition、source-backed anchor field index、statement-position field index 与 source range；它不
+加入 typed field stream。对应的一条 `assert-expression` instruction 以 descriptor index 为
+operand、immediate 固定为零，并在该 statement position 执行。同一位置的 assertion 保留 source
+顺序；positioned operation 重合时，bytecode 固定先完成 sentinel assertion，再执行 expression
+assertion、repeat-count assertion，最后读取下一字段。包含 expression assertion 的 structure 在
+source access 前会完整验证三类 descriptor stream、operand、immediate、position 与顺序。
 
 compiler 会独立 type-check 每个纯函数，再把每个 pure call 展开到使用它的计算字段中。
 得到的 typed expression 只包含字面量、此前 typed-field index，以及一元或二元 operator；
@@ -519,6 +548,15 @@ location，也不执行 enum member、`@equals` 或 `@range` 数值检查。选�
 repeat metadata、controller guard 或 assertion 位置属于 invalid typed definition，运行时
 不会猜测执行。
 
+到达 `assert-expression` instruction 时，VM 会在不读取 source、不移动 reader、也不创建 node
+的情况下计算已经预验证的 Boolean condition。结果为 `true` 时继续下一条 instruction；结果为
+`false` 时立即以 `Assertion condition is false` 消息返回致命 `invalid-syntax`，保留此前全部
+materialized field，并且不执行后续 field。diagnostic path 与 location 来自 `at` field 的完整
+materialized range，因此跨 mapping gap 的 anchor 可以保留多个互相分离的 forwarded source
+span。checked arithmetic failure 保留既有 `invalid-syntax` 消息，并使用同一 anchor。该
+instruction 仍计入 instruction budget 且是 cancellation boundary；在这里触发 limit 或
+cancellation 时不会计算 condition，并保留相同的 completed prefix。
+
 执行任何 bytecode 前，VM 会验证所有 computed 或 lazy typed expression 的 metadata，
 包括节点/深度上限、结果与 operand 类型、previous-field index、dependency availability
 和 controller guard。runtime range、mapping 与 node-budget check 仍在选中的 field
@@ -596,6 +634,12 @@ DSL 语法。Annex B runner 为每条 scanner record 发布一个 `nal_unit[inde
 子节点只覆盖三字节或四字节前缀。`NalUnitHeader` 子节点只消耗 payload 的前 8 bit，并公开
 `forbidden_zero_bit`、`nal_ref_idc` 和 `nal_unit_type`。
 
+完整 8 bit header 可用后，official rule 会检查 clause 7.4.1 prerequisite
+`nal_unit_type != 5 || nal_ref_idc != 0`。reference priority 为零的 type-5 header 会保留三个
+字段，在精确的两 bit `nal_ref_idc` span 上返回致命 `invalid-syntax`，并且不映射或物化当前
+NAL 的 `rbsp_payload`；scanner 继续处理下一 NAL。该 assertion 不拒绝 non-type-5 header 的
+零 `nal_ref_idc`。
+
 direct header 成功后，普通非空 payload 会在不复制字节的情况下从 EBSP 映射为 RBSP logical
 view。每个完整的 `00 00 03` 都会排除其中的 `03`，并把它呈现为
 `emulation_prevention_three_byte[index]`；相邻的 forwarded byte 会合并为 source span。NAL
@@ -604,7 +648,7 @@ view。每个完整的 `00 00 03` 都会排除其中的 `03`，并把它呈现�
 `trailing_zero_8bits`。NAL unit type `14`、`20`、`21` 需要当前 profile 尚未解析的 extension
 header，因此 direct header 之后的字节仍保持 uninterpreted，不会传给 mapper，也无法派发。
 
-内置规则为 `nal_unit_type` 值 `7`、`8`、`9`、`10`、`11` 声明了 payload 派发。被派发的 type 一定会经过
+内置规则为 `nal_unit_type` 值 `5`、`7`、`8`、`9`、`10`、`11` 声明了 payload 派发。被派发的 type 一定会经过
 映射，payload 为空时也不例外，因此每个被派发的 NAL 都存在 `rbsp_payload`。type `9` 把
 `AccessUnitDelimiterRbsp` 解码为 `rbsp_payload` 的子节点，公开 `primary_pic_type`、
 `rbsp_stop_one_bit` 以及 `rbsp_alignment_zero_bit[0]` 到 `rbsp_alignment_zero_bit[3]`。
@@ -751,7 +795,7 @@ exact imported PPS guard 会选择 bottom-field POC、redundant-picture count �
 它们，reserved 值在 controller 码字处失败。missing/future/stale parameter-set generation 仍报告
 `dependency-unavailable`；保留 partial header，并继续分析后续 NAL。non-IDR、P/B/SP/SI、
 field-picture、reference-list、weighted、adaptive-memory-management 与 slice-group 分支均留待
-后续。package `0.1.10` 发布 coverage depth `idr-slice-header`；这尚未完成
+后续。package `0.1.11` 发布 coverage depth `idr-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
@@ -768,7 +812,8 @@ mapper 把带 source 位置的 conformance issue 与 RBSP transformation 分开�
 最后一个空 NAL 仍会发布 NAL region 和 start-code 子节点，并发布一个没有字段的 invalid
 `NalUnitHeader`；所属 NAL 的 `truncated-source` 汇总诊断锚定在已知 NAL region。
 `@equals(0)` 不匹配时保留 `forbidden_zero_bit`，把 header 和所属 NAL 标记为 invalid，
-但不阻止整体扫描完成。header 读取失败时保留已发布节点，把 root 标记为 invalid，并返回
+但不阻止整体扫描完成。type-5 reference-priority assertion 同样保留完整 direct header，但会在 RBSP mapping 前停止，并把
+diagnostic 锚定到 `nal_ref_idc`。header 读取失败时保留已发布节点，把 root 标记为 invalid，并返回
 `source-error`；取消时保留已完成的 NAL region，并把 root 标记为 cancelled。
 
 cancelled Annex B analyzer 可以用空 token 或尚未 requested 的新 cancellation token 原地恢复。
@@ -788,6 +833,7 @@ struct NalUnitHeader {
     bits<1> forbidden_zero_bit @equals(0);
     bits<2> nal_ref_idc;
     bits<5> nal_unit_type;
+    assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
 }
 
 @index(progressive)
@@ -1018,6 +1064,7 @@ struct NalUnitHeader {
     bits<1> forbidden_zero_bit @equals(0);
     bits<2> nal_ref_idc;
     bits<5> nal_unit_type;
+    assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
 }
 
 @spec("ITU-T H.264", "7.3.2.4")
@@ -1062,6 +1109,12 @@ sentinel repeat 的非法示例包括 `repeat (0)` 或 `repeat (65)`、缺少 `u
 sentinel、sentinel 声明在 body 外或 nested control flow 内、以 array、`se`、dynamic-width、
 computed 或 lazy 项作为 sentinel、termination value 越界，以及使用直接等于整数字面量之外的
 任何比较。
+
+assertion 的非法示例包括：condition 不是 Boolean；dependency 或 anchor 未知、声明得更晚、是
+array，或在当前 path 不可用；以 `se` 作为 expression dependency；以 computed、generated、
+lazy、compressed 或 array field 作为 anchor；在 conditional、switch 或 repeat control flow 内
+声明 assertion；任何前置 annotation；缺少括号、`at`、anchor 或分号；condition 中包含
+`context_value`；以及一个 structure 中的第 1,025 条 assertion。
 
 context publication 的非法示例包括：同一 structure 上出现第二个 `@context`、完全相同的
 `@context_dependency` 重复、没有 `@context` 的 structure 声明 dependency、使用 guarded、
@@ -1301,6 +1354,8 @@ imported equality guard 合同见
 [ADR-0047](../adr/0047-lower-bounded-sentinel-repeats-to-guarded-projections.md)。
 消费剩余 bit 的 compressed terminal 合同见
 [ADR-0048](../adr/0048-register-a-compressed-remaining-bit-payload-terminal.md)。
+source-anchored assertion statement 合同见
+[ADR-0054](../adr/0054-add-source-anchored-assertion-statements.md)。
 
 ## 沙箱与资源限制
 
@@ -1355,6 +1410,12 @@ switch arm 的字段都计入静态 99,999 字段投影上限。
 sentinel 等于 termination value，assertion 会在最后一个 sentinel field 上返回
 `invalid-syntax`，并保留有界 materialized prefix。language-wide maximum 64 同时限制 descriptor、
 guard 与 assertion work。
+
+一个 structure 最多包含 1,024 条 source-anchored assertion。每条 assertion 增加一个 descriptor
+和一条 `assert-expression` instruction；该 instruction 消耗一个 instruction-budget unit，并且是
+cancellation point。完全内联的 condition 在这一条 instruction 内计算，仍受 256 个 expression
+node、深度 64 与编译期 4,096-step expansion 上限约束。assertion 不增加 presentation node 或
+source read，也不计入 99,999-field projection。
 
 每个计算字段增加一条 `evaluate-computed` instruction。即使 false guard 跳过求值，该
 instruction 仍计入 instruction budget，并保留取消检查点。成功求值消耗一个物化节点名额，

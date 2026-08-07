@@ -39,6 +39,8 @@ struct NalUnitHeader {
     bits<2> nal_ref_idc;
     bits<5> nal_unit_type;
 
+    assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
+
     computed<bool> is_vcl =
         nal_unit_type >= 1 && nal_unit_type <= 5;
 }
@@ -49,8 +51,10 @@ order, overflow behavior, arrays, enums, structures, conditionals, switches,
 bounded loops, pure helpers, scope, name resolution, and specification
 annotations. The accepted minimum subset remains intentionally bounded:
 expressions are accepted only in pure-function return values, computed fields,
-and lazy byte counts, and control flow remains limited to the conditional,
-switch, and bounded-repeat forms described below.
+lazy byte counts, dynamic bit widths, and assertion conditions. Imported values
+remain restricted to the dedicated width and equality-guard forms, and control
+flow remains limited to the conditional, switch, and bounded-repeat forms
+described below.
 
 The accepted M3 type slice adds declaration-order enums and an explicit byte
 order on `bits` fields. Enum declarations name unsigned integer values; a
@@ -147,6 +151,11 @@ The accepted imported-condition slice also permits that reserved form as the
 left side of `context_value(...) == integer`. It remains a `u64` leaf rather
 than entering the general expression or controller namespace.
 
+The accepted source-anchored assertion slice adds the structure statement
+`assert(boolean_expression) at source_field;`. It lets a rule enforce a fatal
+relationship between fields without creating a presentation node. The `at`
+field supplies the diagnostic path and exact mapped source location.
+
 ## Minimum DSL 0.1 Subset
 
 The first executable subset uses the following grammar. Whitespace and `//` or
@@ -166,7 +175,8 @@ parameter     := scalar_type identifier
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { struct_item } "}" [ ";" ]
-struct_item   := field | computed | lazy_region | rbsp_trailing_bits
+struct_item   := field | computed | lazy_region | assertion
+               | rbsp_trailing_bits
                | compressed_payload
                | conditional | switch | repeat
 field         := { annotation } field_type identifier [ "[" integer "]" ]
@@ -176,6 +186,7 @@ computed      := { annotation } "computed" "<" scalar_type ">" identifier
                  "=" expression { annotation } ";"
 lazy_region   := "@" "lazy" "(" expression ")" "bytes" identifier
                  { presentation_annotation } ";"
+assertion     := "assert" "(" expression ")" "at" identifier ";"
 rbsp_trailing_bits := "rbsp_trailing_bits" ";"
 compressed_payload := "compressed_payload" identifier
                       { presentation_annotation } ";"
@@ -319,6 +330,21 @@ The static rules for this subset are:
   end without reading or copying payload data. Non-byte-aligned, multi-span, and
   empty ranges are valid. The item has no scalar value and cannot be a
   controller, expression dependency, or context value.
+- `assert(condition) at anchor;` is an unannotated, unconditional top-level
+  structure item. It is rejected inside a conditional, switch, count repeat,
+  or sentinel repeat, and it cannot follow a terminal item. `condition` must be
+  `bool`; it uses the complete bounded expression and pure-function contract,
+  but cannot contain `context_value`. Its field dependencies must be earlier
+  scalar unsigned `bits`, enum, `ue`, `computed<u64>`, or `computed<bool>`
+  values guaranteed on the current path. Arrays, `se`, lazy regions, compressed
+  payloads, unknown or future fields, and unavailable branch-local values are
+  rejected as dependencies.
+- The assertion anchor names an earlier source-backed, non-array scalar syntax
+  field guaranteed on the current path. Fixed or dynamic `bits`, enum, `ue`,
+  and `se` fields can anchor a diagnostic; computed fields and generated or
+  region items cannot. An assertion is not a field, introduces no name or scalar value, does
+  not affect static alignment or the 99,999-field projection, and cannot be a
+  controller or context value. One structure declares at most 1,024 assertions.
 - An equality-conditional controller must name an earlier scalar `bits`, enum,
   `ue`, or `computed<u64>` field guaranteed to have been materialized on every
   path reaching that condition. Arrays, `se`, `computed<bool>`, future or
@@ -428,15 +454,17 @@ The static rules for this subset are:
   conversions: arithmetic and ordering require `u64`, logical operators require
   `bool`, equality operands have the same type, and function arguments exactly
   match their parameters. Unsigned overflow or underflow, division by zero, and
-  remainder by zero are runtime `invalid-syntax` failures at the computed field
-  or lazy region path. The same checked arithmetic applies to a dynamic bit
-  width; `context_value` is its only additional leaf form and is also accepted
+  remainder by zero are runtime `invalid-syntax` failures at the computed field,
+  lazy region, dynamic field, or assertion anchor path. The same checked
+  arithmetic applies to a dynamic bit width; `context_value` is its only
+  additional leaf form and is also accepted
   as the exact left side of an imported equality conditional. It counts against
   the same node and depth limits. The complete width expression remains subject
   to the shared expansion-work limit. Enum fields contribute their decoded `u64`;
   enum member names are not expression values.
-- Every written pure-function body, computed-field expression, or lazy
-  byte-count expression, and every corresponding fully inlined expression, has
+- Every written pure-function body, computed-field expression, lazy byte-count
+  expression, dynamic width, or assertion condition, and every corresponding
+  fully inlined expression, has
   depth at most 64 and at most 256 nodes. Expanding one body or expression may
   perform at most 4,096 shared work steps across calls, arguments, and parameter
   substitutions, including arguments for parameters the callee does not use.
@@ -487,8 +515,8 @@ The static rules for this subset are:
 
 `enum`, `big`, `little`, `ue`, `se`, `pure`, `return`, `bool`, `u64`,
 `computed`, `lazy`, `bytes`, `true`, `false`, `if`, `else`, `switch`, `case`,
-`default`, `repeat`, `until`, `payload`, `empty`, `rbsp_trailing_bits`, and
-`compressed_payload` are contextual words in the
+`default`, `repeat`, `until`, `assert`, `at`, `payload`, `empty`,
+`rbsp_trailing_bits`, and `compressed_payload` are contextual words in the
 positions shown by the grammar and remain ordinary identifiers elsewhere.
 Existing scalar declarations are unchanged, and `bits<N>` remains exactly
 equivalent to `bits<N, big>`; this slice deprecates no accepted 0.1 syntax.
@@ -500,7 +528,7 @@ deterministic bytecode using `begin-structure`, `read-unsigned-bits`,
 `read-unsigned-exp-golomb`, `read-signed-exp-golomb`, `evaluate-computed`,
 `register-lazy-bytes`, `register-compressed-payload`, `read-rbsp-trailing-bits`, `assert-equals`,
 `assert-range-minimum`, `assert-range-maximum`, `assert-repeat-count`,
-`assert-sentinel-terminated`, and
+`assert-sentinel-terminated`, `assert-expression`, and
 `end-structure` operations. Each field opcode must match the resolved field type.
 The fixed-width read carries the resolved enum and byte-order information; the
 Exp-Golomb types have zero static bit width, default bit order, no enum
@@ -568,6 +596,17 @@ source, so malformed typed IR cannot make fields execute after termination.
 `svtool rule check` runs both stages. The bundled Annex B runner also compiles its rule
 once when the analyzer is created and executes the resolved structure index
 for every record.
+
+An assertion lowers to one declaration-order `DslTypedAssertion` descriptor
+containing its typed Boolean condition, source-backed anchor field index,
+statement-position field index, and source range. It does not join the typed
+field stream. One `assert-expression` instruction refers to the descriptor by
+index with immediate zero and executes at that statement position. Assertions
+at one position retain source order. When positioned operations coincide, the
+bytecode order is sentinel completion, expression assertion, repeat-count
+assertion, then the next field. The VM validates all three descriptor streams,
+operands, immediates, positions, and ordering before source access for a
+structure containing expression assertions.
 
 The compiler type-checks every pure function independently, then expands each
 pure call into the computed field that uses it. The resulting typed expression
@@ -689,6 +728,18 @@ paths such as `Header.value[1][0]`. Invalid repeat metadata, controller guards,
 or assertion placement is an invalid typed definition rather than guessed
 execution.
 
+At an `assert-expression` instruction, the VM evaluates the prevalidated
+Boolean condition without reading source, moving the reader, or creating a
+node. `true` continues at the next instruction. `false` immediately returns
+fatal `invalid-syntax` with message `Assertion condition is false`, retains all
+earlier materialized fields, and does not execute later fields. The diagnostic
+path and location come from the `at` field's complete materialized range, so a
+mapped anchor may preserve multiple disjoint forwarded source spans. Checked
+arithmetic failures retain their existing `invalid-syntax` messages and use the
+same anchor. The instruction itself remains an instruction-budget and
+cancellation boundary; a limit or cancellation reached there prevents condition
+evaluation and retains the same completed prefix.
+
 Before executing any bytecode, the VM validates every computed or lazy typed
 expression's metadata, including its node and depth bounds, result and operand
 types, previous-field indexes, dependency availability, and controller guards.
@@ -795,6 +846,13 @@ separately identified trailing-zero framing. Its `start_code` child covers only
 the three- or four-byte prefix. A `NalUnitHeader` child consumes exactly the
 first eight payload bits and exposes `forbidden_zero_bit`, `nal_ref_idc`, and
 `nal_unit_type`.
+
+After all eight header bits are available, the official rule asserts the clause
+7.4.1 prerequisite `nal_unit_type != 5 || nal_ref_idc != 0`. A type-5 header with
+zero reference priority retains all three fields, fails with fatal
+`invalid-syntax` at the exact two-bit `nal_ref_idc` span, and never maps or
+materializes that NAL's `rbsp_payload`; scanning continues with the next NAL.
+Zero `nal_ref_idc` remains valid for non-type-5 headers under this assertion.
 
 After a successful direct header, an ordinary non-empty payload is mapped from
 EBSP to an RBSP logical view without copying bytes. Each complete `00 00 03`
@@ -974,7 +1032,7 @@ codeword. Missing/future/stale parameter-set generations remain
 `dependency-unavailable`; the partial header is retained and later NAL units
 are still analyzed. Non-IDR, P/B/SP/SI, field-picture, reference-list, weighted,
 adaptive-memory-management, and slice-group branches are deferred. Package
-`0.1.10` advertises coverage depth `idr-slice-header`; this is not yet the
+`0.1.11` advertises coverage depth `idr-slice-header`; this is not yet the
 complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
@@ -998,6 +1056,9 @@ publishes an invalid, zero-field `NalUnitHeader`; the containing NAL's
 `truncated-source` summary diagnostic is anchored to the known NAL region. An
 `@equals(0)` mismatch retains `forbidden_zero_bit`, marks the header and
 containing NAL invalid, and does not prevent the overall scan from completing.
+The type-5 reference-priority assertion likewise retains the complete direct
+header, but stops before RBSP mapping and anchors its diagnostic to
+`nal_ref_idc`.
 Header read failures retain published nodes, mark the root invalid, and report
 `source-error`. Cancellation retains completed NAL regions and marks the root
 cancelled.
@@ -1023,6 +1084,7 @@ struct NalUnitHeader {
     bits<1> forbidden_zero_bit @equals(0);
     bits<2> nal_ref_idc;
     bits<5> nal_unit_type;
+    assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
 }
 
 @index(progressive)
@@ -1224,6 +1286,7 @@ struct NalUnitHeader {
     bits<1> forbidden_zero_bit @equals(0);
     bits<2> nal_ref_idc;
     bits<5> nal_unit_type;
+    assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
 }
 
 @spec("ITU-T H.264", "7.3.2.4")
@@ -1306,6 +1369,13 @@ missing `until` clause, an unknown sentinel, a sentinel declared outside or in
 nested control flow, an array, `se`, dynamic-width, computed, or lazy sentinel,
 an out-of-range terminating value, and any comparison other than direct
 equality with an integer literal.
+
+Invalid assertion examples include a non-Boolean condition; a dependency or
+anchor that is unknown, declared later, an array, or unavailable on the current
+path; an `se` expression dependency; a computed, generated, lazy, compressed,
+or array anchor; an assertion inside conditional, switch, or repeat control
+flow; any leading annotation; missing parentheses, `at`, anchor, or semicolon;
+`context_value` in the condition; and a 1,025th assertion in one structure.
 
 Invalid context-publication examples include a second `@context` on one
 structure; an identical repeated `@context_dependency`; a dependency on a
@@ -1597,6 +1667,8 @@ Bounded post-tested sentinel repeats are specified by
 [ADR-0047](../adr/0047-lower-bounded-sentinel-repeats-to-guarded-projections.md).
 The compressed remaining-bit terminal is specified by
 [ADR-0048](../adr/0048-register-a-compressed-remaining-bit-payload-terminal.md).
+Source-anchored assertion statements are specified by
+[ADR-0054](../adr/0054-add-source-anchored-assertion-statements.md).
 
 ## Sandbox And Resource Limits
 
@@ -1664,6 +1736,14 @@ assertion is charged even when enclosing guards are false. If no selected
 sentinel equals the terminating value, the assertion returns `invalid-syntax`
 at the final sentinel field while preserving the bounded materialized prefix.
 The language-wide maximum of 64 bounds descriptor, guard, and assertion work.
+
+One structure contains at most 1,024 source-anchored assertions. Each assertion
+adds one descriptor and one `assert-expression` instruction, which consumes one
+instruction-budget unit and is a cancellation point. Its fully inlined
+condition is evaluated within that instruction and remains bounded to 256
+expression nodes, depth 64, and the 4,096-step compile-time expansion limit.
+The assertion adds no presentation node or source read and does not count
+toward the 99,999-field projection.
 
 Each computed field adds one `evaluate-computed` instruction. That instruction
 counts toward the instruction budget and remains a cancellation point even when
