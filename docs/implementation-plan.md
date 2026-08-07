@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Add a bounded P-slice reference-index override
-Next Action: Define and implement a bounded P-slice reference-list modification loop
-Last Verification: Commits 7ded7ba and 9a9e81d; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 72/72; svtool rule check passed; hosted run 31192254742 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Add a bounded P-slice reference-list modification loop
+Next Action: Define and implement a bounded non-reference P-slice CABAC initialization branch
+Last Verification: Commits b635cd7 and d16e932; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 77/77; svtool rule check passed; hosted run 31195600795 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -712,3 +712,18 @@ Blockers: None
   Configure、Build、Test、Install、Upload 全部成功。完整 Baseline/Main/High
   slice-header 项仍未完成；下一步定义并实现 bounded P-slice reference-list
   modification loop。
+- 2026-08-07：完成有界 P-slice reference-list modification loop 增量。ADR-0059 与英中文
+  bundled-profile 参考提交 `b635cd7` 固化 list 0 的 post-tested bounded syntax：flag 为零时
+  modification operation 缺席；flag 为一时最多执行 64 次，按 `modification_of_pic_nums_idc`
+  值 0/1 读取 `abs_diff_pic_num_minus1`、值 2 读取 `long_term_pic_num`，值 3 作为保留在树中的
+  terminator。闭集 enum 使 reserved idc 在完整 Exp-Golomb 码字处致命失败；64 是 bundled
+  profile 的资源边界，不宣称为 H.264 conformance limit。实现提交 `d16e932` 把官方 package
+  更新为 `0.1.15`，coverage depth 保持 `i-p-slice-header`；weighted-prediction 与 CABAC
+  prerequisite 仍位于 loop 之后、`slice_qp_delta` 之前，`slice_data` 继续作为 opaque payload。
+  回归覆盖零 flag、首项终止、idc 0/1/2/3 全路径、type-5 P alias、reserved idc、截断 operation、
+  截断 operand、64 次未终止以及精确 source span 与后续 NAL 恢复，H.264 analyzer 定向套件为
+  77/77。`svtool rule check` 通过；本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest
+  均为 32/32。hosted run `31195600795` 对 `d16e9320ca331e7b5b6549128563d35492f60632`
+  的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、Test、Install、Upload 全部成功。
+  完整 Baseline/Main/High slice-header 项仍未完成；下一步定义并实现 bounded non-reference
+  P-slice CABAC initialization branch。
