@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 3
 Last Completed Step: Add the optional_value expression leaf
 Next Action: Implement the bounded pred_weight_table() rule change on top of optional_value, keeping the spec field names, and absorb the analyzer child-index shifts the new computed fields cause
-Last Verification: Commits 480f661 and bb4e223; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 94/94; svtool rule check passed; hosted verification pending
+Last Verification: Commits 480f661 and bb4e223; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 94/94; svtool rule check passed; hosted run 31260642168 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -900,4 +900,6 @@ Blockers: None
   会直接失败，两组因此互为判别。parser 61/61、IR 70/70、session 37/37；本机 `dev`、`ci`、
   `sanitize` 均 32/32；H.264 analyzer 94/94，`svtool rule check` 通过。本增量**仍然只补
   语言能力**，不动 bundled 规则，与 ADR-0063、ADR-0065 先例一致；消费它的 bounded
-  `pred_weight_table()` 连同其 analyzer child index 偏移作为下一个增量。
+  `pred_weight_table()` 连同其 analyzer child index 偏移作为下一个增量。hosted run
+  `31260642168` 对 `9d867de` 的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、
+  Test、Install、Upload 全部成功。
