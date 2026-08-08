@@ -636,6 +636,30 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
             QStringLiteral("Materialized NAL header has an invalid nal_unit_type field"));
     }
 
+    std::vector<std::optional<quint64>> elementValues;
+    const DslTypedProgram& elementProgram = executionSession_.program();
+    if (elementStructIndex_ < elementProgram.structs.size()) {
+        const DslTypedStruct& element = elementProgram.structs.at(elementStructIndex_);
+        elementValues.resize(element.fields.size());
+        for (const core::AnalysisNodeId childId : headerNode->children()) {
+            const auto child = tree_.node(childId);
+            if (!child) {
+                continue;
+            }
+            for (quint32 fieldIndex = 0; fieldIndex < element.fields.size(); ++fieldIndex) {
+                if (element.fields.at(fieldIndex).name != child->name()) {
+                    continue;
+                }
+                bool converted = false;
+                const quint64 value = child->value().toULongLong(&converted);
+                if (converted) {
+                    elementValues.at(fieldIndex) = value;
+                }
+                break;
+            }
+        }
+    }
+
     const quint64 nalBitLength = record.nalUnit ? record.nalUnit->bitLength() : 0;
     std::optional<DslTypedPayloadCase> payloadCase = payloadCaseFor(nalUnitType);
     const bool mapPayload =
@@ -662,6 +686,7 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
                 *source_, rbspViewId, *payloadSpan, mapperLimits_, cancellation_),
             std::move(payloadCase),
             allowExecutionCancellation,
+            std::move(elementValues),
         });
         return true;
     }
@@ -780,6 +805,7 @@ bool H264AnnexBAnalyzer::decodePayloadStructure(PendingNalUnit& pending,
     if (pending.allowExecutionCancellation) {
         executionOptions.cancellation = cancellation_;
     }
+    executionOptions.sequenceElementValues = pending.elementValues;
     RuleExecutionRequest request;
     request.source = source_;
     request.structureIndex = structureIndex;

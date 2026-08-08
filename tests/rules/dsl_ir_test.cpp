@@ -2234,6 +2234,98 @@ private slots:
         QVERIFY(fields.at(3).conditions.empty());
     }
 
+    void lowersHeaderValueToASequenceElementReferenceWithoutNewOpcodes() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct NalUnitHeader {
+                bits<2> nal_ref_idc;
+                bits<5> nal_unit_type;
+            }
+            struct SliceHeader {
+                ue first_mb_in_slice;
+                if (header_value(nal_ref_idc) == 0) {
+                    ue non_reference_marker;
+                }
+            }
+            @index(progressive)
+            sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+            payload<rbsp> nal_units switch (nal_unit_type) {
+                case 1: SliceHeader;
+            }
+            entry nal_units;
+        )"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& slice = compiled.program->structs.at(1);
+        const auto& guarded = slice.fields.at(1);
+        QCOMPARE(guarded.name, QStringLiteral("non_reference_marker"));
+        QCOMPARE(guarded.conditions.size(), std::size_t(1));
+        const auto& condition = guarded.conditions.front();
+        QVERIFY(condition.expression.has_value());
+        QCOMPARE(condition.expression->kind,
+                 DslTypedExpressionKind::SequenceElementReference);
+        QCOMPARE(condition.expression->type, DslScalarType::U64);
+        QVERIFY(condition.expression->operands.empty());
+        QCOMPARE(condition.expression->elementFieldIndex, quint32(0));
+        QCOMPARE(condition.expectedValue, quint64(0));
+
+        const auto& element = compiled.program->structs.front();
+        QCOMPARE(element.fields.at(condition.expression->elementFieldIndex).name,
+                 QStringLiteral("nal_ref_idc"));
+    }
+
+    void rejectsInvalidHeaderValueReferences() {
+        const std::vector<std::pair<QString, QString>> cases{
+            {QStringLiteral("unknown element field"),
+             QStringLiteral(
+                 "struct NalUnitHeader { bits<2> nal_ref_idc; bits<5> nal_unit_type; } "
+                 "struct S { ue a; if (header_value(missing) == 0) { ue b; } } "
+                 "@index(progressive) sequence<NalUnitHeader> u = scan(h264_start_code); "
+                 "payload<rbsp> u switch (nal_unit_type) { case 1: S; } entry u;")},
+            {QStringLiteral("guarded element field"),
+             QStringLiteral(
+                 "struct NalUnitHeader { bits<2> nal_ref_idc; bits<5> nal_unit_type; "
+                 "if (nal_ref_idc == 0) { bits<1> guarded_flag; } } "
+                 "struct S { ue a; if (header_value(guarded_flag) == 0) { ue b; } } "
+                 "@index(progressive) sequence<NalUnitHeader> u = scan(h264_start_code); "
+                 "payload<rbsp> u switch (nal_unit_type) { case 1: S; } entry u;")},
+            {QStringLiteral("signed element field"),
+             QStringLiteral(
+                 "struct NalUnitHeader { bits<2> nal_ref_idc; bits<5> nal_unit_type; "
+                 "se offset; } "
+                 "struct S { ue a; if (header_value(offset) == 0) { ue b; } } "
+                 "@index(progressive) sequence<NalUnitHeader> u = scan(h264_start_code); "
+                 "payload<rbsp> u switch (nal_unit_type) { case 1: S; } entry u;")},
+            {QStringLiteral("element structure self reference"),
+             QStringLiteral(
+                 "struct NalUnitHeader { bits<2> nal_ref_idc; bits<5> nal_unit_type; "
+                 "if (header_value(nal_ref_idc) == 0) { bits<1> flag; } } "
+                 "struct S { ue a; } "
+                 "@index(progressive) sequence<NalUnitHeader> u = scan(h264_start_code); "
+                 "payload<rbsp> u switch (nal_unit_type) { case 1: S; } entry u;")},
+            {QStringLiteral("no declared sequence"),
+             QStringLiteral("struct S { ue a; if (header_value(nal_ref_idc) == 0) "
+                            "{ ue b; } } entry S;")},
+        };
+        for (const auto& [label, source] : cases) {
+            const auto parsed = DslParser::parse(source);
+            QVERIFY2(parsed.succeeded(), qPrintable(label));
+            const auto compiled = DslCompiler::compile(parsed.program);
+            QVERIFY2(!compiled.succeeded(), qPrintable(label));
+            const bool reported = std::any_of(
+                compiled.diagnostics.begin(),
+                compiled.diagnostics.end(),
+                [](const streamview::rules::DslDiagnostic& diagnostic) {
+                    return diagnostic.message.contains(QStringLiteral("header_value"));
+                });
+            QVERIFY2(reported, qPrintable(label));
+        }
+    }
+
     void rejectsInvalidImportedContextEqualityConditionContracts() {
         const std::vector<QString> invalidSources{
             QStringLiteral(R"(

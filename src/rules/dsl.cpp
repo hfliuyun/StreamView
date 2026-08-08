@@ -1137,7 +1137,10 @@ private:
                     expression.binaryOperator == DslBinaryOperator::Equal &&
                     expression.operands.size() == 2 &&
                     expression.operands.front().kind == DslExpressionKind::Call &&
-                    expression.operands.front().name == QStringLiteral("context_value") &&
+                    (expression.operands.front().name ==
+                         QStringLiteral("context_value") ||
+                     expression.operands.front().name ==
+                         QStringLiteral("header_value")) &&
                     expression.operands.back().kind == DslExpressionKind::UnsignedLiteral;
                 if (!importedEquality) {
                     error(DslDiagnosticCode::MissingToken,
@@ -1767,6 +1770,20 @@ private:
                             {DslDiagnosticCode::InvalidContext,
                              QStringLiteral(
                                  "context_value requires three identifier arguments"),
+                             expression.range});
+                        return std::nullopt;
+                    }
+                    return DslScalarType::U64;
+                }
+                if (allowImportedContextReference &&
+                    expression.name == QStringLiteral("header_value")) {
+                    if (expression.operands.size() != 1 ||
+                        expression.operands.front().kind !=
+                            DslExpressionKind::Identifier) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidContext,
+                             QStringLiteral(
+                                 "header_value requires one identifier argument"),
                              expression.range});
                         return std::nullopt;
                     }

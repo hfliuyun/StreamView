@@ -153,6 +153,72 @@ private slots:
         }
     }
 
+    void parsesSequenceElementHeaderValueLeaf() {
+        const auto result = DslParser::parse(QStringLiteral(R"(
+            struct NalUnitHeader {
+                bits<2> nal_ref_idc;
+                bits<5> nal_unit_type;
+            }
+            struct SliceHeader {
+                ue first_mb_in_slice;
+                if (header_value(nal_ref_idc) == 0) {
+                    ue non_reference_marker;
+                }
+            }
+            @index(progressive)
+            sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+            payload<rbsp> nal_units switch (nal_unit_type) {
+                case 1: SliceHeader;
+            }
+            entry nal_units;
+        )"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& condition = result.program.structs.at(1).items.at(1).condition;
+        QVERIFY(condition.expression.has_value());
+        QCOMPARE(condition.expression->kind, DslExpressionKind::Binary);
+        QCOMPARE(condition.expression->binaryOperator, DslBinaryOperator::Equal);
+        const auto& call = condition.expression->operands.at(0);
+        QCOMPARE(call.kind, DslExpressionKind::Call);
+        QCOMPARE(call.name, QStringLiteral("header_value"));
+        QCOMPARE(call.operands.size(), std::size_t(1));
+        QCOMPARE(call.operands.front().kind, DslExpressionKind::Identifier);
+        QCOMPARE(call.operands.front().name, QStringLiteral("nal_ref_idc"));
+    }
+
+    void rejectsHeaderValueWithoutExactlyOneIdentifierArgument() {
+        const std::vector<QString> sources{
+            QStringLiteral("struct NalUnitHeader { bits<2> nal_ref_idc; bits<5> t; } "
+                           "struct S { ue a; assert(header_value() == 0) at a; } "
+                           "@index(progressive) sequence<NalUnitHeader> u = scan(h264_start_code); "
+                           "entry u;"),
+            QStringLiteral("struct NalUnitHeader { bits<2> nal_ref_idc; bits<5> t; } "
+                           "struct S { ue a; assert(header_value(nal_ref_idc, t) == 0) at a; } "
+                           "@index(progressive) sequence<NalUnitHeader> u = scan(h264_start_code); "
+                           "entry u;"),
+            QStringLiteral("struct NalUnitHeader { bits<2> nal_ref_idc; bits<5> t; } "
+                           "struct S { ue a; assert(header_value(1) == 0) at a; } "
+                           "@index(progressive) sequence<NalUnitHeader> u = scan(h264_start_code); "
+                           "entry u;"),
+        };
+        for (const QString& source : sources) {
+            const auto result = DslParser::parse(source);
+            QVERIFY2(!result.succeeded(), qPrintable(source));
+            const bool reported = std::any_of(
+                result.diagnostics.begin(),
+                result.diagnostics.end(),
+                [](const streamview::rules::DslDiagnostic& diagnostic) {
+                    return diagnostic.code == DslDiagnosticCode::InvalidContext &&
+                           diagnostic.message.contains(
+                               QStringLiteral("header_value requires one identifier"));
+                });
+            QVERIFY2(reported, qPrintable(source));
+        }
+    }
+
     void parsesImportedContextValuesInAssertionConditions() {
         const auto result = DslParser::parse(QStringLiteral(R"(
             @context("h264-pps", id)

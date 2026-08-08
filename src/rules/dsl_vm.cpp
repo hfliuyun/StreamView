@@ -422,6 +422,24 @@ struct TypedExpressionValidationState final {
         }
         return true;
     }
+    case DslTypedExpressionKind::SequenceElementReference: {
+        if (!state.allowImportedContextReferences || !expression.operands.empty() ||
+            expression.type != DslScalarType::U64 || program.scans.empty()) {
+            return fail(QStringLiteral("Typed sequence element reference is invalid"));
+        }
+        const quint32 elementStructIndex = program.scans.front().elementStructIndex;
+        if (elementStructIndex >= program.structs.size()) {
+            return fail(
+                QStringLiteral("Typed sequence element reference is out of range"));
+        }
+        const DslTypedStruct& element = program.structs.at(elementStructIndex);
+        if (expression.elementFieldIndex >= element.fields.size() ||
+            !validContextField(element, expression.elementFieldIndex)) {
+            return fail(QStringLiteral(
+                "Typed sequence element reference descriptor is invalid"));
+        }
+        return true;
+    }
     case DslTypedExpressionKind::Unary:
         if (expression.unaryOperator != DslUnaryOperator::LogicalNot ||
             expression.type != DslScalarType::Bool || expression.operands.size() != 1) {
@@ -522,7 +540,8 @@ struct ComputedEvaluationResult final {
     const DslTypedExpression& expression,
     const DslTypedStruct& structure,
     const std::vector<std::optional<quint64>>& fieldValues,
-    const DslContextValueResolver& contextValueResolver) {
+    const DslContextValueResolver& contextValueResolver,
+    const std::vector<std::optional<quint64>>* sequenceElementValues = nullptr) {
     const auto invalidDefinition = [](const QString& message) {
         return ComputedEvaluationResult{
             DslExecutionStatus::InvalidDefinition, {}, message, std::nullopt};
@@ -606,12 +625,30 @@ struct ComputedEvaluationResult final {
         }
         return unsignedResult(resolution.value);
     }
+    case DslTypedExpressionKind::SequenceElementReference: {
+        if (sequenceElementValues == nullptr) {
+            return invalidDefinition(
+                QStringLiteral("Sequence element values are unavailable"));
+        }
+        if (expression.elementFieldIndex >= sequenceElementValues->size()) {
+            return invalidDefinition(
+                QStringLiteral("Sequence element reference is out of range"));
+        }
+        const std::optional<quint64>& elementValue =
+            sequenceElementValues->at(expression.elementFieldIndex);
+        if (!elementValue) {
+            return invalidDefinition(
+                QStringLiteral("Sequence element value is unavailable"));
+        }
+        return unsignedResult(*elementValue);
+    }
     case DslTypedExpressionKind::Unary: {
         const ComputedEvaluationResult operand =
             evaluateTypedExpression(expression.operands.front(),
                                     structure,
                                     fieldValues,
-                                    contextValueResolver);
+                                    contextValueResolver,
+                                    sequenceElementValues);
         return operand.complete() ? booleanResult(!operand.value.booleanValue) : operand;
     }
     case DslTypedExpressionKind::Binary:
@@ -624,7 +661,8 @@ struct ComputedEvaluationResult final {
         evaluateTypedExpression(expression.operands.at(0),
                                 structure,
                                 fieldValues,
-                                contextValueResolver);
+                                contextValueResolver,
+                                sequenceElementValues);
     if (!left.complete()) {
         return left;
     }
@@ -640,7 +678,8 @@ struct ComputedEvaluationResult final {
         evaluateTypedExpression(expression.operands.at(1),
                                 structure,
                                 fieldValues,
-                                contextValueResolver);
+                                contextValueResolver,
+                                sequenceElementValues);
     if (!right.complete()) {
         return right;
     }
@@ -933,8 +972,10 @@ DslExecutionResult DslVirtualMachine::execute(
                 validation.allowImportedContextReferences = true;
                 if (condition.fieldIndex != 0 ||
                     condition.op != DslConditionOperator::Equal ||
-                    condition.expression->kind !=
-                        DslTypedExpressionKind::ImportedContextReference ||
+                    (condition.expression->kind !=
+                         DslTypedExpressionKind::ImportedContextReference &&
+                     condition.expression->kind !=
+                         DslTypedExpressionKind::SequenceElementReference) ||
                     !validateTypedExpression(*condition.expression,
                                              program,
                                              structure,
@@ -1786,7 +1827,11 @@ DslExecutionResult DslVirtualMachine::execute(
         for (const DslTypedFieldCondition& condition : conditions) {
             if (condition.expression) {
                 const ComputedEvaluationResult evaluated = evaluateTypedExpression(
-                    *condition.expression, structure, fieldValues, contextValueResolver);
+                    *condition.expression,
+                    structure,
+                    fieldValues,
+                    contextValueResolver,
+                    &options.sequenceElementValues);
                 if (!evaluated.complete() || evaluated.value.type != DslScalarType::U64) {
                     const DslTypedField* diagnosticField = subject;
                     std::optional<quint64> diagnosticPosition;
@@ -1990,7 +2035,8 @@ DslExecutionResult DslVirtualMachine::execute(
                     evaluateTypedExpression(*field.bitWidthExpression,
                                             structure,
                                             fieldValues,
-                                            contextValueResolver);
+                                            contextValueResolver,
+                                            &options.sequenceElementValues);
                 if (!evaluated.complete()) {
                     const DslTypedField* diagnosticField = &field;
                     std::optional<quint64> diagnosticPosition;
@@ -2359,7 +2405,8 @@ DslExecutionResult DslVirtualMachine::execute(
                 evaluateTypedExpression(*field.computedExpression,
                                         structure,
                                         fieldValues,
-                                        contextValueResolver);
+                                        contextValueResolver,
+                                        &options.sequenceElementValues);
             if (!evaluated.complete()) {
                 markFailure(evaluated.status,
                             evaluated.errorMessage,
@@ -2443,7 +2490,8 @@ DslExecutionResult DslVirtualMachine::execute(
                 evaluateTypedExpression(*field.lazyByteCountExpression,
                                         structure,
                                         fieldValues,
-                                        contextValueResolver);
+                                        contextValueResolver,
+                                        &options.sequenceElementValues);
             if (!evaluated.complete()) {
                 markFailure(evaluated.status,
                             evaluated.errorMessage,
@@ -2677,7 +2725,11 @@ DslExecutionResult DslVirtualMachine::execute(
                 return result;
             }
             const ComputedEvaluationResult evaluated = evaluateTypedExpression(
-                assertion->condition, structure, fieldValues, contextValueResolver);
+                assertion->condition,
+                structure,
+                fieldValues,
+                contextValueResolver,
+                &options.sequenceElementValues);
             if (!evaluated.complete() || evaluated.value.type != DslScalarType::Bool) {
                 const DslTypedField* diagnosticField = &anchor;
                 std::optional<MaterializedFieldRange> diagnosticRange = anchorRange;

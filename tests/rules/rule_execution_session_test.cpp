@@ -387,6 +387,123 @@ private slots:
         }
     }
 
+    void evaluatesSequenceElementConditionsFromSuppliedElementValues() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct NalUnitHeader {
+                bits<2> nal_ref_idc;
+                bits<5> nal_unit_type;
+                bits<1> reserved;
+            }
+            struct Slice {
+                bits<4> first_mb_in_slice;
+                if (header_value(nal_ref_idc) == 0) {
+                } else {
+                    bits<1> adaptive_ref_pic_marking_mode_flag;
+                }
+                bits<1> tail;
+            }
+            @index(progressive)
+            sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+            payload<rbsp> nal_units switch (nal_unit_type) {
+                case 1: Slice;
+            }
+            entry nal_units;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const quint32 sliceIndex =
+            *compiled.program->structureIndex(QStringLiteral("Slice"));
+
+        struct Scenario final {
+            quint64 referencePriority = 0;
+            quint64 sliceBits = 0;
+            std::size_t childCount = 0;
+            bool hasMarking = false;
+        };
+        const std::vector<Scenario> scenarios{
+            {0, 5, 2, false},
+            {2, 6, 3, true},
+        };
+        for (const Scenario scenario : scenarios) {
+            MemorySource source(bytes({0xa5}));
+            const auto sliceView = makeView(1, 0, scenario.sliceBits);
+            QVERIFY(sliceView.has_value());
+            auto tree = AnalysisTree::create(
+                QStringLiteral("element-%1").arg(scenario.referencePriority));
+            QVERIFY(tree.has_value());
+            RuleExecutionSession session(*compiled.program);
+            auto request = makeRequest(source, sliceIndex, *sliceView, *tree);
+            request.options.sequenceElementValues = {scenario.referencePriority, 1, 0};
+
+            const auto result = session.run(request);
+
+            QVERIFY2(result.materialized(), qPrintable(result.errorMessage));
+            QCOMPARE(result.execution.bitsConsumed, scenario.sliceBits);
+            const auto structure = tree->node(*result.execution.structureNode);
+            QVERIFY(structure.has_value());
+            QCOMPARE(structure->children().size(), scenario.childCount);
+            const bool markingPresent = std::any_of(
+                structure->children().begin(),
+                structure->children().end(),
+                [&tree](streamview::core::AnalysisNodeId childId) {
+                    const auto child = tree->node(childId);
+                    return child &&
+                           child->name() ==
+                               QStringLiteral("adaptive_ref_pic_marking_mode_flag");
+                });
+            QCOMPARE(markingPresent, scenario.hasMarking);
+            const auto tail = tree->node(structure->children().back());
+            QVERIFY(tail.has_value());
+            QCOMPARE(tail->name(), QStringLiteral("tail"));
+        }
+    }
+
+    void rejectsSequenceElementReferencesWithoutSuppliedElementValues() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct NalUnitHeader {
+                bits<2> nal_ref_idc;
+                bits<5> nal_unit_type;
+                bits<1> reserved;
+            }
+            struct Slice {
+                bits<4> first_mb_in_slice;
+                if (header_value(nal_ref_idc) == 0) {
+                } else {
+                    bits<1> adaptive_ref_pic_marking_mode_flag;
+                }
+                bits<1> tail;
+            }
+            @index(progressive)
+            sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+            payload<rbsp> nal_units switch (nal_unit_type) {
+                case 1: Slice;
+            }
+            entry nal_units;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const quint32 sliceIndex =
+            *compiled.program->structureIndex(QStringLiteral("Slice"));
+
+        MemorySource source(bytes({0xa5}));
+        const auto sliceView = makeView(1, 0, 6);
+        QVERIFY(sliceView.has_value());
+        auto tree = AnalysisTree::create(QStringLiteral("element-missing"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        const auto result =
+            session.run(makeRequest(source, sliceIndex, *sliceView, *tree));
+
+        QVERIFY(!result.materialized());
+        QCOMPARE(result.status, RuleExecutionStatus::InvalidDefinition);
+    }
+
     void evaluatesImportedContextAssertionsAtTheirDeclaredAnchors() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             @context("h264-pps", id)

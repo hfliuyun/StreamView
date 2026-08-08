@@ -97,6 +97,9 @@ private:
         H264EbspRbspMapper mapper;
         std::optional<DslTypedPayloadCase> payloadCase;
         bool allowExecutionCancellation = false;
+        // Decoded element header values indexed by typed element field index, so a
+        // dispatched payload can resolve a `header_value(...)` leaf.
+        std::vector<std::optional<quint64>> elementValues;
     };
 
     H264AnnexBAnalyzer(const core::RandomAccessSource& source,

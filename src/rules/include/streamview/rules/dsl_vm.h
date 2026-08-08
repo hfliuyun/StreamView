@@ -51,6 +51,10 @@ struct DslExecutionLimits final {
 struct DslExecutionOptions final {
     DslExecutionLimits limits;
     std::optional<core::CancellationToken> cancellation;
+    // Decoded field values of the sequence element structure that dispatched this
+    // payload, indexed by typed element field index. Empty outside a dispatched
+    // payload; a `header_value(...)` leaf then fails as an invalid definition.
+    std::vector<std::optional<quint64>> sequenceElementValues;
 };
 
 struct DslExecutionContextValue final {

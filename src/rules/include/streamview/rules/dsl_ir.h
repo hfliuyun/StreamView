@@ -51,6 +51,7 @@ enum class DslTypedExpressionKind : quint8 {
     BooleanLiteral,
     FieldReference,
     ImportedContextReference,
+    SequenceElementReference,
     Unary,
     Binary,
 };
@@ -68,6 +69,7 @@ struct DslTypedExpression final {
         core::ContextDefinitionKind::H264SequenceParameterSet;
     quint32 contextStructureIndex = 0;
     quint32 contextExportIndex = 0;
+    quint32 elementFieldIndex = 0;
     std::vector<DslTypedExpression> operands;
 };
 

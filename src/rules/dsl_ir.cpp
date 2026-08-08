@@ -408,6 +408,10 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         contextValueResolver;
     std::function<std::optional<DslTypedExpression>(const DslExpression&)>
         importedContextResolver;
+    std::function<std::optional<DslTypedExpression>(const DslExpression&)>
+        headerValueResolver;
+    std::function<std::optional<DslTypedExpression>(const DslExpression&)>
+        sequenceElementResolver;
     const auto claimExpressionNode = [&](ExpressionBuildState& state,
                                          std::size_t depth,
                                          const DslSourceRange& range) {
@@ -515,6 +519,21 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     return std::nullopt;
                 }
                 return contextValueResolver(expression);
+            }
+            if (expression.name == QStringLiteral("header_value")) {
+                if (!claimExpressionNode(state, depth, expression.range)) {
+                    return std::nullopt;
+                }
+                if (!headerValueResolver) {
+                    addDiagnostic(
+                        result.diagnostics,
+                        DslDiagnosticCode::InvalidContext,
+                        QStringLiteral(
+                            "header_value is not available in this expression"),
+                        expression.range);
+                    return std::nullopt;
+                }
+                return headerValueResolver(expression);
             }
             const std::size_t functionCount =
                 std::min(availableFunctionCount, program.pureFunctions.size());
@@ -1167,16 +1186,19 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     source.binaryOperator != DslBinaryOperator::Equal ||
                     source.operands.size() != 2 ||
                     source.operands.at(0).kind != DslExpressionKind::Call ||
-                    source.operands.at(0).name != QStringLiteral("context_value") ||
+                    (source.operands.at(0).name != QStringLiteral("context_value") &&
+                     source.operands.at(0).name != QStringLiteral("header_value")) ||
                     source.operands.at(1).kind != DslExpressionKind::UnsignedLiteral) {
-                    addDiagnostic(result.diagnostics,
-                                  DslDiagnosticCode::InvalidCondition,
-                                  QStringLiteral(
-                                      "Imported conditions require context_value(...) == integer"),
-                                  condition.range);
+                    addDiagnostic(
+                        result.diagnostics,
+                        DslDiagnosticCode::InvalidCondition,
+                        QStringLiteral("Imported conditions require context_value(...) or "
+                                       "header_value(...) == integer"),
+                        condition.range);
                     return std::optional<DslTypedFieldCondition>{};
                 }
                 contextValueResolver = importedContextResolver;
+                headerValueResolver = sequenceElementResolver;
                 ExpressionBuildState state;
                 const ExpressionResolver noIdentifiers =
                     [](const QString&, const DslSourceRange&) {
@@ -1188,13 +1210,19 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                                           1,
                                                           state);
                 contextValueResolver = {};
+                headerValueResolver = {};
                 if (!expression ||
-                    expression->kind != DslTypedExpressionKind::ImportedContextReference ||
+                    (expression->kind !=
+                         DslTypedExpressionKind::ImportedContextReference &&
+                     expression->kind !=
+                         DslTypedExpressionKind::SequenceElementReference) ||
                     expression->type != DslScalarType::U64 || !expression->operands.empty()) {
-                    addDiagnostic(result.diagnostics,
-                                  DslDiagnosticCode::InvalidCondition,
-                                  QStringLiteral("Imported condition value must be an unsigned context_value"),
-                                  condition.range);
+                    addDiagnostic(
+                        result.diagnostics,
+                        DslDiagnosticCode::InvalidCondition,
+                        QStringLiteral("Imported condition value must be an unsigned "
+                                       "context_value or header_value"),
+                        condition.range);
                     return std::optional<DslTypedFieldCondition>{};
                 }
                 DslTypedFieldCondition resolved;
@@ -1413,6 +1441,88 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             return imported;
         };
         importedContextResolver = resolveContextValue;
+        const auto resolveHeaderValue =
+            [&](const DslExpression& expression) -> std::optional<DslTypedExpression> {
+            if (expression.operands.size() != 1 ||
+                expression.operands.front().kind != DslExpressionKind::Identifier) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidContext,
+                              QStringLiteral("header_value requires one sequence element "
+                                             "field name"),
+                              expression.range);
+                return std::nullopt;
+            }
+            if (program.scans.empty()) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidContext,
+                              QStringLiteral("header_value requires a declared sequence"),
+                              expression.range);
+                return std::nullopt;
+            }
+            const QString& elementName = program.scans.front().elementType;
+            if (structure.name == elementName) {
+                addDiagnostic(
+                    result.diagnostics,
+                    DslDiagnosticCode::InvalidContext,
+                    QStringLiteral("header_value is not available in the sequence "
+                                   "element structure"),
+                    expression.range);
+                return std::nullopt;
+            }
+            const auto element = std::find_if(
+                program.structs.begin(),
+                program.structs.end(),
+                [&elementName](const DslStruct& candidate) {
+                    return candidate.name == elementName;
+                });
+            if (element == program.structs.end()) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::UnknownReference,
+                              QStringLiteral("header_value requires a declared sequence "
+                                             "element structure"),
+                              expression.range);
+                return std::nullopt;
+            }
+            const auto elementTypedIndex = static_cast<std::size_t>(
+                std::distance(program.structs.begin(), element));
+            if (elementTypedIndex >= typed.structs.size()) {
+                addDiagnostic(
+                    result.diagnostics,
+                    DslDiagnosticCode::InvalidContext,
+                    QStringLiteral("header_value requires an earlier sequence element "
+                                   "structure"),
+                    expression.range);
+                return std::nullopt;
+            }
+            const DslTypedStruct& elementStruct = typed.structs.at(elementTypedIndex);
+            const QString& fieldName = expression.operands.front().name;
+            std::optional<quint32> elementFieldIndex;
+            for (quint32 index = 0; index < elementStruct.fields.size(); ++index) {
+                const DslTypedField& candidate = elementStruct.fields.at(index);
+                if (candidate.name != fieldName) {
+                    continue;
+                }
+                if (candidate.contextEligible) {
+                    elementFieldIndex = index;
+                }
+                break;
+            }
+            if (!elementFieldIndex) {
+                addDiagnostic(
+                    result.diagnostics,
+                    DslDiagnosticCode::InvalidContext,
+                    QStringLiteral("header_value must name an unconditional unsigned "
+                                   "scalar field of the sequence element structure"),
+                    expression.operands.front().range);
+                return std::nullopt;
+            }
+            DslTypedExpression elementReference;
+            elementReference.kind = DslTypedExpressionKind::SequenceElementReference;
+            elementReference.type = DslScalarType::U64;
+            elementReference.elementFieldIndex = *elementFieldIndex;
+            return elementReference;
+        };
+        sequenceElementResolver = resolveHeaderValue;
         const auto compileField = [&](const DslBitField& field,
                                       const std::vector<DslTypedFieldCondition>& conditions,
                                       std::optional<quint64> fieldOffset)
@@ -1555,6 +1665,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                             "Dynamic bit widths require scalar unsigned fields"));
                 };
                 contextValueResolver = importedContextResolver;
+                headerValueResolver = sequenceElementResolver;
                 ExpressionBuildState state;
                 typedField.bitWidthExpression = compileExpression(
                     *field.widthExpression,
@@ -1563,6 +1674,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     1,
                     state);
                 contextValueResolver = {};
+                headerValueResolver = {};
                 if (typedField.bitWidthExpression &&
                     typedField.bitWidthExpression->type != DslScalarType::U64) {
                     addDiagnostic(result.diagnostics,
@@ -2045,6 +2157,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                         "Assertion expressions require scalar unsigned fields"));
             };
             contextValueResolver = importedContextResolver;
+            headerValueResolver = sequenceElementResolver;
             ExpressionBuildState state;
             const auto expression = compileExpression(assertion.condition,
                                                       resolveField,
@@ -2052,6 +2165,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                                       1,
                                                       state);
             contextValueResolver = {};
+            headerValueResolver = {};
             if (expression && expression->type != DslScalarType::Bool) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidType,
