@@ -140,6 +140,12 @@ initializer 内部使用这两个保留 leaf，且遵循完整 expression 语法
 它让派生字段能够依赖 parameter set，或依赖自己所属的 element header；多子句的存在性
 guard 与依赖性 repeat count 正是这样表达的。
 
+当前接受的 optional-value 切片新增保留形式
+`optional_value(field_identifier, fallback_expression)`。当实际执行的路径物化了被命名的
+字段时它给出该字段的值，否则给出 fallback 的值；一个可能被某个分支覆盖的值，正是这样
+抵达要求“每条路径都必须有值”的 position 的。它是 branch-guarantee 规则唯一的豁免之处，
+而且只有第一个实参被豁免。
+
 当前接受的 sequence-element 切片新增保留形式 `header_value(element_field)`。它在被派发的
 payload structure 内部解析 sequence element structure 的一个 scalar，使 payload 能够依赖
 自己所属的 element header，而不是依赖 parameter set。它是 `u64` leaf，允许出现的位置与
@@ -188,6 +194,7 @@ conditional   := "if" "(" ( identifier "==" integer | identifier
 context_value := "context_value" "(" identifier "," identifier ","
                  identifier ")"
 header_value  := "header_value" "(" identifier ")"
+optional_value := "optional_value" "(" identifier "," expression ")"
 switch        := "switch" "(" identifier ")" "{"
                  switch_case { switch_case } [ switch_default ] "}"
 switch_case   := "case" integer ":" "{" { struct_item } "}"
@@ -280,6 +287,18 @@ primary       := integer | "true" | "false" | identifier
   本身就是 sequence element structure 的情况，都会被拒绝。该 leaf 在程序范围内针对 element
   structure 解析，因此写在从不被派发为 payload 的 structure 中的调用能够编译通过，但会在
   执行期以 invalid definition 失败。
+- `optional_value(field_identifier, fallback_expression)` 保留给 dynamic `bits` width、
+  source-anchored assertion condition、computed field initializer 与 lazy byte count 使用。
+  pure-function body、condition、switch controller 与其他任何 expression position 都拒绝
+  这一形式，imported 与 sequence-element 的等值 conditional 形式同样拒绝。它接受且只接受
+  两个实参：第一个必须是 identifier，第二个是按完整语法书写的 `u64` expression。leaf 本身
+  的类型是 `u64`。
+- 第一个实参必须命名同一 structure 中更早声明的 scalar unsigned `bits`、enum、`ue` 或
+  `computed<u64>` 字段。数组、`se`、`computed<bool>`，以及未知或未来字段与在别处一样被
+  拒绝。它仅仅豁免 branch-guarantee 规则，因此声明在 conditional 内部的字段是被接受的；
+  它有意不要求该字段必须是 branch-local，因为后续某个无关的 guard 不应当反过来让一处
+  正确的用法失效。fallback expression 在调用处的 scope 中编译，并保留该 position 原本
+  施加的每一条规则，因此 branch-local 的 fallback dependency 仍然会被拒绝。
 - 固定宽度数组按 `width * count` bit 参与静态对齐。小端数组的每个元素宽度必须是 8 的
   倍数，并且首元素必须从结构内的字节边界开始。`ue` 或 `se` 数组的总宽度未知，因此其
   后续小端字段与单个 Exp-Golomb 字段之后的小端字段一样会被拒绝。
@@ -301,8 +320,8 @@ primary       := integer | "true" | "false" | identifier
 - `assert(condition) at anchor;` 是不接受 annotation、无条件的顶层 structure item。
   conditional、switch、count repeat 或 sentinel repeat 内都拒绝 assertion，也不能把它写在
   terminal item 之后。`condition` 必须为 `bool`，沿用完整的 bounded expression 与 pure-function
-  合同，并且可以包含上文定义的 exact imported `context_value` leaf 与
-  `header_value(element_field)` leaf。本地字段 dependency
+  合同，并且可以包含上文定义的 exact imported `context_value` leaf、
+  `header_value(element_field)` leaf 与 `optional_value(...)` leaf。本地字段 dependency
   必须是此前声明、当前路径保证存在的 scalar unsigned `bits`、enum、`ue`、`computed<u64>` 或
   `computed<bool>`；array、`se`、lazy region、compressed payload、未知/未来字段与不可用的
   branch-local 值都会被拒绝。
@@ -363,11 +382,12 @@ primary       := integer | "true" | "false" | identifier
 - 计算字段声明 `computed<bool>` 或 `computed<u64>` 和一条表达式。它可以引用此前声明、
   且在到达当前声明的每条路径上都保证存在的 scalar 无符号 `bits`、enum、`ue` 或计算字段。
   数组、`se`、未知或未来字段，以及路径上不可用的 branch-local 值都会被拒绝。它的表达式
-  还可以按完整 expression 语法包含保留的 `context_value(...)` 与 `header_value(...)` leaf，
-  两者在别处携带的每一项约束都继续适用；若 structure 未声明匹配的 `@context_import`，
-  其中的 computed initializer 会被拒绝，方式与 dynamic width 完全一致。计算字段
-  消耗零 bit，不改变静态对齐，继承外层 guard，计入 99,999 字段投影上限，并按与语法字段
-  相同的 scope 规则供后续声明使用。repeat 投影会给它的物化名称追加同样的 index。
+  还可以按完整 expression 语法包含保留的 `context_value(...)`、`header_value(...)` 与
+  `optional_value(...)` leaf，它们在别处携带的每一项约束都继续适用；若 structure 未声明
+  匹配的 `@context_import`，其中的 computed initializer 会被拒绝，方式与 dynamic width
+  完全一致。计算字段消耗零 bit，不改变静态对齐，继承外层 guard，计入 99,999 字段投影
+  上限，并按与语法字段相同的 scope 规则供后续声明使用。repeat 投影会给它的物化名称
+  追加同样的 index。
 - lazy byte region 使用专用形式 `@lazy(byte_count_expression) bytes name;`。expression
   必须产生 `u64`，并沿用 computed field 对此前 scalar unsigned dependency、路径可用性、
   pure-call expansion 和 expression limit 的规则。region 不是 scalar value，不能被后续
@@ -1269,6 +1289,11 @@ sequence-element 的非法示例包括：`header_value` 带零个、两个或更
 element 字段；没有声明 sequence 的程序；写在 sequence element structure 自身内部的调用；
 以及出现在 pure-function body、lazy size、controller 或任何已经拒绝
 `context_value` 的位置。
+optional-value 的非法示例包括：`optional_value` 带一个、三个或更多实参；第一个实参不是
+identifier；第一个实参是未知字段、更晚声明的字段、数组、`se`、`computed<bool>`，或已经
+离开 scope 的 repeat body 字段；fallback expression 为 Boolean；fallback 的 dependency
+本身是 branch-local；以及出现在 pure-function body、condition、switch controller，或
+imported 与 sequence-element 等值 conditional 中的调用。
 
 payload 派发的非法示例包括：两个 payload 声明、`payload<ebsp>` 或其他 view kind、派发命名
 结构或未声明名称而非 sequence、所派发 sequence 没有 `entry`、未知 controller 名、以
@@ -1484,6 +1509,14 @@ node。详见
 位置已经使用的同一 resolver 和 element value vector，因此计算字段不新增 opcode，也不引入上述
 之外的新失败模式。详见
 [ADR-0065](../adr/0065-admit-reserved-external-leaves-in-computed-initializers.md)。
+
+`optional_value(...)` leaf 被降低为 typed optional field reference，携带解析出的字段
+index，并以编译后的 fallback 作为唯一 operand，不新增 opcode。虚拟机本来就按每次
+structure 执行记录字段是否存在，因此求值时：实际执行的路径物化了该字段就读取已记录的值，
+没有物化就求值 fallback。guard 为假的字段即为不存在；repeat body 在 repeat 结束后离开
+scope，因此不会有 index 与后续 projection 混淆。fallback 只在需要时才求值，其中的任何
+失败都按包含该 leaf 的 position 原本的方式上报。详见
+[ADR-0066](../adr/0066-select-an-optional-field-value-with-a-declared-fallback.md)。
 
 只有 structure 成功 materialize、满足请求的精确消费策略、完成 dependency resolution 和
 typed-payload 准备后才会发布。registration 前会预留 payload 与 directory 容量，因此成功

@@ -167,6 +167,13 @@ expression grammar rather than a fixed comparison shape. It lets a derived field
 depend on a parameter set or on its own element header, which is how a
 multi-clause presence guard and a dependent repeat count are expressed.
 
+The accepted optional-value slice adds the reserved
+`optional_value(field_identifier, fallback_expression)` form. It yields the named
+field when the executed path materialized it and the fallback otherwise, which is
+how a value that a branch may override reaches a position requiring a value on
+every path. It is the one place where a dependency is exempt from the
+branch-guarantee rule, and only that first argument is exempt.
+
 The accepted sequence-element slice adds the reserved
 `header_value(element_field)` form. It resolves one scalar of the sequence
 element structure from within a dispatched payload structure, which lets a
@@ -219,6 +226,7 @@ conditional   := "if" "(" ( identifier "==" integer | identifier
 context_value := "context_value" "(" identifier "," identifier ","
                  identifier ")"
 header_value  := "header_value" "(" identifier ")"
+optional_value := "optional_value" "(" identifier "," expression ")"
 switch        := "switch" "(" identifier ")" "{"
                  switch_case { switch_case } [ switch_default ] "}"
 switch_case   := "case" integer ":" "{" { struct_item } "}"
@@ -336,6 +344,22 @@ The static rules for this subset are:
   structure, are both rejected. The leaf resolves against the element structure
   program-wide, so a call inside a structure that is never dispatched as a
   payload compiles but fails at execution as an invalid definition.
+- `optional_value(field_identifier, fallback_expression)` is reserved for a
+  dynamic `bits` width, a source-anchored assertion condition, a computed field
+  initializer, and a lazy byte count. It is rejected in pure-function bodies,
+  conditions, switch controllers, and every other expression position, including
+  the imported and sequence-element equality conditional forms. It takes exactly
+  two arguments; the first must be an identifier and the second is a `u64`
+  expression under the full grammar. The leaf itself is `u64`.
+- The first argument must name an earlier declared scalar unsigned `bits`, enum,
+  `ue`, or `computed<u64>` field of the same structure. Arrays, `se`,
+  `computed<bool>`, and unknown or future fields are rejected exactly as
+  elsewhere. It is exempt from the branch-guarantee rule alone, so a field
+  declared inside a conditional is accepted; it is deliberately not required to
+  be branch-local, because a later unrelated guard must not retroactively
+  invalidate a correct use. The fallback expression is compiled in the calling
+  scope and keeps every rule that position already imposes, so a branch-local
+  fallback dependency is still rejected.
 - Fixed-width arrays contribute `width * count` bits to static alignment.
   Every element of a little-endian array must therefore have a byte-multiple
   width and the first element must begin at a structure-relative byte boundary.
@@ -368,8 +392,9 @@ The static rules for this subset are:
   structure item. It is rejected inside a conditional, switch, count repeat,
   or sentinel repeat, and it cannot follow a terminal item. `condition` must be
   `bool`; it uses the complete bounded expression and pure-function contract
-  and may include the exact imported `context_value` leaf and the
-  `header_value(element_field)` leaf described above.
+  and may include the exact imported `context_value` leaf, the
+  `header_value(element_field)` leaf, and the `optional_value(...)` leaf
+  described above.
   Its local field dependencies must be earlier scalar unsigned `bits`, enum,
   `ue`, `computed<u64>`, or `computed<bool>` values guaranteed on the current
   path. Arrays, `se`, lazy regions, compressed payloads, unknown or future
@@ -459,15 +484,15 @@ The static rules for this subset are:
   expression. It may reference earlier scalar unsigned `bits`, enum, `ue`, or
   computed fields guaranteed on every path reaching the declaration. Arrays,
   `se`, unknown or future fields, and unavailable branch-local values are
-  rejected. Its expression may also include the reserved `context_value(...)`
-  and `header_value(...)` leaves under the full expression grammar, each keeping
-  every constraint it carries elsewhere; a computed initializer in a structure
-  that declares no matching `@context_import` is rejected exactly as a dynamic
-  width is. A computed field consumes zero bits, leaves static alignment
-  unchanged, inherits enclosing guards, counts toward the 99,999-field
-  projection limit, and is visible to later declarations under the same scope
-  rules as a syntax field. Repeat projection appends the same indexes to its
-  materialized name.
+  rejected. Its expression may also include the reserved `context_value(...)`,
+  `header_value(...)`, and `optional_value(...)` leaves under the full expression
+  grammar, each keeping every constraint it carries elsewhere; a computed
+  initializer in a structure that declares no matching `@context_import` is
+  rejected exactly as a dynamic width is. A computed field consumes zero bits,
+  leaves static alignment unchanged, inherits enclosing guards, counts toward
+  the 99,999-field projection limit, and is visible to later declarations under
+  the same scope rules as a syntax field. Repeat projection appends the same
+  indexes to its materialized name.
 - A lazy byte region has the dedicated form
   `@lazy(byte_count_expression) bytes name;`. Its expression must produce
   `u64` and follows the computed-field rules for earlier scalar unsigned
@@ -1561,6 +1586,12 @@ repeated, array, dynamic-width, or signed element field; a program that declares
 no sequence; a call inside the sequence element structure itself; and a call in
 a pure-function body, lazy size, controller, or any other position that already
 rejects `context_value`.
+Invalid optional-value examples include `optional_value` with one, three, or more
+arguments; a non-identifier first argument; an unknown, later, array, `se`,
+`computed<bool>`, or repeat-body field out of scope as the first argument; a
+Boolean fallback expression; a fallback dependency that is itself branch-local;
+and a call in a pure-function body, a condition, a switch controller, or an
+imported or sequence-element equality conditional.
 
 Invalid payload-dispatch examples include two payload declarations,
 `payload<ebsp>` or any other view kind, a dispatch naming a structure or an
@@ -1824,6 +1855,17 @@ reusing the same resolver and element value vector that the assertion and
 dynamic-width positions use, so a computed field adds no opcode and no new
 failure mode beyond those already described. See
 [ADR-0065](../adr/0065-admit-reserved-external-leaves-in-computed-initializers.md).
+
+The `optional_value(...)` leaf lowers to a typed optional field reference
+carrying the resolved field index and the compiled fallback as its single
+operand, and adds no opcode. The virtual machine already records field presence
+per structure execution, so evaluation reads the recorded value when the executed
+path materialized that field and evaluates the fallback when it did not. A field
+whose guard was false is absent, and a repeat body leaves scope after the repeat,
+so no index aliases a later projection. The fallback is evaluated only when it is
+needed, and any failure inside it is reported exactly as it would be in the
+position that contains the leaf. See
+[ADR-0066](../adr/0066-select-an-optional-field-value-with-a-declared-fallback.md).
 
 Publication occurs only after successful materialization, requested exact
 consumption, dependency resolution, and complete typed-payload preparation.
