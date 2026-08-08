@@ -8,7 +8,6 @@ struct NalUnitHeader {
     bits<5> nal_unit_type
         @description("Identifies the syntax carried by the NAL unit.");
     assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
-    assert(nal_unit_type != 1 || nal_ref_idc == 0) at nal_ref_idc;
 }
 
 @spec("ITU-T H.264", "7.3.2.4")
@@ -245,6 +244,16 @@ enum ModificationOfPicNumsIdc {
     end = 3;
 }
 
+enum MemoryManagementControlOperation {
+    end = 0;
+    unmark_short_term = 1;
+    unmark_long_term = 2;
+    assign_long_term = 3;
+    set_max_long_term_idx = 4;
+    unmark_all = 5;
+    mark_current_long_term = 6;
+}
+
 enum DisableDeblockingFilterIdc {
     enabled = 0;
     disabled = 1;
@@ -425,6 +434,46 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
     assert(!is_b_slice ||
            context_value(pic_parameter_set_id, h264_pps, weighted_bipred_idc) != 1)
         at pic_parameter_set_id;
+    if (header_value(nal_ref_idc) == 0) {
+    } else {
+        bits<1> adaptive_ref_pic_marking_mode_flag
+            @spec("ITU-T H.264", "7.3.3.3")
+            @description("Selects sliding-window or adaptive reference-picture marking.");
+        if (adaptive_ref_pic_marking_mode_flag == 1) {
+            repeat (64) {
+                ue memory_management_control_operation
+                    @enum(MemoryManagementControlOperation)
+                    @spec("ITU-T H.264", "7.3.3.3, 7.4.3.3")
+                    @description("Selects the next reference-picture marking operation.");
+                computed<bool> marking_uses_pic_num_difference =
+                    memory_management_control_operation == 1 ||
+                    memory_management_control_operation == 3;
+                if (marking_uses_pic_num_difference) {
+                    ue difference_of_pic_nums_minus1
+                        @spec("ITU-T H.264", "7.3.3.3, 7.4.3.3")
+                        @description("Identifies a short-term picture to operate on.");
+                }
+                if (memory_management_control_operation == 2) {
+                    ue long_term_pic_num_mmco
+                        @spec("ITU-T H.264", "7.3.3.3, 7.4.3.3")
+                        @description("Identifies a long-term picture to unmark.");
+                }
+                computed<bool> marking_uses_long_term_frame_idx =
+                    memory_management_control_operation == 3 ||
+                    memory_management_control_operation == 6;
+                if (marking_uses_long_term_frame_idx) {
+                    ue long_term_frame_idx
+                        @spec("ITU-T H.264", "7.3.3.3, 7.4.3.3")
+                        @description("Assigns the long-term frame index.");
+                }
+                if (memory_management_control_operation == 4) {
+                    ue max_long_term_frame_idx_plus1
+                        @spec("ITU-T H.264", "7.3.3.3, 7.4.3.3")
+                        @description("Sets the maximum long-term frame index plus one.");
+                }
+            } until (memory_management_control_operation == 0);
+        }
+    }
     if (uses_reference_lists) {
         if (context_value(pic_parameter_set_id,
                           h264_pps,

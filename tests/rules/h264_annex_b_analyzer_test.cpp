@@ -290,12 +290,10 @@ private slots:
         QVERIFY(parsed.succeeded());
         QCOMPARE(parsed.program.structs.size(), std::size_t(6));
         QCOMPARE(parsed.program.structs.at(0).name, QStringLiteral("NalUnitHeader"));
-        QCOMPARE(parsed.program.structs.at(0).items.size(), std::size_t(5));
+        QCOMPARE(parsed.program.structs.at(0).items.size(), std::size_t(4));
         QCOMPARE(parsed.program.structs.at(0).items.back().kind,
                  streamview::rules::DslStructItemKind::Assertion);
         QCOMPARE(parsed.program.structs.at(0).items.back().assertion.anchorFieldName,
-                 QStringLiteral("nal_ref_idc"));
-        QCOMPARE(parsed.program.structs.at(0).items.at(3).assertion.anchorFieldName,
                  QStringLiteral("nal_ref_idc"));
         QCOMPARE(parsed.program.structs.at(1).name,
                  QStringLiteral("AccessUnitDelimiterRbsp"));
@@ -3240,11 +3238,224 @@ private slots:
         QVERIFY(slice->diagnostics().empty());
     }
 
-    void rejectsNonIdrReferenceNalBeforePayloadMapping() {
+    void decodesSlidingWindowMarkingForAReferenceNonIdrSlice() {
         MemorySource source(bytes({
             0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
             0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
-            0x00, 0x00, 0x01, 0x21, 0xba, 0x9e, 0xaa,
+            0x00, 0x00, 0x01, 0x41, 0xea, 0x62, 0xd5,
+            0x00, 0x00, 0x01, 0x0a,
+        }));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(4));
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Materialized);
+
+        const auto fieldNamed = [&](const QString& name) {
+            const auto found = std::find_if(
+                slice->children().begin(), slice->children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == slice->children().end() ? std::nullopt
+                                                    : analyzer->tree().node(*found);
+        };
+        const auto markingMode =
+            fieldNamed(QStringLiteral("adaptive_ref_pic_marking_mode_flag"));
+        QVERIFY(markingMode.has_value());
+        QCOMPARE(markingMode->value().toULongLong(), quint64(0));
+        QCOMPARE(markingMode->metadata().specification->clause,
+                 QStringLiteral("7.3.3.3"));
+        QCOMPARE(markingMode->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(189));
+        QCOMPARE(markingMode->location()->logicalRange().bitLength(), quint64(1));
+        QVERIFY(
+            !fieldNamed(QStringLiteral("memory_management_control_operation[0]"))
+                 .has_value());
+
+        const auto qp = fieldNamed(QStringLiteral("slice_qp_delta"));
+        QVERIFY(qp.has_value());
+        QCOMPARE(qp->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(190));
+        QVERIFY(slice->diagnostics().empty());
+
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+    }
+
+    void omitsMarkingFieldsForANonReferenceNonIdrSlice() {
+        MemorySource source(bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+            0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
+            0x00, 0x00, 0x01, 0x01, 0xea, 0x64, 0xd5,
+            0x00, 0x00, 0x01, 0x0a,
+        }));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Materialized);
+
+        for (const auto childId : slice->children()) {
+            const auto child = analyzer->tree().node(childId);
+            QVERIFY(child.has_value());
+            QVERIFY(child->name() !=
+                    QStringLiteral("adaptive_ref_pic_marking_mode_flag"));
+            QVERIFY(child->name() !=
+                    QStringLiteral("memory_management_control_operation[0]"));
+        }
+        QVERIFY(slice->diagnostics().empty());
+    }
+
+    void decodesEachAdaptiveMarkingOperandSetAndContinues() {
+        struct MarkingCase final {
+            QString operandName;
+            quint64 operation = 0;
+            quint64 operandValue = 0;
+            std::vector<std::byte> data;
+            quint64 operationOffset = 0;
+            quint64 operationLength = 0;
+            quint64 operandOffset = 0;
+            quint64 operandLength = 0;
+            quint64 terminatorOffset = 0;
+        };
+        const std::vector<MarkingCase> cases{
+            {QStringLiteral("difference_of_pic_nums_minus1[0]"),
+             1,
+             3,
+             bytes({
+                 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+                 0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
+                 0x00, 0x00, 0x01, 0x41, 0xea, 0x65, 0x13, 0xd5,
+                 0x00, 0x00, 0x01, 0x0a,
+             }),
+             190, 3, 193, 5, 198},
+            {QStringLiteral("long_term_pic_num_mmco[0]"),
+             2,
+             1,
+             bytes({
+                 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+                 0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
+                 0x00, 0x00, 0x01, 0x41, 0xea, 0x65, 0xac, 0xd5,
+                 0x00, 0x00, 0x01, 0x0a,
+             }),
+             190, 3, 193, 3, 196},
+            {QStringLiteral("max_long_term_frame_idx_plus1[0]"),
+             4,
+             2,
+             bytes({
+                 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+                 0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
+                 0x00, 0x00, 0x01, 0x41, 0xea, 0x64, 0xaf, 0xd5,
+                 0x00, 0x00, 0x01, 0x0a,
+             }),
+             190, 5, 195, 3, 198},
+            {QStringLiteral("long_term_frame_idx[0]"),
+             6,
+             1,
+             bytes({
+                 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+                 0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
+                 0x00, 0x00, 0x01, 0x41, 0xea, 0x64, 0xeb, 0xd5,
+                 0x00, 0x00, 0x01, 0x0a,
+             }),
+             190, 5, 195, 3, 198},
+        };
+
+        for (const auto& testCase : cases) {
+            MemorySource source(testCase.data);
+            QString errorMessage;
+            auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+            QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+            const auto batch = analyzer->analyzeBatch();
+
+            QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+            const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+            QVERIFY(nal.has_value());
+            QCOMPARE(nal->state(), MaterializationState::Materialized);
+            const auto rbsp = analyzer->tree().node(nal->children().at(2));
+            QVERIFY(rbsp.has_value());
+            const auto slice = analyzer->tree().node(rbsp->children().front());
+            QVERIFY(slice.has_value());
+            QVERIFY2(slice->state() == MaterializationState::Materialized,
+                     qPrintable(testCase.operandName));
+
+            const auto fieldNamed = [&](const QString& name) {
+                const auto found = std::find_if(
+                    slice->children().begin(),
+                    slice->children().end(),
+                    [&](const auto id) {
+                        const auto node = analyzer->tree().node(id);
+                        return node && node->name() == name;
+                    });
+                return found == slice->children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+            };
+
+            const auto operation =
+                fieldNamed(QStringLiteral("memory_management_control_operation[0]"));
+            QVERIFY2(operation.has_value(), qPrintable(testCase.operandName));
+            QCOMPARE(operation->value().toULongLong(), testCase.operation);
+            QCOMPARE(operation->metadata().typeName,
+                     QStringLiteral("MemoryManagementControlOperation"));
+            QCOMPARE(operation->metadata().specification->clause,
+                     QStringLiteral("7.3.3.3, 7.4.3.3"));
+            QCOMPARE(operation->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     testCase.operationOffset);
+            QCOMPARE(operation->location()->logicalRange().bitLength(),
+                     testCase.operationLength);
+
+            const auto operand = fieldNamed(testCase.operandName);
+            QVERIFY2(operand.has_value(), qPrintable(testCase.operandName));
+            QCOMPARE(operand->value().toULongLong(), testCase.operandValue);
+            QCOMPARE(operand->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     testCase.operandOffset);
+            QCOMPARE(operand->location()->logicalRange().bitLength(),
+                     testCase.operandLength);
+            QVERIFY(operand->diagnostics().empty());
+
+            const auto terminator =
+                fieldNamed(QStringLiteral("memory_management_control_operation[1]"));
+            QVERIFY2(terminator.has_value(), qPrintable(testCase.operandName));
+            QCOMPARE(terminator->value().toULongLong(), quint64(0));
+            QCOMPARE(terminator->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     testCase.terminatorOffset);
+
+            QVERIFY(slice->diagnostics().empty());
+            const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+            QVERIFY(followingNal.has_value());
+            QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+        }
+    }
+
+    void rejectsReservedMarkingOperationAndContinues() {
+        MemorySource source(bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+            0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
+            0x00, 0x00, 0x01, 0x41, 0xea, 0x64, 0x40, 0xd5,
             0x00, 0x00, 0x01, 0x0a,
         }));
         QString errorMessage;
@@ -3258,28 +3469,30 @@ private slots:
         const auto invalidNal = analyzer->tree().node(batch.nalUnitNodes.at(2));
         QVERIFY(invalidNal.has_value());
         QCOMPARE(invalidNal->state(), MaterializationState::Invalid);
-        QCOMPARE(invalidNal->children().size(), std::size_t(2));
-        QCOMPARE(invalidNal->diagnostics().size(), std::size_t(1));
-        const auto& diagnostic = invalidNal->diagnostics().front();
+        const auto rbsp = analyzer->tree().node(invalidNal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Invalid);
+
+        const auto operation = analyzer->tree().node(slice->children().back());
+        QVERIFY(operation.has_value());
+        QCOMPARE(operation->name(),
+                 QStringLiteral("memory_management_control_operation[0]"));
+        QCOMPARE(operation->value().toULongLong(), quint64(7));
+        QCOMPARE(slice->diagnostics().size(), std::size_t(1));
+        const auto& diagnostic = slice->diagnostics().front();
         QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::InvalidSyntax);
-        QCOMPARE(diagnostic.message, QStringLiteral("Assertion condition is false"));
-        QCOMPARE(diagnostic.fieldPath, QStringLiteral("NalUnitHeader.nal_ref_idc"));
+        QCOMPARE(diagnostic.severity, streamview::core::DiagnosticSeverity::Error);
+        QCOMPARE(diagnostic.message,
+                 QStringLiteral("Field value is not declared by its enum type"));
+        QCOMPARE(diagnostic.fieldPath,
+                 QStringLiteral("NonIdrSliceLayerWithoutPartitioningRbsp."
+                                "memory_management_control_operation[0]"));
         QVERIFY(diagnostic.location.has_value());
         QCOMPARE(diagnostic.location->sourceSpans().front().start().absoluteBitOffset(),
-                 quint64(169));
-        QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(2));
-
-        const auto header = analyzer->tree().node(invalidNal->children().at(1));
-        QVERIFY(header.has_value());
-        QCOMPARE(header->state(), MaterializationState::Invalid);
-        QCOMPARE(header->children().size(), std::size_t(3));
-        for (const auto childId : invalidNal->children()) {
-            const auto child = analyzer->tree().node(childId);
-            QVERIFY(child.has_value());
-            QVERIFY(child->name() != QStringLiteral("rbsp_payload"));
-            QVERIFY(child->name() !=
-                    QStringLiteral("NonIdrSliceLayerWithoutPartitioningRbsp"));
-        }
+                 quint64(190));
+        QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(7));
 
         const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
         QVERIFY(followingNal.has_value());
