@@ -412,6 +412,9 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         headerValueResolver;
     std::function<std::optional<DslTypedExpression>(const DslExpression&)>
         sequenceElementResolver;
+    // Name-based rather than expression-based, because the fallback is compiled
+    // in the calling scope. Empty where optional_value is rejected.
+    ExpressionResolver optionalValueResolver;
     const auto claimExpressionNode = [&](ExpressionBuildState& state,
                                          std::size_t depth,
                                          const DslSourceRange& range) {
@@ -534,6 +537,59 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     return std::nullopt;
                 }
                 return headerValueResolver(expression);
+            }
+            if (expression.name == QStringLiteral("optional_value")) {
+                if (!claimExpressionNode(state, depth, expression.range)) {
+                    return std::nullopt;
+                }
+                if (!optionalValueResolver) {
+                    addDiagnostic(
+                        result.diagnostics,
+                        DslDiagnosticCode::InvalidExpression,
+                        QStringLiteral(
+                            "optional_value is not available in this expression"),
+                        expression.range);
+                    return std::nullopt;
+                }
+                if (expression.operands.size() != 2 ||
+                    expression.operands.front().kind !=
+                        DslExpressionKind::Identifier) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidExpression,
+                                  QStringLiteral("optional_value requires an identifier "
+                                                 "and a fallback expression"),
+                                  expression.range);
+                    return std::nullopt;
+                }
+                // The named field skips the branch-guarantee check; the
+                // fallback is compiled in the ordinary scope and keeps it.
+                const auto field =
+                    optionalValueResolver(expression.operands.front().name,
+                                          expression.operands.front().range);
+                const auto fallback = compileExpression(expression.operands.at(1),
+                                                        resolveIdentifier,
+                                                        availableFunctionCount,
+                                                        depth + 1,
+                                                        state);
+                if (!field || !fallback) {
+                    return std::nullopt;
+                }
+                if (field->type != DslScalarType::U64 ||
+                    fallback->type != DslScalarType::U64) {
+                    addDiagnostic(
+                        result.diagnostics,
+                        DslDiagnosticCode::InvalidType,
+                        QStringLiteral("optional_value requires an unsigned field and "
+                                       "an unsigned fallback"),
+                        expression.range);
+                    return std::nullopt;
+                }
+                DslTypedExpression optional;
+                optional.kind = DslTypedExpressionKind::OptionalFieldReference;
+                optional.type = DslScalarType::U64;
+                optional.fieldIndex = field->fieldIndex;
+                optional.operands.push_back(*fallback);
+                return optional;
             }
             const std::size_t functionCount =
                 std::min(availableFunctionCount, program.pureFunctions.size());
@@ -1238,12 +1294,17 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             return resolveConditionValue(
                 controller, condition.expectedValue, condition.range);
         };
+        // requireBranchGuarantee is false only for the first argument of
+        // optional_value, which declares its own handling for absence and so
+        // is the one form allowed to name a branch-local field. See ADR-0066.
         const auto resolveExpressionDependency =
             [&](const QString& name,
                 const DslSourceRange& range,
                 const std::vector<DslTypedFieldCondition>& conditions,
                 const QString& subject,
-                const QString& invalidTypeMessage) -> std::optional<DslTypedExpression> {
+                const QString& invalidTypeMessage,
+                bool requireBranchGuarantee = true)
+            -> std::optional<DslTypedExpression> {
             const auto found = std::find_if(
                 declaredFields.rbegin(),
                 declaredFields.rend(),
@@ -1266,7 +1327,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                             return sameCondition(required, candidate);
                         });
                 });
-            if (!available) {
+            if (requireBranchGuarantee && !available) {
                 addDiagnostic(
                     result.diagnostics,
                     DslDiagnosticCode::InvalidCondition,
@@ -1666,6 +1727,18 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 };
                 contextValueResolver = importedContextResolver;
                 headerValueResolver = sequenceElementResolver;
+                optionalValueResolver =
+                    [&](const QString& name,
+                        const DslSourceRange& range) -> std::optional<DslTypedExpression> {
+                    return resolveExpressionDependency(
+                        name,
+                        range,
+                        conditions,
+                        QStringLiteral("Dynamic bit width"),
+                        QStringLiteral(
+                            "Dynamic bit widths require scalar unsigned fields"),
+                        false);
+                };
                 ExpressionBuildState state;
                 typedField.bitWidthExpression = compileExpression(
                     *field.widthExpression,
@@ -1675,6 +1748,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     state);
                 contextValueResolver = {};
                 headerValueResolver = {};
+                optionalValueResolver = {};
                 if (typedField.bitWidthExpression &&
                     typedField.bitWidthExpression->type != DslScalarType::U64) {
                     addDiagnostic(result.diagnostics,
@@ -1927,6 +2001,14 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             };
             contextValueResolver = importedContextResolver;
             headerValueResolver = sequenceElementResolver;
+            optionalValueResolver =
+                [&](const QString& name,
+                    const DslSourceRange& range) -> std::optional<DslTypedExpression> {
+                return resolveExpressionDependency(
+                    name, range, conditions, QStringLiteral("Computed field"),
+                    QStringLiteral("Computed expressions require scalar unsigned fields"),
+                    false);
+            };
             ExpressionBuildState state;
             const auto expression = compileExpression(field.expression,
                                                       resolveField,
@@ -1935,6 +2017,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                                       state);
             contextValueResolver = {};
             headerValueResolver = {};
+            optionalValueResolver = {};
             if (expression && expression->type != field.type) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidType,
@@ -2008,12 +2091,21 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     name, range, conditions, QStringLiteral("Lazy byte-count expression"),
                     QStringLiteral("Lazy byte counts require scalar unsigned fields"));
             };
+            optionalValueResolver =
+                [&](const QString& name,
+                    const DslSourceRange& range) -> std::optional<DslTypedExpression> {
+                return resolveExpressionDependency(
+                    name, range, conditions, QStringLiteral("Lazy byte-count expression"),
+                    QStringLiteral("Lazy byte counts require scalar unsigned fields"),
+                    false);
+            };
             ExpressionBuildState state;
             const auto expression = compileExpression(region.byteCountExpression,
                                                       resolveField,
                                                       program.pureFunctions.size(),
                                                       1,
                                                       state);
+            optionalValueResolver = {};
             if (expression && expression->type != DslScalarType::U64) {
                 addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidType,
                               QStringLiteral("Lazy byte-count expression must be u64"),
@@ -2162,6 +2254,18 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             };
             contextValueResolver = importedContextResolver;
             headerValueResolver = sequenceElementResolver;
+            optionalValueResolver =
+                [&](const QString& name,
+                    const DslSourceRange& range) -> std::optional<DslTypedExpression> {
+                return resolveExpressionDependency(
+                    name,
+                    range,
+                    conditions,
+                    QStringLiteral("Assertion"),
+                    QStringLiteral(
+                        "Assertion expressions require scalar unsigned fields"),
+                    false);
+            };
             ExpressionBuildState state;
             const auto expression = compileExpression(assertion.condition,
                                                       resolveField,
@@ -2170,6 +2274,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                                       state);
             contextValueResolver = {};
             headerValueResolver = {};
+            optionalValueResolver = {};
             if (expression && expression->type != DslScalarType::Bool) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidType,

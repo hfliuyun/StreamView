@@ -1723,11 +1723,17 @@ private:
     }
 
     void validateProgram() {
+        // An empty resolver rejects optional_value, which is how a
+        // pure-function body excludes the form. See ADR-0066.
+        using OptionalDependencyResolver = std::function<std::optional<DslScalarType>(
+            const QString&, const DslSourceRange&)>;
         const auto validateExpression = [&](const auto& self,
                                             const DslExpression& expression,
                                             const auto& resolveIdentifier,
                                             std::size_t availableFunctionCount,
                                             bool allowImportedContextReference,
+                                            const OptionalDependencyResolver&
+                                                resolveOptionalDependency,
                                             std::size_t depth,
                                             std::size_t& nodeCount)
             -> std::optional<DslScalarType> {
@@ -1789,6 +1795,44 @@ private:
                     }
                     return DslScalarType::U64;
                 }
+                if (resolveOptionalDependency &&
+                    expression.name == QStringLiteral("optional_value")) {
+                    if (expression.operands.size() != 2 ||
+                        expression.operands.front().kind !=
+                            DslExpressionKind::Identifier) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidExpression,
+                             QStringLiteral("optional_value requires an identifier "
+                                            "and a fallback expression"),
+                             expression.range});
+                        return std::nullopt;
+                    }
+                    // The named field is exempt from the branch-guarantee rule.
+                    // The fallback is an ordinary expression and keeps it.
+                    const auto fieldType =
+                        resolveOptionalDependency(expression.operands.front().name,
+                                                  expression.operands.front().range);
+                    const auto fallbackType = self(self,
+                                                   expression.operands.at(1),
+                                                   resolveIdentifier,
+                                                   availableFunctionCount,
+                                                   allowImportedContextReference,
+                                                   resolveOptionalDependency,
+                                                   depth + 1,
+                                                   nodeCount);
+                    if (!fieldType || !fallbackType) {
+                        return std::nullopt;
+                    }
+                    if (*fallbackType != DslScalarType::U64) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidType,
+                             QStringLiteral(
+                                 "optional_value requires an unsigned fallback"),
+                             expression.operands.at(1).range});
+                        return std::nullopt;
+                    }
+                    return DslScalarType::U64;
+                }
                 const auto functionsEnd = result_.program.pureFunctions.begin() +
                                           static_cast<std::ptrdiff_t>(availableFunctionCount);
                 const auto found = std::find_if(
@@ -1805,6 +1849,7 @@ private:
                                                  resolveIdentifier,
                                                  availableFunctionCount,
                                                  allowImportedContextReference,
+                                                 resolveOptionalDependency,
                                                  depth + 1,
                                                  nodeCount));
                 }
@@ -1846,6 +1891,7 @@ private:
                                               resolveIdentifier,
                                               availableFunctionCount,
                                               allowImportedContextReference,
+                                              resolveOptionalDependency,
                                               depth + 1,
                                               nodeCount);
                 if (operandType && *operandType != DslScalarType::Bool) {
@@ -1872,6 +1918,7 @@ private:
                                        resolveIdentifier,
                                        availableFunctionCount,
                                        allowImportedContextReference,
+                                       resolveOptionalDependency,
                                        depth + 1,
                                        nodeCount);
             const auto rightType = self(self,
@@ -1879,6 +1926,7 @@ private:
                                         resolveIdentifier,
                                         availableFunctionCount,
                                         allowImportedContextReference,
+                                        resolveOptionalDependency,
                                         depth + 1,
                                         nodeCount);
             const auto requireOperands = [&](DslScalarType required,
@@ -1996,6 +2044,7 @@ private:
                                                            resolveParameter,
                                                            index,
                                                            false,
+                                                           OptionalDependencyResolver{},
                                                            1,
                                                            nodeCount);
             if (expressionType && *expressionType != function.returnType) {
@@ -2101,6 +2150,48 @@ private:
                 return left.fieldName == right.fieldName &&
                        left.expectedValue == right.expectedValue &&
                        left.negated == right.negated;
+            };
+            // Resolves the first argument of optional_value. It applies every
+            // dependency rule except the branch-guarantee check, which is the
+            // one restriction the form exists to lift. See ADR-0066.
+            const auto resolveOptionalDependency =
+                [&](const QString& name,
+                    const DslSourceRange& range) -> std::optional<DslScalarType> {
+                const auto found = std::find_if(
+                    declaredFields.rbegin(),
+                    declaredFields.rend(),
+                    [&name](const DeclaredField& declared) {
+                        return declared.name == name;
+                    });
+                if (found == declaredFields.rend()) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::UnknownReference,
+                         QStringLiteral(
+                             "Optional field dependency must be declared earlier"),
+                         range});
+                    return std::nullopt;
+                }
+                if (found->computed != nullptr) {
+                    if (found->type != DslScalarType::U64) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidType,
+                             QStringLiteral("Optional field values require scalar "
+                                            "unsigned fields"),
+                             range});
+                        return std::nullopt;
+                    }
+                    return DslScalarType::U64;
+                }
+                if (found->syntax == nullptr || found->syntax->arrayLength ||
+                    found->syntax->encoding == DslFieldEncoding::SignedExpGolomb) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidType,
+                         QStringLiteral(
+                             "Optional field values require scalar unsigned fields"),
+                         range});
+                    return std::nullopt;
+                }
+                return DslScalarType::U64;
             };
             const auto validateController = [&](const QString& fieldName,
                                                 const DslSourceRange& range,
@@ -2532,6 +2623,7 @@ private:
                             resolveAssertionIdentifier,
                             result_.program.pureFunctions.size(),
                             true,
+                            resolveOptionalDependency,
                             1,
                             nodeCount);
                         if (expressionType && *expressionType != DslScalarType::Bool) {
@@ -2870,6 +2962,7 @@ private:
                             resolveLazyIdentifier,
                             result_.program.pureFunctions.size(),
                             false,
+                            resolveOptionalDependency,
                             1,
                             nodeCount);
                         if (expressionType && *expressionType != DslScalarType::U64) {
@@ -2963,6 +3056,7 @@ private:
                             resolveComputedIdentifier,
                             result_.program.pureFunctions.size(),
                             true,
+                            resolveOptionalDependency,
                             1,
                             nodeCount);
                         if (expressionType && *expressionType != field.type) {

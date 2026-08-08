@@ -308,6 +308,69 @@ private slots:
         QCOMPARE(header.operands.size(), std::size_t(1));
     }
 
+    void parsesOptionalFieldValuesWithDeclaredFallbacks() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> override_flag; "
+            "if (override_flag == 1) { bits<4> override_count_minus1; } "
+            "computed<u64> effective_count = "
+            "optional_value(override_count_minus1, 3) + 1; } entry Header;"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& header = result.program.structs.at(0);
+        const auto& computed = header.items.at(2).computed;
+        QCOMPARE(computed.name, QStringLiteral("effective_count"));
+        QCOMPARE(computed.expression.kind, DslExpressionKind::Binary);
+        QCOMPARE(computed.expression.binaryOperator, DslBinaryOperator::Add);
+        const auto& optional = computed.expression.operands.at(0);
+        QCOMPARE(optional.kind, DslExpressionKind::Call);
+        QCOMPARE(optional.name, QStringLiteral("optional_value"));
+        QCOMPARE(optional.operands.size(), std::size_t(2));
+        QCOMPARE(optional.operands.at(0).kind, DslExpressionKind::Identifier);
+        QCOMPARE(optional.operands.at(0).name,
+                 QStringLiteral("override_count_minus1"));
+        QCOMPARE(optional.operands.at(1).kind, DslExpressionKind::UnsignedLiteral);
+
+        // The fallback is a full expression, so it nests and composes.
+        const auto nested = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> first_flag; "
+            "if (first_flag == 1) { bits<4> first_count; } "
+            "bits<1> second_flag; "
+            "if (second_flag == 1) { bits<4> second_count; } "
+            "computed<u64> effective_count = "
+            "optional_value(first_count, optional_value(second_count, 7)); } "
+            "entry Header;"));
+        QVERIFY(nested.succeeded());
+
+        // An assertion condition admits the same leaf.
+        const auto inAssertion = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> override_flag; "
+            "if (override_flag == 1) { bits<4> override_count_minus1; } "
+            "assert(optional_value(override_count_minus1, 3) == 3) "
+            "at override_flag; } entry Header;"));
+        QVERIFY(inAssertion.succeeded());
+
+        // A pure-function body resolves parameters, not fields, so it rejects
+        // the leaf as an undeclared function call.
+        const auto inPureFunction = DslParser::parse(QStringLiteral(
+            "pure u64 widen(u64 value) { return optional_value(value, 0); } "
+            "struct Header { bits<1> value; } entry Header;"));
+        QVERIFY(hasDiagnostic(inPureFunction, DslDiagnosticCode::UnknownReference));
+
+        const auto tooFewArguments = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value; "
+            "computed<u64> derived = optional_value(value); } entry Header;"));
+        QVERIFY(hasDiagnostic(tooFewArguments, DslDiagnosticCode::InvalidExpression));
+
+        const auto nonIdentifierField = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value; "
+            "computed<u64> derived = optional_value(value + 1, 0); } entry Header;"));
+        QVERIFY(hasDiagnostic(nonIdentifierField,
+                              DslDiagnosticCode::InvalidExpression));
+    }
+
     void rejectsInvalidAssertionContractsAndRecoversAtTheNextField() {
         const auto nonBoolean = DslParser::parse(QStringLiteral(
             "struct Header { bits<1> value; assert(value) at value; } entry Header;"));

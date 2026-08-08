@@ -440,6 +440,31 @@ struct TypedExpressionValidationState final {
         }
         return true;
     }
+    case DslTypedExpressionKind::OptionalFieldReference: {
+        // Deliberately omits the branch-guarantee check that a plain field
+        // reference applies: naming a field the path may not materialize is the
+        // point of this kind. Every other descriptor rule still holds, and the
+        // fallback is validated as an ordinary operand. See ADR-0066.
+        if (expression.operands.size() != 1 ||
+            expression.type != DslScalarType::U64 ||
+            expression.fieldIndex >= subjectFieldIndex ||
+            expression.fieldIndex >= structure.fields.size()) {
+            return fail(QStringLiteral("Typed optional field reference is invalid"));
+        }
+        const DslTypedField& dependency = structure.fields.at(expression.fieldIndex);
+        const std::optional<DslScalarType> dependencyType = scalarTypeForField(dependency);
+        if (!dependencyType || *dependencyType != DslScalarType::U64) {
+            return fail(
+                QStringLiteral("Typed optional field reference type is invalid"));
+        }
+        return validateTypedExpression(expression.operands.front(),
+                                       program,
+                                       structure,
+                                       subjectFieldIndex,
+                                       subjectConditions,
+                                       depth + 1,
+                                       state);
+    }
     case DslTypedExpressionKind::Unary:
         if (expression.unaryOperator != DslUnaryOperator::LogicalNot ||
             expression.type != DslScalarType::Bool || expression.operands.size() != 1) {
@@ -641,6 +666,20 @@ struct ComputedEvaluationResult final {
                 QStringLiteral("Sequence element value is unavailable"));
         }
         return unsignedResult(*elementValue);
+    }
+    case DslTypedExpressionKind::OptionalFieldReference: {
+        // A slot holding no value means the executed path never materialized the
+        // field, which is the case this kind exists to answer. Absence is not a
+        // failure here, unlike a plain field reference. See ADR-0066.
+        if (expression.fieldIndex < fieldValues.size() &&
+            fieldValues.at(expression.fieldIndex)) {
+            return unsignedResult(*fieldValues.at(expression.fieldIndex));
+        }
+        return evaluateTypedExpression(expression.operands.front(),
+                                       structure,
+                                       fieldValues,
+                                       contextValueResolver,
+                                       sequenceElementValues);
     }
     case DslTypedExpressionKind::Unary: {
         const ComputedEvaluationResult operand =

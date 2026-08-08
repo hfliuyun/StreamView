@@ -540,6 +540,98 @@ private slots:
         }
     }
 
+    void selectsOptionalFieldValuesOrTheirDeclaredFallbacks() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-pps", pps_id)
+            struct Pps {
+                bits<8> pps_id;
+                bits<8> default_count_minus1 @context_export;
+            }
+            @context_import("h264-pps", pps_id)
+            struct Slice {
+                bits<8> pps_id;
+                bits<1> override_flag;
+                computed<bool> has_override = override_flag != 0;
+                if (has_override) {
+                    bits<3> local_count_minus1;
+                }
+                computed<u64> effective_count =
+                    optional_value(local_count_minus1,
+                                   context_value(pps_id, h264_pps,
+                                                 default_count_minus1)) + 1;
+                repeat (effective_count, 8) {
+                    bits<1> luma_weight_flag;
+                }
+                bits<1> tail;
+            }
+            entry Slice;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const quint32 ppsIndex =
+            *compiled.program->structureIndex(QStringLiteral("Pps"));
+        const quint32 sliceIndex =
+            *compiled.program->structureIndex(QStringLiteral("Slice"));
+
+        struct Scenario final {
+            quint8 slicePayload = 0;
+            quint64 sliceBits = 0;
+            quint64 effectiveCount = 0;
+            std::size_t weightFields = 0;
+        };
+        // The PPS exports default_count_minus1 == 4. When override_flag is set the
+        // guarded local_count_minus1 == 2 wins, and when it is clear the field was
+        // never materialized so the imported default is what the fallback yields.
+        const std::vector<Scenario> scenarios{
+            {0xab, 16, 3, 3},
+            {0x6a, 15, 5, 5},
+        };
+        for (const Scenario scenario : scenarios) {
+            MemorySource source(bytes({3, 4, 3, scenario.slicePayload}));
+            const auto ppsView = makeView(1, 0, 16);
+            const auto sliceView = makeView(2, 16, scenario.sliceBits);
+            QVERIFY(ppsView.has_value());
+            QVERIFY(sliceView.has_value());
+            auto tree = AnalysisTree::create(
+                QStringLiteral("optional-value-%1").arg(scenario.effectiveCount));
+            QVERIFY(tree.has_value());
+            RuleExecutionSession session(*compiled.program);
+            QVERIFY(session.run(makeRequest(source, ppsIndex, *ppsView, *tree))
+                        .materialized());
+
+            const auto result =
+                session.run(makeRequest(source, sliceIndex, *sliceView, *tree));
+
+            QVERIFY2(result.materialized(), qPrintable(result.errorMessage));
+            QCOMPARE(result.execution.bitsConsumed, scenario.sliceBits);
+            const auto structure = tree->node(*result.execution.structureNode);
+            QVERIFY(structure.has_value());
+            std::optional<quint64> effective;
+            std::size_t weightFields = 0;
+            for (const streamview::core::AnalysisNodeId childId :
+                 structure->children()) {
+                const auto child = tree->node(childId);
+                QVERIFY(child.has_value());
+                if (child->name() == QStringLiteral("effective_count")) {
+                    effective = child->value().toULongLong();
+                } else if (child->name().startsWith(
+                               QStringLiteral("luma_weight_flag"))) {
+                    ++weightFields;
+                }
+            }
+            QVERIFY(effective.has_value());
+            QCOMPARE(*effective, scenario.effectiveCount);
+            QCOMPARE(weightFields, scenario.weightFields);
+            const auto tail = tree->node(structure->children().back());
+            QVERIFY(tail.has_value());
+            QCOMPARE(tail->name(), QStringLiteral("tail"));
+        }
+    }
+
     void rejectsSequenceElementReferencesWithoutSuppliedElementValues() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             struct NalUnitHeader {

@@ -2345,6 +2345,121 @@ private slots:
         QCOMPARE(computedOpcodes, 2);
     }
 
+    void lowersOptionalFieldValuesWithDeclaredFallbacks() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-pps", id)
+            struct Pps {
+                bits<8> id;
+                ue num_ref_idx_l0_default_active_minus1 @context_export;
+            }
+            @context_import("h264-pps", pic_parameter_set_id)
+            struct SliceHeader {
+                ue pic_parameter_set_id;
+                bits<1> override_flag;
+                if (override_flag == 1) {
+                    ue num_ref_idx_l0_active_minus1;
+                }
+                computed<u64> effective_l0_count =
+                    optional_value(num_ref_idx_l0_active_minus1,
+                                   context_value(pic_parameter_set_id,
+                                                 h264_pps,
+                                                 num_ref_idx_l0_default_active_minus1))
+                    + 1;
+            }
+            entry SliceHeader;
+        )"));
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& slice = compiled.program->structs.at(1);
+        const auto& count = slice.fields.at(3);
+        QCOMPARE(count.name, QStringLiteral("effective_l0_count"));
+        QVERIFY(count.computedExpression.has_value());
+        QCOMPARE(count.computedExpression->kind, DslTypedExpressionKind::Binary);
+        const auto& optional = count.computedExpression->operands.at(0);
+        QCOMPARE(optional.kind, DslTypedExpressionKind::OptionalFieldReference);
+        QCOMPARE(optional.type, DslScalarType::U64);
+        QCOMPARE(slice.fields.at(optional.fieldIndex).name,
+                 QStringLiteral("num_ref_idx_l0_active_minus1"));
+        // The fallback is the single operand, and it keeps its own contract.
+        QCOMPARE(optional.operands.size(), std::size_t(1));
+        QCOMPARE(optional.operands.front().kind,
+                 DslTypedExpressionKind::ImportedContextReference);
+
+        // No new opcode: the leaf rides the existing computed evaluation.
+        const auto computedOpcodes = std::count_if(
+            compiled.program->bytecode.begin(),
+            compiled.program->bytecode.end(),
+            [](const streamview::rules::DslInstruction& instruction) {
+                return instruction.opcode == DslOpcode::EvaluateComputed;
+            });
+        QCOMPARE(computedOpcodes, 1);
+    }
+
+    void rejectsInvalidOptionalFieldValueContracts() {
+        const std::vector<std::pair<QString, QString>> cases{
+            {QStringLiteral("unknown field"),
+             QStringLiteral("struct S { bits<1> flag; "
+                            "computed<u64> derived = optional_value(missing, 0); } "
+                            "entry S;")},
+            {QStringLiteral("later field"),
+             QStringLiteral("struct S { bits<1> flag; "
+                            "computed<u64> derived = optional_value(tail, 0); "
+                            "bits<1> tail; } entry S;")},
+            {QStringLiteral("array field"),
+             QStringLiteral("struct S { bits<1> values[2]; "
+                            "computed<u64> derived = optional_value(values, 0); } "
+                            "entry S;")},
+            {QStringLiteral("signed field"),
+             QStringLiteral("struct S { se value; "
+                            "computed<u64> derived = optional_value(value, 0); } "
+                            "entry S;")},
+            {QStringLiteral("boolean field"),
+             QStringLiteral("struct S { bits<1> flag; "
+                            "computed<bool> derived = flag == 1; "
+                            "computed<u64> widened = optional_value(derived, 0); } "
+                            "entry S;")},
+            {QStringLiteral("boolean fallback"),
+             QStringLiteral("struct S { bits<1> flag; "
+                            "computed<u64> derived = optional_value(flag, true); } "
+                            "entry S;")},
+            {QStringLiteral("branch-local fallback"),
+             QStringLiteral("struct S { bits<1> flag; "
+                            "if (flag == 1) { bits<4> guarded; } "
+                            "computed<u64> derived = optional_value(flag, guarded); } "
+                            "entry S;")},
+            {QStringLiteral("repeat body field out of scope"),
+             QStringLiteral("struct S { bits<2> count; "
+                            "repeat (count, 4) { bits<1> inner; } "
+                            "computed<u64> derived = optional_value(inner, 0); } "
+                            "entry S;")},
+            {QStringLiteral("switch controller position"),
+             QStringLiteral("struct S { bits<1> flag; "
+                            "if (flag == 1) { bits<4> guarded; } "
+                            "switch (optional_value(guarded, 0)) { case 0: {} } } "
+                            "entry S;")},
+        };
+
+        for (std::size_t index = 0; index < cases.size(); ++index) {
+            const auto parsed = DslParser::parse(cases.at(index).second);
+            if (!parsed.succeeded()) {
+                continue;
+            }
+            const auto compiled = DslCompiler::compile(parsed.program);
+            QVERIFY2(!compiled.succeeded(),
+                     qPrintable(QStringLiteral("case %1 (%2) was accepted")
+                                    .arg(index)
+                                    .arg(cases.at(index).first)));
+        }
+    }
+
     void rejectsInvalidHeaderValueReferences() {
         const std::vector<std::pair<QString, QString>> cases{
             {QStringLiteral("unknown element field"),
