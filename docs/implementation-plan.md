@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Admit the reserved external leaves in computed field initializers
-Next Action: Decide how a bounded pred_weight_table() selects its effective entry count, then implement it; the language currently cannot express the choice between the locally overridden count and the imported PPS default, and the restriction that would avoid the choice has no legal assertion position
-Last Verification: Commits 8d54240 and 3cfef2b; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 94/94; svtool rule check passed; hosted run 31258216794 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Add the optional_value expression leaf
+Next Action: Implement the bounded pred_weight_table() rule change on top of optional_value, keeping the spec field names, and absorb the analyzer child-index shifts the new computed fields cause
+Last Verification: Commits 480f661 and bb4e223; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 94/94; svtool rule check passed; hosted verification pending
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -876,3 +876,28 @@ Blockers: None
   区分后缀（今天即可表达，代价是四份近似副本、字段名随一个无关 flag 变化），二是新增带
   flow-sensitive 依赖分析的 defaulting/conditional expression（保住 spec 命名，代价是再
   一个能力 ADR）；建议取二，因为复制方案会在后续每张表上复利式膨胀。
+- [x] 新增 `optional_value(field, fallback)` expression leaf（承接上一条的方案二）。
+  决策前先用探测把问题钉死，而不是照图纸设计：最小 blocker 精确复现
+  `error: Computed field dependency is not guaranteed on the current branch`，复制方案
+  也真的编译通过（`Rule OK`），因此 ADR 里的对比是实测而非推断——代价确认为字段名被迫
+  变成 `weight_flag_override` / `weight_flag_default`。随后在源码里核实三条运行期事实：
+  VM 的 `fieldValues` 本来就是 `std::vector<std::optional<quint64>>`；空槽今天之所以是硬
+  失败，只是因为静态规则承诺它不会发生；repeat body 每次迭代都 `resize(scopeStart)`，所以
+  index 不可能与后续 projection 混淆。结论是**这条限制纯属静态，运行期早已知情**。
+  ADR-0066 与英中 format-language 参考提交 `480f661`：leaf 在实际执行路径物化了该字段时
+  给出其值，否则给出 fallback；**只有第一个实参**豁免 branch-guarantee，其余每条 dependency
+  规则照旧。有意不要求第一个实参必须 branch-local——否则后续一个无关 guard 会反过来让一处
+  正确用法失效。Boolean 形式与通用三元表达式明确列为 non-goal，也不暴露 `has_value`。
+  实现提交 `bb4e223` 在**三层各自独立检查 dependency 的地方**都设闸：parser 用专用
+  resolver（只省掉 availability 检查）解析被命名字段，在拒绝该形式的位置传空 resolver；
+  IR 降低为新的 `OptionalFieldReference` kind，携带解析出的 field index 与编译后的
+  fallback 作为唯一 operand；VM 验证该 descriptor 并在字段已物化时读取记录值，否则求值
+  fallback。**不新增 opcode、不新增结构体成员。** 探测确认四个位置（dynamic width、
+  assertion condition、computed initializer、lazy byte count）全部可用；lazy 位置额外
+  受既有的 byte-boundary 约束，与本 leaf 无关。端到端 session 测试用同一程序跑两组
+  scenario：override 分支取本地值（effective 3、16 bit），未取时 fallback 落到 imported
+  PPS 默认（effective 5、15 bit）——若 fallback 恒胜第一组会读到 5，若空槽仍是硬失败第二组
+  会直接失败，两组因此互为判别。parser 61/61、IR 70/70、session 37/37；本机 `dev`、`ci`、
+  `sanitize` 均 32/32；H.264 analyzer 94/94，`svtool rule check` 通过。本增量**仍然只补
+  语言能力**，不动 bundled 规则，与 ADR-0063、ADR-0065 先例一致；消费它的 bounded
+  `pred_weight_table()` 连同其 analyzer child index 偏移作为下一个增量。
