@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Add the header_value sequence-element expression leaf
-Next Action: Define and implement bounded reference-picture marking for nonzero-reference type-1 slice headers using header_value
-Last Verification: Commits 29556cf and 3f64b27; local dev/ci/sanitize each passed 32/32; DSL parser 59/59, IR 67/67, executor 118/118, session 35/35, H.264 analyzer 91/91; svtool rule check passed; hosted run 31250687630 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Add bounded reference-picture marking
+Next Action: Define and implement bounded pred_weight_table() for explicit weighted prediction
+Last Verification: Commits db48349 and 698092a; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 94/94; svtool rule check passed; hosted run 31253798200 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -813,3 +813,31 @@ Blockers: None
   `3f64b27` 的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、Test、Install、
   Upload 全部成功。下一步用该能力实现有界 `dec_ref_pic_marking()`，解除 type-1 的
   `nal_ref_idc == 0` 前置约束。
+- 2026-08-08：完成有界 reference-picture marking 增量，首次解除 type-1 的
+  `nal_ref_idc == 0` 前置约束。ADR-0064 与英中文 bundled-profile 参考提交 `db48349`
+  固化边界：移除 ADR-0054 引入的该前置 assertion，改用 ADR-0063 的 `header_value` leaf
+  表达 clause 7.3.3 的 presence 条件，因此 profile 现在接受 reference P/B slice，而不再
+  只支持 non-reference。实现提交 `698092a` 让 `adaptive_ref_pic_marking_mode_flag` 为零时
+  选择 sliding-window marking 且不再发布字段；为一时进入 64 次有界 loop，operation 1/3 读
+  `difference_of_pic_nums_minus1`、operation 2 读 `long_term_pic_num_mmco`、operation 3/6
+  读 `long_term_frame_idx`、operation 4 读 `max_long_term_frame_idx_plus1`，operation 0/5
+  不读 operand，terminator 保留在树中。`MemoryManagementControlOperation` 为覆盖 `0..6` 的
+  闭集 enum：保留值不对应任何 operand 组合，属 layout-critical，故在完整码字处致命失败。
+  扁平命名空间中只有 clause 7.3.3.3 的 `long_term_pic_num` 与 list 0 loop 冲突，因此仅它
+  改名为 `long_term_pic_num_mmco`，其余四个 operation 字段保留 clause 名——与 ADR-0062 的
+  统一 `_l1` 后缀不同，因为那里有四个名字冲突。guard 反转为空 `then` 分支，因为 `if`
+  condition 只接受 equality，无法写 `header_value(...) != 0`。package 更新为 `0.1.19`，
+  coverage depth 更新为 `i-p-b-reference-slice-header`（本增量拓宽的是所接受的 slice 范围）。
+  测试影响：`loadsBundledRule` 的 `NalUnitHeader` item 数减一；
+  `rejectsNonIdrReferenceNalBeforePayloadMapping` 断言的正是本次移除的行为，故整体替换而非
+  修补。四条新回归覆盖 sliding-window marking、non-reference slice 的 marking 缺席、四个
+  operand 组合的精确 source span，以及保留 operation 的致命失败；其中三条在旧规则下失败、
+  在新规则下通过（marking 缺席那条在两版下都通过，它守的是边界而非新代码）。写 ADR 前先在
+  scratch 副本上用 `svtool analyze` 实际解码五个 fixture 核对字段 presence 与 span，落地时
+  规则文本与该已验证副本逐字节相同。H.264 analyzer 定向套件为 94/94，`svtool rule check`
+  通过；本机 `dev`、`ci`、`sanitize` 完整构建与 CTest 均为 32/32。hosted run `31253798200`
+  对 `698092a` 的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、Test、Install、
+  Upload 全部成功。至此 type-1 slice-header 覆盖 reference 与 non-reference 两种形态下的
+  I、P、B slice；完整 Baseline/Main/High slice-header 项仍未完成，下一步定义并实现有界
+  `pred_weight_table()`，以解除 `weighted_pred_flag == 0` 与 `weighted_bipred_idc != 1`
+  这两条 imported assertion。
