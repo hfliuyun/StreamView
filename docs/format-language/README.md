@@ -161,6 +161,12 @@ The accepted imported-assertion slice additionally permits the reserved
 imported generation contract and remains unavailable in other general
 expression positions.
 
+The accepted computed-initializer slice additionally permits both reserved
+leaves inside a `computed<bool>` or `computed<u64>` initializer, under the full
+expression grammar rather than a fixed comparison shape. It lets a derived field
+depend on a parameter set or on its own element header, which is how a
+multi-clause presence guard and a dependent repeat count are expressed.
+
 The accepted sequence-element slice adds the reserved
 `header_value(element_field)` form. It resolves one scalar of the sequence
 element structure from within a dispatched payload structure, which lets a
@@ -305,19 +311,23 @@ The static rules for this subset are:
   rules. Declaration order is preserved; an identical kind/field pair is a
   duplicate and is rejected.
 - `context_value(import_key, context_kind, exported_field)` is reserved for a
-  dynamic `bits` width, the left side of an imported equality conditional, or
-  the Boolean condition of a source-anchored assertion.
-  All three arguments are identifiers. `import_key` names
+  dynamic `bits` width, the left side of an imported equality conditional, the
+  Boolean condition of a source-anchored assertion, or a computed field
+  initializer. All three arguments are identifiers. `import_key` names
   an earlier context-eligible field that identifies exactly one import on the
   structure. The kind identifier is `h264_sps`, `h264_pps`, `aac_asc`, or
   `iso_bmff_sample_description`, and must name the imported root kind or a kind
   reachable through its declared dependency graph. Exactly one structure must
   publish that target kind, and it must export exactly one field with the named
   declaration. Outside a dynamic `bits` width, a source-anchored assertion
-  condition, and the exact conditional form `context_value(...) == integer`,
-  it is rejected in pure-function bodies, computed fields, conditions, lazy
-  sizes, switch or repeat controllers, and every other expression position.
-- `header_value(element_field)` is reserved for the same three positions as
+  condition, a computed field initializer, and the exact conditional form
+  `context_value(...) == integer`, it is rejected in pure-function bodies,
+  conditions, lazy sizes, switch controllers, and every other expression
+  position. A computed initializer accepts it under the full expression grammar,
+  so it may be combined with arithmetic and Boolean operators; because a
+  `computed<u64>` may control a count repeat, an imported entry count reaches a
+  repeat controller through that field rather than directly.
+- `header_value(element_field)` is reserved for the same four positions as
   `context_value`. It takes exactly one identifier argument, which must name a
   field of the program's sequence element structure. That field must be an
   unconditional, top-level, non-array unsigned scalar, so a guarded, repeated,
@@ -449,7 +459,11 @@ The static rules for this subset are:
   expression. It may reference earlier scalar unsigned `bits`, enum, `ue`, or
   computed fields guaranteed on every path reaching the declaration. Arrays,
   `se`, unknown or future fields, and unavailable branch-local values are
-  rejected. A computed field consumes zero bits, leaves static alignment
+  rejected. Its expression may also include the reserved `context_value(...)`
+  and `header_value(...)` leaves under the full expression grammar, each keeping
+  every constraint it carries elsewhere; a computed initializer in a structure
+  that declares no matching `@context_import` is rejected exactly as a dynamic
+  width is. A computed field consumes zero bits, leaves static alignment
   unchanged, inherits enclosing guards, counts toward the 99,999-field
   projection limit, and is visible to later declarations under the same scope
   rules as a syntax field. Repeat projection appends the same indexes to its
@@ -485,8 +499,9 @@ The static rules for this subset are:
   lazy region, dynamic field, or assertion anchor path. The same checked
   arithmetic applies to a dynamic bit width; `context_value` is its only
   additional leaf form and is also accepted as the exact left side of an
-  imported equality conditional and inside a source-anchored assertion
-  condition. It counts against the same node and depth limits. The complete
+  imported equality conditional, inside a source-anchored assertion condition,
+  and inside a computed field initializer. It counts against the same node and
+  depth limits. The complete
   width or assertion expression remains subject to the shared expansion-work
   limit. Enum fields contribute their decoded `u64`; enum member names are not
   expression values.
@@ -1523,8 +1538,10 @@ Invalid context-import examples include an identical repeated import, a guarded,
 repeated, array, signed, lazy, generated, or unknown key field, an unsupported
 kind, malformed arguments, and more than 16 imports.
 Invalid imported dynamic-width examples include `context_value` outside a
-dynamic `bits` width, imported equality conditional, or source-anchored
-assertion condition; a missing or later import key; an unrelated target kind;
+dynamic `bits` width, imported equality conditional, source-anchored assertion
+condition, or computed field initializer; a missing or later import key,
+including in a computed initializer whose structure declares no matching
+import; an unrelated target kind;
 zero or multiple publishers for the target kind; a missing export; and a
 dynamic little-endian, array, enum, constrained, context-key, dependency,
 import, or export field. Runtime results `0` and `65`, arithmetic overflow or
@@ -1534,14 +1551,16 @@ Invalid imported-condition examples include arithmetic or a call around
 `context_value`, `!=`, ordering, a Boolean combination, imported Boolean
 shorthand, a nonliteral right side, a missing or later import key, an unrelated
 target kind, zero or multiple publishers, and a missing export. Imported values
-remain invalid as switch or repeat controllers, sentinel conditions, computed
-or lazy expressions, array lengths, annotations, and payload dispatch values.
+remain invalid as switch or repeat controllers, sentinel conditions, lazy
+expressions, array lengths, annotations, and payload dispatch values. A computed
+field reaches a repeat controller only as a `computed<u64>` field, never as a
+bare imported value in the controller position.
 Invalid sequence-element examples include `header_value` with zero, two, or more
 arguments; a non-identifier argument; an unknown element field name; a guarded,
 repeated, array, dynamic-width, or signed element field; a program that declares
 no sequence; a call inside the sequence element structure itself; and a call in
-a pure-function body, computed field, lazy size, controller, or any other
-position that already rejects `context_value`.
+a pure-function body, lazy size, controller, or any other position that already
+rejects `context_value`.
 
 Invalid payload-dispatch examples include two payload declarations,
 `payload<ebsp>` or any other view kind, a dispatch naming a structure or an
@@ -1780,10 +1799,13 @@ Every entry retains the definition ID, kind, publishing structure index,
 ordered exported values, and exact dependency IDs. A closure contains at most
 64 definitions; a missing rules-owned payload is invalid runtime state. Import
 results create no analysis nodes. Imported values are available only through
-the lowered `context_value` leaf in a dynamic width or the exact
-`context_value(...) == integer` conditional, or in a source-anchored assertion
-condition. They are not identifiers in general expressions, lazy sizes, switch
-or repeat controllers, or repeat bounds.
+the lowered `context_value` leaf in a dynamic width, the exact
+`context_value(...) == integer` conditional, a source-anchored assertion
+condition, or a computed field initializer. They are not identifiers in general
+expressions, lazy sizes, switch or repeat controllers, or repeat bounds. A
+`computed<u64>` initialized from an imported value may itself control a count
+repeat, which is how an imported entry count reaches a repeat; the import is
+resolved once when that computed field is evaluated.
 
 A dispatched payload structure reads its own sequence element header through the
 `header_value(element_field)` leaf, which lowers to a typed sequence-element
@@ -1796,6 +1818,12 @@ value, or an absent value vector is an invalid definition rather than a decode
 with a guessed value. A false guard over such a leaf consumes no source and
 creates no node. See
 [ADR-0063](../adr/0063-read-sequence-element-fields-from-dispatched-payloads.md).
+
+Both reserved leaves are also evaluated inside a computed field initializer,
+reusing the same resolver and element value vector that the assertion and
+dynamic-width positions use, so a computed field adds no opcode and no new
+failure mode beyond those already described. See
+[ADR-0065](../adr/0065-admit-reserved-external-leaves-in-computed-initializers.md).
 
 Publication occurs only after successful materialization, requested exact
 consumption, dependency resolution, and complete typed-payload preparation.

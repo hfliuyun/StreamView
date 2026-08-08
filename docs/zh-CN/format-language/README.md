@@ -135,6 +135,11 @@ presentation node；`at` 字段提供 diagnostic path 与精确 mapped source lo
 `context_value(...)` leaf。它沿用 exact imported generation 合同，在其他一般 expression
 position 中仍不可用。
 
+当前接受的 computed-initializer 切片还允许 `computed<bool>` 或 `computed<u64>` 的
+initializer 内部使用这两个保留 leaf，且遵循完整 expression 语法，而不是固定的比较形状。
+它让派生字段能够依赖 parameter set，或依赖自己所属的 element header；多子句的存在性
+guard 与依赖性 repeat count 正是这样表达的。
+
 当前接受的 sequence-element 切片新增保留形式 `header_value(element_field)`。它在被派发的
 payload structure 内部解析 sequence element structure 的一个 scalar，使 payload 能够依赖
 自己所属的 element header，而不是依赖 parameter set。它是 `u64` leaf，允许出现的位置与
@@ -255,16 +260,20 @@ primary       := integer | "true" | "false" | identifier
   kind 与无条件 unsigned scalar key-field 规则，保留 declaration order；相同 kind/field pair
   是静态重复错误。
 - `context_value(import_key, context_kind, exported_field)` 保留给 dynamic `bits` width、
-  imported equality conditional 左侧或 source-anchored assertion 的 Boolean condition 使用。
+  imported equality conditional 左侧、source-anchored assertion 的 Boolean condition，或
+  computed field initializer 使用。
   三个参数都必须是 identifier。`import_key` 必须命名
   此前 context-eligible 的字段，并且在该
   structure 上精确标识一个 import。kind identifier 只能是 `h264_sps`、`h264_pps`、
   `aac_asc` 或 `iso_bmff_sample_description`，而且必须命名 imported root kind，或从其声明的
   dependency graph 可达的 kind。该 target kind 必须恰好有一个 publishing structure，且该
   structure 必须精确导出一个同名字段。除 dynamic `bits` width、source-anchored assertion
-  condition 与精确形式 `context_value(...) == integer` 外，pure-function body、computed field、
-  condition、lazy size、switch/repeat controller 与其他 expression position 都拒绝这一形式。
-- `header_value(element_field)` 保留给与 `context_value` 相同的三个位置使用。它接受且只接受
+  condition、computed field initializer 与精确形式 `context_value(...) == integer` 外，
+  pure-function body、condition、lazy size、switch controller 与其他 expression position
+  都拒绝这一形式。computed initializer 按完整 expression 语法接受它，因此可以与算术和
+  Boolean 运算符组合；由于 `computed<u64>` 可以充当 count repeat 的 controller，imported
+  的表项数量是通过该字段而不是直接抵达 repeat controller 的。
+- `header_value(element_field)` 保留给与 `context_value` 相同的四个位置使用。它接受且只接受
   一个 identifier 实参，该实参必须命名程序中 sequence element structure 的一个字段，且该字段
   必须是无条件、顶层、非数组的 unsigned scalar；被 guard 的、位于 repeat 中的、数组、
   dynamic-width 或 signed element 字段一律拒绝。没有声明 sequence 的程序，以及 structure
@@ -353,7 +362,10 @@ primary       := integer | "true" | "false" | identifier
   unknown。不提供 `break`、`continue`、EOF、remaining-bit 或 expression termination。
 - 计算字段声明 `computed<bool>` 或 `computed<u64>` 和一条表达式。它可以引用此前声明、
   且在到达当前声明的每条路径上都保证存在的 scalar 无符号 `bits`、enum、`ue` 或计算字段。
-  数组、`se`、未知或未来字段，以及路径上不可用的 branch-local 值都会被拒绝。计算字段
+  数组、`se`、未知或未来字段，以及路径上不可用的 branch-local 值都会被拒绝。它的表达式
+  还可以按完整 expression 语法包含保留的 `context_value(...)` 与 `header_value(...)` leaf，
+  两者在别处携带的每一项约束都继续适用；若 structure 未声明匹配的 `@context_import`，
+  其中的 computed initializer 会被拒绝，方式与 dynamic width 完全一致。计算字段
   消耗零 bit，不改变静态对齐，继承外层 guard，计入 99,999 字段投影上限，并按与语法字段
   相同的 scope 规则供后续声明使用。repeat 投影会给它的物化名称追加同样的 index。
 - lazy byte region 使用专用形式 `@lazy(byte_count_expression) bytes name;`。expression
@@ -377,7 +389,8 @@ primary       := integer | "true" | "false" | identifier
   匹配。无符号 overflow/underflow、除零和模零会在计算字段、lazy region、dynamic field 或
   assertion anchor path 上产生 runtime `invalid-syntax`。dynamic bit width 使用同一套 checked
   arithmetic；`context_value` 是它唯一额外的 leaf form，也可以作为 imported equality
-  conditional 的精确左侧或用于 source-anchored assertion condition，并计入相同 node 与
+  conditional 的精确左侧、用于 source-anchored assertion condition，或出现在 computed field
+  initializer 之中，并计入相同 node 与
   depth 上限；完整的 width 或 assertion expression 仍受共享 expansion-work 上限约束。enum
   字段提供解码后的 `u64`；enum member 名不是本切片的 expression value。
 - 每个写出的纯函数体、计算字段 expression、lazy byte-count expression、dynamic width 或
@@ -1238,20 +1251,23 @@ repeated、array、signed、lazy 或 generated field 作为 key/export、
 context import 的非法示例包括：完全相同的 import 重复、guarded/repeated/array/signed/lazy/
 generated 或未知 key field、不支持的 kind、malformed argument，以及超过 16 个 import。
 imported dynamic-width 的非法示例包括：在 dynamic `bits` width、imported equality
-conditional 或 source-anchored assertion condition 之外使用 `context_value`；import key 缺失
-或声明得更晚；target kind 与 import closure 无关；target kind 没有 publisher 或存在多个
+conditional、source-anchored assertion condition 或 computed field initializer 之外使用
+`context_value`；import key 缺失
+或声明得更晚，包括所在 structure 未声明匹配 import 的 computed initializer；
+target kind 与 import closure 无关；target kind 没有 publisher 或存在多个
 publisher；export 缺失；以及 dynamic little-endian、array、enum、constrained、context-key、
 dependency、import 或 export field。runtime 结果为 `0` 或 `65`、arithmetic
 overflow/underflow、除零或模零时，在该字段消费输入前报告 `invalid-syntax`。
 imported-condition 的非法示例包括：在 `context_value` 外包 arithmetic 或 call、`!=`、
 ordering、Boolean combination、imported Boolean shorthand、非 literal 右侧、缺失或较晚声明的
 import key、无关 target kind、零或多个 publisher，以及缺失 export。imported value 仍不能作为
-switch/repeat controller、sentinel condition、computed/lazy expression、array length、
-annotation 或 payload dispatch value。
+switch/repeat controller、sentinel condition、lazy expression、array length、
+annotation 或 payload dispatch value。imported count 只能以 `computed<u64>` 字段的形式抵达
+repeat controller，绝不能在 controller 位置直接写成裸的 imported value。
 sequence-element 的非法示例包括：`header_value` 带零个、两个或更多实参；非 identifier
 实参；未知的 element 字段名；guarded、位于 repeat 中、数组、dynamic-width 或 signed 的
 element 字段；没有声明 sequence 的程序；写在 sequence element structure 自身内部的调用；
-以及出现在 pure-function body、computed field、lazy size、controller 或任何已经拒绝
+以及出现在 pure-function body、lazy size、controller 或任何已经拒绝
 `context_value` 的位置。
 
 payload 派发的非法示例包括：两个 payload 声明、`payload<ebsp>` 或其他 view kind、派发命名
@@ -1448,9 +1464,12 @@ depth-first traversal；每个精确
 definition 只包含一次。每项保留 definition ID、kind、publishing structure index、有序 exported
 value 与精确 dependency ID。closure 最多 64 个 definition；rules-owned payload 缺失属于
 invalid runtime state。import result 不创建 analysis node。imported value 只能通过 dynamic
-width 中 lower 后的 `context_value` leaf、精确的 `context_value(...) == integer` conditional，
-或 source-anchored assertion condition 使用。它不能作为一般 expression、lazy size、
-switch/repeat controller 或 repeat bound 中的 identifier。
+width 中 lower 后的 `context_value` leaf、精确的 `context_value(...) == integer` conditional、
+source-anchored assertion condition，或 computed field initializer 使用。它不能作为一般
+expression、lazy size、
+switch/repeat controller 或 repeat bound 中的 identifier。由 imported value 初始化的
+`computed<u64>` 本身可以控制 count repeat，这也是 imported entry count 抵达 repeat 的唯一
+方式；import 在该计算字段求值时解析一次。
 
 被派发的 payload structure 通过 `header_value(element_field)` leaf 读取自己所属的 sequence
 element header。该 leaf 降低为 typed sequence-element reference，携带已解析的 element field
@@ -1460,6 +1479,11 @@ index，且不新增 opcode。runner 随 execution request 提供已解码的 el
 definition，而不是用猜测值解码。位于此类 leaf 之上的 false guard 不消费 source，也不创建
 node。详见
 [ADR-0063](../adr/0063-read-sequence-element-fields-from-dispatched-payloads.md)。
+
+两个保留 leaf 同样会在 computed field initializer 内求值，复用 assertion 与 dynamic-width
+位置已经使用的同一 resolver 和 element value vector，因此计算字段不新增 opcode，也不引入上述
+之外的新失败模式。详见
+[ADR-0065](../adr/0065-admit-reserved-external-leaves-in-computed-initializers.md)。
 
 只有 structure 成功 materialize、满足请求的精确消费策略、完成 dependency resolution 和
 typed-payload 准备后才会发布。registration 前会预留 payload 与 directory 容量，因此成功
