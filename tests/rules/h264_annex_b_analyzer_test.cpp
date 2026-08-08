@@ -1280,12 +1280,14 @@ private slots:
         QCOMPARE(slice->state(), MaterializationState::Materialized);
         QCOMPARE(slice->metadata().specification->clause,
                  QStringLiteral("7.3.2.8, 7.3.3"));
-        QCOMPARE(slice->children().size(), std::size_t(8));
+        QCOMPARE(slice->children().size(), std::size_t(10));
 
         const std::vector expectedNames{
             QStringLiteral("first_mb_in_slice"),
             QStringLiteral("slice_type"),
             QStringLiteral("is_p_slice"),
+            QStringLiteral("is_b_slice"),
+            QStringLiteral("uses_reference_lists"),
             QStringLiteral("pic_parameter_set_id"),
             QStringLiteral("frame_num"),
             QStringLiteral("pic_order_cnt_lsb"),
@@ -1386,12 +1388,14 @@ private slots:
         QVERIFY(slice.has_value());
         QCOMPARE(slice->name(), QStringLiteral("NonIdrSliceLayerWithoutPartitioningRbsp"));
         QCOMPARE(slice->state(), MaterializationState::Materialized);
-        QCOMPARE(slice->children().size(), std::size_t(10));
+        QCOMPARE(slice->children().size(), std::size_t(12));
 
         const std::vector expectedNames{
             QStringLiteral("first_mb_in_slice"),
             QStringLiteral("slice_type"),
             QStringLiteral("is_p_slice"),
+            QStringLiteral("is_b_slice"),
+            QStringLiteral("uses_reference_lists"),
             QStringLiteral("pic_parameter_set_id"),
             QStringLiteral("frame_num"),
             QStringLiteral("pic_order_cnt_lsb"),
@@ -1500,7 +1504,7 @@ private slots:
         QVERIFY(slice.has_value());
         QCOMPARE(slice->name(), QStringLiteral("NonIdrSliceLayerWithoutPartitioningRbsp"));
         QCOMPARE(slice->state(), MaterializationState::Materialized);
-        QCOMPARE(slice->children().size(), std::size_t(11));
+        QCOMPARE(slice->children().size(), std::size_t(13));
 
         const auto fieldNamed = [&](const QString& name) {
             const auto found = std::find_if(
@@ -1583,12 +1587,14 @@ private slots:
         const auto slice = analyzer->tree().node(rbsp->children().front());
         QVERIFY(slice.has_value());
         QCOMPARE(slice->state(), MaterializationState::Materialized);
-        QCOMPARE(slice->children().size(), std::size_t(11));
+        QCOMPARE(slice->children().size(), std::size_t(13));
 
         const std::vector expectedNames{
             QStringLiteral("first_mb_in_slice"),
             QStringLiteral("slice_type"),
             QStringLiteral("is_p_slice"),
+            QStringLiteral("is_b_slice"),
+            QStringLiteral("uses_reference_lists"),
             QStringLiteral("pic_parameter_set_id"),
             QStringLiteral("frame_num"),
             QStringLiteral("pic_order_cnt_lsb"),
@@ -1604,11 +1610,11 @@ private slots:
             QCOMPARE(child->name(), expectedNames.at(index));
         }
 
-        const auto overrideFlag = analyzer->tree().node(slice->children().at(6));
-        const auto overrideCount = analyzer->tree().node(slice->children().at(7));
-        const auto modificationFlag = analyzer->tree().node(slice->children().at(8));
-        const auto qp = analyzer->tree().node(slice->children().at(9));
-        const auto payload = analyzer->tree().node(slice->children().at(10));
+        const auto overrideFlag = analyzer->tree().node(slice->children().at(8));
+        const auto overrideCount = analyzer->tree().node(slice->children().at(9));
+        const auto modificationFlag = analyzer->tree().node(slice->children().at(10));
+        const auto qp = analyzer->tree().node(slice->children().at(11));
+        const auto payload = analyzer->tree().node(slice->children().at(12));
         QVERIFY(overrideFlag.has_value());
         QVERIFY(overrideCount.has_value());
         QVERIFY(modificationFlag.has_value());
@@ -1661,13 +1667,13 @@ private slots:
         const auto slice = analyzer->tree().node(rbsp->children().front());
         QVERIFY(slice.has_value());
         QCOMPARE(slice->state(), MaterializationState::Materialized);
-        QCOMPARE(slice->children().size(), std::size_t(11));
+        QCOMPARE(slice->children().size(), std::size_t(13));
         const auto sliceType = analyzer->tree().node(slice->children().at(1));
-        const auto overrideFlag = analyzer->tree().node(slice->children().at(6));
-        const auto overrideCount = analyzer->tree().node(slice->children().at(7));
-        const auto modificationFlag = analyzer->tree().node(slice->children().at(8));
-        const auto qp = analyzer->tree().node(slice->children().at(9));
-        const auto payload = analyzer->tree().node(slice->children().at(10));
+        const auto overrideFlag = analyzer->tree().node(slice->children().at(8));
+        const auto overrideCount = analyzer->tree().node(slice->children().at(9));
+        const auto modificationFlag = analyzer->tree().node(slice->children().at(10));
+        const auto qp = analyzer->tree().node(slice->children().at(11));
+        const auto payload = analyzer->tree().node(slice->children().at(12));
         QVERIFY(sliceType.has_value());
         QVERIFY(overrideFlag.has_value());
         QVERIFY(overrideCount.has_value());
@@ -1720,11 +1726,11 @@ private slots:
         const auto slice = analyzer->tree().node(rbsp->children().front());
         QVERIFY(slice.has_value());
         QCOMPARE(slice->state(), MaterializationState::Materialized);
-        QCOMPARE(slice->children().size(), std::size_t(11));
-        const auto overrideCount = analyzer->tree().node(slice->children().at(7));
-        const auto modificationFlag = analyzer->tree().node(slice->children().at(8));
-        const auto qp = analyzer->tree().node(slice->children().at(9));
-        const auto payload = analyzer->tree().node(slice->children().at(10));
+        QCOMPARE(slice->children().size(), std::size_t(13));
+        const auto overrideCount = analyzer->tree().node(slice->children().at(9));
+        const auto modificationFlag = analyzer->tree().node(slice->children().at(10));
+        const auto qp = analyzer->tree().node(slice->children().at(11));
+        const auto payload = analyzer->tree().node(slice->children().at(12));
         QVERIFY(overrideCount.has_value());
         QVERIFY(modificationFlag.has_value());
         QVERIFY(qp.has_value());
@@ -1780,7 +1786,7 @@ private slots:
         const auto slice = analyzer->tree().node(rbsp->children().front());
         QVERIFY(slice.has_value());
         QCOMPARE(slice->state(), MaterializationState::Invalid);
-        QCOMPARE(slice->children().size(), std::size_t(7));
+        QCOMPARE(slice->children().size(), std::size_t(9));
         const auto overrideFlag = analyzer->tree().node(slice->children().back());
         QVERIFY(overrideFlag.has_value());
         QCOMPARE(overrideFlag->name(), QStringLiteral("num_ref_idx_active_override_flag"));
@@ -1831,13 +1837,13 @@ private slots:
         const auto slice = analyzer->tree().node(rbsp->children().front());
         QVERIFY(slice.has_value());
         QCOMPARE(slice->state(), MaterializationState::Materialized);
-        QCOMPARE(slice->children().size(), std::size_t(13));
-        const auto overrideCount = analyzer->tree().node(slice->children().at(7));
-        const auto modificationFlag = analyzer->tree().node(slice->children().at(8));
-        const auto operation = analyzer->tree().node(slice->children().at(9));
-        const auto usesAbsDiff = analyzer->tree().node(slice->children().at(10));
-        const auto qp = analyzer->tree().node(slice->children().at(11));
-        const auto payload = analyzer->tree().node(slice->children().at(12));
+        QCOMPARE(slice->children().size(), std::size_t(15));
+        const auto overrideCount = analyzer->tree().node(slice->children().at(9));
+        const auto modificationFlag = analyzer->tree().node(slice->children().at(10));
+        const auto operation = analyzer->tree().node(slice->children().at(11));
+        const auto usesAbsDiff = analyzer->tree().node(slice->children().at(12));
+        const auto qp = analyzer->tree().node(slice->children().at(13));
+        const auto payload = analyzer->tree().node(slice->children().at(14));
         QVERIFY(overrideCount.has_value());
         QVERIFY(modificationFlag.has_value());
         QVERIFY(operation.has_value());
@@ -1904,12 +1910,14 @@ private slots:
         const auto slice = analyzer->tree().node(rbsp->children().front());
         QVERIFY(slice.has_value());
         QCOMPARE(slice->state(), MaterializationState::Materialized);
-        QCOMPARE(slice->children().size(), std::size_t(21));
+        QCOMPARE(slice->children().size(), std::size_t(23));
 
         const std::vector expectedNames{
             QStringLiteral("first_mb_in_slice"),
             QStringLiteral("slice_type"),
             QStringLiteral("is_p_slice"),
+            QStringLiteral("is_b_slice"),
+            QStringLiteral("uses_reference_lists"),
             QStringLiteral("pic_parameter_set_id"),
             QStringLiteral("frame_num"),
             QStringLiteral("pic_order_cnt_lsb"),
@@ -1935,20 +1943,20 @@ private slots:
             QCOMPARE(child->name(), expectedNames.at(index));
         }
 
-        const auto modificationFlag = analyzer->tree().node(slice->children().at(7));
-        const auto operation0 = analyzer->tree().node(slice->children().at(8));
-        const auto usesAbsDiff0 = analyzer->tree().node(slice->children().at(9));
-        const auto absDiff0 = analyzer->tree().node(slice->children().at(10));
-        const auto operation1 = analyzer->tree().node(slice->children().at(11));
-        const auto usesAbsDiff1 = analyzer->tree().node(slice->children().at(12));
-        const auto absDiff1 = analyzer->tree().node(slice->children().at(13));
-        const auto operation2 = analyzer->tree().node(slice->children().at(14));
-        const auto usesAbsDiff2 = analyzer->tree().node(slice->children().at(15));
-        const auto longTerm2 = analyzer->tree().node(slice->children().at(16));
-        const auto operation3 = analyzer->tree().node(slice->children().at(17));
-        const auto usesAbsDiff3 = analyzer->tree().node(slice->children().at(18));
-        const auto qp = analyzer->tree().node(slice->children().at(19));
-        const auto payload = analyzer->tree().node(slice->children().at(20));
+        const auto modificationFlag = analyzer->tree().node(slice->children().at(9));
+        const auto operation0 = analyzer->tree().node(slice->children().at(10));
+        const auto usesAbsDiff0 = analyzer->tree().node(slice->children().at(11));
+        const auto absDiff0 = analyzer->tree().node(slice->children().at(12));
+        const auto operation1 = analyzer->tree().node(slice->children().at(13));
+        const auto usesAbsDiff1 = analyzer->tree().node(slice->children().at(14));
+        const auto absDiff1 = analyzer->tree().node(slice->children().at(15));
+        const auto operation2 = analyzer->tree().node(slice->children().at(16));
+        const auto usesAbsDiff2 = analyzer->tree().node(slice->children().at(17));
+        const auto longTerm2 = analyzer->tree().node(slice->children().at(18));
+        const auto operation3 = analyzer->tree().node(slice->children().at(19));
+        const auto usesAbsDiff3 = analyzer->tree().node(slice->children().at(20));
+        const auto qp = analyzer->tree().node(slice->children().at(21));
+        const auto payload = analyzer->tree().node(slice->children().at(22));
         QVERIFY(modificationFlag.has_value());
         QVERIFY(operation0.has_value());
         QVERIFY(usesAbsDiff0.has_value());
@@ -2046,13 +2054,13 @@ private slots:
         const auto slice = analyzer->tree().node(rbsp->children().front());
         QVERIFY(slice.has_value());
         QCOMPARE(slice->state(), MaterializationState::Materialized);
-        QCOMPARE(slice->children().size(), std::size_t(12));
+        QCOMPARE(slice->children().size(), std::size_t(14));
         const auto sliceType = analyzer->tree().node(slice->children().at(1));
-        const auto modificationFlag = analyzer->tree().node(slice->children().at(7));
-        const auto operation = analyzer->tree().node(slice->children().at(8));
-        const auto usesAbsDiff = analyzer->tree().node(slice->children().at(9));
-        const auto qp = analyzer->tree().node(slice->children().at(10));
-        const auto payload = analyzer->tree().node(slice->children().at(11));
+        const auto modificationFlag = analyzer->tree().node(slice->children().at(9));
+        const auto operation = analyzer->tree().node(slice->children().at(10));
+        const auto usesAbsDiff = analyzer->tree().node(slice->children().at(11));
+        const auto qp = analyzer->tree().node(slice->children().at(12));
+        const auto payload = analyzer->tree().node(slice->children().at(13));
         QVERIFY(sliceType.has_value());
         QVERIFY(modificationFlag.has_value());
         QVERIFY(operation.has_value());
@@ -2104,7 +2112,7 @@ private slots:
         const auto slice = analyzer->tree().node(rbsp->children().front());
         QVERIFY(slice.has_value());
         QCOMPARE(slice->state(), MaterializationState::Invalid);
-        QCOMPARE(slice->children().size(), std::size_t(9));
+        QCOMPARE(slice->children().size(), std::size_t(11));
         const auto operation = analyzer->tree().node(slice->children().back());
         QVERIFY(operation.has_value());
         QCOMPARE(operation->name(), QStringLiteral("modification_of_pic_nums_idc[0]"));
@@ -2157,7 +2165,7 @@ private slots:
         const auto slice = analyzer->tree().node(rbsp->children().front());
         QVERIFY(slice.has_value());
         QCOMPARE(slice->state(), MaterializationState::Invalid);
-        QCOMPARE(slice->children().size(), std::size_t(8));
+        QCOMPARE(slice->children().size(), std::size_t(10));
         const auto modificationFlag = analyzer->tree().node(slice->children().back());
         QVERIFY(modificationFlag.has_value());
         QCOMPARE(modificationFlag->name(),
@@ -2208,9 +2216,9 @@ private slots:
         const auto slice = analyzer->tree().node(rbsp->children().front());
         QVERIFY(slice.has_value());
         QCOMPARE(slice->state(), MaterializationState::Invalid);
-        QCOMPARE(slice->children().size(), std::size_t(10));
-        const auto operation = analyzer->tree().node(slice->children().at(8));
-        const auto usesAbsDiff = analyzer->tree().node(slice->children().at(9));
+        QCOMPARE(slice->children().size(), std::size_t(12));
+        const auto operation = analyzer->tree().node(slice->children().at(10));
+        const auto usesAbsDiff = analyzer->tree().node(slice->children().at(11));
         QVERIFY(operation.has_value());
         QVERIFY(usesAbsDiff.has_value());
         QCOMPARE(operation->name(), QStringLiteral("modification_of_pic_nums_idc[0]"));
@@ -2266,10 +2274,10 @@ private slots:
         const auto slice = analyzer->tree().node(rbsp->children().front());
         QVERIFY(slice.has_value());
         QCOMPARE(slice->state(), MaterializationState::Invalid);
-        QCOMPARE(slice->children().size(), std::size_t(200));
-        const auto finalOperation = analyzer->tree().node(slice->children().at(197));
-        const auto finalComputed = analyzer->tree().node(slice->children().at(198));
-        const auto finalOperand = analyzer->tree().node(slice->children().at(199));
+        QCOMPARE(slice->children().size(), std::size_t(202));
+        const auto finalOperation = analyzer->tree().node(slice->children().at(199));
+        const auto finalComputed = analyzer->tree().node(slice->children().at(200));
+        const auto finalOperand = analyzer->tree().node(slice->children().at(201));
         QVERIFY(finalOperation.has_value());
         QVERIFY(finalComputed.has_value());
         QVERIFY(finalOperand.has_value());
@@ -2327,9 +2335,9 @@ private slots:
         const auto slice = analyzer->tree().node(rbsp->children().front());
         QVERIFY(slice.has_value());
         QCOMPARE(slice->state(), MaterializationState::Invalid);
-        QCOMPARE(slice->children().size(), std::size_t(8));
-        const auto overrideFlag = analyzer->tree().node(slice->children().at(6));
-        const auto modificationFlag = analyzer->tree().node(slice->children().at(7));
+        QCOMPARE(slice->children().size(), std::size_t(10));
+        const auto overrideFlag = analyzer->tree().node(slice->children().at(8));
+        const auto modificationFlag = analyzer->tree().node(slice->children().at(9));
         QVERIFY(overrideFlag.has_value());
         QVERIFY(modificationFlag.has_value());
         QCOMPARE(overrideFlag->name(), QStringLiteral("num_ref_idx_active_override_flag"));
@@ -2417,11 +2425,11 @@ private slots:
             const auto slice = analyzer->tree().node(rbsp->children().front());
             QVERIFY(slice.has_value());
             QCOMPARE(slice->state(), MaterializationState::Materialized);
-            QCOMPARE(slice->children().size(), std::size_t(11));
+            QCOMPARE(slice->children().size(), std::size_t(13));
 
-            const auto cabacInitIdc = analyzer->tree().node(slice->children().at(8));
-            const auto qp = analyzer->tree().node(slice->children().at(9));
-            const auto payload = analyzer->tree().node(slice->children().at(10));
+            const auto cabacInitIdc = analyzer->tree().node(slice->children().at(10));
+            const auto qp = analyzer->tree().node(slice->children().at(11));
+            const auto payload = analyzer->tree().node(slice->children().at(12));
             QVERIFY(cabacInitIdc.has_value());
             QVERIFY(qp.has_value());
             QVERIFY(payload.has_value());
@@ -2479,11 +2487,11 @@ private slots:
         const auto slice = analyzer->tree().node(rbsp->children().front());
         QVERIFY(slice.has_value());
         QCOMPARE(slice->state(), MaterializationState::Materialized);
-        QCOMPARE(slice->children().size(), std::size_t(12));
-        const auto cabacInitIdc = analyzer->tree().node(slice->children().at(8));
-        const auto qp = analyzer->tree().node(slice->children().at(9));
-        const auto deblockingMode = analyzer->tree().node(slice->children().at(10));
-        const auto payload = analyzer->tree().node(slice->children().at(11));
+        QCOMPARE(slice->children().size(), std::size_t(14));
+        const auto cabacInitIdc = analyzer->tree().node(slice->children().at(10));
+        const auto qp = analyzer->tree().node(slice->children().at(11));
+        const auto deblockingMode = analyzer->tree().node(slice->children().at(12));
+        const auto payload = analyzer->tree().node(slice->children().at(13));
         QVERIFY(cabacInitIdc.has_value());
         QVERIFY(qp.has_value());
         QVERIFY(deblockingMode.has_value());
@@ -2550,7 +2558,7 @@ private slots:
         const auto slice = analyzer->tree().node(rbsp->children().front());
         QVERIFY(slice.has_value());
         QCOMPARE(slice->state(), MaterializationState::Invalid);
-        QCOMPARE(slice->children().size(), std::size_t(8));
+        QCOMPARE(slice->children().size(), std::size_t(10));
         QCOMPARE(slice->diagnostics().size(), std::size_t(1));
         const auto& diagnostic = slice->diagnostics().front();
         QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::TruncatedSource);
@@ -2570,6 +2578,464 @@ private slots:
         const auto followingType = analyzer->tree().node(followingHeader->children().at(2));
         QVERIFY(followingType.has_value());
         QCOMPARE(followingType->value().toULongLong(), quint64(10));
+    }
+
+    void decodesTheBoundedNonIdrBSliceTypeOneAndKeepsSliceDataOpaque() {
+        MemorySource source(bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+            0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
+            0x00, 0x00, 0x01, 0x01, 0xaa, 0x9c, 0x40, 0xd5,
+            0x00, 0x00, 0x01, 0x0a,
+        }));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(4));
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Materialized);
+        QCOMPARE(slice->children().size(), std::size_t(14));
+
+        const std::vector expectedNames{
+            QStringLiteral("first_mb_in_slice"),
+            QStringLiteral("slice_type"),
+            QStringLiteral("is_p_slice"),
+            QStringLiteral("is_b_slice"),
+            QStringLiteral("uses_reference_lists"),
+            QStringLiteral("pic_parameter_set_id"),
+            QStringLiteral("frame_num"),
+            QStringLiteral("pic_order_cnt_lsb"),
+            QStringLiteral("direct_spatial_mv_pred_flag"),
+            QStringLiteral("num_ref_idx_active_override_flag"),
+            QStringLiteral("ref_pic_list_modification_flag_l0"),
+            QStringLiteral("ref_pic_list_modification_flag_l1"),
+            QStringLiteral("slice_qp_delta"),
+            QStringLiteral("slice_data"),
+        };
+        for (std::size_t index = 0; index < expectedNames.size(); ++index) {
+            const auto child = analyzer->tree().node(slice->children().at(index));
+            QVERIFY(child.has_value());
+            QCOMPARE(child->name(), expectedNames.at(index));
+        }
+
+        const auto sliceType = analyzer->tree().node(slice->children().at(1));
+        const auto isPSlice = analyzer->tree().node(slice->children().at(2));
+        const auto isBSlice = analyzer->tree().node(slice->children().at(3));
+        const auto usesLists = analyzer->tree().node(slice->children().at(4));
+        const auto directFlag = analyzer->tree().node(slice->children().at(8));
+        const auto listOneFlag = analyzer->tree().node(slice->children().at(11));
+        const auto payload = analyzer->tree().node(slice->children().at(13));
+        QVERIFY(sliceType.has_value());
+        QVERIFY(isPSlice.has_value());
+        QVERIFY(isBSlice.has_value());
+        QVERIFY(usesLists.has_value());
+        QVERIFY(directFlag.has_value());
+        QVERIFY(listOneFlag.has_value());
+        QVERIFY(payload.has_value());
+        QCOMPARE(sliceType->value().toULongLong(), quint64(1));
+        QCOMPARE(sliceType->metadata().typeName, QStringLiteral("NonIdrSliceType"));
+        QCOMPARE(isPSlice->value().toBool(), false);
+        QCOMPARE(isBSlice->kind(), AnalysisNodeKind::ComputedField);
+        QCOMPARE(isBSlice->value().toBool(), true);
+        QVERIFY(!isBSlice->location().has_value());
+        QCOMPARE(usesLists->kind(), AnalysisNodeKind::ComputedField);
+        QCOMPARE(usesLists->value().toBool(), true);
+        QVERIFY(!usesLists->location().has_value());
+        QCOMPARE(directFlag->value().toULongLong(), quint64(1));
+        QCOMPARE(directFlag->metadata().specification->clause, QStringLiteral("7.3.3"));
+        QCOMPARE(directFlag->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(189));
+        QCOMPARE(directFlag->location()->logicalRange().bitLength(), quint64(1));
+        QCOMPARE(listOneFlag->value().toULongLong(), quint64(0));
+        QCOMPARE(listOneFlag->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(192));
+        QCOMPARE(payload->kind(), AnalysisNodeKind::CompressedPayload);
+        QCOMPARE(payload->state(), MaterializationState::Materialized);
+        QCOMPARE(payload->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(194));
+        QCOMPARE(payload->location()->logicalRange().bitLength(), quint64(14));
+        QVERIFY(slice->diagnostics().empty());
+
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+    }
+
+    void decodesTheEquivalentNonIdrBSliceTypeSix() {
+        MemorySource source(bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+            0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
+            0x00, 0x00, 0x01, 0x01, 0x9e, 0xa7, 0x10, 0xd5,
+            0x00, 0x00, 0x01, 0x0a,
+        }));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(nal.has_value());
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Materialized);
+        QCOMPARE(slice->children().size(), std::size_t(14));
+
+        const auto sliceType = analyzer->tree().node(slice->children().at(1));
+        const auto isBSlice = analyzer->tree().node(slice->children().at(3));
+        const auto directFlag = analyzer->tree().node(slice->children().at(8));
+        const auto payload = analyzer->tree().node(slice->children().at(13));
+        QVERIFY(sliceType.has_value());
+        QVERIFY(isBSlice.has_value());
+        QVERIFY(directFlag.has_value());
+        QVERIFY(payload.has_value());
+        QCOMPARE(sliceType->value().toULongLong(), quint64(6));
+        QCOMPARE(sliceType->location()->logicalRange().bitLength(), quint64(5));
+        QCOMPARE(isBSlice->value().toBool(), true);
+        QCOMPARE(directFlag->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(191));
+        QCOMPARE(payload->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(196));
+        QCOMPARE(payload->location()->logicalRange().bitLength(), quint64(12));
+        QVERIFY(slice->diagnostics().empty());
+    }
+
+    void decodesTemporalDirectPredictionInNonIdrBSlice() {
+        MemorySource source(bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+            0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
+            0x00, 0x00, 0x01, 0x01, 0xaa, 0x98, 0x40, 0xd5,
+            0x00, 0x00, 0x01, 0x0a,
+        }));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(nal.has_value());
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Materialized);
+        QCOMPARE(slice->children().size(), std::size_t(14));
+
+        const auto directFlag = analyzer->tree().node(slice->children().at(8));
+        const auto payload = analyzer->tree().node(slice->children().at(13));
+        QVERIFY(directFlag.has_value());
+        QVERIFY(payload.has_value());
+        QCOMPARE(directFlag->name(), QStringLiteral("direct_spatial_mv_pred_flag"));
+        QCOMPARE(directFlag->value().toULongLong(), quint64(0));
+        QCOMPARE(directFlag->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(189));
+        QCOMPARE(payload->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(194));
+        QVERIFY(slice->diagnostics().empty());
+    }
+
+    void decodesNonIdrBSliceReferenceIndexOverridesForBothLists() {
+        MemorySource source(bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+            0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
+            0x00, 0x00, 0x01, 0x01, 0xaa, 0x9e, 0xd1, 0xd5,
+            0x00, 0x00, 0x01, 0x0a,
+        }));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(nal.has_value());
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Materialized);
+        QCOMPARE(slice->children().size(), std::size_t(16));
+
+        const auto overrideFlag = analyzer->tree().node(slice->children().at(9));
+        const auto listZeroCount = analyzer->tree().node(slice->children().at(10));
+        const auto listOneCount = analyzer->tree().node(slice->children().at(11));
+        const auto listZeroFlag = analyzer->tree().node(slice->children().at(12));
+        const auto listOneFlag = analyzer->tree().node(slice->children().at(13));
+        const auto payload = analyzer->tree().node(slice->children().at(15));
+        QVERIFY(overrideFlag.has_value());
+        QVERIFY(listZeroCount.has_value());
+        QVERIFY(listOneCount.has_value());
+        QVERIFY(listZeroFlag.has_value());
+        QVERIFY(listOneFlag.has_value());
+        QVERIFY(payload.has_value());
+        QCOMPARE(overrideFlag->value().toULongLong(), quint64(1));
+        QCOMPARE(listZeroCount->name(), QStringLiteral("num_ref_idx_l0_active_minus1"));
+        QCOMPARE(listZeroCount->value().toULongLong(), quint64(2));
+        QCOMPARE(listZeroCount->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(191));
+        QCOMPARE(listZeroCount->location()->logicalRange().bitLength(), quint64(3));
+        QCOMPARE(listOneCount->name(), QStringLiteral("num_ref_idx_l1_active_minus1"));
+        QCOMPARE(listOneCount->value().toULongLong(), quint64(1));
+        QCOMPARE(listOneCount->metadata().specification->clause,
+                 QStringLiteral("7.3.3, 7.4.3"));
+        QCOMPARE(listOneCount->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(194));
+        QCOMPARE(listOneCount->location()->logicalRange().bitLength(), quint64(3));
+        QVERIFY(listOneCount->diagnostics().empty());
+        QCOMPARE(listZeroFlag->value().toULongLong(), quint64(0));
+        QCOMPARE(listOneFlag->value().toULongLong(), quint64(0));
+        QCOMPARE(payload->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(200));
+        QCOMPARE(payload->location()->logicalRange().bitLength(), quint64(8));
+        QVERIFY(slice->diagnostics().empty());
+    }
+
+    void decodesNonIdrBSliceReferenceListModificationLoop() {
+        MemorySource source(bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+            0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
+            0x00, 0x00, 0x01, 0x01, 0xaa, 0x9d, 0x90, 0x88, 0xd5,
+            0x00, 0x00, 0x01, 0x0a,
+        }));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(nal.has_value());
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Materialized);
+        QCOMPARE(slice->children().size(), std::size_t(19));
+
+        const auto listZeroFlag = analyzer->tree().node(slice->children().at(10));
+        const auto operation0 = analyzer->tree().node(slice->children().at(11));
+        const auto usesAbsDiff0 = analyzer->tree().node(slice->children().at(12));
+        const auto absDiff0 = analyzer->tree().node(slice->children().at(13));
+        const auto operation1 = analyzer->tree().node(slice->children().at(14));
+        const auto usesAbsDiff1 = analyzer->tree().node(slice->children().at(15));
+        const auto listOneFlag = analyzer->tree().node(slice->children().at(16));
+        const auto payload = analyzer->tree().node(slice->children().at(18));
+        QVERIFY(listZeroFlag.has_value());
+        QVERIFY(operation0.has_value());
+        QVERIFY(usesAbsDiff0.has_value());
+        QVERIFY(absDiff0.has_value());
+        QVERIFY(operation1.has_value());
+        QVERIFY(usesAbsDiff1.has_value());
+        QVERIFY(listOneFlag.has_value());
+        QVERIFY(payload.has_value());
+        QCOMPARE(listZeroFlag->value().toULongLong(), quint64(1));
+        QCOMPARE(operation0->name(), QStringLiteral("modification_of_pic_nums_idc[0]"));
+        QCOMPARE(operation0->value().toULongLong(), quint64(0));
+        QCOMPARE(usesAbsDiff0->value().toBool(), true);
+        QCOMPARE(absDiff0->name(), QStringLiteral("abs_diff_pic_num_minus1[0]"));
+        QCOMPARE(absDiff0->value().toULongLong(), quint64(3));
+        QCOMPARE(operation1->name(), QStringLiteral("modification_of_pic_nums_idc[1]"));
+        QCOMPARE(operation1->value().toULongLong(), quint64(3));
+        QCOMPARE(usesAbsDiff1->value().toBool(), false);
+        QCOMPARE(listOneFlag->name(),
+                 QStringLiteral("ref_pic_list_modification_flag_l1"));
+        QCOMPARE(listOneFlag->value().toULongLong(), quint64(0));
+        QCOMPARE(listOneFlag->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(203));
+        QCOMPARE(payload->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(205));
+        QCOMPARE(payload->location()->logicalRange().bitLength(), quint64(11));
+        QVERIFY(slice->diagnostics().empty());
+    }
+
+    void rejectsModifiedReferenceListOneInNonIdrBSliceAndContinues() {
+        MemorySource source(bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+            0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
+            0x00, 0x00, 0x01, 0x01, 0xaa, 0x9c, 0xc0, 0xd5,
+            0x00, 0x00, 0x01, 0x0a,
+        }));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(4));
+        const auto invalidNal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(invalidNal.has_value());
+        QCOMPARE(invalidNal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(invalidNal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Invalid);
+        QCOMPARE(slice->children().size(), std::size_t(12));
+
+        const auto listOneFlag = analyzer->tree().node(slice->children().at(11));
+        QVERIFY(listOneFlag.has_value());
+        QCOMPARE(listOneFlag->name(),
+                 QStringLiteral("ref_pic_list_modification_flag_l1"));
+        QCOMPARE(listOneFlag->value().toULongLong(), quint64(1));
+        QCOMPARE(slice->diagnostics().size(), std::size_t(1));
+        const auto& diagnostic = slice->diagnostics().front();
+        QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::InvalidSyntax);
+        QCOMPARE(diagnostic.severity, streamview::core::DiagnosticSeverity::Error);
+        QCOMPARE(diagnostic.message,
+                 QStringLiteral("Field value violates @equals constraint"));
+        QCOMPARE(diagnostic.fieldPath,
+                 QStringLiteral("NonIdrSliceLayerWithoutPartitioningRbsp."
+                                "ref_pic_list_modification_flag_l1"));
+        QVERIFY(diagnostic.location.has_value());
+        QCOMPARE(diagnostic.location->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(192));
+        QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(1));
+
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+    }
+
+    void rejectsExplicitWeightedBipredictionAtPictureParameterSetAndContinues() {
+        MemorySource source(bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+            0x00, 0x00, 0x01, 0x68, 0xce, 0x78, 0x80,
+            0x00, 0x00, 0x01, 0x01, 0xaa, 0x9c, 0x40, 0xd5,
+            0x00, 0x00, 0x01, 0x0a,
+        }));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(4));
+        const auto invalidNal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(invalidNal.has_value());
+        QCOMPARE(invalidNal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(invalidNal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Invalid);
+        QCOMPARE(slice->children().size(), std::size_t(12));
+
+        const auto listOneFlag = analyzer->tree().node(slice->children().at(11));
+        QVERIFY(listOneFlag.has_value());
+        QCOMPARE(listOneFlag->name(),
+                 QStringLiteral("ref_pic_list_modification_flag_l1"));
+        QCOMPARE(slice->diagnostics().size(), std::size_t(1));
+        const auto& diagnostic = slice->diagnostics().front();
+        QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::InvalidSyntax);
+        QCOMPARE(diagnostic.severity, streamview::core::DiagnosticSeverity::Error);
+        QCOMPARE(diagnostic.message, QStringLiteral("Assertion condition is false"));
+        QCOMPARE(diagnostic.fieldPath,
+                 QStringLiteral(
+                     "NonIdrSliceLayerWithoutPartitioningRbsp.pic_parameter_set_id"));
+        QVERIFY(diagnostic.location.has_value());
+        QCOMPARE(diagnostic.location->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(180));
+        QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(1));
+
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+    }
+
+    void acceptsImplicitWeightedBipredictionInNonIdrBSlice() {
+        MemorySource source(bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+            0x00, 0x00, 0x01, 0x68, 0xce, 0xb8, 0x80,
+            0x00, 0x00, 0x01, 0x01, 0xaa, 0x9c, 0x40, 0xd5,
+            0x00, 0x00, 0x01, 0x0a,
+        }));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Materialized);
+        QCOMPARE(slice->children().size(), std::size_t(14));
+
+        const auto payload = analyzer->tree().node(slice->children().at(13));
+        QVERIFY(payload.has_value());
+        QCOMPARE(payload->kind(), AnalysisNodeKind::CompressedPayload);
+        QCOMPARE(payload->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(194));
+        QVERIFY(slice->diagnostics().empty());
+    }
+
+    void decodesCabacInitializationIdentifierForNonIdrBSlice() {
+        MemorySource source(bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+            0x00, 0x00, 0x01, 0x68, 0xee, 0x38, 0x80,
+            0x00, 0x00, 0x01, 0x01, 0xaa, 0x9c, 0x60, 0xd5,
+            0x00, 0x00, 0x01, 0x0a,
+        }));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(nal.has_value());
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Materialized);
+        QCOMPARE(slice->children().size(), std::size_t(15));
+
+        const auto listOneFlag = analyzer->tree().node(slice->children().at(11));
+        const auto cabacInitIdc = analyzer->tree().node(slice->children().at(12));
+        const auto qp = analyzer->tree().node(slice->children().at(13));
+        const auto payload = analyzer->tree().node(slice->children().at(14));
+        QVERIFY(listOneFlag.has_value());
+        QVERIFY(cabacInitIdc.has_value());
+        QVERIFY(qp.has_value());
+        QVERIFY(payload.has_value());
+        QCOMPARE(listOneFlag->name(),
+                 QStringLiteral("ref_pic_list_modification_flag_l1"));
+        QCOMPARE(cabacInitIdc->name(), QStringLiteral("cabac_init_idc"));
+        QCOMPARE(cabacInitIdc->value().toULongLong(), quint64(0));
+        QCOMPARE(cabacInitIdc->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(193));
+        QCOMPARE(cabacInitIdc->location()->logicalRange().bitLength(), quint64(1));
+        QVERIFY(cabacInitIdc->diagnostics().empty());
+        QCOMPARE(qp->name(), QStringLiteral("slice_qp_delta"));
+        QCOMPARE(payload->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(195));
+        QCOMPARE(payload->location()->logicalRange().bitLength(), quint64(13));
+        QVERIFY(slice->diagnostics().empty());
     }
 
     void rejectsNonIdrReferenceNalBeforePayloadMapping() {

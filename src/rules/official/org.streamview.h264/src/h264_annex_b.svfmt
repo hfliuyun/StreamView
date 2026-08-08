@@ -231,8 +231,10 @@ enum IdrAllISliceType {
 
 enum NonIdrSliceType {
     p = 0;
+    b = 1;
     i = 2;
     all_p = 5;
+    all_b = 6;
     all_i = 7;
 }
 
@@ -313,14 +315,16 @@ struct IdrSliceLayerWithoutPartitioningRbsp {
 }
 
 @spec("ITU-T H.264", "7.3.2.8, 7.3.3")
-@description("The bounded progressive I/P non-IDR slice header followed by an opaque suffix.")
+@description("The bounded progressive I/P/B non-IDR slice header followed by an opaque suffix.")
 @context_import("h264-pps", pic_parameter_set_id)
 struct NonIdrSliceLayerWithoutPartitioningRbsp {
     ue first_mb_in_slice
         @description("Identifies the first macroblock in this slice.");
     ue slice_type @enum(NonIdrSliceType)
-        @description("Selects the supported non-IDR I or P slice header form.");
+        @description("Selects the supported non-IDR I, P, or B slice header form.");
     computed<bool> is_p_slice = slice_type == 0 || slice_type == 5;
+    computed<bool> is_b_slice = slice_type == 1 || slice_type == 6;
+    computed<bool> uses_reference_lists = is_p_slice || is_b_slice;
     ue pic_parameter_set_id @range(0, 255)
         @description("Selects the active picture parameter set.");
     bits<(context_value(pic_parameter_set_id,
@@ -347,14 +351,24 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
             @spec("ITU-T H.264", "7.3.3, 7.4.3")
             @description("Identifies the redundant representation of this picture.");
     }
-    if (is_p_slice) {
+    if (is_b_slice) {
+        bits<1> direct_spatial_mv_pred_flag
+            @spec("ITU-T H.264", "7.3.3")
+            @description("Selects spatial or temporal direct motion-vector prediction.");
+    }
+    if (uses_reference_lists) {
         bits<1> num_ref_idx_active_override_flag
             @spec("ITU-T H.264", "7.3.3")
-            @description("Selects a slice-level list 0 active-reference count override.");
+            @description("Selects slice-level active-reference count overrides.");
         if (num_ref_idx_active_override_flag == 1) {
             ue num_ref_idx_l0_active_minus1 @range(0, 31)
                 @spec("ITU-T H.264", "7.3.3, 7.4.3")
-                @description("Overrides the active list 0 entry count for this P slice.");
+                @description("Overrides the active list 0 entry count for this slice.");
+            if (is_b_slice) {
+                ue num_ref_idx_l1_active_minus1 @range(0, 31)
+                    @spec("ITU-T H.264", "7.3.3, 7.4.3")
+                    @description("Overrides the active list 1 entry count for this B slice.");
+            }
         }
         bits<1> ref_pic_list_modification_flag_l0
             @spec("ITU-T H.264", "7.3.3")
@@ -379,11 +393,19 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
                 }
             } until (modification_of_pic_nums_idc == 3);
         }
+        if (is_b_slice) {
+            bits<1> ref_pic_list_modification_flag_l1 @equals(0)
+                @spec("ITU-T H.264", "7.3.3")
+                @description("The supported profile requires an unmodified list 1.");
+        }
     }
     assert(!is_p_slice ||
            context_value(pic_parameter_set_id, h264_pps, weighted_pred_flag) == 0)
         at pic_parameter_set_id;
-    if (is_p_slice) {
+    assert(!is_b_slice ||
+           context_value(pic_parameter_set_id, h264_pps, weighted_bipred_idc) != 1)
+        at pic_parameter_set_id;
+    if (uses_reference_lists) {
         if (context_value(pic_parameter_set_id,
                           h264_pps,
                           entropy_coding_mode_flag) == 1) {
