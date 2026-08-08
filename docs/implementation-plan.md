@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Add a bounded list 1 reference-list modification loop
-Next Action: Define and implement bounded reference-picture marking for nonzero-reference type-1 slice headers
-Last Verification: Commits 91faab6 and c69e02e; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 91/91; svtool rule check passed; hosted run 31242093716 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Add the header_value sequence-element expression leaf
+Next Action: Define and implement bounded reference-picture marking for nonzero-reference type-1 slice headers using header_value
+Last Verification: Commits 29556cf and 3f64b27; local dev/ci/sanitize each passed 32/32; DSL parser 59/59, IR 67/67, executor 118/118, session 35/35, H.264 analyzer 91/91; svtool rule check passed; hosted run 31250687630 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -788,3 +788,28 @@ Blockers: None
   Ubuntu 24.04 Configure、Build、Test、Install、Upload 全部成功。完整 Baseline/Main/High
   slice-header 项仍未完成；下一步定义并实现 nonzero-reference type-1 slice header 的
   有界 `dec_ref_pic_marking()`，这将首次解除 type-1 的 `nal_ref_idc == 0` 前置约束。
+- 2026-08-08：完成 `header_value` sequence-element expression leaf 这一使能能力增量。
+  开始 `dec_ref_pic_marking()` 前的独立核验确认它当前**不可表达**：该语法的 presence
+  取决于 `NalUnitHeader` 的 `nal_ref_idc`，而 payload request 不携带 header 值（VM 按
+  正在执行的 structure 单独建立空环境）；context 机制按 source position 解析，payload 的
+  查询位置是 NAL 起点而 definition 只在其 exclusive end 处可选，因此 slice 会导入**上一个**
+  NAL 的 header；context kind 也是四个 parameter-set kind 的闭集；dispatch controller 同样
+  从不进入 payload 环境。因此本增量先补语言能力，与 ADR-0054、ADR-0056 的做法一致。
+  ADR-0063 与英中 format-language 参考提交 `29556cf` 固化 `header_value(element_field)`：
+  它镜像既有 `context_value(...)` leaf，接受且只接受一个 identifier 实参，在编译期针对
+  程序唯一的 sequence element structure 解析，要求无条件、顶层、非数组的 unsigned scalar，
+  并拒绝缺少 sequence、未知或不合格的 element 字段，以及写在 element structure 自身内部的
+  调用。由于它是 call 而不是 identifier，element 与 payload 的命名空间保持分离——这正是
+  ADR-0037 拒绝把 dispatch 放进 header 时所要求的。实现提交 `3f64b27` 覆盖 parser、
+  typed IR（新增 `SequenceElementReference` kind，携带已解析 element field index，不新增
+  opcode）、compiler 静态校验与 VM 预验证；runner 在物化 NAL header 时顺带捕获 element
+  字段值（它本来就要从中读出 dispatch controller），并随 execution request 提供。index
+  越界、值缺失或值向量缺席都作为 invalid definition 失败，不用猜测值解码。bundled rule
+  本次不改动，package 版本保持 `0.1.18`。回归覆盖 parser arity/identifier 规则、五类静态
+  拒绝、typed IR 降低、以及 session 层依据 element 值分支与缺少值向量时的失败；通过临时
+  篡改求值路径确认新测试确为有效信号。DSL parser 59/59、IR 67/67、executor 118/118、
+  session 35/35、H.264 analyzer 91/91；`svtool rule check` 通过；本机 `dev`、`ci`、
+  `sanitize` 重新配置、完整构建与 CTest 均为 32/32。hosted run `31250687630` 对
+  `3f64b27` 的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、Test、Install、
+  Upload 全部成功。下一步用该能力实现有界 `dec_ref_pic_marking()`，解除 type-1 的
+  `nal_ref_idc == 0` 前置约束。
