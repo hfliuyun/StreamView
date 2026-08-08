@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Add a bounded non-reference P-slice CABAC initialization branch
-Next Action: Define and implement a bounded progressive non-reference B-slice prerequisite
-Last Verification: Commits c39677c and 75c04ae; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 79/79; svtool rule check passed; hosted run 31198302934 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Add a bounded non-reference B-slice header
+Next Action: Define and implement the bounded list 1 reference-list modification loop
+Last Verification: Commits 4abf385 and 73a5156; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 88/88; svtool rule check passed; hosted run 31241123551 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -743,3 +743,29 @@ Blockers: None
   的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、Test、Install、Upload 全部成功。
   完整 Baseline/Main/High slice-header 项仍未完成；下一步定义并实现 bounded progressive
   non-reference B-slice prerequisite。
+- 2026-08-08：完成有界 non-reference B-slice header 增量。ADR-0061 与英中文 bundled-profile
+  参考提交 `4abf385` 固化边界：`NonIdrSliceType` 增加 `b = 1` 与 `all_b = 6`，并把既有
+  P-slice 分支拓宽为共享 reference-list 分支，而不是新增平行的 B-only 副本。该形状由
+  语言约束决定而非偏好：structure 的 field name 共享一个扁平命名空间，独立 B-only 分支会
+  重复声明 `num_ref_idx_active_override_flag` 与 `ref_pic_list_modification_flag_l0`；
+  `if` condition 只接受 computed<bool>、field equality 或 imported `context_value` equality，
+  无法内联写出 `is_p_slice || is_b_slice`，因此需要 `uses_reference_lists` computed Boolean。
+  实现提交 `73a5156` 让 B slice 在 reference-count override 之前读取
+  `direct_spatial_mv_pred_flag`，在 override 分支内追加 `num_ref_idx_l1_active_minus1`，
+  复用既有 list 0 modification loop，随后读取由 `@equals(0)` 约束的
+  `ref_pic_list_modification_flag_l1`——list 1 loop 需要第二套投射名，故暂以致命约束封边。
+  新增 source-anchored assertion 要求 `weighted_bipred_idc != 1`，因此 default(0) 与
+  implicit(2) biprediction 受支持，explicit(1) 在 `pic_parameter_set_id` 处失败；
+  `cabac_init_idc` 的 guard 从 `is_p_slice` 改为 `uses_reference_lists`。type-1 direct header
+  继续要求 `nal_ref_idc == 0`，因此没有 reference-picture marking。structure 现在发布三个
+  top-level computed Boolean 而非一个，type-1 的 child index 整体后移两位，18 个既有测试
+  已同步更新；这是可见的呈现变化，不影响任何字段的 source span 与取值。package 更新为
+  `0.1.17`，coverage depth 更新为 `i-p-b-slice-header`。新增九条回归覆盖 B 值 1/6、
+  direct flag 两种状态、l0/l1 override count、复用的 modification loop、非零 list 1 flag 的
+  致命失败、explicit/implicit biprediction，以及 entropy-coded B 的 `cabac_init_idc`；
+  九条在旧规则下全部失败、在新规则下全部通过，H.264 analyzer 定向套件为 88/88。
+  `svtool rule check` 通过；本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与 CTest 均为
+  32/32。hosted run `31241123551` 对 `73a515677a660d34450aa6e8403d187db29cf42c`
+  的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、Test、Install、Upload 全部成功。
+  完整 Baseline/Main/High slice-header 项仍未完成；下一步定义并实现有界 list 1
+  reference-list modification loop，这需要为第二个 loop 取一套不同的投射名。
