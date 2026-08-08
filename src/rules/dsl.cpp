@@ -2962,7 +2962,7 @@ private:
                             field.expression,
                             resolveComputedIdentifier,
                             result_.program.pureFunctions.size(),
-                            false,
+                            true,
                             1,
                             nodeCount);
                         if (expressionType && *expressionType != field.type) {

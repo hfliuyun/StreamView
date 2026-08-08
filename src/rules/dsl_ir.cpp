@@ -1925,12 +1925,16 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     name, range, conditions, QStringLiteral("Computed field"),
                     QStringLiteral("Computed expressions require scalar unsigned fields"));
             };
+            contextValueResolver = importedContextResolver;
+            headerValueResolver = sequenceElementResolver;
             ExpressionBuildState state;
             const auto expression = compileExpression(field.expression,
                                                       resolveField,
                                                       program.pureFunctions.size(),
                                                       1,
                                                       state);
+            contextValueResolver = {};
+            headerValueResolver = {};
             if (expression && expression->type != field.type) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidType,

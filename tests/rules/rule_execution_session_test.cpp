@@ -462,6 +462,84 @@ private slots:
         }
     }
 
+    void evaluatesComputedFieldsThatReadSequenceElementValues() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct NalUnitHeader {
+                bits<2> nal_ref_idc;
+                bits<5> nal_unit_type;
+                bits<1> reserved;
+            }
+            struct Slice {
+                bits<4> first_mb_in_slice;
+                computed<bool> is_reference_picture = header_value(nal_ref_idc) != 0;
+                computed<u64> weight_count = header_value(nal_ref_idc) + 1;
+                if (is_reference_picture) {
+                    repeat (weight_count, 4) {
+                        bits<1> luma_weight_flag;
+                    }
+                }
+                bits<1> tail;
+            }
+            @index(progressive)
+            sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+            payload<rbsp> nal_units switch (nal_unit_type) {
+                case 1: Slice;
+            }
+            entry nal_units;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const quint32 sliceIndex =
+            *compiled.program->structureIndex(QStringLiteral("Slice"));
+
+        struct Scenario final {
+            quint64 referencePriority = 0;
+            quint64 sliceBits = 0;
+            std::size_t weightFields = 0;
+        };
+        // nal_ref_idc == 0 skips the repeat entirely; otherwise the computed
+        // controller admits exactly nal_ref_idc + 1 iterations.
+        const std::vector<Scenario> scenarios{
+            {0, 5, 0},
+            {1, 7, 2},
+            {3, 9, 4},
+        };
+        for (const Scenario scenario : scenarios) {
+            MemorySource source(bytes({0xa5, 0x5a}));
+            const auto sliceView = makeView(1, 0, scenario.sliceBits);
+            QVERIFY(sliceView.has_value());
+            auto tree = AnalysisTree::create(
+                QStringLiteral("computed-%1").arg(scenario.referencePriority));
+            QVERIFY(tree.has_value());
+            RuleExecutionSession session(*compiled.program);
+            auto request = makeRequest(source, sliceIndex, *sliceView, *tree);
+            request.options.sequenceElementValues = {scenario.referencePriority, 1, 0};
+
+            const auto result = session.run(request);
+
+            QVERIFY2(result.materialized(), qPrintable(result.errorMessage));
+            QCOMPARE(result.execution.bitsConsumed, scenario.sliceBits);
+            const auto structure = tree->node(*result.execution.structureNode);
+            QVERIFY(structure.has_value());
+            const auto weightFields = std::count_if(
+                structure->children().begin(),
+                structure->children().end(),
+                [&tree](streamview::core::AnalysisNodeId childId) {
+                    const auto child = tree->node(childId);
+                    return child &&
+                           child->name().startsWith(QStringLiteral("luma_weight_flag"));
+                });
+            QCOMPARE(std::size_t(weightFields), scenario.weightFields);
+            const auto tail = tree->node(structure->children().back());
+            QVERIFY(tail.has_value());
+            QCOMPARE(tail->name(), QStringLiteral("tail"));
+        }
+    }
+
     void rejectsSequenceElementReferencesWithoutSuppliedElementValues() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             struct NalUnitHeader {
@@ -1125,17 +1203,6 @@ private slots:
         badDynamicEndian.structs.at(sliceIndex).fields.at(1).type.endian =
             streamview::rules::DslEndian::Little;
         malformed.push_back(std::move(badDynamicEndian));
-
-        auto importedComputed = *compiled.program;
-        auto importedExpression = *importedComputed.structs.at(sliceIndex)
-                                       .fields.at(1)
-                                       .bitWidthExpression;
-        auto& dynamicField = importedComputed.structs.at(sliceIndex).fields.at(1);
-        dynamicField.bitWidthExpression.reset();
-        dynamicField.type.kind =
-            streamview::rules::DslValueTypeKind::ComputedUnsigned;
-        dynamicField.computedExpression = std::move(importedExpression);
-        malformed.push_back(std::move(importedComputed));
 
         for (std::size_t index = 0; index < malformed.size(); ++index) {
             MemorySource source(bytes({1, 0}));

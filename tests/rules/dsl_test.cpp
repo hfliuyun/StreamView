@@ -258,6 +258,56 @@ private slots:
         }
     }
 
+    void parsesReservedExternalLeavesInComputedInitializers() {
+        const auto result = DslParser::parse(QStringLiteral(R"(
+            @context("h264-pps", id)
+            struct Pps {
+                bits<8> id;
+                ue num_ref_idx_l0_default_active_minus1 @context_export;
+            }
+            struct NalUnitHeader {
+                bits<2> nal_ref_idc;
+                bits<5> nal_unit_type;
+            }
+            @context_import("h264-pps", pic_parameter_set_id)
+            struct SliceHeader {
+                ue pic_parameter_set_id;
+                computed<u64> effective_l0_count =
+                    context_value(pic_parameter_set_id,
+                                  h264_pps,
+                                  num_ref_idx_l0_default_active_minus1) + 1;
+                computed<bool> is_reference_picture = header_value(nal_ref_idc) != 0;
+            }
+            @index(progressive)
+            sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+            payload<rbsp> nal_units switch (nal_unit_type) {
+                case 1: SliceHeader;
+            }
+            entry nal_units;
+        )"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& slice = result.program.structs.at(2);
+        const auto& count = slice.items.at(1).computed;
+        QCOMPARE(count.name, QStringLiteral("effective_l0_count"));
+        QCOMPARE(count.expression.kind, DslExpressionKind::Binary);
+        QCOMPARE(count.expression.binaryOperator, DslBinaryOperator::Add);
+        const auto& imported = count.expression.operands.at(0);
+        QCOMPARE(imported.kind, DslExpressionKind::Call);
+        QCOMPARE(imported.name, QStringLiteral("context_value"));
+        QCOMPARE(imported.operands.size(), std::size_t(3));
+        const auto& flag = slice.items.at(2).computed;
+        QCOMPARE(flag.name, QStringLiteral("is_reference_picture"));
+        QCOMPARE(flag.expression.binaryOperator, DslBinaryOperator::NotEqual);
+        const auto& header = flag.expression.operands.at(0);
+        QCOMPARE(header.kind, DslExpressionKind::Call);
+        QCOMPARE(header.name, QStringLiteral("header_value"));
+        QCOMPARE(header.operands.size(), std::size_t(1));
+    }
+
     void rejectsInvalidAssertionContractsAndRecoversAtTheNextField() {
         const auto nonBoolean = DslParser::parse(QStringLiteral(
             "struct Header { bits<1> value; assert(value) at value; } entry Header;"));
@@ -304,11 +354,13 @@ private slots:
         QVERIFY(hasDiagnostic(nonIdentifierContextArgument,
                               DslDiagnosticCode::InvalidContext));
 
+        // A computed initializer admits the reserved imported-context leaf, so the
+        // parser accepts the call and the missing import is a later compiler error.
         const auto importedComputed = DslParser::parse(QStringLiteral(
             "struct Header { bits<1> value; "
             "computed<u64> derived = context_value(value, h264_pps, present); } "
             "entry Header;"));
-        QVERIFY(hasDiagnostic(importedComputed, DslDiagnosticCode::UnknownReference));
+        QVERIFY(importedComputed.succeeded());
 
         const auto importedPureBody = DslParser::parse(QStringLiteral(
             "pure u64 imported(u64 value) { "

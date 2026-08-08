@@ -1217,6 +1217,7 @@ DslExecutionResult DslVirtualMachine::execute(
             return result;
         }
         TypedExpressionValidationState validation;
+        validation.allowImportedContextReferences = true;
         if (!validateTypedExpression(*field.computedExpression,
                                      program,
                                      structure,

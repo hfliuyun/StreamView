@@ -2278,6 +2278,73 @@ private slots:
                  QStringLiteral("nal_ref_idc"));
     }
 
+    void lowersReservedExternalLeavesInComputedInitializers() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-pps", id)
+            struct Pps {
+                bits<8> id;
+                ue num_ref_idx_l0_default_active_minus1 @context_export;
+            }
+            struct NalUnitHeader {
+                bits<2> nal_ref_idc;
+                bits<5> nal_unit_type;
+            }
+            @context_import("h264-pps", pic_parameter_set_id)
+            struct SliceHeader {
+                ue pic_parameter_set_id;
+                computed<u64> effective_l0_count =
+                    context_value(pic_parameter_set_id,
+                                  h264_pps,
+                                  num_ref_idx_l0_default_active_minus1) + 1;
+                computed<bool> is_reference_picture = header_value(nal_ref_idc) != 0;
+            }
+            @index(progressive)
+            sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+            payload<rbsp> nal_units switch (nal_unit_type) {
+                case 1: SliceHeader;
+            }
+            entry nal_units;
+        )"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& slice = compiled.program->structs.at(2);
+        const auto& count = slice.fields.at(1);
+        QCOMPARE(count.name, QStringLiteral("effective_l0_count"));
+        QVERIFY(count.computedExpression.has_value());
+        QCOMPARE(count.computedExpression->type, DslScalarType::U64);
+        QCOMPARE(count.computedExpression->kind, DslTypedExpressionKind::Binary);
+        QCOMPARE(count.computedExpression->binaryOperator,
+                 streamview::rules::DslBinaryOperator::Add);
+        const auto& imported = count.computedExpression->operands.at(0);
+        QCOMPARE(imported.kind, DslTypedExpressionKind::ImportedContextReference);
+        QCOMPARE(imported.type, DslScalarType::U64);
+
+        const auto& flag = slice.fields.at(2);
+        QCOMPARE(flag.name, QStringLiteral("is_reference_picture"));
+        QVERIFY(flag.computedExpression.has_value());
+        QCOMPARE(flag.computedExpression->type, DslScalarType::Bool);
+        const auto& header = flag.computedExpression->operands.at(0);
+        QCOMPARE(header.kind, DslTypedExpressionKind::SequenceElementReference);
+        QVERIFY(header.operands.empty());
+        QCOMPARE(compiled.program->structs.at(1)
+                     .fields.at(header.elementFieldIndex)
+                     .name,
+                 QStringLiteral("nal_ref_idc"));
+
+        const auto computedOpcodes = std::count_if(
+            compiled.program->bytecode.begin(),
+            compiled.program->bytecode.end(),
+            [](const streamview::rules::DslInstruction& instruction) {
+                return instruction.opcode == DslOpcode::EvaluateComputed;
+            });
+        QCOMPARE(computedOpcodes, 2);
+    }
+
     void rejectsInvalidHeaderValueReferences() {
         const std::vector<std::pair<QString, QString>> cases{
             {QStringLiteral("unknown element field"),
@@ -2493,7 +2560,6 @@ private slots:
             QStringLiteral(R"(
                 @context("h264-sps", id)
                 struct Sps { bits<8> id; bits<8> width @context_export; }
-                @context_import("h264-sps", id)
                 struct Consumer {
                     bits<8> id;
                     computed<u64> value = context_value(id, h264_sps, width);
@@ -2515,10 +2581,6 @@ private slots:
         for (std::size_t index = 0; index < invalidSources.size(); ++index) {
             const QString& source = invalidSources.at(index);
             const auto parsed = DslParser::parse(source);
-            if (index == 8) {
-                QVERIFY(!parsed.succeeded());
-                continue;
-            }
             QVERIFY2(parsed.succeeded(),
                      parsed.diagnostics.empty()
                          ? ""
@@ -2526,7 +2588,7 @@ private slots:
             const auto compiled = DslCompiler::compile(parsed.program);
             QVERIFY(!compiled.succeeded());
             QVERIFY(!compiled.diagnostics.empty());
-            if (index < 5 || index == 9) {
+            if (index < 5 || index >= 8) {
                 QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidContext));
             }
         }
