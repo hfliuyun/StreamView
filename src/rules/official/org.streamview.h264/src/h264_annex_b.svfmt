@@ -394,9 +394,29 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
             } until (modification_of_pic_nums_idc == 3);
         }
         if (is_b_slice) {
-            bits<1> ref_pic_list_modification_flag_l1 @equals(0)
+            bits<1> ref_pic_list_modification_flag_l1
                 @spec("ITU-T H.264", "7.3.3")
-                @description("The supported profile requires an unmodified list 1.");
+                @description("Selects list 1 reference-picture modification syntax.");
+            if (ref_pic_list_modification_flag_l1 == 1) {
+                repeat (64) {
+                    ue modification_of_pic_nums_idc_l1 @enum(ModificationOfPicNumsIdc)
+                        @spec("ITU-T H.264", "7.3.3, 7.4.3")
+                        @description("Selects the next list 1 modification operation.");
+                    computed<bool> uses_abs_diff_pic_num_l1 =
+                        modification_of_pic_nums_idc_l1 == 0 ||
+                        modification_of_pic_nums_idc_l1 == 1;
+                    if (uses_abs_diff_pic_num_l1) {
+                        ue abs_diff_pic_num_minus1_l1
+                            @spec("ITU-T H.264", "7.3.3, 7.4.3")
+                            @description("Carries the list 1 picture-number difference.");
+                    }
+                    if (modification_of_pic_nums_idc_l1 == 2) {
+                        ue long_term_pic_num_l1
+                            @spec("ITU-T H.264", "7.3.3, 7.4.3")
+                            @description("Selects a list 1 long-term reference picture.");
+                    }
+                } until (modification_of_pic_nums_idc_l1 == 3);
+            }
         }
     }
     assert(!is_p_slice ||
