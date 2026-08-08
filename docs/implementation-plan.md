@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Add bounded reference-picture marking
-Next Action: Define and implement bounded pred_weight_table() for explicit weighted prediction
-Last Verification: Commits db48349 and 698092a; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 94/94; svtool rule check passed; hosted run 31253798200 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Admit the reserved external leaves in computed field initializers
+Next Action: Decide how a bounded pred_weight_table() selects its effective entry count, then implement it; the language currently cannot express the choice between the locally overridden count and the imported PPS default, and the restriction that would avoid the choice has no legal assertion position
+Last Verification: Commits 8d54240 and 3cfef2b; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 94/94; svtool rule check passed
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -841,3 +841,36 @@ Blockers: None
   I、P、B slice；完整 Baseline/Main/High slice-header 项仍未完成，下一步定义并实现有界
   `pred_weight_table()`，以解除 `weighted_pred_flag == 0` 与 `weighted_bipred_idc != 1`
   这两条 imported assertion。
+- 2026-08-08：完成「computed initializer 接受保留 external leaf」这一使能能力增量。
+  上一轮批准的 ADR-0065 草案在写代码前先被 scratch 探测**推翻**：`pred_weight_table()`
+  需要有效的 entry count，而该 count 要么来自本地 override 字段、要么来自 imported PPS
+  默认值，语言没有在二者之间选择的表达式；草案原本打算用一条 narrowing assertion 绕开这个
+  选择，但那条 assertion **没有合法位置**——写在顶层时 `num_ref_idx_active_override_flag`
+  报「dependency is not guaranteed on the current branch」，写进该 flag 可用的
+  `if (uses_reference_lists)` 内部则报「Assertions must be unconditional top-level items」。
+  探测还额外确认 `repeat (integer)` 永远是 sentinel 形式，因此固定 2 次的 Cb/Cr 循环不可
+  表达（这独立证明草案里的 `_cb`/`_cr` 命名是必需而非风格选择），以及 `computed<u64>`
+  确实可以驱动 count repeat、嵌在 conditional 里的 `computed<bool>` 确实可以 guard 后续
+  `if`。于是本增量改为只补语言能力，与 ADR-0054、ADR-0056、ADR-0063 的做法一致。
+  ADR-0065 与英中 format-language 参考提交 `8d54240` 固化：`computed<bool>` 与
+  `computed<u64>` 的 initializer 按**完整 expression 语法**接受 `context_value(...)` 与
+  `header_value(...)`，不是固定比较形状；两个 leaf 在别处携带的每一项约束继续适用，包括
+  structure 未声明匹配 `@context_import` 时的拒绝。两个 leaf 一起放开，因为它们是同一套
+  机制、在同样三处开关。实现提交 `3cfef2b` 只打开三道前端闸门：parser 的
+  `validateExpression` 调用点、IR lowering 的 resolver 赋值、typed-expression validation
+  state。**求值路径无需改动**——VM 在 computed 位置本来就同时传入 imported-context
+  resolver 与 sequence-element value vector，与 assertion 位置逐字相同；因此不新增语法、
+  expression kind 或 opcode。三条既有负向测试断言的正是本次解除的限制：parser 那条改为
+  断言接受，IR index 8 那条移除 `@context_import` 以保持因合法理由无效，VM 那条
+  malformed-program 直接删除（该程序现已合法）。端到端回归用 `header_value(nal_ref_idc)`
+  同时驱动一个 `computed<bool>` guard 与一个 `computed<u64>` repeat controller，三组
+  scenario 的 bit 消费量与预测完全一致。bundled H.264 规则**故意不改**：清理版本已在
+  probe 上验证通过且与目标逐字节相同，但计算字段总是物化为可见节点（无隐藏机制），落地会
+  在 non-IDR slice structure 尾部插入 2 个节点，导致 24 个 analyzer 测试的 106 处硬编码
+  child index 偏移，而解码行为零变化——沿用 ADR-0063 的 capability-only 先例，package
+  版本与 `rule.toml` 均不变。H.264 analyzer 定向套件 94/94，`svtool rule check` 通过；
+  本机 `dev`、`ci`、`sanitize` 完整构建与 CTest 均为 32/32。下一步先决定
+  `pred_weight_table()` 的 count 选择方案：一是在 override 与默认两个分支下复制表体并加
+  区分后缀（今天即可表达，代价是四份近似副本、字段名随一个无关 flag 变化），二是新增带
+  flow-sensitive 依赖分析的 defaulting/conditional expression（保住 spec 命名，代价是再
+  一个能力 ADR）；建议取二，因为复制方案会在后续每张表上复利式膨胀。
