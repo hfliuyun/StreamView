@@ -787,8 +787,9 @@ override，且仅 B slice 会紧接着读取 `num_ref_idx_l1_active_minus1`，�
 default。后续 `ref_pic_list_modification_flag_l0` 仍是必需字段。值 0 不发布
 modification field；值 1 进入有界 list 0 loop，其 operation code 选择 short-term
 subtraction、short-term addition、long-term selection 或 termination。B slice 之后读取
-`ref_pic_list_modification_flag_l1`；本 profile 要求其为零，因为 list 1 loop 需要第二套
-投射名，非零值在该 bit 处致命失败。
+`ref_pic_list_modification_flag_l1`；值 1 进入与 list 0 形状相同的第二个有界 loop。由于
+structure 只有一个扁平字段命名空间，list 1 的投射名带 `_l1` 后缀；clause 7.3.3.1 对两个
+loop 使用完全相同的名字，因此该后缀只用于呈现层消歧，并不表示另一个 syntax element。
 
 可选 loop 之后有两条 imported PPS assertion。P slice 仍要求
 `weighted_pred_flag == 0`，B slice 要求 `weighted_bipred_idc != 1`，因此 default 与
@@ -825,7 +826,11 @@ generation 以及该 PPS 的精确 SPS dependency。两个有界 shape 中声明
 | `uses_abs_diff_pic_num[index]` | operation code 为 0/1 时为 true 的 computed Boolean；没有 source location。 |
 | `abs_diff_pic_num_minus1[index]` | 在 operation code 0/1 下携带 short-term picture-number difference operand。 |
 | `long_term_pic_num[index]` | 在 operation code 2 下携带 long-term picture-number operand。 |
-| `ref_pic_list_modification_flag_l1` | 受支持 B slice 的必需字段；本 profile 要求为零，值 1 在该 bit 处致命失败。 |
+| `ref_pic_list_modification_flag_l1` | 受支持 B slice 的必需字段；值 1 选择有界 list 1 modification loop，值 0 不发布 loop field。 |
+| `modification_of_pic_nums_idc_l1[index]` | `modification_of_pic_nums_idc` 的 list 1 对应项；`_l1` 后缀只用于呈现层消歧。 |
+| `uses_abs_diff_pic_num_l1[index]` | list 1 operation code 为 0/1 时为 true 的 computed Boolean；没有 source location。 |
+| `abs_diff_pic_num_minus1_l1[index]` | 在 list 1 operation code 0/1 下携带 short-term picture-number difference operand。 |
+| `long_term_pic_num_l1[index]` | 在 list 1 operation code 2 下携带 long-term picture-number operand。 |
 | `cabac_init_idc` | 为 entropy-coded P 或 B slice 选择 CABAC context initialization table；超出 `0..2` 的值会告警。 |
 | `no_output_of_prior_pics_flag` | 控制 IDR picture 之前 picture 的输出。 |
 | `long_term_reference_flag` | 设置时把 IDR picture 标记为 long-term reference。 |
@@ -839,12 +844,13 @@ dynamic width 仍会在受影响字段读取 source 前拒绝 non-progressive SP
 exact imported PPS guard 会选择 bottom-field POC、redundant-picture count 与 deblocking-control
 字段；false guard 不消费 bit，也不创建 node。deblocking 值 1 省略两个 offset，值 0 和 2 读取
 它们，reserved 值在 controller 码字处失败。missing/future/stale parameter-set generation 仍报告
-`dependency-unavailable`；保留 partial header，并继续分析后续 NAL。reference type-1、
-SP/SI slice type、list 1 modification operation、field-picture、
+`dependency-unavailable`；保留 partial header，并继续分析后续 NAL。每个 modification loop
+各自以 64 个 operation 受界，这是 sentinel repeat 的语言上界，因此一个 B slice 最多可投射
+128 个 operation。reference type-1、SP/SI slice type、field-picture、
 decoded-picture-buffer validation、weighted-prediction table、CABAC slice-data 解码、
 adaptive-memory-management 与 slice-group 分支均留待后续。
 type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.17` 发布 coverage depth `i-p-b-slice-header`；这尚未完成
+`0.1.18` 发布 coverage depth `i-p-b-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正

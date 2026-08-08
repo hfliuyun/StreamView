@@ -1027,9 +1027,11 @@ following `ref_pic_list_modification_flag_l0` remains mandatory. Value zero
 publishes no modification fields; value one enters a bounded list 0 loop whose
 operation codes select short-term subtraction, short-term addition, long-term
 selection, or termination. A B slice then reads
-`ref_pic_list_modification_flag_l1`, which this profile requires to be zero
-because a list 1 loop would need a second set of projected names; a nonzero flag
-is fatal at that bit.
+`ref_pic_list_modification_flag_l1`, which selects a second bounded loop with the
+same shape as the list 0 loop. Because a structure has one flat field namespace,
+the list 1 projections carry an `_l1` suffix; clause 7.3.3.1 names both loops'
+elements identically, so the suffix disambiguates presentation only and does not
+denote a different syntax element.
 
 Two imported PPS assertions follow the optional loop. A P slice still requires
 `weighted_pred_flag == 0`, and a B slice requires `weighted_bipred_idc != 1`, so
@@ -1070,7 +1072,11 @@ meanings:
 | `uses_abs_diff_pic_num[index]` | Computed Boolean that is true for operation codes 0 and 1; it has no source location. |
 | `abs_diff_pic_num_minus1[index]` | Carries the short-term picture-number difference operand for operation codes 0 and 1. |
 | `long_term_pic_num[index]` | Carries the long-term picture-number operand for operation code 2. |
-| `ref_pic_list_modification_flag_l1` | Mandatory for a supported B slice; this profile requires zero, and value one is fatal at the bit. |
+| `ref_pic_list_modification_flag_l1` | Mandatory for a supported B slice; value 1 selects the bounded list 1 modification loop and value 0 publishes no loop fields. |
+| `modification_of_pic_nums_idc_l1[index]` | The list 1 counterpart of `modification_of_pic_nums_idc`; the `_l1` suffix disambiguates presentation only. |
+| `uses_abs_diff_pic_num_l1[index]` | Computed Boolean that is true for list 1 operation codes 0 and 1; it has no source location. |
+| `abs_diff_pic_num_minus1_l1[index]` | Carries the list 1 short-term picture-number difference operand for operation codes 0 and 1. |
+| `long_term_pic_num_l1[index]` | Carries the list 1 long-term picture-number operand for operation code 2. |
 | `cabac_init_idc` | Selects the CABAC context initialization table for an entropy-coded P or B slice; values outside `0..2` warn. |
 | `no_output_of_prior_pics_flag` | Controls output of pictures preceding the IDR picture. |
 | `long_term_reference_flag` | Marks the IDR picture as a long-term reference when set. |
@@ -1087,12 +1093,14 @@ false guard consumes no bits and creates no node. Deblocking value 1 skips both
 offsets, values 0 and 2 read them, and reserved values fail at the controlling
 codeword. Missing/future/stale parameter-set generations remain
 `dependency-unavailable`; the partial header is retained and later NAL units
-are still analyzed. Reference type-1, SP/SI slice types, list 1 modification
-operations, field-picture, decoded-picture-buffer validation,
-weighted-prediction tables, CABAC slice-data decoding,
-adaptive-memory-management, and slice-group branches are deferred.
+are still analyzed. Each modification loop is independently bounded at 64
+operations, which is the language maximum for a sentinel repeat, so a B slice
+may project up to 128 operations. Reference type-1, SP/SI slice types,
+field-picture, decoded-picture-buffer validation, weighted-prediction tables,
+CABAC slice-data decoding, adaptive-memory-management, and slice-group branches
+are deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
-Package `0.1.17` advertises coverage depth `i-p-b-slice-header`; this is not yet
+Package `0.1.18` advertises coverage depth `i-p-b-slice-header`; this is not yet
 the complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
