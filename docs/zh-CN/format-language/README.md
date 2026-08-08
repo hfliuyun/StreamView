@@ -39,7 +39,6 @@ struct NalUnitHeader {
     bits<5> nal_unit_type;
 
     assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
-    assert(nal_unit_type != 1 || nal_ref_idc == 0) at nal_ref_idc;
 
     computed<bool> is_vcl =
         nal_unit_type >= 1 && nal_unit_type <= 5;
@@ -658,11 +657,11 @@ DSL 语法。Annex B runner 为每条 scanner record 发布一个 `nal_unit[inde
 `forbidden_zero_bit`、`nal_ref_idc` 和 `nal_unit_type`。
 
 完整 8 bit header 可用后，official rule 会检查 clause 7.4.1 prerequisite
-`nal_unit_type != 5 || nal_ref_idc != 0`，以及有界 type-1 support prerequisite
-`nal_unit_type != 1 || nal_ref_idc == 0`。reference priority 为零的 type-5 header，或 reference
-priority 非零的 type-1 header，都会保留三个字段，在精确的两 bit `nal_ref_idc` span 上返回致命
-`invalid-syntax`，并且不映射或物化当前 NAL 的 `rbsp_payload`；scanner 继续处理下一 NAL。
-type-1 prerequisite 防止尚未支持的 non-IDR reference-picture marking 被误读成后续 slice 字段。
+`nal_unit_type != 5 || nal_ref_idc != 0`。reference priority 为零的 type-5 header 会保留三个
+字段，在精确的两 bit `nal_ref_idc` span 上返回致命 `invalid-syntax`，并且不映射或物化当前
+NAL 的 `rbsp_payload`；scanner 继续处理下一 NAL。type-1 header 接受任意 reference
+priority；slice structure 通过 `header_value(nal_ref_idc)` 读取该值，以决定
+`dec_ref_pic_marking()` 是否存在。
 
 direct header 成功后，普通非空 payload 会在不复制字节的情况下从 EBSP 映射为 RBSP logical
 view。每个完整的 `00 00 03` 都会排除其中的 `03`，并把它呈现为
@@ -791,11 +790,12 @@ generation。若不存在 SPS，PPS structure 仍保持 materialized，但会收
 | `constrained_intra_pred_flag` | 将 intra prediction 限制在 intra-coded 相邻 macroblock。 |
 | `redundant_pic_cnt_present_flag` | 表示关联 slice header 中存在 redundant-picture count 语法。 |
 
-type `1` 为有界 progressive non-reference I、P 与 B slice 解码
+type `1` 为 reference 与 non-reference 两种形态下的有界 progressive I、P 与 B slice 解码
 `NonIdrSliceLayerWithoutPartitioningRbsp`。`NonIdrSliceType` 接受 I 值 2/7、P 值 0/5
 与 B 值 1/6。三个可见 computed field 区分布局：`is_p_slice`、`is_b_slice`，以及对任意
-P 或 B slice 为 true 的 `uses_reference_lists`。direct-header assertion 要求
-`nal_ref_idc == 0`，因此 projection 不包含 `dec_ref_pic_marking`。
+P 或 B slice 为 true 的 `uses_reference_lists`。type-1 header 接受任意 reference
+priority，structure 通过 `header_value(nal_ref_idc)` 读取该值以决定
+`dec_ref_pic_marking()` 是否存在。
 
 B slice 首先读取 `direct_spatial_mv_pred_flag`。随后每个 P 与 B slice 都会读取必需的
 `num_ref_idx_active_override_flag`；值 1 会选择有界 `num_ref_idx_l0_active_minus1`
@@ -810,11 +810,24 @@ loop 使用完全相同的名字，因此该后缀只用于呈现层消歧，并
 可选 loop 之后有两条 imported PPS assertion。P slice 仍要求
 `weighted_pred_flag == 0`，B slice 要求 `weighted_bipred_idc != 1`，因此 default 与
 implicit biprediction 受支持，而 explicit biprediction 会在 `pic_parameter_set_id` 处
-失败，不会误读未声明的 `pred_weight_table()`。当精确 PPS 启用 entropy coding 时，
-任意 P 或 B slice 随后会在 `slice_qp_delta` 之前读取 `cabac_init_idc`；超出 `0..2` 的值
-会告警，但不会改变剩余 header boundary。即使 entropy coding 已启用，all-I 值也会短路
-全部 reference-list operation。IDR 专属的
-`idr_pic_id`、`no_output_of_prior_pics_flag` 与 `long_term_reference_flag` 不出现。
+失败，不会误读未声明的 `pred_weight_table()`。
+
+NAL header 带非零 reference priority 的 slice 随后解码 clause 7.3.3.3 的
+`dec_ref_pic_marking()`。`adaptive_ref_pic_marking_mode_flag` 为零时选择 sliding-window
+marking，不再发布任何字段；为一时进入由 operation 零终止的有界 memory-management control
+operation 循环，该 terminator 保留在树中。operation 1 与 3 读取
+`difference_of_pic_nums_minus1`，operation 2 读取 `long_term_pic_num_mmco`，operation 3
+与 6 读取 `long_term_frame_idx`，operation 4 读取 `max_long_term_frame_idx_plus1`，
+operation 0 与 5 不读取 operand。保留 operation 在 controller 码字处致命失败，因为它不
+对应任何 operand 组合，之后每个字段都会错位。只有 `long_term_pic_num_mmco` 带后缀，因为
+clause 7.3.3.3 的 `long_term_pic_num` 与 list 0 modification loop 的投射名冲突；其余
+operation 字段独有，保留 clause 名。non-reference slice 完全不发布 marking 字段。
+
+当精确 PPS 启用 entropy coding 时，任意 P 或 B slice 随后会在 `slice_qp_delta` 之前读取
+`cabac_init_idc`；超出 `0..2` 的值会告警，但不会改变剩余 header boundary。即使 entropy
+coding 已启用，all-I 值也会短路全部 reference-list operation。IDR 专属的
+`idr_pic_id`、`no_output_of_prior_pics_flag` 与 `long_term_reference_flag` 不出现——
+clause 7.3.3.3 在 `IdrPicFlag` 路径上读取它们。
 
 type `5` 为有界 progressive all-I `slice_type` 值 2 和 7 解码
 `IdrSliceLayerWithoutPartitioningRbsp`。它导入 `pic_parameter_set_id` 选择的精确 PPS
@@ -847,6 +860,14 @@ generation 以及该 PPS 的精确 SPS dependency。两个有界 shape 中声明
 | `uses_abs_diff_pic_num_l1[index]` | list 1 operation code 为 0/1 时为 true 的 computed Boolean；没有 source location。 |
 | `abs_diff_pic_num_minus1_l1[index]` | 在 list 1 operation code 0/1 下携带 short-term picture-number difference operand。 |
 | `long_term_pic_num_l1[index]` | 在 list 1 operation code 2 下携带 long-term picture-number operand。 |
+| `adaptive_ref_pic_marking_mode_flag` | NAL header 带非零 reference priority 时出现；值 0 选择 sliding-window marking，值 1 选择有界 operation 循环。 |
+| `memory_management_control_operation[index]` | 在 `0..6` 中选择 marking operation；operation 0 终止循环，保留值致命失败。 |
+| `marking_uses_pic_num_difference[index]` | operation 为 1/3 时为 true 的 computed Boolean；没有 source location。 |
+| `difference_of_pic_nums_minus1[index]` | 标识 operation 1 与 3 所作用的 short-term picture。 |
+| `long_term_pic_num_mmco[index]` | 标识 operation 2 要 unmark 的 long-term picture；带后缀是因为 clause 7.3.3.3 复用了 list 0 loop 的名字。 |
+| `marking_uses_long_term_frame_idx[index]` | operation 为 3/6 时为 true 的 computed Boolean；没有 source location。 |
+| `long_term_frame_idx[index]` | 为 operation 3 与 6 指派 long-term frame index。 |
+| `max_long_term_frame_idx_plus1[index]` | 为 operation 4 设置 maximum long-term frame index 加一。 |
 | `cabac_init_idc` | 为 entropy-coded P 或 B slice 选择 CABAC context initialization table；超出 `0..2` 的值会告警。 |
 | `no_output_of_prior_pics_flag` | 控制 IDR picture 之前 picture 的输出。 |
 | `long_term_reference_flag` | 设置时把 IDR picture 标记为 long-term reference。 |
@@ -861,12 +882,12 @@ exact imported PPS guard 会选择 bottom-field POC、redundant-picture count �
 字段；false guard 不消费 bit，也不创建 node。deblocking 值 1 省略两个 offset，值 0 和 2 读取
 它们，reserved 值在 controller 码字处失败。missing/future/stale parameter-set generation 仍报告
 `dependency-unavailable`；保留 partial header，并继续分析后续 NAL。每个 modification loop
-各自以 64 个 operation 受界，这是 sentinel repeat 的语言上界，因此一个 B slice 最多可投射
-128 个 operation。reference type-1、SP/SI slice type、field-picture、
-decoded-picture-buffer validation、weighted-prediction table、CABAC slice-data 解码、
-adaptive-memory-management 与 slice-group 分支均留待后续。
+与 marking loop 各自以 64 个 operation 受界，这是 sentinel repeat 的语言上界。它们是资源
+边界，而不是宣称的 conformance limit。SP/SI slice type、field-picture、
+decoded-picture-buffer validation、marking 语义与 clause 7.4.3.3 关系校验、
+weighted-prediction table、CABAC slice-data 解码与 slice-group 分支均留待后续。
 type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.18` 发布 coverage depth `i-p-b-slice-header`；这尚未完成
+`0.1.19` 发布 coverage depth `i-p-b-reference-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
@@ -905,7 +926,6 @@ struct NalUnitHeader {
     bits<2> nal_ref_idc;
     bits<5> nal_unit_type;
     assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
-    assert(nal_unit_type != 1 || nal_ref_idc == 0) at nal_ref_idc;
 }
 
 @index(progressive)
@@ -1158,7 +1178,6 @@ struct NalUnitHeader {
     bits<2> nal_ref_idc;
     bits<5> nal_unit_type;
     assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
-    assert(nal_unit_type != 1 || nal_ref_idc == 0) at nal_ref_idc;
 }
 
 @spec("ITU-T H.264", "7.3.2.4")

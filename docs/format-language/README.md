@@ -40,7 +40,6 @@ struct NalUnitHeader {
     bits<5> nal_unit_type;
 
     assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
-    assert(nal_unit_type != 1 || nal_ref_idc == 0) at nal_ref_idc;
 
     computed<bool> is_vcl =
         nal_unit_type >= 1 && nal_unit_type <= 5;
@@ -878,14 +877,13 @@ first eight payload bits and exposes `forbidden_zero_bit`, `nal_ref_idc`, and
 `nal_unit_type`.
 
 After all eight header bits are available, the official rule asserts the clause
-7.4.1 prerequisite `nal_unit_type != 5 || nal_ref_idc != 0` and the bounded
-type-1 support prerequisite `nal_unit_type != 1 || nal_ref_idc == 0`. A type-5
-header with zero reference priority, or a type-1 header with nonzero reference
-priority, retains all three fields, fails with fatal `invalid-syntax` at the
-exact two-bit `nal_ref_idc` span, and never maps or materializes that NAL's
-`rbsp_payload`; scanning continues with the next NAL. The type-1 prerequisite
-keeps unsupported non-IDR reference-picture marking from being interpreted as
-later slice fields.
+7.4.1 prerequisite `nal_unit_type != 5 || nal_ref_idc != 0`. A type-5 header with
+zero reference priority retains all three fields, fails with fatal
+`invalid-syntax` at the exact two-bit `nal_ref_idc` span, and never maps or
+materializes that NAL's `rbsp_payload`; scanning continues with the next NAL. A
+type-1 header accepts any reference priority; the slice structure reads that
+value through `header_value(nal_ref_idc)` to decide whether
+`dec_ref_pic_marking()` is present.
 
 After a successful direct header, an ordinary non-empty payload is mapped from
 EBSP to an RBSP logical view without copying bytes. Each complete `00 00 03`
@@ -1034,11 +1032,13 @@ The declared PPS fields have the following bounded meanings:
 | `redundant_pic_cnt_present_flag` | Signals redundant-picture count syntax in associated slice headers. |
 
 Type `1` decodes `NonIdrSliceLayerWithoutPartitioningRbsp` for bounded
-progressive non-reference I, P, and B slices. `NonIdrSliceType` accepts I values
-2 and 7, P values 0 and 5, and B values 1 and 6. Three visible computed fields
-distinguish the layouts: `is_p_slice`, `is_b_slice`, and `uses_reference_lists`,
-which is true for any P or B slice. The direct-header assertion requires
-`nal_ref_idc == 0`, so the projection does not contain `dec_ref_pic_marking`.
+progressive I, P, and B slices in both reference and non-reference form.
+`NonIdrSliceType` accepts I values 2 and 7, P values 0 and 5, and B values 1 and
+6. Three visible computed fields distinguish the layouts: `is_p_slice`,
+`is_b_slice`, and `uses_reference_lists`, which is true for any P or B slice. A
+type-1 header accepts any reference priority, and the structure reads
+`header_value(nal_ref_idc)` to decide whether `dec_ref_pic_marking()` is
+present.
 
 A B slice first reads `direct_spatial_mv_pred_flag`. Every P and B slice then
 reads the mandatory `num_ref_idx_active_override_flag`; value 1 selects a bounded
@@ -1058,12 +1058,30 @@ Two imported PPS assertions follow the optional loop. A P slice still requires
 `weighted_pred_flag == 0`, and a B slice requires `weighted_bipred_idc != 1`, so
 default and implicit biprediction are supported while explicit biprediction
 fails at `pic_parameter_set_id` rather than misreading an undeclared
-`pred_weight_table()`. When the exact PPS enables entropy coding, any P or B
-slice then reads `cabac_init_idc` before `slice_qp_delta`; values outside `0..2`
-warn without changing the remaining header boundary. All-I values short-circuit
-every reference-list operation, even when entropy coding is enabled. The
-structure omits the IDR-only `idr_pic_id`, `no_output_of_prior_pics_flag`, and
-`long_term_reference_flag` fields.
+`pred_weight_table()`.
+
+A slice whose NAL header carries nonzero reference priority then decodes
+clause 7.3.3.3 `dec_ref_pic_marking()`. `adaptive_ref_pic_marking_mode_flag`
+value zero selects sliding-window marking and publishes nothing further; value
+one enters a bounded loop of memory-management control operations terminated by
+operation zero, which is retained in the tree. Operations 1 and 3 read
+`difference_of_pic_nums_minus1`, operation 2 reads `long_term_pic_num_mmco`,
+operations 3 and 6 read `long_term_frame_idx`, operation 4 reads
+`max_long_term_frame_idx_plus1`, and operations 0 and 5 read no operand. Reserved
+operations are fatal at the controlling codeword because they select no operand
+set and every following field would be misaligned. Only
+`long_term_pic_num_mmco` carries a suffix, because clause 7.3.3.3
+`long_term_pic_num` collides with the list 0 modification loop's projection; the
+other operation fields are unique and keep their clause names. A non-reference
+slice publishes no marking fields at all.
+
+When the exact PPS enables entropy coding, any P or B slice then reads
+`cabac_init_idc` before `slice_qp_delta`; values outside `0..2` warn without
+changing the remaining header boundary. All-I values short-circuit every
+reference-list operation, even when entropy coding is enabled. The structure omits
+the IDR-only `idr_pic_id`, `no_output_of_prior_pics_flag`, and
+`long_term_reference_flag` fields, which clause 7.3.3.3 reads on the `IdrPicFlag`
+path instead.
 
 Type `5` decodes `IdrSliceLayerWithoutPartitioningRbsp` for the bounded
 progressive all-I `slice_type` values 2 and 7. It imports the exact PPS
@@ -1098,6 +1116,14 @@ meanings:
 | `uses_abs_diff_pic_num_l1[index]` | Computed Boolean that is true for list 1 operation codes 0 and 1; it has no source location. |
 | `abs_diff_pic_num_minus1_l1[index]` | Carries the list 1 short-term picture-number difference operand for operation codes 0 and 1. |
 | `long_term_pic_num_l1[index]` | Carries the list 1 long-term picture-number operand for operation code 2. |
+| `adaptive_ref_pic_marking_mode_flag` | Present when the NAL header carries nonzero reference priority; value 0 selects sliding-window marking and value 1 selects the bounded operation loop. |
+| `memory_management_control_operation[index]` | Selects a marking operation over `0..6`; operation 0 terminates the loop and reserved values are fatal. |
+| `marking_uses_pic_num_difference[index]` | Computed Boolean that is true for operations 1 and 3; it has no source location. |
+| `difference_of_pic_nums_minus1[index]` | Identifies the short-term picture that operations 1 and 3 act on. |
+| `long_term_pic_num_mmco[index]` | Identifies the long-term picture that operation 2 unmarks; suffixed because clause 7.3.3.3 reuses the list 0 loop's name. |
+| `marking_uses_long_term_frame_idx[index]` | Computed Boolean that is true for operations 3 and 6; it has no source location. |
+| `long_term_frame_idx[index]` | Assigns the long-term frame index for operations 3 and 6. |
+| `max_long_term_frame_idx_plus1[index]` | Sets the maximum long-term frame index plus one for operation 4. |
 | `cabac_init_idc` | Selects the CABAC context initialization table for an entropy-coded P or B slice; values outside `0..2` warn. |
 | `no_output_of_prior_pics_flag` | Controls output of pictures preceding the IDR picture. |
 | `long_term_reference_flag` | Marks the IDR picture as a long-term reference when set. |
@@ -1114,15 +1140,15 @@ false guard consumes no bits and creates no node. Deblocking value 1 skips both
 offsets, values 0 and 2 read them, and reserved values fail at the controlling
 codeword. Missing/future/stale parameter-set generations remain
 `dependency-unavailable`; the partial header is retained and later NAL units
-are still analyzed. Each modification loop is independently bounded at 64
-operations, which is the language maximum for a sentinel repeat, so a B slice
-may project up to 128 operations. Reference type-1, SP/SI slice types,
-field-picture, decoded-picture-buffer validation, weighted-prediction tables,
-CABAC slice-data decoding, adaptive-memory-management, and slice-group branches
-are deferred.
+are still analyzed. Each modification loop and the marking loop are independently
+bounded at 64 operations, which is the language maximum for a sentinel repeat.
+These are resource bounds rather than claimed conformance limits. SP/SI slice
+types, field-picture, decoded-picture-buffer validation, marking-semantics and
+clause 7.4.3.3 relational validation, weighted-prediction tables, CABAC
+slice-data decoding, and slice-group branches are deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
-Package `0.1.18` advertises coverage depth `i-p-b-slice-header`; this is not yet
-the complete Baseline/Main/High slice-header milestone.
+Package `0.1.19` advertises coverage depth `i-p-b-reference-slice-header`; this is
+not yet the complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
 addition to their record-count and inspected-position budgets. The default is
@@ -1174,7 +1200,6 @@ struct NalUnitHeader {
     bits<2> nal_ref_idc;
     bits<5> nal_unit_type;
     assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
-    assert(nal_unit_type != 1 || nal_ref_idc == 0) at nal_ref_idc;
 }
 
 @index(progressive)
@@ -1389,7 +1414,6 @@ struct NalUnitHeader {
     bits<2> nal_ref_idc;
     bits<5> nal_unit_type;
     assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
-    assert(nal_unit_type != 1 || nal_ref_idc == 0) at nal_ref_idc;
 }
 
 @spec("ITU-T H.264", "7.3.2.4")
