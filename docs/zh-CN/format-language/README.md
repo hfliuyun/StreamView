@@ -775,18 +775,28 @@ generation。若不存在 SPS，PPS structure 仍保持 materialized，但会收
 | `constrained_intra_pred_flag` | 将 intra prediction 限制在 intra-coded 相邻 macroblock。 |
 | `redundant_pic_cnt_present_flag` | 表示关联 slice header 中存在 redundant-picture count 语法。 |
 
-type `1` 为有界 progressive non-reference I 与 P slice 解码
-`NonIdrSliceLayerWithoutPartitioningRbsp`。`NonIdrSliceType` 接受 I 值 2/7 和 P 值 0/5，
-可见的 `is_p_slice` computed field 区分两种布局。direct-header assertion 要求
-`nal_ref_idc == 0`，因此 projection 不包含 `dec_ref_pic_marking`。P slice 会实际读取必需的
-`num_ref_idx_active_override_flag`；值 1 会选择有界 `num_ref_idx_l0_active_minus1` override，
-值 0 则保留 PPS default。后续 `ref_pic_list_modification_flag_l0` 仍是必需字段。值 0
-不发布 modification field；值 1 进入有界 list 0 loop，其 operation code 选择 short-term
-subtraction、short-term addition、long-term selection 或 termination。imported PPS assertion 仍会在
-可选 loop 之后要求 `weighted_pred_flag == 0`。当精确 PPS 启用 entropy coding 时，P slice
-随后会在 `slice_qp_delta` 之前读取 `cabac_init_idc`；超出 `0..2` 的值会告警，但不会改变
-剩余 header boundary。即使 entropy coding 已启用，all-I 值也会短路这两项 P-only operation。
-IDR 专属的
+type `1` 为有界 progressive non-reference I、P 与 B slice 解码
+`NonIdrSliceLayerWithoutPartitioningRbsp`。`NonIdrSliceType` 接受 I 值 2/7、P 值 0/5
+与 B 值 1/6。三个可见 computed field 区分布局：`is_p_slice`、`is_b_slice`，以及对任意
+P 或 B slice 为 true 的 `uses_reference_lists`。direct-header assertion 要求
+`nal_ref_idc == 0`，因此 projection 不包含 `dec_ref_pic_marking`。
+
+B slice 首先读取 `direct_spatial_mv_pred_flag`。随后每个 P 与 B slice 都会读取必需的
+`num_ref_idx_active_override_flag`；值 1 会选择有界 `num_ref_idx_l0_active_minus1`
+override，且仅 B slice 会紧接着读取 `num_ref_idx_l1_active_minus1`，值 0 则保留 PPS
+default。后续 `ref_pic_list_modification_flag_l0` 仍是必需字段。值 0 不发布
+modification field；值 1 进入有界 list 0 loop，其 operation code 选择 short-term
+subtraction、short-term addition、long-term selection 或 termination。B slice 之后读取
+`ref_pic_list_modification_flag_l1`；本 profile 要求其为零，因为 list 1 loop 需要第二套
+投射名，非零值在该 bit 处致命失败。
+
+可选 loop 之后有两条 imported PPS assertion。P slice 仍要求
+`weighted_pred_flag == 0`，B slice 要求 `weighted_bipred_idc != 1`，因此 default 与
+implicit biprediction 受支持，而 explicit biprediction 会在 `pic_parameter_set_id` 处
+失败，不会误读未声明的 `pred_weight_table()`。当精确 PPS 启用 entropy coding 时，
+任意 P 或 B slice 随后会在 `slice_qp_delta` 之前读取 `cabac_init_idc`；超出 `0..2` 的值
+会告警，但不会改变剩余 header boundary。即使 entropy coding 已启用，all-I 值也会短路
+全部 reference-list operation。IDR 专属的
 `idr_pic_id`、`no_output_of_prior_pics_flag` 与 `long_term_reference_flag` 不出现。
 
 type `5` 为有界 progressive all-I `slice_type` 值 2 和 7 解码
@@ -796,22 +806,27 @@ generation 以及该 PPS 的精确 SPS dependency。两个有界 shape 中声明
 | 字段 | 本切片中的含义 |
 | --- | --- |
 | `first_mb_in_slice` | 标识 slice 中的第一个 macroblock。 |
-| `slice_type` | type 1 接受 `p = 0`、`i = 2`、`all_p = 5` 与 `all_i = 7`；type 5 只接受两个 all-I 值。其他值在该码字处致命失败。 |
+| `slice_type` | type 1 接受 `p = 0`、`b = 1`、`i = 2`、`all_p = 5`、`all_b = 6` 与 `all_i = 7`；type 5 只接受两个 all-I 值。其他值在该码字处致命失败。 |
 | `is_p_slice` | type-1 computed Boolean，值 0/5 时为 true；没有 source location。 |
+| `is_b_slice` | type-1 computed Boolean，值 1/6 时为 true；没有 source location。 |
+| `uses_reference_lists` | type-1 computed Boolean，任意 P 或 B slice 为 true；没有 source location。 |
 | `pic_parameter_set_id` | 选择此前精确 PPS generation，超出 `0..255` 时告警。 |
 | `frame_num` | 使用绑定 SPS 的 `log2_max_frame_num_minus4 + 4` bit。 |
 | `idr_pic_id` | 标识 IDR picture。 |
 | `pic_order_cnt_lsb` | 在绑定的 POC-type-0 SPS 下使用 `log2_max_pic_order_cnt_lsb_minus4 + 4` bit。 |
 | `delta_pic_order_cnt_bottom` | 在绑定 PPS 启用时携带 signed bottom-field POC delta。 |
 | `redundant_pic_cnt` | 在绑定 PPS 启用时标识 redundant representation；超出 `0..127` 时告警。 |
-| `num_ref_idx_active_override_flag` | 受支持 P slice 的必需字段；值 1 读取 list 0 active-reference override，值 0 保留 PPS default。 |
+| `direct_spatial_mv_pred_flag` | 为受支持 B slice 选择 spatial 或 temporal direct prediction。 |
+| `num_ref_idx_active_override_flag` | 受支持 P 或 B slice 的必需字段；值 1 读取 active-reference override，值 0 保留 PPS default。 |
 | `num_ref_idx_l0_active_minus1` | 被选择时覆盖 active list 0 entry count；超出 `0..31` 时告警。 |
-| `ref_pic_list_modification_flag_l0` | 受支持 P slice 的必需字段；值 1 选择有界 list 0 modification loop，值 0 不发布 loop field。 |
+| `num_ref_idx_l1_active_minus1` | B slice 被选择时覆盖 active list 1 entry count；超出 `0..31` 时告警。 |
+| `ref_pic_list_modification_flag_l0` | 受支持 P 或 B slice 的必需字段；值 1 选择有界 list 0 modification loop，值 0 不发布 loop field。 |
 | `modification_of_pic_nums_idc[index]` | 选择 short-term subtraction (0)、short-term addition (1)、long-term picture number (2) 或 termination (3)；其他值致命失败。 |
 | `uses_abs_diff_pic_num[index]` | operation code 为 0/1 时为 true 的 computed Boolean；没有 source location。 |
 | `abs_diff_pic_num_minus1[index]` | 在 operation code 0/1 下携带 short-term picture-number difference operand。 |
 | `long_term_pic_num[index]` | 在 operation code 2 下携带 long-term picture-number operand。 |
-| `cabac_init_idc` | 为 entropy-coded P slice 选择 CABAC context initialization table；超出 `0..2` 的值会告警。 |
+| `ref_pic_list_modification_flag_l1` | 受支持 B slice 的必需字段；本 profile 要求为零，值 1 在该 bit 处致命失败。 |
+| `cabac_init_idc` | 为 entropy-coded P 或 B slice 选择 CABAC context initialization table；超出 `0..2` 的值会告警。 |
 | `no_output_of_prior_pics_flag` | 控制 IDR picture 之前 picture 的输出。 |
 | `long_term_reference_flag` | 设置时把 IDR picture 标记为 long-term reference。 |
 | `slice_qp_delta` | 调整初始 luma quantization parameter；signed bound 留待后续。 |
@@ -825,10 +840,11 @@ exact imported PPS guard 会选择 bottom-field POC、redundant-picture count �
 字段；false guard 不消费 bit，也不创建 node。deblocking 值 1 省略两个 offset，值 0 和 2 读取
 它们，reserved 值在 controller 码字处失败。missing/future/stale parameter-set generation 仍报告
 `dependency-unavailable`；保留 partial header，并继续分析后续 NAL。reference type-1、
-B/SP/SI 与 list 1 modification、field-picture、decoded-picture-buffer validation、
-weighted-prediction、CABAC slice-data 解码、adaptive-memory-management 与 slice-group 分支均留待后续。
+SP/SI slice type、list 1 modification operation、field-picture、
+decoded-picture-buffer validation、weighted-prediction table、CABAC slice-data 解码、
+adaptive-memory-management 与 slice-group 分支均留待后续。
 type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.16` 发布 coverage depth `i-p-slice-header`；这尚未完成
+`0.1.17` 发布 coverage depth `i-p-b-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正

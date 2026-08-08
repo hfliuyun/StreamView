@@ -1013,23 +1013,34 @@ The declared PPS fields have the following bounded meanings:
 | `redundant_pic_cnt_present_flag` | Signals redundant-picture count syntax in associated slice headers. |
 
 Type `1` decodes `NonIdrSliceLayerWithoutPartitioningRbsp` for bounded
-progressive non-reference I and P slices. `NonIdrSliceType` accepts I values 2
-and 7 and P values 0 and 5, while the visible `is_p_slice` computed field
-distinguishes the two layouts. The direct-header assertion requires
-`nal_ref_idc == 0`, so the projection does not contain
-`dec_ref_pic_marking`. P slices read the mandatory
-`num_ref_idx_active_override_flag`; value 1 selects a bounded
-`num_ref_idx_l0_active_minus1` override, while value 0 keeps the PPS default.
-The following `ref_pic_list_modification_flag_l0` remains mandatory. Value zero
+progressive non-reference I, P, and B slices. `NonIdrSliceType` accepts I values
+2 and 7, P values 0 and 5, and B values 1 and 6. Three visible computed fields
+distinguish the layouts: `is_p_slice`, `is_b_slice`, and `uses_reference_lists`,
+which is true for any P or B slice. The direct-header assertion requires
+`nal_ref_idc == 0`, so the projection does not contain `dec_ref_pic_marking`.
+
+A B slice first reads `direct_spatial_mv_pred_flag`. Every P and B slice then
+reads the mandatory `num_ref_idx_active_override_flag`; value 1 selects a bounded
+`num_ref_idx_l0_active_minus1` override followed, for a B slice only, by
+`num_ref_idx_l1_active_minus1`, while value 0 keeps the PPS defaults. The
+following `ref_pic_list_modification_flag_l0` remains mandatory. Value zero
 publishes no modification fields; value one enters a bounded list 0 loop whose
 operation codes select short-term subtraction, short-term addition, long-term
-selection, or termination. The imported PPS assertion still requires
-`weighted_pred_flag == 0` after the optional loop. When the exact PPS enables
-entropy coding, a P slice then reads `cabac_init_idc` before `slice_qp_delta`;
-values outside `0..2` warn without changing the remaining header boundary.
-All-I values short-circuit both P-only operations, even when entropy coding is
-enabled. The structure omits the IDR-only `idr_pic_id`,
-`no_output_of_prior_pics_flag`, and `long_term_reference_flag` fields.
+selection, or termination. A B slice then reads
+`ref_pic_list_modification_flag_l1`, which this profile requires to be zero
+because a list 1 loop would need a second set of projected names; a nonzero flag
+is fatal at that bit.
+
+Two imported PPS assertions follow the optional loop. A P slice still requires
+`weighted_pred_flag == 0`, and a B slice requires `weighted_bipred_idc != 1`, so
+default and implicit biprediction are supported while explicit biprediction
+fails at `pic_parameter_set_id` rather than misreading an undeclared
+`pred_weight_table()`. When the exact PPS enables entropy coding, any P or B
+slice then reads `cabac_init_idc` before `slice_qp_delta`; values outside `0..2`
+warn without changing the remaining header boundary. All-I values short-circuit
+every reference-list operation, even when entropy coding is enabled. The
+structure omits the IDR-only `idr_pic_id`, `no_output_of_prior_pics_flag`, and
+`long_term_reference_flag` fields.
 
 Type `5` decodes `IdrSliceLayerWithoutPartitioningRbsp` for the bounded
 progressive all-I `slice_type` values 2 and 7. It imports the exact PPS
@@ -1040,22 +1051,27 @@ meanings:
 | Field | Meaning in this slice |
 | --- | --- |
 | `first_mb_in_slice` | Identifies the first macroblock in the slice. |
-| `slice_type` | Type 1 accepts `p = 0`, `i = 2`, `all_p = 5`, and `all_i = 7`; type 5 accepts only the two all-I values. Other values are fatal at this codeword. |
+| `slice_type` | Type 1 accepts `p = 0`, `b = 1`, `i = 2`, `all_p = 5`, `all_b = 6`, and `all_i = 7`; type 5 accepts only the two all-I values. Other values are fatal at this codeword. |
 | `is_p_slice` | Type-1 computed Boolean that is true for values 0 and 5; it has no source location. |
+| `is_b_slice` | Type-1 computed Boolean that is true for values 1 and 6; it has no source location. |
+| `uses_reference_lists` | Type-1 computed Boolean that is true for any P or B slice; it has no source location. |
 | `pic_parameter_set_id` | Selects the exact prior PPS generation and warns outside `0..255`. |
 | `frame_num` | Uses `log2_max_frame_num_minus4 + 4` bits from the bound SPS. |
 | `idr_pic_id` | Identifies the IDR picture. |
 | `pic_order_cnt_lsb` | Uses `log2_max_pic_order_cnt_lsb_minus4 + 4` bits from the bound POC-type-0 SPS. |
 | `delta_pic_order_cnt_bottom` | Carries the signed bottom-field POC delta when the bound PPS enables it. |
 | `redundant_pic_cnt` | Identifies the redundant representation when the bound PPS enables it; values outside `0..127` warn. |
-| `num_ref_idx_active_override_flag` | Mandatory for a supported P slice; value 1 reads the list 0 active-reference override and value 0 keeps the PPS default. |
+| `direct_spatial_mv_pred_flag` | Selects spatial or temporal direct prediction for a supported B slice. |
+| `num_ref_idx_active_override_flag` | Mandatory for a supported P or B slice; value 1 reads the active-reference overrides and value 0 keeps the PPS defaults. |
 | `num_ref_idx_l0_active_minus1` | Overrides the active list 0 entry count when selected; values outside `0..31` warn. |
-| `ref_pic_list_modification_flag_l0` | Mandatory for a supported P slice; value 1 selects the bounded list 0 modification loop and value 0 publishes no loop fields. |
+| `num_ref_idx_l1_active_minus1` | Overrides the active list 1 entry count for a B slice when selected; values outside `0..31` warn. |
+| `ref_pic_list_modification_flag_l0` | Mandatory for a supported P or B slice; value 1 selects the bounded list 0 modification loop and value 0 publishes no loop fields. |
 | `modification_of_pic_nums_idc[index]` | Selects short-term subtraction (0), short-term addition (1), a long-term picture number (2), or termination (3); other values are fatal. |
 | `uses_abs_diff_pic_num[index]` | Computed Boolean that is true for operation codes 0 and 1; it has no source location. |
 | `abs_diff_pic_num_minus1[index]` | Carries the short-term picture-number difference operand for operation codes 0 and 1. |
 | `long_term_pic_num[index]` | Carries the long-term picture-number operand for operation code 2. |
-| `cabac_init_idc` | Selects the CABAC context initialization table for an entropy-coded P slice; values outside `0..2` warn. |
+| `ref_pic_list_modification_flag_l1` | Mandatory for a supported B slice; this profile requires zero, and value one is fatal at the bit. |
+| `cabac_init_idc` | Selects the CABAC context initialization table for an entropy-coded P or B slice; values outside `0..2` warn. |
 | `no_output_of_prior_pics_flag` | Controls output of pictures preceding the IDR picture. |
 | `long_term_reference_flag` | Marks the IDR picture as a long-term reference when set. |
 | `slice_qp_delta` | Adjusts the initial luma quantization parameter; its signed bound is deferred. |
@@ -1071,13 +1087,13 @@ false guard consumes no bits and creates no node. Deblocking value 1 skips both
 offsets, values 0 and 2 read them, and reserved values fail at the controlling
 codeword. Missing/future/stale parameter-set generations remain
 `dependency-unavailable`; the partial header is retained and later NAL units
-are still analyzed. Reference type-1, B/SP/SI and list 1 modification,
-field-picture, decoded-picture-buffer validation, weighted-prediction, CABAC
-slice-data decoding, adaptive-memory-management, and slice-group branches are
-deferred.
+are still analyzed. Reference type-1, SP/SI slice types, list 1 modification
+operations, field-picture, decoded-picture-buffer validation,
+weighted-prediction tables, CABAC slice-data decoding,
+adaptive-memory-management, and slice-group branches are deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
-Package `0.1.16` advertises coverage depth `i-p-slice-header`; this is not yet the
-complete Baseline/Main/High slice-header milestone.
+Package `0.1.17` advertises coverage depth `i-p-b-slice-header`; this is not yet
+the complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
 addition to their record-count and inspected-position budgets. The default is
