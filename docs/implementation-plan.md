@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Add a bounded non-reference B-slice header
-Next Action: Define and implement the bounded list 1 reference-list modification loop
-Last Verification: Commits 4abf385 and 73a5156; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 88/88; svtool rule check passed; hosted run 31241123551 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Add a bounded list 1 reference-list modification loop
+Next Action: Define and implement bounded reference-picture marking for nonzero-reference type-1 slice headers
+Last Verification: Commits 91faab6 and c69e02e; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 91/91; svtool rule check passed; hosted run 31242093716 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -769,3 +769,22 @@ Blockers: None
   的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、Test、Install、Upload 全部成功。
   完整 Baseline/Main/High slice-header 项仍未完成；下一步定义并实现有界 list 1
   reference-list modification loop，这需要为第二个 loop 取一套不同的投射名。
+- 2026-08-08：完成有界 list 1 reference-list modification loop 增量。ADR-0062 与英中文
+  bundled-profile 参考提交 `91faab6` 固化决策：用真正的 loop 取代
+  `ref_pic_list_modification_flag_l1` 上的 `@equals(0)` 约束，形状镜像 list 0。clause
+  7.3.3.1 的两个 loop 结构完全相同且复用同一批 syntax element 名字，因为每个 loop 自带
+  作用域；而本语言的 structure 只有一个扁平字段命名空间，因此 list 1 的投射名带 `_l1`
+  后缀。该后缀只用于呈现层消歧，不表示另一个 syntax element，将来若引入 scope 构造可在
+  不改变解码 bit 布局的前提下移除。实现提交 `c69e02e` 让 flag 为零时不发布任何 loop
+  字段，为一时进入 64 次 sentinel repeat；复用闭集 `ModificationOfPicNumsIdc` enum，
+  因此保留值仍在完整 Exp-Golomb 码字处致命失败，终止值 3 保留在树中。64 是 sentinel
+  repeat 的语言上界而非 profile 选择，两个 loop 各自独立受界，因此一个 B slice 最多可
+  投射 128 个 operation。package 更新为 `0.1.18`，coverage depth 保持
+  `i-p-b-slice-header`。四条新回归取代了已过时的 `@equals` 断言，覆盖首轮即终止、单个
+  list 1 loop 中的 operation 0/1/2/3 全集、同一 slice 中两个独立 loop，以及保留
+  operation code；四条在旧规则下全部失败、在新规则下全部通过，H.264 analyzer 定向套件
+  为 91/91。`svtool rule check` 通过；本机 `dev`、`ci`、`sanitize` 重新配置、完整构建与
+  CTest 均为 32/32。hosted run `31242093716` 对 `c69e02e` 的 Windows 2022、macOS 15、
+  Ubuntu 24.04 Configure、Build、Test、Install、Upload 全部成功。完整 Baseline/Main/High
+  slice-header 项仍未完成；下一步定义并实现 nonzero-reference type-1 slice header 的
+  有界 `dec_ref_pic_marking()`，这将首次解除 type-1 的 `nal_ref_idc == 0` 前置约束。
