@@ -136,6 +136,12 @@ presentation node；`at` 字段提供 diagnostic path 与精确 mapped source lo
 `context_value(...)` leaf。它沿用 exact imported generation 合同，在其他一般 expression
 position 中仍不可用。
 
+当前接受的 sequence-element 切片新增保留形式 `header_value(element_field)`。它在被派发的
+payload structure 内部解析 sequence element structure 的一个 scalar，使 payload 能够依赖
+自己所属的 element header，而不是依赖 parameter set。它是 `u64` leaf，允许出现的位置与
+imported `context_value` leaf 完全相同；并且由于它是 call 而不是 identifier，element 与
+payload 的字段命名空间保持分离。
+
 ## DSL 0.1 最小子集
 
 首个可执行子集使用以下语法。token 之间可以有空白，以及 `//` 或 `/* ... */`
@@ -177,6 +183,7 @@ conditional   := "if" "(" ( identifier "==" integer | identifier
                  [ "else" "{" { struct_item } "}" ]
 context_value := "context_value" "(" identifier "," identifier ","
                  identifier ")"
+header_value  := "header_value" "(" identifier ")"
 switch        := "switch" "(" identifier ")" "{"
                  switch_case { switch_case } [ switch_default ] "}"
 switch_case   := "case" integer ":" "{" { struct_item } "}"
@@ -258,6 +265,13 @@ primary       := integer | "true" | "false" | identifier
   structure 必须精确导出一个同名字段。除 dynamic `bits` width、source-anchored assertion
   condition 与精确形式 `context_value(...) == integer` 外，pure-function body、computed field、
   condition、lazy size、switch/repeat controller 与其他 expression position 都拒绝这一形式。
+- `header_value(element_field)` 保留给与 `context_value` 相同的三个位置使用。它接受且只接受
+  一个 identifier 实参，该实参必须命名程序中 sequence element structure 的一个字段，且该字段
+  必须是无条件、顶层、非数组的 unsigned scalar；被 guard 的、位于 repeat 中的、数组、
+  dynamic-width 或 signed element 字段一律拒绝。没有声明 sequence 的程序，以及 structure
+  本身就是 sequence element structure 的情况，都会被拒绝。该 leaf 在程序范围内针对 element
+  structure 解析，因此写在从不被派发为 payload 的 structure 中的调用能够编译通过，但会在
+  执行期以 invalid definition 失败。
 - 固定宽度数组按 `width * count` bit 参与静态对齐。小端数组的每个元素宽度必须是 8 的
   倍数，并且首元素必须从结构内的字节边界开始。`ue` 或 `se` 数组的总宽度未知，因此其
   后续小端字段与单个 Exp-Golomb 字段之后的小端字段一样会被拒绝。
@@ -279,7 +293,8 @@ primary       := integer | "true" | "false" | identifier
 - `assert(condition) at anchor;` 是不接受 annotation、无条件的顶层 structure item。
   conditional、switch、count repeat 或 sentinel repeat 内都拒绝 assertion，也不能把它写在
   terminal item 之后。`condition` 必须为 `bool`，沿用完整的 bounded expression 与 pure-function
-  合同，并且可以包含上文定义的 exact imported `context_value` leaf。本地字段 dependency
+  合同，并且可以包含上文定义的 exact imported `context_value` leaf 与
+  `header_value(element_field)` leaf。本地字段 dependency
   必须是此前声明、当前路径保证存在的 scalar unsigned `bits`、enum、`ue`、`computed<u64>` 或
   `computed<bool>`；array、`se`、lazy region、compressed payload、未知/未来字段与不可用的
   branch-local 值都会被拒绝。
@@ -298,7 +313,8 @@ primary       := integer | "true" | "false" | identifier
   类型为 `u64`，literal 因此可使用完整 `u64` 范围，并遵守上面的 static import、reachability、
   unique-publisher 与 named-export 合同。当前切片不接受一般条件表达式、围绕 imported value
   的 arithmetic、Boolean combination、imported shorthand、`!=`、ordering、`else if` 或其他
-  比较形式。
+  比较形式。sequence-element equality 使用对应的精确形式
+  `header_value(element_field) == integer`，受同一套限制约束。
 - 字段名在结构的全部分支中仍必须唯一，所有可能的 branch field 都计入 99,999 字段投影
   上限。静态对齐沿两个分支分别跟踪；只有两条路径都在相同的已知 offset 结束时，条件出口
   才保留已知 offset，省略的 `else` 按空路径处理。
@@ -1213,6 +1229,11 @@ ordering、Boolean combination、imported Boolean shorthand、非 literal 右侧
 import key、无关 target kind、零或多个 publisher，以及缺失 export。imported value 仍不能作为
 switch/repeat controller、sentinel condition、computed/lazy expression、array length、
 annotation 或 payload dispatch value。
+sequence-element 的非法示例包括：`header_value` 带零个、两个或更多实参；非 identifier
+实参；未知的 element 字段名；guarded、位于 repeat 中、数组、dynamic-width 或 signed 的
+element 字段；没有声明 sequence 的程序；写在 sequence element structure 自身内部的调用；
+以及出现在 pure-function body、computed field、lazy size、controller 或任何已经拒绝
+`context_value` 的位置。
 
 payload 派发的非法示例包括：两个 payload 声明、`payload<ebsp>` 或其他 view kind、派发命名
 结构或未声明名称而非 sequence、所派发 sequence 没有 `entry`、未知 controller 名、以
@@ -1411,6 +1432,15 @@ invalid runtime state。import result 不创建 analysis node。imported value �
 width 中 lower 后的 `context_value` leaf、精确的 `context_value(...) == integer` conditional，
 或 source-anchored assertion condition 使用。它不能作为一般 expression、lazy size、
 switch/repeat controller 或 repeat bound 中的 identifier。
+
+被派发的 payload structure 通过 `header_value(element_field)` leaf 读取自己所属的 sequence
+element header。该 leaf 降低为 typed sequence-element reference，携带已解析的 element field
+index，且不新增 opcode。runner 随 execution request 提供已解码的 element 字段值——这之所以
+可行，是因为它在选择 case 之前本来就会物化 element header 并从中读出 dispatch controller。
+虚拟机在读取 source 之前验证 descriptor：index 越界、值缺失或值向量缺席都是 invalid
+definition，而不是用猜测值解码。位于此类 leaf 之上的 false guard 不消费 source，也不创建
+node。详见
+[ADR-0063](../adr/0063-read-sequence-element-fields-from-dispatched-payloads.md)。
 
 只有 structure 成功 materialize、满足请求的精确消费策略、完成 dependency resolution 和
 typed-payload 准备后才会发布。registration 前会预留 payload 与 directory 容量，因此成功

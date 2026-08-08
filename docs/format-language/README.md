@@ -162,6 +162,14 @@ The accepted imported-assertion slice additionally permits the reserved
 imported generation contract and remains unavailable in other general
 expression positions.
 
+The accepted sequence-element slice adds the reserved
+`header_value(element_field)` form. It resolves one scalar of the sequence
+element structure from within a dispatched payload structure, which lets a
+payload depend on its own element header rather than on a parameter set. It is a
+`u64` leaf admitted exactly where the imported `context_value` leaf is admitted,
+and because it is a call rather than an identifier the element and payload field
+namespaces stay separate.
+
 ## Minimum DSL 0.1 Subset
 
 The first executable subset uses the following grammar. Whitespace and `//` or
@@ -205,6 +213,7 @@ conditional   := "if" "(" ( identifier "==" integer | identifier
                  [ "else" "{" { struct_item } "}" ]
 context_value := "context_value" "(" identifier "," identifier ","
                  identifier ")"
+header_value  := "header_value" "(" identifier ")"
 switch        := "switch" "(" identifier ")" "{"
                  switch_case { switch_case } [ switch_default ] "}"
 switch_case   := "case" integer ":" "{" { struct_item } "}"
@@ -309,6 +318,15 @@ The static rules for this subset are:
   condition, and the exact conditional form `context_value(...) == integer`,
   it is rejected in pure-function bodies, computed fields, conditions, lazy
   sizes, switch or repeat controllers, and every other expression position.
+- `header_value(element_field)` is reserved for the same three positions as
+  `context_value`. It takes exactly one identifier argument, which must name a
+  field of the program's sequence element structure. That field must be an
+  unconditional, top-level, non-array unsigned scalar, so a guarded, repeated,
+  array, dynamic-width, or signed element field is rejected. A program that
+  declares no sequence, and a structure that is itself the sequence element
+  structure, are both rejected. The leaf resolves against the element structure
+  program-wide, so a call inside a structure that is never dispatched as a
+  payload compiles but fails at execution as an invalid definition.
 - Fixed-width arrays contribute `width * count` bits to static alignment.
   Every element of a little-endian array must therefore have a byte-multiple
   width and the first element must begin at a structure-relative byte boundary.
@@ -341,7 +359,8 @@ The static rules for this subset are:
   structure item. It is rejected inside a conditional, switch, count repeat,
   or sentinel repeat, and it cannot follow a terminal item. `condition` must be
   `bool`; it uses the complete bounded expression and pure-function contract
-  and may include the exact imported `context_value` leaf described above.
+  and may include the exact imported `context_value` leaf and the
+  `header_value(element_field)` leaf described above.
   Its local field dependencies must be earlier scalar unsigned `bits`, enum,
   `ue`, `computed<u64>`, or `computed<bool>` values guaranteed on the current
   path. Arrays, `se`, lazy regions, compressed payloads, unknown or future
@@ -366,7 +385,9 @@ The static rules for this subset are:
   the static import, reachability, unique-publisher, and named-export contract
   above. General condition expressions, arithmetic around an imported value,
   Boolean combinations, imported shorthand, `!=`, ordering, `else if`, and
-  other comparison forms are not accepted.
+  other comparison forms are not accepted. A sequence-element equality has the
+  matching exact form `header_value(element_field) == integer` under the same
+  restrictions.
 - Field names remain unique across all branches of a structure. Every possible
   branch field counts toward the 99,999-field projection limit. Static
   alignment is tracked independently through both branches; the conditional
@@ -1491,6 +1512,12 @@ shorthand, a nonliteral right side, a missing or later import key, an unrelated
 target kind, zero or multiple publishers, and a missing export. Imported values
 remain invalid as switch or repeat controllers, sentinel conditions, computed
 or lazy expressions, array lengths, annotations, and payload dispatch values.
+Invalid sequence-element examples include `header_value` with zero, two, or more
+arguments; a non-identifier argument; an unknown element field name; a guarded,
+repeated, array, dynamic-width, or signed element field; a program that declares
+no sequence; a call inside the sequence element structure itself; and a call in
+a pure-function body, computed field, lazy size, controller, or any other
+position that already rejects `context_value`.
 
 Invalid payload-dispatch examples include two payload declarations,
 `payload<ebsp>` or any other view kind, a dispatch naming a structure or an
@@ -1733,6 +1760,18 @@ the lowered `context_value` leaf in a dynamic width or the exact
 `context_value(...) == integer` conditional, or in a source-anchored assertion
 condition. They are not identifiers in general expressions, lazy sizes, switch
 or repeat controllers, or repeat bounds.
+
+A dispatched payload structure reads its own sequence element header through the
+`header_value(element_field)` leaf, which lowers to a typed sequence-element
+reference carrying the resolved element field index and adds no opcode. The
+runner supplies the already-decoded element field values with the execution
+request, which is possible because it materializes the element header and reads
+the dispatch controller out of it before selecting a case. Before reading source
+the virtual machine validates the descriptor; an out-of-range index, a missing
+value, or an absent value vector is an invalid definition rather than a decode
+with a guessed value. A false guard over such a leaf consumes no source and
+creates no node. See
+[ADR-0063](../adr/0063-read-sequence-element-fields-from-dispatched-payloads.md).
 
 Publication occurs only after successful materialization, requested exact
 consumption, dependency resolution, and complete typed-payload preparation.
