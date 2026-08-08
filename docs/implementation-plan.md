@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 3
 Last Completed Step: Admit the reserved external leaves in computed field initializers
 Next Action: Decide how a bounded pred_weight_table() selects its effective entry count, then implement it; the language currently cannot express the choice between the locally overridden count and the imported PPS default, and the restriction that would avoid the choice has no legal assertion position
-Last Verification: Commits 8d54240 and 3cfef2b; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 94/94; svtool rule check passed
+Last Verification: Commits 8d54240 and 3cfef2b; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 94/94; svtool rule check passed; hosted run 31258216794 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -869,7 +869,9 @@ Blockers: None
   在 non-IDR slice structure 尾部插入 2 个节点，导致 24 个 analyzer 测试的 106 处硬编码
   child index 偏移，而解码行为零变化——沿用 ADR-0063 的 capability-only 先例，package
   版本与 `rule.toml` 均不变。H.264 analyzer 定向套件 94/94，`svtool rule check` 通过；
-  本机 `dev`、`ci`、`sanitize` 完整构建与 CTest 均为 32/32。下一步先决定
+  本机 `dev`、`ci`、`sanitize` 完整构建与 CTest 均为 32/32。hosted run `31258216794` 对
+  `90910e6` 的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、Test、Install、
+  Upload 全部成功。下一步先决定
   `pred_weight_table()` 的 count 选择方案：一是在 override 与默认两个分支下复制表体并加
   区分后缀（今天即可表达，代价是四份近似副本、字段名随一个无关 flag 变化），二是新增带
   flow-sensitive 依赖分析的 defaulting/conditional expression（保住 spec 命名，代价是再
