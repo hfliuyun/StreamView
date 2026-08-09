@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Add the optional_value expression leaf
-Next Action: Implement the bounded pred_weight_table() rule change on top of optional_value, keeping the spec field names, and absorb the analyzer child-index shifts the new computed fields cause
-Last Verification: Commits 480f661 and bb4e223; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 94/94; svtool rule check passed; hosted run 31260642168 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Decode the bounded explicit weighted-prediction table
+Next Action: Continue toward the complete Baseline/Main/High slice-header milestone; the nearest deferred items are SP/SI slice types and the clause 7.4.3.3 relational marking validation
+Last Verification: Commits 4a83d44 and e5ff808; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 97/97; svtool rule check passed; Release install tree produced
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -903,3 +903,32 @@ Blockers: None
   `pred_weight_table()` 连同其 analyzer child index 偏移作为下一个增量。hosted run
   `31260642168` 对 `9d867de` 的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、
   Test、Install、Upload 全部成功。
+- [x] 解除 `weighted_pred_flag == 0` 与 `weighted_bipred_idc != 1` 两条 imported
+  assertion，改为解码有界的 clause 7.3.3.2 `pred_weight_table()`（消费 ADR-0066 的
+  `optional_value`）。**表体从来不是障碍，count 才是**——这也是前两个增量分别铺路的原因。
+  写文档前先用探测钉死上一轮交接时仍未定的设计问题：把 `if (is_p_slice)` 与 `if (is_b_slice)`
+  各自嵌套一层 imported 相等判断，会被 `error: Duplicate field name` 拒绝，因为 structure
+  只有一个扁平字段命名空间、互斥分支不能重名；嵌套因此会迫使整张表复制两份，正是 ADR-0066
+  要避免的代价。于是 presence 条件由**单个** `computed<bool> uses_explicit_weighting` 承载。
+  另外两点也是实测而非推断：完整表体（l0/l1 repeat、四个 Cb/Cr 字段、两处 `optional_value`）
+  在真实 bundled 规则上 `Rule OK`，`optional_value` 确实是唯一缺失能力；色度字段**无条件
+  存在**，因为 `chroma_format_idc` 只在 `profile_idc == 100` 下声明且被 `@equals(1)` 钉死、
+  其余受支持 profile 根本不声明它，故受支持子集内 ChromaArrayType 恒为 1，不需要新增 SPS
+  export 或改 context 契约。`weighted_bipred_idc == 3` 也**不需要**新 assertion：`@enum` 本
+  就提供致命校验而 `WeightedBipredIdc` 只声明 0/1/2，保留值早已在读取它的 PPS 处
+  `invalid-syntax`——那才是正确的拦截点。ADR-0067 与英中 format-language 参考提交 `4a83d44`；
+  实现提交 `e5ff808` 中两个 loop 都以 32 项为界，与 count 字段已有的 `@range(0, 31)` 一致；
+  `_cb`/`_cr` 后缀是必需而非风格，因为单整数 `repeat` 永远是 sentinel 形式、固定两次的
+  chroma 循环不可表达。测试影响先**实测**（应用改动后跑套件）再处理：24 个失败中 22 个是纯
+  索引平移，child count 一律 +1——计算字段总会物化为可见节点，于是每个 non-IDR slice 都多一
+  个节点，与它是否真的带表无关；另 2 个断言的正是本增量解除的限制，因此整体重写。这 2 个重
+  写扩成 5 个测试，覆盖两个 `optional_value` 叶子各自的两种状态：P/B slice 的 count 分别取
+  imported PPS 默认与 slice header 声明的 override，外加一个被码流末尾截断的表（终止在
+  `luma_weight_l0[0]` 与 `luma_offset_l0[0]` 之间，确认部分前缀仍物化、诊断锚定在未读到的
+  字段上）。每个测试断言**完整有序的 child 名字列表**而非位置索引，后续增量插入字段时会以名
+  字不匹配的形式失败，而不是变成一次被静默平移的比较。所有码流由生成脚本装配、解码结果经
+  `svtool analyze` 回读，因此每个被断言的值都是实测而非手算——首轮就靠这条发现 B slice 的
+  `direct_spatial_mv_pred_flag` 会多吃一个 bit、使原本的取值全部错位。package 更新为
+  `0.1.20`，是四个增量以来**第一个真正改变解码输出**的 bundled 规则变更（前三个为纯能力增量
+  并有意不升版本）。H.264 analyzer 97/97，`svtool rule check` 通过；本机 `dev`、`ci`、
+  `sanitize` 完整构建与 CTest 均为 32/32，并额外跑通 CI 也会执行的 Release install。
