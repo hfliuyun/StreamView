@@ -840,10 +840,19 @@ subtraction、short-term addition、long-term selection 或 termination。B slic
 structure 只有一个扁平字段命名空间，list 1 的投射名带 `_l1` 后缀；clause 7.3.3.1 对两个
 loop 使用完全相同的名字，因此该后缀只用于呈现层消歧，并不表示另一个 syntax element。
 
-可选 loop 之后有两条 imported PPS assertion。P slice 仍要求
-`weighted_pred_flag == 0`，B slice 要求 `weighted_bipred_idc != 1`，因此 default 与
-implicit biprediction 受支持，而 explicit biprediction 会在 `pic_parameter_set_id` 处
-失败，不会误读未声明的 `pred_weight_table()`。
+可选 loop 之后是 clause 7.3.3.2 的 `pred_weight_table()`。当 P slice 使用
+`weighted_pred_flag == 1` 的 PPS，或 B slice 使用 `weighted_bipred_idc == 1` 的 PPS 时
+该表存在；这一条件由**单个** computed 存在性字段承载，因为互斥分支不能重名，嵌套会迫使
+整张表复制两份。表先读 `luma_log2_weight_denom` 与 `chroma_log2_weight_denom`，然后按
+list 0 的有效表项数循环——override flag 选中时用 slice 级的
+`num_ref_idx_l0_active_minus1`，否则用 imported 的 PPS 默认值。每一项先读
+`luma_weight_l0_flag`（guard 一对 weight 与 offset），再读 `chroma_weight_l0_flag`
+（guard 两个 Cb 与两个 Cr 值）。B slice 按自己的有效次数对 list 1 重复整个循环。色度值
+无条件存在，因为受支持子集内 ChromaArrayType 恒为 1。两个 loop 都以 32 项为界，与 count
+字段已经携带的 `0..31` 界一致。由于 clause 7.3.3.2 对一个 chroma 元素循环两次，而单整数
+`repeat` 形式永远是 sentinel 形式，四个色度字段带 `_cb` 与 `_cr` 后缀；list 1 的投射名
+带 `_l1`，理由与 modification loop 的扁平命名空间相同。implicit biprediction 不读表，
+保留的 `weighted_bipred_idc` 仍在读取它的 PPS 处保持 `invalid-syntax`。
 
 NAL header 带非零 reference priority 的 slice 随后解码 clause 7.3.3.3 的
 `dec_ref_pic_marking()`。`adaptive_ref_pic_marking_mode_flag` 为零时选择 sliding-window
@@ -918,9 +927,9 @@ exact imported PPS guard 会选择 bottom-field POC、redundant-picture count �
 与 marking loop 各自以 64 个 operation 受界，这是 sentinel repeat 的语言上界。它们是资源
 边界，而不是宣称的 conformance limit。SP/SI slice type、field-picture、
 decoded-picture-buffer validation、marking 语义与 clause 7.4.3.3 关系校验、
-weighted-prediction table、CABAC slice-data 解码与 slice-group 分支均留待后续。
+权重施加语义、CABAC slice-data 解码与 slice-group 分支均留待后续。
 type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.19` 发布 coverage depth `i-p-b-reference-slice-header`；这尚未完成
+`0.1.20` 发布 coverage depth `i-p-b-reference-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正

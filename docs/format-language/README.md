@@ -1094,11 +1094,25 @@ the list 1 projections carry an `_l1` suffix; clause 7.3.3.1 names both loops'
 elements identically, so the suffix disambiguates presentation only and does not
 denote a different syntax element.
 
-Two imported PPS assertions follow the optional loop. A P slice still requires
-`weighted_pred_flag == 0`, and a B slice requires `weighted_bipred_idc != 1`, so
-default and implicit biprediction are supported while explicit biprediction
-fails at `pic_parameter_set_id` rather than misreading an undeclared
-`pred_weight_table()`.
+Clause 7.3.3.2 `pred_weight_table()` follows the optional loop. It is present
+when a P slice uses a PPS with `weighted_pred_flag == 1` or a B slice uses one
+with `weighted_bipred_idc == 1`; a single computed presence field carries that
+condition, because mutually exclusive branches cannot redeclare a field name and
+nesting would force two copies of the table. The table reads
+`luma_log2_weight_denom` and `chroma_log2_weight_denom`, then loops over the
+effective list 0 entry count, which is the slice-level
+`num_ref_idx_l0_active_minus1` when the override flag selected it and the
+imported PPS default otherwise. Each entry reads `luma_weight_l0_flag`, guarding
+a weight and offset pair, then `chroma_weight_l0_flag`, guarding two Cb and two
+Cr values. A B slice repeats the whole loop for list 1 under its own effective
+count. Chroma values are unconditionally present because ChromaArrayType is 1
+throughout the supported subset. Both loops are bounded at 32 entries, matching
+the `0..31` bounds the count fields already carry. Because clause 7.3.3.2 loops
+twice over one chroma element and the single-integer `repeat` form is always the
+sentinel form, the four chroma fields carry `_cb` and `_cr` suffixes; the list 1
+projections carry `_l1` for the same flat-namespace reason as the modification
+loops. Implicit biprediction reads no table, and a reserved
+`weighted_bipred_idc` remains `invalid-syntax` at the PPS where it is read.
 
 A slice whose NAL header carries nonzero reference priority then decodes
 clause 7.3.3.3 `dec_ref_pic_marking()`. `adaptive_ref_pic_marking_mode_flag`
@@ -1184,10 +1198,10 @@ are still analyzed. Each modification loop and the marking loop are independentl
 bounded at 64 operations, which is the language maximum for a sentinel repeat.
 These are resource bounds rather than claimed conformance limits. SP/SI slice
 types, field-picture, decoded-picture-buffer validation, marking-semantics and
-clause 7.4.3.3 relational validation, weighted-prediction tables, CABAC
+clause 7.4.3.3 relational validation, weight-application semantics, CABAC
 slice-data decoding, and slice-group branches are deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
-Package `0.1.19` advertises coverage depth `i-p-b-reference-slice-header`; this is
+Package `0.1.20` advertises coverage depth `i-p-b-reference-slice-header`; this is
 not yet the complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
