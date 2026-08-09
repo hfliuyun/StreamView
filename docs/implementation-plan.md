@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 3
 Last Completed Step: Decode the bounded explicit weighted-prediction table
 Next Action: Continue toward the complete Baseline/Main/High slice-header milestone; the nearest deferred items are SP/SI slice types and the clause 7.4.3.3 relational marking validation
-Last Verification: Commits 4a83d44 and e5ff808; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 97/97; svtool rule check passed; Release install tree produced
+Last Verification: Commits 4a83d44 and e5ff808; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 97/97; svtool rule check passed; hosted run 31293182690 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -931,4 +931,7 @@ Blockers: None
   `direct_spatial_mv_pred_flag` 会多吃一个 bit、使原本的取值全部错位。package 更新为
   `0.1.20`，是四个增量以来**第一个真正改变解码输出**的 bundled 规则变更（前三个为纯能力增量
   并有意不升版本）。H.264 analyzer 97/97，`svtool rule check` 通过；本机 `dev`、`ci`、
-  `sanitize` 完整构建与 CTest 均为 32/32，并额外跑通 CI 也会执行的 Release install。
+  `sanitize` 完整构建与 CTest 均为 32/32，并额外跑通 CI 也会执行的 Release install。落地后
+  补做了一次反向核验：把 svfmt 单独回退到 `a324e39` 重建，5 个新测试全部 red，恢复后 97/97
+  green，因此它们确实判别的是本增量的行为而不是恒真。hosted run `31293182690` 对 `7f093d8`
+  的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、Test、Install、Upload 全部成功。
