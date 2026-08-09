@@ -428,12 +428,89 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
             }
         }
     }
-    assert(!is_p_slice ||
-           context_value(pic_parameter_set_id, h264_pps, weighted_pred_flag) == 0)
-        at pic_parameter_set_id;
-    assert(!is_b_slice ||
-           context_value(pic_parameter_set_id, h264_pps, weighted_bipred_idc) != 1)
-        at pic_parameter_set_id;
+    computed<bool> uses_explicit_weighting =
+        (is_p_slice &&
+         context_value(pic_parameter_set_id, h264_pps, weighted_pred_flag) == 1) ||
+        (is_b_slice &&
+         context_value(pic_parameter_set_id, h264_pps, weighted_bipred_idc) == 1);
+    if (uses_explicit_weighting) {
+        ue luma_log2_weight_denom @range(0, 7)
+            @spec("ITU-T H.264", "7.3.3.2, 7.4.3.2")
+            @description("Sets the binary logarithm of the luma weight denominator.");
+        ue chroma_log2_weight_denom @range(0, 7)
+            @spec("ITU-T H.264", "7.3.3.2, 7.4.3.2")
+            @description("Sets the binary logarithm of the chroma weight denominator.");
+        computed<u64> effective_l0_count =
+            optional_value(num_ref_idx_l0_active_minus1,
+                           context_value(pic_parameter_set_id, h264_pps,
+                                         num_ref_idx_l0_default_active_minus1)) + 1;
+        repeat (effective_l0_count, 32) {
+            bits<1> luma_weight_l0_flag
+                @spec("ITU-T H.264", "7.3.3.2")
+                @description("Selects explicit list 0 luma weighting for this entry.");
+            if (luma_weight_l0_flag == 1) {
+                se luma_weight_l0
+                    @spec("ITU-T H.264", "7.3.3.2, 7.4.3.2")
+                    @description("Carries the list 0 luma weight factor.");
+                se luma_offset_l0
+                    @spec("ITU-T H.264", "7.3.3.2, 7.4.3.2")
+                    @description("Carries the list 0 luma additive offset.");
+            }
+            bits<1> chroma_weight_l0_flag
+                @spec("ITU-T H.264", "7.3.3.2")
+                @description("Selects explicit list 0 chroma weighting for this entry.");
+            if (chroma_weight_l0_flag == 1) {
+                se chroma_weight_l0_cb
+                    @spec("ITU-T H.264", "7.3.3.2, 7.4.3.2")
+                    @description("Carries the list 0 Cb weight factor.");
+                se chroma_offset_l0_cb
+                    @spec("ITU-T H.264", "7.3.3.2, 7.4.3.2")
+                    @description("Carries the list 0 Cb additive offset.");
+                se chroma_weight_l0_cr
+                    @spec("ITU-T H.264", "7.3.3.2, 7.4.3.2")
+                    @description("Carries the list 0 Cr weight factor.");
+                se chroma_offset_l0_cr
+                    @spec("ITU-T H.264", "7.3.3.2, 7.4.3.2")
+                    @description("Carries the list 0 Cr additive offset.");
+            }
+        }
+        if (is_b_slice) {
+            computed<u64> effective_l1_count =
+                optional_value(num_ref_idx_l1_active_minus1,
+                               context_value(pic_parameter_set_id, h264_pps,
+                                             num_ref_idx_l1_default_active_minus1)) + 1;
+            repeat (effective_l1_count, 32) {
+                bits<1> luma_weight_l1_flag
+                    @spec("ITU-T H.264", "7.3.3.2")
+                    @description("Selects explicit list 1 luma weighting for this entry.");
+                if (luma_weight_l1_flag == 1) {
+                    se luma_weight_l1
+                        @spec("ITU-T H.264", "7.3.3.2, 7.4.3.2")
+                        @description("Carries the list 1 luma weight factor.");
+                    se luma_offset_l1
+                        @spec("ITU-T H.264", "7.3.3.2, 7.4.3.2")
+                        @description("Carries the list 1 luma additive offset.");
+                }
+                bits<1> chroma_weight_l1_flag
+                    @spec("ITU-T H.264", "7.3.3.2")
+                    @description("Selects explicit list 1 chroma weighting for this entry.");
+                if (chroma_weight_l1_flag == 1) {
+                    se chroma_weight_l1_cb
+                        @spec("ITU-T H.264", "7.3.3.2, 7.4.3.2")
+                        @description("Carries the list 1 Cb weight factor.");
+                    se chroma_offset_l1_cb
+                        @spec("ITU-T H.264", "7.3.3.2, 7.4.3.2")
+                        @description("Carries the list 1 Cb additive offset.");
+                    se chroma_weight_l1_cr
+                        @spec("ITU-T H.264", "7.3.3.2, 7.4.3.2")
+                        @description("Carries the list 1 Cr weight factor.");
+                    se chroma_offset_l1_cr
+                        @spec("ITU-T H.264", "7.3.3.2, 7.4.3.2")
+                        @description("Carries the list 1 Cr additive offset.");
+                }
+            }
+        }
+    }
     if (header_value(nal_ref_idc) == 0) {
     } else {
         bits<1> adaptive_ref_pic_marking_mode_flag
