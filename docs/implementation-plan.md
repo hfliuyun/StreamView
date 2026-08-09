@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Decode the bounded explicit weighted-prediction table
-Next Action: Continue toward the complete Baseline/Main/High slice-header milestone; the nearest deferred items are SP/SI slice types and the clause 7.4.3.3 relational marking validation
-Last Verification: Commits 4a83d44 and e5ff808; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 97/97; svtool rule check passed; hosted run 31293182690 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Decode the field-picture slice header
+Next Action: Continue toward the complete Baseline/Main/High slice-header milestone; the nearest deferred item on that path is the clause 7.4.3.3 relational marking validation (SP/SI slice types are Extended-profile and therefore off this milestone's path)
+Last Verification: Commits c0d326f and a6ae0a7; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 102/102; svtool rule check passed; hosted verification pending
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -935,3 +935,20 @@ Blockers: None
   补做了一次反向核验：把 svfmt 单独回退到 `a324e39` 重建，5 个新测试全部 red，恢复后 97/97
   green，因此它们确实判别的是本增量的行为而不是恒真。hosted run `31293182690` 对 `7f093d8`
   的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、Test、Install、Upload 全部成功。
+- 2026-08-09：解码场图像 slice header（`field_pic_flag` / `bottom_field_flag`）。`frame_num` 上那个
+  除以 `frame_mbs_only_flag` 的 ADR-0049 guard 并不属于 clause 7.4.3 规定的字段宽度，它只是用来拒绝
+  隔行码流，因此移除；两个 slice struct 改为在 imported equality 下读 `field_pic_flag`，并在其内层嵌
+  `bottom_field_flag`。`delta_pic_order_cnt_bottom` 的条件是复合的，而 imported-condition 文法只接受
+  `context_value(a, b, c) == <整数>` 这一确切形式，因此折进一个 `computed<bool>`，用
+  `optional_value(field_pic_flag, 0)` 承接那个自身就是条件性的字段——靠的正是 ADR-0066 只豁免第一个
+  实参的规则。fallback 取 0 是在重述 clause 7.4.3 的推断，而不是挑一个方便的默认值。同时接受了 MBAFF
+  帧：它 header 布局与场图像相同，宏块自适应只改变不透明 `slice_data` 的解释，因此不需要额外语法。
+  34 个既有测试失败，全部是 +1 child 平移，**没有一个是语义变更**。两种失败形态安全性不对等：断言有序
+  名字列表的以名字不匹配失败，而按位置索引的**直接 SIGSEGV**——`at(8)` 仍返回有效节点，但那已是计算
+  guard，其 `location()` 为空。插入位置由 `svtool analyze` 实测（non-IDR 索引 8、IDR 索引 7），不靠读
+  规则推导。新增 5 个测试：底场（其 PPS 启用 bottom-field POC，证明的是场图像**抑制**该字段）、MBAFF
+  帧带 delta、IDR 布局、两个 flag 之间的截断（12 bit `frame_num` 把 `field_pic_flag` 顶到 payload 末
+  位）、以及 progressive 回归。fixture 由生成脚本装配，该脚本先逐字节复现两个**已提交**的既有 fixture
+  做自检。package 升到 `0.1.21`，coverage depth 改 `field-picture-slice-header`。H.264 analyzer
+  102/102，`svtool rule check` 通过；本机 `dev`、`ci`、`sanitize` 三套 CTest 均 32/32。另修正计划头部
+  `Next Action`：SP/SI 属 Extended profile，不在 Baseline/Main/High slice-header 里程碑的路径上。
