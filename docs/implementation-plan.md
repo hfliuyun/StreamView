@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 3
 Last Completed Step: Decode the field-picture slice header
 Next Action: Continue toward the complete Baseline/Main/High slice-header milestone; the nearest deferred item on that path is the clause 7.4.3.3 relational marking validation (SP/SI slice types are Extended-profile and therefore off this milestone's path)
-Last Verification: Commits c0d326f and a6ae0a7; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 102/102; svtool rule check passed; hosted verification pending
+Last Verification: Commits c0d326f and a6ae0a7; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 102/102; svtool rule check passed; hosted run 31320789048 passed on Windows, macOS, and Ubuntu
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -952,3 +952,5 @@ Blockers: None
   做自检。package 升到 `0.1.21`，coverage depth 改 `field-picture-slice-header`。H.264 analyzer
   102/102，`svtool rule check` 通过；本机 `dev`、`ci`、`sanitize` 三套 CTest 均 32/32。另修正计划头部
   `Next Action`：SP/SI 属 Extended profile，不在 Baseline/Main/High slice-header 里程碑的路径上。
+  hosted run `31320789048` 对 `685b615` 的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、
+  Test、Install deployable tree、Upload package tree 全部成功。
