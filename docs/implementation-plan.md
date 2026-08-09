@@ -876,7 +876,7 @@ Blockers: None
   区分后缀（今天即可表达，代价是四份近似副本、字段名随一个无关 flag 变化），二是新增带
   flow-sensitive 依赖分析的 defaulting/conditional expression（保住 spec 命名，代价是再
   一个能力 ADR）；建议取二，因为复制方案会在后续每张表上复利式膨胀。
-- [x] 新增 `optional_value(field, fallback)` expression leaf（承接上一条的方案二）。
+- 2026-08-08：新增 `optional_value(field, fallback)` expression leaf（承接上一条的方案二）。
   决策前先用探测把问题钉死，而不是照图纸设计：最小 blocker 精确复现
   `error: Computed field dependency is not guaranteed on the current branch`，复制方案
   也真的编译通过（`Rule OK`），因此 ADR 里的对比是实测而非推断——代价确认为字段名被迫
@@ -903,7 +903,7 @@ Blockers: None
   `pred_weight_table()` 连同其 analyzer child index 偏移作为下一个增量。hosted run
   `31260642168` 对 `9d867de` 的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、
   Test、Install、Upload 全部成功。
-- [x] 解除 `weighted_pred_flag == 0` 与 `weighted_bipred_idc != 1` 两条 imported
+- 2026-08-09：解除 `weighted_pred_flag == 0` 与 `weighted_bipred_idc != 1` 两条 imported
   assertion，改为解码有界的 clause 7.3.3.2 `pred_weight_table()`（消费 ADR-0066 的
   `optional_value`）。**表体从来不是障碍，count 才是**——这也是前两个增量分别铺路的原因。
   写文档前先用探测钉死上一轮交接时仍未定的设计问题：把 `if (is_p_slice)` 与 `if (is_b_slice)`
