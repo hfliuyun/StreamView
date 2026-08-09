@@ -1152,9 +1152,11 @@ meanings:
 | `uses_reference_lists` | Type-1 computed Boolean that is true for any P or B slice; it has no source location. |
 | `pic_parameter_set_id` | Selects the exact prior PPS generation and warns outside `0..255`. |
 | `frame_num` | Uses `log2_max_frame_num_minus4 + 4` bits from the bound SPS. |
+| `field_pic_flag` | Selects field or frame coding; present only when the bound SPS clears `frame_mbs_only_flag`. |
+| `bottom_field_flag` | Selects the bottom field; present only when `field_pic_flag` is one. |
 | `idr_pic_id` | Identifies the IDR picture. |
 | `pic_order_cnt_lsb` | Uses `log2_max_pic_order_cnt_lsb_minus4 + 4` bits from the bound POC-type-0 SPS. |
-| `delta_pic_order_cnt_bottom` | Carries the signed bottom-field POC delta when the bound PPS enables it. |
+| `delta_pic_order_cnt_bottom` | Carries the signed bottom-field POC delta when the bound PPS enables it and the picture is not a field. |
 | `redundant_pic_cnt` | Identifies the redundant representation when the bound PPS enables it; values outside `0..127` warn. |
 | `direct_spatial_mv_pred_flag` | Selects spatial or temporal direct prediction for a supported B slice. |
 | `num_ref_idx_active_override_flag` | Mandatory for a supported P or B slice; value 1 reads the active-reference overrides and value 0 keeps the PPS defaults. |
@@ -1187,21 +1189,27 @@ meanings:
 | `slice_beta_offset_div2` | Carries the signed beta deblocking offset when filtering is not disabled; its signed bound is deferred. |
 | `slice_data` | Materialized opaque suffix covering every remaining RBSP bit, including any slice trailing bits; CAVLC/CABAC is not decoded. |
 
-Dynamic widths still reject non-progressive SPS and POC types other than 0
-before the affected field reads source. Exact imported PPS guards select
-bottom-field POC, redundant-picture count, and deblocking-control fields; a
-false guard consumes no bits and creates no node. Deblocking value 1 skips both
+Dynamic widths still reject POC types other than 0 before the affected field
+reads source. Exact imported PPS guards select redundant-picture count and
+deblocking-control fields, and a computed guard selects the bottom-field POC
+delta; a false guard consumes no bits and creates no node. Deblocking value 1
+skips both
 offsets, values 0 and 2 read them, and reserved values fail at the controlling
 codeword. Missing/future/stale parameter-set generations remain
 `dependency-unavailable`; the partial header is retained and later NAL units
 are still analyzed. Each modification loop and the marking loop are independently
 bounded at 64 operations, which is the language maximum for a sentinel repeat.
-These are resource bounds rather than claimed conformance limits. SP/SI slice
-types, field-picture, decoded-picture-buffer validation, marking-semantics and
-clause 7.4.3.3 relational validation, weight-application semantics, CABAC
-slice-data decoding, and slice-group branches are deferred.
+These are resource bounds rather than claimed conformance limits. An interlaced
+sequence (`frame_mbs_only_flag == 0`) reads `field_pic_flag`, and a field picture
+reads `bottom_field_flag`; a field picture suppresses
+`delta_pic_order_cnt_bottom` even when its PPS enables that field. MBAFF frames
+are accepted with the same header layout, since macroblock-adaptive coding
+changes only how the opaque `slice_data` is interpreted. SP/SI slice types,
+decoded-picture-buffer validation, marking-semantics and clause 7.4.3.3
+relational validation, weight-application semantics, CABAC slice-data decoding,
+and slice-group branches are deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
-Package `0.1.20` advertises coverage depth `i-p-b-reference-slice-header`; this is
+Package `0.1.21` advertises coverage depth `field-picture-slice-header`; this is
 not yet the complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in

@@ -884,9 +884,11 @@ generation 以及该 PPS 的精确 SPS dependency。两个有界 shape 中声明
 | `uses_reference_lists` | type-1 computed Boolean，任意 P 或 B slice 为 true；没有 source location。 |
 | `pic_parameter_set_id` | 选择此前精确 PPS generation，超出 `0..255` 时告警。 |
 | `frame_num` | 使用绑定 SPS 的 `log2_max_frame_num_minus4 + 4` bit。 |
+| `field_pic_flag` | 选择场编码或帧编码；仅当绑定 SPS 清零 `frame_mbs_only_flag` 时存在。 |
+| `bottom_field_flag` | 选择底场；仅当 `field_pic_flag` 为 1 时存在。 |
 | `idr_pic_id` | 标识 IDR picture。 |
 | `pic_order_cnt_lsb` | 在绑定的 POC-type-0 SPS 下使用 `log2_max_pic_order_cnt_lsb_minus4 + 4` bit。 |
-| `delta_pic_order_cnt_bottom` | 在绑定 PPS 启用时携带 signed bottom-field POC delta。 |
+| `delta_pic_order_cnt_bottom` | 在绑定 PPS 启用且该图像不是场图像时携带 signed bottom-field POC delta。 |
 | `redundant_pic_cnt` | 在绑定 PPS 启用时标识 redundant representation；超出 `0..127` 时告警。 |
 | `direct_spatial_mv_pred_flag` | 为受支持 B slice 选择 spatial 或 temporal direct prediction。 |
 | `num_ref_idx_active_override_flag` | 受支持 P 或 B slice 的必需字段；值 1 读取 active-reference override，值 0 保留 PPS default。 |
@@ -919,17 +921,21 @@ generation 以及该 PPS 的精确 SPS dependency。两个有界 shape 中声明
 | `slice_beta_offset_div2` | 在 filtering 未禁用时携带 signed beta deblocking offset；signed bound 留待后续。 |
 | `slice_data` | 覆盖全部剩余 RBSP bit 的 materialized opaque suffix，其中包括可能存在的 slice trailing bits；不解码 CAVLC/CABAC。 |
 
-dynamic width 仍会在受影响字段读取 source 前拒绝 non-progressive SPS 与非零 POC type。
-exact imported PPS guard 会选择 bottom-field POC、redundant-picture count 与 deblocking-control
-字段；false guard 不消费 bit，也不创建 node。deblocking 值 1 省略两个 offset，值 0 和 2 读取
+dynamic width 仍会在受影响字段读取 source 前拒绝非零 POC type。
+exact imported PPS guard 会选择 redundant-picture count 与 deblocking-control
+字段，bottom-field POC delta 改由 computed guard 选择；false guard 不消费 bit，也不创建
+node。deblocking 值 1 省略两个 offset，值 0 和 2 读取
 它们，reserved 值在 controller 码字处失败。missing/future/stale parameter-set generation 仍报告
 `dependency-unavailable`；保留 partial header，并继续分析后续 NAL。每个 modification loop
 与 marking loop 各自以 64 个 operation 受界，这是 sentinel repeat 的语言上界。它们是资源
-边界，而不是宣称的 conformance limit。SP/SI slice type、field-picture、
+边界，而不是宣称的 conformance limit。隔行序列（`frame_mbs_only_flag == 0`）会读取
+`field_pic_flag`，场图像再读取 `bottom_field_flag`；即使其 PPS 启用了该字段，场图像
+也会抑制 `delta_pic_order_cnt_bottom`。MBAFF 帧以相同的 header 布局被接受，因为宏块
+自适应编码只改变不透明 `slice_data` 的解释方式。SP/SI slice type、
 decoded-picture-buffer validation、marking 语义与 clause 7.4.3.3 关系校验、
 权重施加语义、CABAC slice-data 解码与 slice-group 分支均留待后续。
 type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.20` 发布 coverage depth `i-p-b-reference-slice-header`；这尚未完成
+`0.1.21` 发布 coverage depth `field-picture-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
