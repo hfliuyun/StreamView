@@ -272,9 +272,20 @@ struct IdrSliceLayerWithoutPartitioningRbsp {
         @description("Selects the active picture parameter set.");
     bits<(context_value(pic_parameter_set_id,
                         h264_sps,
-                        log2_max_frame_num_minus4) + 4) /
-         context_value(pic_parameter_set_id, h264_sps, frame_mbs_only_flag)> frame_num
+                        log2_max_frame_num_minus4) + 4)> frame_num
         @description("Identifies the decoded picture within the frame-number wrap.");
+    if (context_value(pic_parameter_set_id,
+                      h264_sps,
+                      frame_mbs_only_flag) == 0) {
+        bits<1> field_pic_flag
+            @spec("ITU-T H.264", "7.3.3, 7.4.3")
+            @description("Selects field or frame coding for this slice.");
+        if (field_pic_flag == 1) {
+            bits<1> bottom_field_flag
+                @spec("ITU-T H.264", "7.3.3, 7.4.3")
+                @description("Selects the bottom field when this slice codes a field.");
+        }
+    }
     ue idr_pic_id
         @description("Identifies this IDR picture.");
     bits<(context_value(pic_parameter_set_id,
@@ -282,9 +293,12 @@ struct IdrSliceLayerWithoutPartitioningRbsp {
                         log2_max_pic_order_cnt_lsb_minus4) + 4) /
          (1 - context_value(pic_parameter_set_id, h264_sps, pic_order_cnt_type))> pic_order_cnt_lsb
         @description("Carries the picture-order-count least-significant bits.");
-    if (context_value(pic_parameter_set_id,
+    computed<bool> has_delta_pic_order_cnt_bottom =
+        context_value(pic_parameter_set_id,
                       h264_pps,
-                      bottom_field_pic_order_in_frame_present_flag) == 1) {
+                      bottom_field_pic_order_in_frame_present_flag) == 1 &&
+        optional_value(field_pic_flag, 0) == 0;
+    if (has_delta_pic_order_cnt_bottom) {
         se delta_pic_order_cnt_bottom
             @spec("ITU-T H.264", "7.3.3")
             @description("Carries the bottom-field picture-order-count delta.");
@@ -338,17 +352,31 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
         @description("Selects the active picture parameter set.");
     bits<(context_value(pic_parameter_set_id,
                         h264_sps,
-                        log2_max_frame_num_minus4) + 4) /
-         context_value(pic_parameter_set_id, h264_sps, frame_mbs_only_flag)> frame_num
+                        log2_max_frame_num_minus4) + 4)> frame_num
         @description("Identifies the decoded picture within the frame-number wrap.");
+    if (context_value(pic_parameter_set_id,
+                      h264_sps,
+                      frame_mbs_only_flag) == 0) {
+        bits<1> field_pic_flag
+            @spec("ITU-T H.264", "7.3.3, 7.4.3")
+            @description("Selects field or frame coding for this slice.");
+        if (field_pic_flag == 1) {
+            bits<1> bottom_field_flag
+                @spec("ITU-T H.264", "7.3.3, 7.4.3")
+                @description("Selects the bottom field when this slice codes a field.");
+        }
+    }
     bits<(context_value(pic_parameter_set_id,
                         h264_sps,
                         log2_max_pic_order_cnt_lsb_minus4) + 4) /
          (1 - context_value(pic_parameter_set_id, h264_sps, pic_order_cnt_type))> pic_order_cnt_lsb
         @description("Carries the picture-order-count least-significant bits.");
-    if (context_value(pic_parameter_set_id,
+    computed<bool> has_delta_pic_order_cnt_bottom =
+        context_value(pic_parameter_set_id,
                       h264_pps,
-                      bottom_field_pic_order_in_frame_present_flag) == 1) {
+                      bottom_field_pic_order_in_frame_present_flag) == 1 &&
+        optional_value(field_pic_flag, 0) == 0;
+    if (has_delta_pic_order_cnt_bottom) {
         se delta_pic_order_cnt_bottom
             @spec("ITU-T H.264", "7.3.3")
             @description("Carries the bottom-field picture-order-count delta.");
