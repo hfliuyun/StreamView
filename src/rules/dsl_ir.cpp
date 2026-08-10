@@ -2187,11 +2187,12 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 return;
             }
             const bool topLevel = conditions.empty() && repeatIndices.empty();
-            if (!topLevel) {
+            const bool repeatLocal = !repeatIndices.empty();
+            if (!topLevel && !repeatLocal) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidCondition,
                               QStringLiteral(
-                                  "Assertions must be unconditional top-level items"),
+                                  "Assertions must be top-level or repeat-local items"),
                               assertion.range);
             }
 
@@ -2281,7 +2282,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                               QStringLiteral("Assertion conditions must be bool"),
                               assertion.condition.range);
             }
-            if (!topLevel || !anchorFieldIndex || !expression ||
+            if ((!topLevel && !repeatLocal) || !anchorFieldIndex || !expression ||
                 expression->type != DslScalarType::Bool) {
                 return;
             }
@@ -2298,6 +2299,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 {*expression,
                  *anchorFieldIndex,
                  static_cast<quint32>(typedStruct.fields.size()),
+                 conditions,
                  assertion.range});
         };
         const auto compileItems =

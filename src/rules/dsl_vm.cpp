@@ -1545,8 +1545,19 @@ DslExecutionResult DslVirtualMachine::execute(
             anchor.type.kind == DslValueTypeKind::Enum ||
             anchor.type.kind == DslValueTypeKind::UnsignedExpGolomb ||
             anchor.type.kind == DslValueTypeKind::SignedExpGolomb;
+        const bool anchorAvailable = std::all_of(
+            anchor.conditions.begin(),
+            anchor.conditions.end(),
+            [&assertion](const DslTypedFieldCondition& required) {
+                return std::any_of(
+                    assertion.conditions.begin(),
+                    assertion.conditions.end(),
+                    [&required](const DslTypedFieldCondition& candidate) {
+                        return sameCondition(required, candidate);
+                    });
+            });
         if (anchor.kind != DslTypedFieldKind::Declared || !sourceBacked ||
-            !anchor.conditions.empty()) {
+            !anchorAvailable) {
             markFailure(DslExecutionStatus::InvalidDefinition,
                         QStringLiteral("Typed assertion anchor is invalid"),
                         &anchor,
@@ -1555,13 +1566,19 @@ DslExecutionResult DslVirtualMachine::execute(
                         false);
             return result;
         }
+        if (!validateConditions(assertion.conditions,
+                                assertion.assertionFieldIndex,
+                                &anchor,
+                                QStringLiteral("assertion"))) {
+            return result;
+        }
         TypedExpressionValidationState validation;
         validation.allowImportedContextReferences = true;
         if (!validateTypedExpression(assertion.condition,
                                      program,
                                      structure,
                                      assertion.assertionFieldIndex,
-                                     {},
+                                     assertion.conditions,
                                      1,
                                      validation) ||
             assertion.condition.type != DslScalarType::Bool) {
@@ -2753,6 +2770,16 @@ DslExecutionResult DslVirtualMachine::execute(
             ++nextAssertionIndex;
             const DslTypedField& anchor =
                 structure.fields.at(assertion->anchorFieldIndex);
+            const std::optional<bool> assertionPresent =
+                conditionsPresent(assertion->conditions,
+                                  &anchor,
+                                  QStringLiteral("assertion"));
+            if (!assertionPresent) {
+                return result;
+            }
+            if (!*assertionPresent) {
+                break;
+            }
             const std::optional<MaterializedFieldRange>& anchorRange =
                 fieldRanges.at(assertion->anchorFieldIndex);
             if (!anchorRange) {

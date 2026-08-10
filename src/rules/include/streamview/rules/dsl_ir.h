@@ -137,6 +137,7 @@ struct DslTypedAssertion final {
     DslTypedExpression condition;
     quint32 anchorFieldIndex = 0;
     quint32 assertionFieldIndex = 0;
+    std::vector<DslTypedFieldCondition> conditions;
     DslSourceRange range;
 };
 

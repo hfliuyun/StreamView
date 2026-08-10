@@ -41,9 +41,16 @@ condition/anchor dependency relationship. Assertions count toward the
 structure's 1,024 assertion limit and the instruction budget; skipped
 assertions remain cancellation points.
 
-The official H.264 rule uses this capability for bounded checks against values
-available from the imported SPS context. This increment does not track a
-decoded-picture buffer, model operation ordering, detect duplicate or
+The official H.264 rule uses this capability for three bounded checks against
+the imported SPS `max_num_ref_frames` value: operation 2 requires
+`long_term_pic_num_mmco < max_num_ref_frames`, operations 3 and 6 require
+`long_term_frame_idx < max_num_ref_frames`, and operation 4 requires
+`max_long_term_frame_idx_plus1 <= max_num_ref_frames`. The SPS export and
+these assertions are published by package `0.1.22` at coverage depth
+`relational-marking-slice-header`. The short-term operation 1/3
+`difference_of_pic_nums_minus1` relation remains deferred because its correct
+MaxPicNum bound needs additional frame-number context. This increment does not
+track a decoded-picture buffer, model operation ordering, detect duplicate or
 contradictory operations, or claim complete clause 7.4.3.3 conformance.
 
 ## Consequences

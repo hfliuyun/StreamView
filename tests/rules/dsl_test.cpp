@@ -153,6 +153,37 @@ private slots:
         }
     }
 
+    void parsesRepeatLocalAssertionsOnTheCurrentProjection() {
+        const auto result = DslParser::parse(QStringLiteral(R"(
+            struct Marking {
+                ue maximum;
+                repeat (2) {
+                    ue operation;
+                    if (operation == 1) {
+                        ue operand;
+                        assert(operand <= maximum) at operand;
+                    }
+                } until (operation == 0);
+            }
+            entry Marking;
+        )"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& repeat = result.program.structs.front().items.at(1);
+        QCOMPARE(repeat.kind, DslStructItemKind::SentinelRepeat);
+        const auto& conditional = repeat.repeatItems.at(1);
+        QCOMPARE(conditional.kind, DslStructItemKind::Conditional);
+        QCOMPARE(conditional.thenItems.at(1).kind, DslStructItemKind::Assertion);
+        const auto& assertion = conditional.thenItems.at(1).assertion;
+        QCOMPARE(assertion.anchorFieldName, QStringLiteral("operand"));
+        QCOMPARE(assertion.condition.kind, DslExpressionKind::Binary);
+        QCOMPARE(assertion.condition.binaryOperator,
+                 DslBinaryOperator::LessEqual);
+    }
+
     void parsesSequenceElementHeaderValueLeaf() {
         const auto result = DslParser::parse(QStringLiteral(R"(
             struct NalUnitHeader {

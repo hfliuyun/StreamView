@@ -393,6 +393,136 @@ private slots:
         QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(2));
     }
 
+    void executesAndSkipsRepeatLocalAssertionsPerProjection() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header {
+                bits<2> maximum;
+                repeat (2) {
+                    bits<1> operation;
+                    if (operation == 1) {
+                        bits<2> operand;
+                        assert(operand <= maximum) at operand;
+                    }
+                } until (operation == 0);
+                bits<1> tail;
+            }
+            entry Header;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+
+        MemorySource validSource(bytes({0xb2}));
+        BitReader validReader(validSource, *range);
+        auto validTree = AnalysisTree::create(QStringLiteral("repeat-assertion-valid"));
+        QVERIFY(validTree.has_value());
+        const auto valid = DslExecutor::decodeStruct(*compiled.program,
+                                                     quint32(0),
+                                                     validReader,
+                                                     *mapping,
+                                                     0,
+                                                     *validTree,
+                                                     validTree->rootId());
+        QCOMPARE(valid.status, DslExecutionStatus::Materialized);
+        QCOMPARE(valid.bitsConsumed, quint64(7));
+        QCOMPARE(valid.instructionsExecuted, quint64(11));
+        QCOMPARE(valid.nodesCreated, quint64(6));
+
+        MemorySource skippedSource(bytes({0x90}));
+        BitReader skippedReader(skippedSource, *range);
+        auto skippedTree = AnalysisTree::create(QStringLiteral("repeat-assertion-skipped"));
+        QVERIFY(skippedTree.has_value());
+        const auto skipped = DslExecutor::decodeStruct(*compiled.program,
+                                                       quint32(0),
+                                                       skippedReader,
+                                                       *mapping,
+                                                       0,
+                                                       *skippedTree,
+                                                       skippedTree->rootId());
+        QCOMPARE(skipped.status, DslExecutionStatus::Materialized);
+        QCOMPARE(skipped.bitsConsumed, quint64(4));
+        QCOMPARE(skipped.instructionsExecuted, quint64(11));
+        QCOMPARE(skipped.nodesCreated, quint64(4));
+
+        MemorySource invalidSource(bytes({0xb8}));
+        BitReader invalidReader(invalidSource, *range);
+        auto invalidTree = AnalysisTree::create(QStringLiteral("repeat-assertion-invalid"));
+        QVERIFY(invalidTree.has_value());
+        const auto invalid = DslExecutor::decodeStruct(*compiled.program,
+                                                       quint32(0),
+                                                       invalidReader,
+                                                       *mapping,
+                                                       0,
+                                                       *invalidTree,
+                                                       invalidTree->rootId());
+        QCOMPARE(invalid.status, DslExecutionStatus::InvalidSyntax);
+        QCOMPARE(invalid.bitsConsumed, quint64(5));
+        QCOMPARE(invalid.instructionsExecuted, quint64(5));
+        QCOMPARE(invalid.nodesCreated, quint64(4));
+        const auto structure = invalidTree->node(*invalid.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->diagnostics().size(), std::size_t(1));
+        const auto& diagnostic = structure->diagnostics().front();
+        QCOMPARE(diagnostic.fieldPath, QStringLiteral("Header.operand[0]"));
+        QVERIFY(diagnostic.location.has_value());
+        QCOMPARE(diagnostic.location->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(3));
+        QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(2));
+    }
+
+    void rejectsMalformedRepeatLocalAssertionConditionsBeforeReadingSource() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header {
+                bits<1> count;
+                repeat (count, 1) {
+                    bits<1> operand;
+                    assert(operand == 0) at operand;
+                }
+            }
+            entry Header;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+
+        auto malformed = *compiled.program;
+        QCOMPARE(malformed.structs.front().assertions.size(), std::size_t(1));
+        malformed.structs.front().assertions.front().conditions.clear();
+
+        MemorySource source(bytes({0x00}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 2);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        BitReader reader(source, *range);
+        auto tree = AnalysisTree::create(QStringLiteral("malformed-repeat-assertion"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(malformed,
+                                                      quint32(0),
+                                                      reader,
+                                                      *mapping,
+                                                      0,
+                                                      *tree,
+                                                      tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(result.instructionsExecuted, quint64(0));
+        QCOMPARE(result.bitsConsumed, quint64(0));
+        QCOMPARE(result.nodesCreated, quint64(0));
+        QCOMPARE(reader.position(), quint64(0));
+        QCOMPARE(source.readCount(), quint64(0));
+    }
+
     void preservesMappedAnchorSpansAcrossASourceGap() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "struct Header { bits<2> reference; bits<5> type; "

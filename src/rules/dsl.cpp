@@ -1459,7 +1459,8 @@ private:
         quint32 compressedPayloadCount = 0;
         const auto validateTerminals = [&](const auto& self,
                                            const std::vector<DslStructItem>& items,
-                                           bool topLevel) -> void {
+                                           bool topLevel,
+                                           bool repeatLocal) -> void {
             for (std::size_t itemIndex = 0; itemIndex < items.size(); ++itemIndex) {
                 const DslStructItem& item = items.at(itemIndex);
                 if (item.kind == DslStructItemKind::RbspTrailingBits) {
@@ -1486,29 +1487,29 @@ private:
                     continue;
                 }
                 if (item.kind == DslStructItemKind::Assertion) {
-                    if (!topLevel) {
+                    if (!topLevel && !repeatLocal) {
                         result_.diagnostics.push_back(
                             {DslDiagnosticCode::InvalidCondition,
                              QStringLiteral(
-                                 "Assertions must be unconditional top-level items"),
+                                 "Assertions must be top-level or repeat-local items"),
                              item.range});
                     }
                     continue;
                 }
                 if (item.kind == DslStructItemKind::Conditional) {
-                    self(self, item.thenItems, false);
-                    self(self, item.elseItems, false);
+                    self(self, item.thenItems, false, repeatLocal);
+                    self(self, item.elseItems, false, repeatLocal);
                 } else if (item.kind == DslStructItemKind::Switch) {
                     for (const DslStructItem::SwitchArm& arm : item.switchArms) {
-                        self(self, arm.items, false);
+                        self(self, arm.items, false, repeatLocal);
                     }
                 } else if (item.kind == DslStructItemKind::Repeat ||
                            item.kind == DslStructItemKind::SentinelRepeat) {
-                    self(self, item.repeatItems, false);
+                    self(self, item.repeatItems, false, true);
                 }
             }
         };
-        validateTerminals(validateTerminals, structure.items, true);
+        validateTerminals(validateTerminals, structure.items, true, false);
         if (trailingBitsCount != 0 && compressedPayloadCount != 0) {
             result_.diagnostics.push_back(
                 {DslDiagnosticCode::InvalidCompressedPayload,

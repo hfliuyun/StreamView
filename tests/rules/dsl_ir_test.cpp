@@ -154,6 +154,62 @@ private slots:
         QCOMPARE(first.program->bytecode.at(3).immediate, quint64(0));
     }
 
+    void expandsRepeatLocalAssertionsWithProjectionConditions() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Marking {
+                ue maximum;
+                repeat (2) {
+                    ue operation;
+                    if (operation == 1) {
+                        ue operand;
+                        assert(operand <= maximum) at operand;
+                    }
+                } until (operation == 0);
+                bits<1> tail;
+            }
+            entry Marking;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+
+        const auto& structure = compiled.program->structs.front();
+        QCOMPARE(structure.fields.size(), std::size_t(6));
+        QCOMPARE(structure.assertions.size(), std::size_t(2));
+
+        const auto& first = structure.assertions.at(0);
+        QCOMPARE(first.anchorFieldIndex, quint32(2));
+        QCOMPARE(first.assertionFieldIndex, quint32(3));
+        QCOMPARE(first.conditions.size(), std::size_t(1));
+        QCOMPARE(first.conditions.front().fieldIndex, quint32(1));
+        QCOMPARE(first.conditions.front().expectedValue, quint64(1));
+        QCOMPARE(first.condition.operands.at(0).fieldIndex, quint32(2));
+        QCOMPARE(first.condition.operands.at(1).fieldIndex, quint32(0));
+
+        const auto& second = structure.assertions.at(1);
+        QCOMPARE(second.anchorFieldIndex, quint32(4));
+        QCOMPARE(second.assertionFieldIndex, quint32(5));
+        QCOMPARE(second.conditions.size(), std::size_t(2));
+        QCOMPARE(second.conditions.at(0).fieldIndex, quint32(1));
+        QVERIFY(second.conditions.at(0).negated);
+        QCOMPARE(second.conditions.at(1).fieldIndex, quint32(3));
+        QCOMPARE(second.conditions.at(1).expectedValue, quint64(1));
+
+        const auto assertionOpcodes = std::count_if(
+            compiled.program->bytecode.begin(),
+            compiled.program->bytecode.end(),
+            [](const streamview::rules::DslInstruction& instruction) {
+                return instruction.opcode == DslOpcode::AssertExpression;
+            });
+        QCOMPARE(assertionOpcodes, std::ptrdiff_t(2));
+    }
+
     void lowersImportedContextValuesInSourceAnchoredAssertions() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             pure bool is_disabled(u64 value) {
