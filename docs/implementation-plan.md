@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Decode the field-picture slice header
-Next Action: Continue toward the complete Baseline/Main/High slice-header milestone; the nearest deferred item on that path is the clause 7.4.3.3 relational marking validation (SP/SI slice types are Extended-profile and therefore off this milestone's path)
-Last Verification: Commits c0d326f and a6ae0a7; local dev/ci/sanitize each passed 32/32; H.264 analyzer passed 102/102; svtool rule check passed; hosted run 31320789048 passed on Windows, macOS, and Ubuntu
+Last Completed Step: Implement the scoped clause 7.4.3.3 relational marking bounds
+Next Action: Define the MaxPicNum context needed to validate `difference_of_pic_nums_minus1` for marking operations 1 and 3, then continue the complete Baseline/Main/High slice-header milestone; DPB/order semantics remain deferred (SP/SI slice types are Extended-profile and therefore off this milestone's path)
+Last Verification: Local dev/ci/sanitize builds and CTest each passed 32/32; focused DSL/H.264 suites passed; `svtool rule check` passed; hosted verification remains pending for this increment
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -954,3 +954,15 @@ Blockers: None
   `Next Action`：SP/SI 属 Extended profile，不在 Baseline/Main/High slice-header 里程碑的路径上。
   hosted run `31320789048` 对 `685b615` 的 Windows 2022、macOS 15、Ubuntu 24.04 Configure、Build、
   Test、Install deployable tree、Upload package tree 全部成功。
+- 2026-08-10：完成有界 repeat-local assertion 与 H.264 marking 关系切片。ADR-0069 允许
+  `assert(condition) at anchor;` 出现在 bounded/sentinel repeat 及其 conditional/switch body；compiler
+  按静态 projection iteration 展开 assertion，descriptor 保存 active conditions，VM 在读取 anchor
+  range 前检查 branch conditions。官方规则将 SPS `max_num_ref_frames` 导出，并为 operation 2 的
+  `long_term_pic_num_mmco`、operation 3/6 的 `long_term_frame_idx`、operation 4 的
+  `max_long_term_frame_idx_plus1` 增加 source-anchored bound assertion；超限 slice 保留前缀并继续
+  分析后续 NAL。package 升到 `0.1.22`，coverage depth 为 `relational-marking-slice-header`。
+  `streamview_dsl_tests` 62/62、`streamview_dsl_ir_tests` 71/71、`streamview_dsl_executor_tests`
+  120/120、`streamview_h264_annex_b_analyzer_tests` 103/103，`svtool rule check` 通过；本机
+  dev/ci/sanitize 完整构建与 CTest 均为 32/32。hosted verification 待本增量提交后执行。
+  `difference_of_pic_nums_minus1` 的
+  MaxPicNum relation、DPB/order/duplicate semantics 明确保留为后续工作。

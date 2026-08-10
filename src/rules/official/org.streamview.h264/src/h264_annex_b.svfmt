@@ -56,7 +56,7 @@ struct SequenceParameterSetRbsp {
     ue log2_max_pic_order_cnt_lsb_minus4 @range(0, 12) @context_export
         @spec("ITU-T H.264", "7.4.2.1.1")
         @description("Sets the picture-order-count wrap; conformant values are 0 to 12.");
-    ue max_num_ref_frames;
+    ue max_num_ref_frames @context_export;
     bits<1> gaps_in_frame_num_value_allowed_flag;
     ue pic_width_in_mbs_minus1;
     ue pic_height_in_map_units_minus1;
@@ -562,6 +562,11 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
                     ue long_term_pic_num_mmco
                         @spec("ITU-T H.264", "7.3.3.3, 7.4.3.3")
                         @description("Identifies a long-term picture to unmark.");
+                    assert(long_term_pic_num_mmco <
+                           context_value(pic_parameter_set_id,
+                                         h264_sps,
+                                         max_num_ref_frames))
+                        at long_term_pic_num_mmco;
                 }
                 computed<bool> marking_uses_long_term_frame_idx =
                     memory_management_control_operation == 3 ||
@@ -570,11 +575,21 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
                     ue long_term_frame_idx
                         @spec("ITU-T H.264", "7.3.3.3, 7.4.3.3")
                         @description("Assigns the long-term frame index.");
+                    assert(long_term_frame_idx <
+                           context_value(pic_parameter_set_id,
+                                         h264_sps,
+                                         max_num_ref_frames))
+                        at long_term_frame_idx;
                 }
                 if (memory_management_control_operation == 4) {
                     ue max_long_term_frame_idx_plus1
                         @spec("ITU-T H.264", "7.3.3.3, 7.4.3.3")
                         @description("Sets the maximum long-term frame index plus one.");
+                    assert(max_long_term_frame_idx_plus1 <=
+                           context_value(pic_parameter_set_id,
+                                         h264_sps,
+                                         max_num_ref_frames))
+                        at max_long_term_frame_idx_plus1;
                 }
             } until (memory_management_control_operation == 0);
         }

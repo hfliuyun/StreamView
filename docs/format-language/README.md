@@ -1180,10 +1180,10 @@ meanings:
 | `memory_management_control_operation[index]` | Selects a marking operation over `0..6`; operation 0 terminates the loop and reserved values are fatal. |
 | `marking_uses_pic_num_difference[index]` | Computed Boolean that is true for operations 1 and 3; it has no source location. |
 | `difference_of_pic_nums_minus1[index]` | Identifies the short-term picture that operations 1 and 3 act on. |
-| `long_term_pic_num_mmco[index]` | Identifies the long-term picture that operation 2 unmarks; suffixed because clause 7.3.3.3 reuses the list 0 loop's name. |
+| `long_term_pic_num_mmco[index]` | Identifies the long-term picture that operation 2 unmarks; it must be less than the imported SPS `max_num_ref_frames`; suffixed because clause 7.3.3.3 reuses the list 0 loop's name. |
 | `marking_uses_long_term_frame_idx[index]` | Computed Boolean that is true for operations 3 and 6; it has no source location. |
-| `long_term_frame_idx[index]` | Assigns the long-term frame index for operations 3 and 6. |
-| `max_long_term_frame_idx_plus1[index]` | Sets the maximum long-term frame index plus one for operation 4. |
+| `long_term_frame_idx[index]` | Assigns the long-term frame index for operations 3 and 6; it must be less than the imported SPS `max_num_ref_frames`. |
+| `max_long_term_frame_idx_plus1[index]` | Sets the maximum long-term frame index plus one for operation 4; it must not exceed the imported SPS `max_num_ref_frames`. |
 | `cabac_init_idc` | Selects the CABAC context initialization table for an entropy-coded P or B slice; values outside `0..2` warn. |
 | `no_output_of_prior_pics_flag` | Controls output of pictures preceding the IDR picture. |
 | `long_term_reference_flag` | Marks the IDR picture as a long-term reference when set. |
@@ -1208,13 +1208,17 @@ sequence (`frame_mbs_only_flag == 0`) reads `field_pic_flag`, and a field pictur
 reads `bottom_field_flag`; a field picture suppresses
 `delta_pic_order_cnt_bottom` even when its PPS enables that field. MBAFF frames
 are accepted with the same header layout, since macroblock-adaptive coding
-changes only how the opaque `slice_data` is interpreted. SP/SI slice types,
-decoded-picture-buffer validation, marking-semantics and clause 7.4.3.3
-relational validation, weight-application semantics, CABAC slice-data decoding,
-and slice-group branches are deferred.
+changes only how the opaque `slice_data` is interpreted. The marking loop now
+checks the three per-operation bounds that can be expressed from the imported
+SPS `max_num_ref_frames`: operation 2's `long_term_pic_num_mmco`, operations 3
+and 6's `long_term_frame_idx`, and operation 4's
+`max_long_term_frame_idx_plus1`. SP/SI slice types, the remaining
+`difference_of_pic_nums_minus1` MaxPicNum relation, decoded-picture-buffer
+validation, operation-order/duplicate semantics, weight-application semantics,
+CABAC slice-data decoding, and slice-group branches are deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
-Package `0.1.21` advertises coverage depth `field-picture-slice-header`; this is
-not yet the complete Baseline/Main/High slice-header milestone.
+Package `0.1.22` advertises coverage depth `relational-marking-slice-header`;
+this is not yet the complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
 addition to their record-count and inspected-position budgets. The default is

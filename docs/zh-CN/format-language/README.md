@@ -910,10 +910,10 @@ generation 以及该 PPS 的精确 SPS dependency。两个有界 shape 中声明
 | `memory_management_control_operation[index]` | 在 `0..6` 中选择 marking operation；operation 0 终止循环，保留值致命失败。 |
 | `marking_uses_pic_num_difference[index]` | operation 为 1/3 时为 true 的 computed Boolean；没有 source location。 |
 | `difference_of_pic_nums_minus1[index]` | 标识 operation 1 与 3 所作用的 short-term picture。 |
-| `long_term_pic_num_mmco[index]` | 标识 operation 2 要 unmark 的 long-term picture；带后缀是因为 clause 7.3.3.3 复用了 list 0 loop 的名字。 |
+| `long_term_pic_num_mmco[index]` | 标识 operation 2 要 unmark 的 long-term picture；必须小于 imported SPS `max_num_ref_frames`；带后缀是因为 clause 7.3.3.3 复用了 list 0 loop 的名字。 |
 | `marking_uses_long_term_frame_idx[index]` | operation 为 3/6 时为 true 的 computed Boolean；没有 source location。 |
-| `long_term_frame_idx[index]` | 为 operation 3 与 6 指派 long-term frame index。 |
-| `max_long_term_frame_idx_plus1[index]` | 为 operation 4 设置 maximum long-term frame index 加一。 |
+| `long_term_frame_idx[index]` | 为 operation 3 与 6 指派 long-term frame index；必须小于 imported SPS `max_num_ref_frames`。 |
+| `max_long_term_frame_idx_plus1[index]` | 为 operation 4 设置 maximum long-term frame index 加一；不得超过 imported SPS `max_num_ref_frames`。 |
 | `cabac_init_idc` | 为 entropy-coded P 或 B slice 选择 CABAC context initialization table；超出 `0..2` 的值会告警。 |
 | `no_output_of_prior_pics_flag` | 控制 IDR picture 之前 picture 的输出。 |
 | `long_term_reference_flag` | 设置时把 IDR picture 标记为 long-term reference。 |
@@ -933,11 +933,14 @@ node。deblocking 值 1 省略两个 offset，值 0 和 2 读取
 边界，而不是宣称的 conformance limit。隔行序列（`frame_mbs_only_flag == 0`）会读取
 `field_pic_flag`，场图像再读取 `bottom_field_flag`；即使其 PPS 启用了该字段，场图像
 也会抑制 `delta_pic_order_cnt_bottom`。MBAFF 帧以相同的 header 布局被接受，因为宏块
-自适应编码只改变不透明 `slice_data` 的解释方式。SP/SI slice type、
-decoded-picture-buffer validation、marking 语义与 clause 7.4.3.3 关系校验、
-权重施加语义、CABAC slice-data 解码与 slice-group 分支均留待后续。
+自适应编码只改变不透明 `slice_data` 的解释方式。marking loop 现在会检查可由 imported
+SPS `max_num_ref_frames` 表达的三条 per-operation bound：operation 2 的
+`long_term_pic_num_mmco`、operation 3/6 的 `long_term_frame_idx`，以及 operation 4 的
+`max_long_term_frame_idx_plus1`。SP/SI slice type、剩余的
+`difference_of_pic_nums_minus1` MaxPicNum 关系、decoded-picture-buffer validation、
+operation 顺序/重复语义、权重施加语义、CABAC slice-data 解码与 slice-group 分支均留待后续。
 type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.21` 发布 coverage depth `field-picture-slice-header`；这尚未完成
+`0.1.22` 发布 coverage depth `relational-marking-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
