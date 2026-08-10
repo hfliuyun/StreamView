@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 3
 Last Completed Step: Implement the scoped clause 7.4.3.3 relational marking bounds
 Next Action: Define the MaxPicNum context needed to validate `difference_of_pic_nums_minus1` for marking operations 1 and 3, then continue the complete Baseline/Main/High slice-header milestone; DPB/order semantics remain deferred (SP/SI slice types are Extended-profile and therefore off this milestone's path)
-Last Verification: Local dev/ci/sanitize builds and CTest each passed 32/32; focused DSL/H.264 suites passed; `svtool rule check` passed; hosted verification remains pending for this increment
+Last Verification: Local dev/ci/sanitize builds and CTest each passed 32/32; focused DSL/H.264 suites passed; `svtool rule check` passed; hosted run 31391608560 passed on Ubuntu, Windows, and macOS
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -963,6 +963,7 @@ Blockers: None
   分析后续 NAL。package 升到 `0.1.22`，coverage depth 为 `relational-marking-slice-header`。
   `streamview_dsl_tests` 62/62、`streamview_dsl_ir_tests` 71/71、`streamview_dsl_executor_tests`
   120/120、`streamview_h264_annex_b_analyzer_tests` 103/103，`svtool rule check` 通过；本机
-  dev/ci/sanitize 完整构建与 CTest 均为 32/32。hosted verification 待本增量提交后执行。
+  dev/ci/sanitize 完整构建与 CTest 均为 32/32。hosted run `31391608560` 的 Ubuntu 24.04 /
+  Qt 6.11.1、Windows 2022 / Qt 6.10.1、macOS 15 / Qt 6.11.1 jobs 全部成功。
   `difference_of_pic_nums_minus1` 的
   MaxPicNum relation、DPB/order/duplicate semantics 明确保留为后续工作。
