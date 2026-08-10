@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 3
 Last Completed Step: Validate marking operation 1/3 against frame- or field-derived MaxPicNum
 Next Action: Define and implement the H.264 `pic_order_cnt_type` 1/2 SPS and slice-header branches; DPB/order semantics remain deferred (SP/SI slice types are Extended-profile and therefore off this milestone's path)
-Last Verification: The MaxPicNum increment has passed focused DSL/H.264 tests, `svtool rule check`, and local dev/ci/sanitize builds with CTest 32/32; hosted verification remains pending
+Last Verification: The MaxPicNum increment passed focused DSL/H.264 tests, `svtool rule check`, local dev/ci/sanitize builds with CTest 32/32, and hosted run 31396375794 on Ubuntu, Windows, and macOS
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -979,5 +979,7 @@ Blockers: None
   套件为 DSL 64/64、IR 72/72、executor 121/121、H.264 analyzer 104/104，
   `svtool rule check` 通过；回归同时覆盖 exponent 0/63/64+、operation 1/3 与
   frame/field MaxPicNum 边界。完整本机 dev/ci/sanitize 构建与 CTest 均为 32/32，
-  hosted verification 待执行。下一步进入
+  实现拆分为 `c6fb05f` 与 `116271c`。hosted run `31396375794` 的 Ubuntu 24.04 /
+  Qt 6.11.1 job `93480182939`、Windows 2022 / Qt 6.10.1 job `93480182983`、macOS 15 /
+  Qt 6.11.1 job `93480183106` 全部成功。下一步进入
   `pic_order_cnt_type` 1/2 的 SPS 与 slice-header 分支；DPB/order/duplicate semantics 继续延期。
