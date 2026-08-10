@@ -317,14 +317,16 @@ primary       := integer | "true" | "false" | identifier
   发布一个 materialized `CompressedPayload` node，并在不读取或复制 payload data 的情况下
   seek 到末尾。不按 byte 对齐、multi-span 和空 range 都合法。item 不产生 scalar value，
   不能作为 controller、expression dependency 或 context value。
-- `assert(condition) at anchor;` 是不接受 annotation、无条件的顶层 structure item。
-  conditional、switch、count repeat 或 sentinel repeat 内都拒绝 assertion，也不能把它写在
-  terminal item 之后。`condition` 必须为 `bool`，沿用完整的 bounded expression 与 pure-function
+- `assert(condition) at anchor;` 是不接受 annotation 的 structure item。它可以是无条件顶层
+  item，也可以位于 bounded 或 sentinel repeat 内部，包括该 repeat 中嵌套的 conditional 或
+  switch body；不在 repeat 中的 conditional/switch 仍拒绝 assertion，也不能把它写在 terminal
+  item 之后。`condition` 必须为 `bool`，沿用完整的 bounded expression 与 pure-function
   合同，并且可以包含上文定义的 exact imported `context_value` leaf、
   `header_value(element_field)` leaf 与 `optional_value(...)` leaf。本地字段 dependency
   必须是此前声明、当前路径保证存在的 scalar unsigned `bits`、enum、`ue`、`computed<u64>` 或
   `computed<bool>`；array、`se`、lazy region、compressed payload、未知/未来字段与不可用的
-  branch-local 值都会被拒绝。
+  branch-local 值都会被拒绝。repeat-local assertion 只能引用当前静态 projection iteration
+  中的值，不能 aggregate 或索引其他 iteration。
 - assertion anchor 必须命名此前声明、当前路径保证存在且 source-backed 的非数组 scalar syntax
   field。fixed/dynamic `bits`、enum、`ue` 与 `se` 可以锚定 diagnostic；computed field、
   generated item 与 region item 不可以。assertion 不是字段，不引入 name 或 scalar value，不改变 static
@@ -1556,6 +1558,8 @@ imported equality guard 合同见
 [ADR-0048](../adr/0048-register-a-compressed-remaining-bit-payload-terminal.md)。
 source-anchored assertion statement 合同见
 [ADR-0054](../adr/0054-add-source-anchored-assertion-statements.md)。
+repeat-local assertion projection 合同见
+[ADR-0069](../adr/0069-add-repeat-local-assertions-for-bounded-relations.md)。
 source-anchored assertion 中 imported value 的合同见
 [ADR-0056](../adr/0056-allow-imported-context-values-in-source-anchored-assertions.md)。
 有界 progressive non-IDR all-I slice 合同见
@@ -1623,11 +1627,14 @@ sentinel 等于 termination value，assertion 会在最后一个 sentinel field 
 `invalid-syntax`，并保留有界 materialized prefix。language-wide maximum 64 同时限制 descriptor、
 guard 与 assertion work。
 
-一个 structure 最多包含 1,024 条 source-anchored assertion。每条 assertion 增加一个 descriptor
-和一条 `assert-expression` instruction；该 instruction 消耗一个 instruction-budget unit，并且是
+一个 structure 在 repeat projection 后最多包含 1,024 条 source-anchored assertion。每条 assertion
+增加一个 descriptor 和一条 `assert-expression` instruction；该 instruction 消耗一个
+instruction-budget unit，即使 active conditions 使其跳过求值也仍是
 cancellation point。完全内联的 condition 在这一条 instruction 内计算，仍受 256 个 expression
 node、深度 64 与编译期 4,096-step expansion 上限约束。assertion 不增加 presentation node 或
-source read，也不计入 99,999-field projection。
+source read，也不计入 99,999-field projection。repeat-local descriptor 保留 active field
+conditions；VM 会先检查这些条件，再要求当前 iteration 的 anchor range 并求值 Boolean
+condition。
 
 每个计算字段增加一条 `evaluate-computed` instruction。即使 false guard 跳过求值，该
 instruction 仍计入 instruction budget，并保留取消检查点。成功求值消耗一个物化节点名额，

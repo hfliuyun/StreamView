@@ -388,9 +388,11 @@ The static rules for this subset are:
   end without reading or copying payload data. Non-byte-aligned, multi-span, and
   empty ranges are valid. The item has no scalar value and cannot be a
   controller, expression dependency, or context value.
-- `assert(condition) at anchor;` is an unannotated, unconditional top-level
-  structure item. It is rejected inside a conditional, switch, count repeat,
-  or sentinel repeat, and it cannot follow a terminal item. `condition` must be
+- `assert(condition) at anchor;` is an unannotated structure item. It may be an
+  unconditional top-level item or a repeat-local item inside a bounded or
+  sentinel repeat, including a conditional or switch body nested in that
+  repeat. It is rejected in a non-repeat conditional or switch and cannot
+  follow a terminal item. `condition` must be
   `bool`; it uses the complete bounded expression and pure-function contract
   and may include the exact imported `context_value` leaf, the
   `header_value(element_field)` leaf, and the `optional_value(...)` leaf
@@ -398,7 +400,9 @@ The static rules for this subset are:
   Its local field dependencies must be earlier scalar unsigned `bits`, enum,
   `ue`, `computed<u64>`, or `computed<bool>` values guaranteed on the current
   path. Arrays, `se`, lazy regions, compressed payloads, unknown or future
-  fields, and unavailable branch-local values are rejected as dependencies.
+  fields, and unavailable branch-local values are rejected as dependencies. A
+  repeat-local assertion can refer only to values from its current statically
+  projected iteration; it cannot aggregate or index other iterations.
 - The assertion anchor names an earlier source-backed, non-array scalar syntax
   field guaranteed on the current path. Fixed or dynamic `bits`, enum, `ue`,
   and `se` fields can anchor a diagnostic; computed fields and generated or
@@ -1918,6 +1922,8 @@ The compressed remaining-bit terminal is specified by
 [ADR-0048](../adr/0048-register-a-compressed-remaining-bit-payload-terminal.md).
 Source-anchored assertion statements are specified by
 [ADR-0054](../adr/0054-add-source-anchored-assertion-statements.md).
+Repeat-local assertion projection is specified by
+[ADR-0069](../adr/0069-add-repeat-local-assertions-for-bounded-relations.md).
 Imported values in source-anchored assertions are specified by
 [ADR-0056](../adr/0056-allow-imported-context-values-in-source-anchored-assertions.md).
 The bounded progressive non-IDR all-I slice is specified by
@@ -1998,13 +2004,16 @@ sentinel equals the terminating value, the assertion returns `invalid-syntax`
 at the final sentinel field while preserving the bounded materialized prefix.
 The language-wide maximum of 64 bounds descriptor, guard, and assertion work.
 
-One structure contains at most 1,024 source-anchored assertions. Each assertion
-adds one descriptor and one `assert-expression` instruction, which consumes one
-instruction-budget unit and is a cancellation point. Its fully inlined
+One structure contains at most 1,024 source-anchored assertions after repeat
+projection. Each assertion adds one descriptor and one `assert-expression`
+instruction, which consumes one instruction-budget unit and is a cancellation
+point even when its active conditions skip evaluation. Its fully inlined
 condition is evaluated within that instruction and remains bounded to 256
 expression nodes, depth 64, and the 4,096-step compile-time expansion limit.
 The assertion adds no presentation node or source read and does not count
-toward the 99,999-field projection.
+toward the 99,999-field projection. A repeat-local descriptor keeps its active
+field conditions; the VM checks them before requiring the current iteration's
+anchor range or evaluating the Boolean condition.
 
 Each computed field adds one `evaluate-computed` instruction. That instruction
 counts toward the instruction budget and remains a cancellation point even when
