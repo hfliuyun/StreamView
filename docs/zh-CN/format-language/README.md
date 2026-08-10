@@ -299,6 +299,9 @@ primary       := integer | "true" | "false" | identifier
   它有意不要求该字段必须是 branch-local，因为后续某个无关的 guard 不应当反过来让一处
   正确的用法失效。fallback expression 在调用处的 scope 中编译，并保留该 position 原本
   施加的每一条规则，因此 branch-local 的 fallback dependency 仍然会被拒绝。
+- `power_of_two(unsigned_expression)` 是有界幂运算 leaf。`u64` exponent 为 `0..63` 时返回
+  `1 << exponent`，更大的 exponent 在求值时返回致命 `invalid-syntax`。它遵守完整 expression
+  grammar，不读取 source，也不新增 presentation node。
 - 固定宽度数组按 `width * count` bit 参与静态对齐。小端数组的每个元素宽度必须是 8 的
   倍数，并且首元素必须从结构内的字节边界开始。`ue` 或 `se` 数组的总宽度未知，因此其
   后续小端字段与单个 Exp-Golomb 字段之后的小端字段一样会被拒绝。
@@ -408,7 +411,8 @@ primary       := integer | "true" | "false" | identifier
   `!`、checked `*`、`/`、`%`、`+`、`-`、同类型 `==` 和 `!=`、无符号大小比较，以及
   short-circuit Boolean `&&` 和 `||`，优先级如 grammar 所示。不存在隐式转换：算术和大小
   比较要求 `u64`，逻辑运算要求 `bool`，等值运算两侧类型相同，函数实参必须与形参逐一
-  匹配。无符号 overflow/underflow、除零和模零会在计算字段、lazy region、dynamic field 或
+  匹配。无符号 overflow/underflow、除零、模零和大于等于 64 的 `power_of_two` exponent 会在
+  计算字段、lazy region、dynamic field 或
   assertion anchor path 上产生 runtime `invalid-syntax`。dynamic bit width 使用同一套 checked
   arithmetic；`context_value` 是它唯一额外的 leaf form，也可以作为 imported equality
   conditional 的精确左侧、用于 source-anchored assertion condition，或出现在 computed field
@@ -909,7 +913,7 @@ generation 以及该 PPS 的精确 SPS dependency。两个有界 shape 中声明
 | `adaptive_ref_pic_marking_mode_flag` | NAL header 带非零 reference priority 时出现；值 0 选择 sliding-window marking，值 1 选择有界 operation 循环。 |
 | `memory_management_control_operation[index]` | 在 `0..6` 中选择 marking operation；operation 0 终止循环，保留值致命失败。 |
 | `marking_uses_pic_num_difference[index]` | operation 为 1/3 时为 true 的 computed Boolean；没有 source location。 |
-| `difference_of_pic_nums_minus1[index]` | 标识 operation 1 与 3 所作用的 short-term picture。 |
+| `difference_of_pic_nums_minus1[index]` | 标识 operation 1 与 3 所作用的 short-term picture；必须小于由帧/场形态推导出的 `MaxPicNum`。 |
 | `long_term_pic_num_mmco[index]` | 标识 operation 2 要 unmark 的 long-term picture；必须小于 imported SPS `max_num_ref_frames`；带后缀是因为 clause 7.3.3.3 复用了 list 0 loop 的名字。 |
 | `marking_uses_long_term_frame_idx[index]` | operation 为 3/6 时为 true 的 computed Boolean；没有 source location。 |
 | `long_term_frame_idx[index]` | 为 operation 3 与 6 指派 long-term frame index；必须小于 imported SPS `max_num_ref_frames`。 |
@@ -936,11 +940,11 @@ node。deblocking 值 1 省略两个 offset，值 0 和 2 读取
 自适应编码只改变不透明 `slice_data` 的解释方式。marking loop 现在会检查可由 imported
 SPS `max_num_ref_frames` 表达的三条 per-operation bound：operation 2 的
 `long_term_pic_num_mmco`、operation 3/6 的 `long_term_frame_idx`，以及 operation 4 的
-`max_long_term_frame_idx_plus1`。SP/SI slice type、剩余的
-`difference_of_pic_nums_minus1` MaxPicNum 关系、decoded-picture-buffer validation、
+`max_long_term_frame_idx_plus1`。operation 1/3 还会用由帧/场形态推导出的 `MaxPicNum`
+约束 `difference_of_pic_nums_minus1`。SP/SI slice type、decoded-picture-buffer validation、
 operation 顺序/重复语义、权重施加语义、CABAC slice-data 解码与 slice-group 分支均留待后续。
 type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.22` 发布 coverage depth `relational-marking-slice-header`；这尚未完成
+`0.1.23` 发布 coverage depth `max-pic-num-marking-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
@@ -1271,6 +1275,9 @@ case 值、没有 case 的 switch、重复或不位于最后的 default、缺少
 repeat body、repeat 前的 annotation、投影后超过 99,999 字段、在其他迭代或 repeat 之后
 使用 repeat-local controller、repeat 之后的小端字段、`scan(other_scanner)`、重复声明同名，
 以及没有 `entry` 或包含多个 `entry` 声明的程序。
+bounded-power 的非法示例包括 `power_of_two()`、`power_of_two(1, 2)`、Boolean exponent，
+以及命名为 `power_of_two` 的 pure function，因为该 expression name 已保留。exponent 为 64
+或更大值时类型仍合法，但会在求值时失败。
 sentinel repeat 的非法示例包括 `repeat (0)` 或 `repeat (65)`、缺少 `until` clause、未知
 sentinel、sentinel 声明在 body 外或 nested control flow 内、以 array、`se`、dynamic-width、
 computed 或 lazy 项作为 sentinel、termination value 越界，以及使用直接等于整数字面量之外的
@@ -1537,6 +1544,10 @@ structure 执行记录字段是否存在，因此求值时：实际执行的路�
 scope，因此不会有 index 与后续 projection 混淆。fallback 只在需要时才求值，其中的任何
 失败都按包含该 leaf 的 position 原本的方式上报。详见
 [ADR-0066](../adr/0066-select-an-optional-field-value-with-a-declared-fallback.md)。
+
+`power_of_two(...)` leaf 降低为一条 typed expression node，并在外层 instruction 内求值。
+exponent 会在 shift 前检查，因此 malformed typed descriptor 不会触发未定义的 host shift。
+详见 [ADR-0070](../adr/0070-add-bounded-power-of-two-expression.md)。
 
 只有 structure 成功 materialize、满足请求的精确消费策略、完成 dependency resolution 和
 typed-payload 准备后才会发布。registration 前会预留 payload 与 directory 容量，因此成功

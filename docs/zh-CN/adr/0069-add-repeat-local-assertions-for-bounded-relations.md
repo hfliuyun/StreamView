@@ -38,10 +38,11 @@ operand/immediate，以及 condition/anchor dependency 关系。assertion 仍计
 operation 2 要求 `long_term_pic_num_mmco < max_num_ref_frames`，operation 3 与 6 要求
 `long_term_frame_idx < max_num_ref_frames`，operation 4 要求
 `max_long_term_frame_idx_plus1 <= max_num_ref_frames`。SPS export 与这些 assertion 由 package
-`0.1.22`、coverage depth `relational-marking-slice-header` 一并发布。short-term operation 1/3
-的 `difference_of_pic_nums_minus1` 关系仍延期，因为正确的 MaxPicNum bound 需要额外的
-frame-number context。本增量不跟踪 decoded-picture buffer，不建模 operation 顺序，不检测重复或
-矛盾 operation，也不声称完成完整 clause 7.4.3.3 conformance。
+`0.1.22`、coverage depth `relational-marking-slice-header` 一并发布。本决策最初延期了 short-term
+operation 1/3 的 `difference_of_pic_nums_minus1` 关系，因为正确的 MaxPicNum bound 需要额外的
+frame-number context；ADR-0070 与 package `0.1.23` 随后补上这条有界表达式。本增量不跟踪
+decoded-picture buffer，不建模 operation 顺序，不检测重复或矛盾 operation，也不声称完成完整
+clause 7.4.3.3 conformance。
 
 ## 影响
 

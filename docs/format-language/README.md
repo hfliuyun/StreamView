@@ -174,6 +174,12 @@ how a value that a branch may override reaches a position requiring a value on
 every path. It is the one place where a dependency is exempt from the
 branch-guarantee rule, and only that first argument is exempt.
 
+The accepted bounded-power slice adds the reserved
+`power_of_two(unsigned_expression)` leaf. It returns `1 << exponent` for
+`u64` exponents `0..63`, and reports a fatal `invalid-syntax` evaluation failure
+for larger exponents. It is available under the full expression grammar and
+does not read source or add a presentation node.
+
 The accepted sequence-element slice adds the reserved
 `header_value(element_field)` form. It resolves one scalar of the sequence
 element structure from within a dispatched payload structure, which lets a
@@ -524,13 +530,15 @@ The static rules for this subset are:
   conversions: arithmetic and ordering require `u64`, logical operators require
   `bool`, equality operands have the same type, and function arguments exactly
   match their parameters. Unsigned overflow or underflow, division by zero, and
-  remainder by zero are runtime `invalid-syntax` failures at the computed field,
+  remainder by zero, or a `power_of_two` exponent of 64 or greater are runtime
+  `invalid-syntax` failures at the computed field,
   lazy region, dynamic field, or assertion anchor path. The same checked
   arithmetic applies to a dynamic bit width; `context_value` is its only
   additional leaf form and is also accepted as the exact left side of an
   imported equality conditional, inside a source-anchored assertion condition,
   and inside a computed field initializer. It counts against the same node and
-  depth limits. The complete
+  depth limits. `power_of_two` accepts only an unsigned operand and counts its
+  operand as one additional expression node. The complete
   width or assertion expression remains subject to the shared expansion-work
   limit. Enum fields contribute their decoded `u64`; enum member names are not
   expression values.
@@ -1179,7 +1187,7 @@ meanings:
 | `adaptive_ref_pic_marking_mode_flag` | Present when the NAL header carries nonzero reference priority; value 0 selects sliding-window marking and value 1 selects the bounded operation loop. |
 | `memory_management_control_operation[index]` | Selects a marking operation over `0..6`; operation 0 terminates the loop and reserved values are fatal. |
 | `marking_uses_pic_num_difference[index]` | Computed Boolean that is true for operations 1 and 3; it has no source location. |
-| `difference_of_pic_nums_minus1[index]` | Identifies the short-term picture that operations 1 and 3 act on. |
+| `difference_of_pic_nums_minus1[index]` | Identifies the short-term picture that operations 1 and 3 act on; it must be less than frame- or field-derived `MaxPicNum`. |
 | `long_term_pic_num_mmco[index]` | Identifies the long-term picture that operation 2 unmarks; it must be less than the imported SPS `max_num_ref_frames`; suffixed because clause 7.3.3.3 reuses the list 0 loop's name. |
 | `marking_uses_long_term_frame_idx[index]` | Computed Boolean that is true for operations 3 and 6; it has no source location. |
 | `long_term_frame_idx[index]` | Assigns the long-term frame index for operations 3 and 6; it must be less than the imported SPS `max_num_ref_frames`. |
@@ -1212,12 +1220,13 @@ changes only how the opaque `slice_data` is interpreted. The marking loop now
 checks the three per-operation bounds that can be expressed from the imported
 SPS `max_num_ref_frames`: operation 2's `long_term_pic_num_mmco`, operations 3
 and 6's `long_term_frame_idx`, and operation 4's
-`max_long_term_frame_idx_plus1`. SP/SI slice types, the remaining
-`difference_of_pic_nums_minus1` MaxPicNum relation, decoded-picture-buffer
-validation, operation-order/duplicate semantics, weight-application semantics,
-CABAC slice-data decoding, and slice-group branches are deferred.
+`max_long_term_frame_idx_plus1`. Operations 1 and 3 also bound
+`difference_of_pic_nums_minus1` by the frame- or field-derived `MaxPicNum`.
+SP/SI slice types, decoded-picture-buffer validation, operation-order/duplicate
+semantics, weight-application semantics, CABAC slice-data decoding, and
+slice-group branches are deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
-Package `0.1.22` advertises coverage depth `relational-marking-slice-header`;
+Package `0.1.23` advertises coverage depth `max-pic-num-marking-slice-header`;
 this is not yet the complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
@@ -1570,6 +1579,10 @@ fields, a repeat-local controller used by another iteration or after the
 repeat, a little-endian field after a repeat, `scan(other_scanner)`, two
 declarations with the same name, a program with no `entry`, or multiple `entry`
 declarations.
+Invalid bounded-power examples include `power_of_two()` or
+`power_of_two(1, 2)`, a Boolean exponent, and a pure function declaration named
+`power_of_two` because the expression name is reserved. Exponents of 64 or
+greater are well-typed but fail when evaluated.
 Invalid sentinel-repeat examples include `repeat (0)` or `repeat (65)`, a
 missing `until` clause, an unknown sentinel, a sentinel declared outside or in
 nested control flow, an array, `se`, dynamic-width, computed, or lazy sentinel,
@@ -1896,6 +1909,11 @@ so no index aliases a later projection. The fallback is evaluated only when it i
 needed, and any failure inside it is reported exactly as it would be in the
 position that contains the leaf. See
 [ADR-0066](../adr/0066-select-an-optional-field-value-with-a-declared-fallback.md).
+
+The `power_of_two(...)` leaf lowers to one typed expression node and is evaluated
+inside the enclosing instruction. Its exponent is checked before shifting, so
+malformed typed descriptors cannot trigger an undefined host shift. See
+[ADR-0070](../adr/0070-add-bounded-power-of-two-expression.md).
 
 Publication occurs only after successful materialization, requested exact
 consumption, dependency resolution, and complete typed-payload preparation.

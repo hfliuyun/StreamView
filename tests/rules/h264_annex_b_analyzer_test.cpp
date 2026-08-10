@@ -35,6 +35,65 @@ namespace {
     return result;
 }
 
+[[nodiscard]] std::vector<bool> unsignedExpGolombBits(quint64 value) {
+    const quint64 codeNum = value + 1;
+    std::size_t codeBits = 0;
+    for (quint64 remaining = codeNum; remaining != 0; remaining >>= 1) {
+        ++codeBits;
+    }
+    std::vector<bool> result(codeBits - 1, false);
+    for (std::size_t index = codeBits; index != 0; --index) {
+        result.push_back(((codeNum >> (index - 1)) & 1U) != 0);
+    }
+    return result;
+}
+
+[[nodiscard]] std::vector<std::byte> replaceCodewordBeforeNextNal(
+    std::vector<std::byte> data,
+    std::size_t sourceBitOffset,
+    std::size_t oldBitLength,
+    quint64 value) {
+    const auto prefix = bytes({0x00, 0x00, 0x01});
+    const auto nextPrefix = std::search(
+        data.begin() + static_cast<std::ptrdiff_t>((sourceBitOffset + oldBitLength + 7) / 8),
+        data.end(),
+        prefix.begin(),
+        prefix.end());
+    Q_ASSERT(nextPrefix != data.end());
+    const std::size_t nextPrefixBit =
+        static_cast<std::size_t>(std::distance(data.begin(), nextPrefix)) * 8;
+
+    std::vector<bool> bits;
+    bits.reserve(data.size() * 8);
+    for (const std::byte byte : data) {
+        const unsigned int valueByte = std::to_integer<unsigned int>(byte);
+        for (int bit = 7; bit >= 0; --bit) {
+            bits.push_back(((valueByte >> bit) & 1U) != 0);
+        }
+    }
+    const std::vector<bool> replacement = unsignedExpGolombBits(value);
+    Q_ASSERT(replacement.size() >= oldBitLength);
+    bits.erase(bits.begin() + static_cast<std::ptrdiff_t>(sourceBitOffset),
+               bits.begin() + static_cast<std::ptrdiff_t>(sourceBitOffset + oldBitLength));
+    bits.insert(bits.begin() + static_cast<std::ptrdiff_t>(sourceBitOffset),
+                replacement.begin(),
+                replacement.end());
+    const std::size_t growth = replacement.size() - oldBitLength;
+    bits.erase(bits.begin() + static_cast<std::ptrdiff_t>(nextPrefixBit),
+               bits.begin() + static_cast<std::ptrdiff_t>(nextPrefixBit + growth));
+    Q_ASSERT(bits.size() == data.size() * 8);
+
+    for (std::size_t byteIndex = 0; byteIndex < data.size(); ++byteIndex) {
+        unsigned int valueByte = 0;
+        for (std::size_t bit = 0; bit < 8; ++bit) {
+            valueByte = (valueByte << 1U) |
+                        static_cast<unsigned int>(bits.at(byteIndex * 8 + bit));
+        }
+        data.at(byteIndex) = static_cast<std::byte>(valueByte);
+    }
+    return data;
+}
+
 class MemorySource final : public RandomAccessSource {
 public:
     explicit MemorySource(std::vector<std::byte> data) : data_(std::move(data)) {}
@@ -4111,15 +4170,50 @@ private slots:
         }
     }
 
-    void rejectsAdaptiveMarkingOperandsBeyondSpsReferenceCapacityAndContinues() {
+    void rejectsAdaptiveMarkingOperandsBeyondDerivedBoundsAndContinues() {
         struct InvalidCase final {
             QString fieldName;
+            quint64 operation = 0;
             quint64 operandOffset = 0;
             quint64 operandLength = 0;
             std::vector<std::byte> data;
         };
         const std::vector<InvalidCase> cases{
+            {QStringLiteral("difference_of_pic_nums_minus1[0]"),
+             1,
+             193,
+             9,
+             replaceCodewordBeforeNextNal(
+                 bytes({
+                     0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0xc8,
+                     0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
+                     0x00, 0x00, 0x01, 0x41, 0xea, 0x65, 0x13, 0xd5,
+                     0x00, 0x00, 0x01, 0x0a,
+                 }),
+                 193,
+                 5,
+                 16)},
+            {QStringLiteral("difference_of_pic_nums_minus1[0]"),
+             3,
+             195,
+             9,
+             replaceCodewordBeforeNextNal(
+                 replaceCodewordBeforeNextNal(
+                     bytes({
+                         0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a,
+                         0x0f, 0xc8,
+                         0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
+                         0x00, 0x00, 0x01, 0x41, 0xea, 0x65, 0x13, 0xd5,
+                         0x00, 0x00, 0x01, 0x0a,
+                     }),
+                     190,
+                     3,
+                     3),
+                 195,
+                 5,
+                 16)},
             {QStringLiteral("long_term_pic_num_mmco[0]"),
+             2,
              193,
              3,
              bytes({
@@ -4129,6 +4223,7 @@ private slots:
                  0x00, 0x00, 0x01, 0x0a,
              })},
             {QStringLiteral("max_long_term_frame_idx_plus1[0]"),
+             4,
              195,
              3,
              bytes({
@@ -4138,6 +4233,7 @@ private slots:
                  0x00, 0x00, 0x01, 0x0a,
              })},
             {QStringLiteral("long_term_frame_idx[0]"),
+             6,
              195,
              3,
              bytes({
@@ -4165,6 +4261,20 @@ private slots:
             const auto slice = analyzer->tree().node(rbsp->children().front());
             QVERIFY(slice.has_value());
             QCOMPARE(slice->state(), MaterializationState::Invalid);
+
+            const auto operation = std::find_if(
+                slice->children().begin(),
+                slice->children().end(),
+                [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node &&
+                           node->name() == QStringLiteral(
+                                               "memory_management_control_operation[0]");
+                });
+            QVERIFY(operation != slice->children().end());
+            const auto operationNode = analyzer->tree().node(*operation);
+            QVERIFY(operationNode.has_value());
+            QCOMPARE(operationNode->value().toULongLong(), testCase.operation);
 
             const auto operand = std::find_if(
                 slice->children().begin(),
@@ -4196,6 +4306,80 @@ private slots:
             QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(),
                      testCase.operandLength);
 
+            const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+            QVERIFY(followingNal.has_value());
+            QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+        }
+    }
+
+    void derivesTheAdaptiveMarkingBoundFromAFieldPicture() {
+        const auto base = bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0x0a, 0x0f, 0x24,
+            0x00, 0x00, 0x01, 0x68, 0xde, 0x38, 0x80,
+            0x00, 0x00, 0x01, 0x61, 0xeb, 0x99, 0x5c, 0x80,
+            0x00, 0x00, 0x01, 0x0a,
+        });
+        struct FieldCase final {
+            quint64 operandValue = 0;
+            MaterializationState expectedState = MaterializationState::Materialized;
+            quint64 operandLength = 0;
+        };
+        const std::vector<FieldCase> cases{
+            {16, MaterializationState::Materialized, 9},
+            {32, MaterializationState::Invalid, 11},
+        };
+
+        for (const auto& testCase : cases) {
+            MemorySource source(
+                replaceCodewordBeforeNextNal(base, 195, 1, testCase.operandValue));
+            QString errorMessage;
+            auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+            QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+            const auto batch = analyzer->analyzeBatch();
+
+            QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+            const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+            QVERIFY(nal.has_value());
+            const auto rbsp = analyzer->tree().node(nal->children().at(2));
+            QVERIFY(rbsp.has_value());
+            const auto slice = analyzer->tree().node(rbsp->children().front());
+            QVERIFY(slice.has_value());
+            QCOMPARE(slice->state(), testCase.expectedState);
+
+            const auto fieldNamed = [&](const QString& name) {
+                const auto found = std::find_if(
+                    slice->children().begin(),
+                    slice->children().end(),
+                    [&](const auto id) {
+                        const auto node = analyzer->tree().node(id);
+                        return node && node->name() == name;
+                    });
+                return found == slice->children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+            };
+            const auto fieldPicFlag = fieldNamed(QStringLiteral("field_pic_flag"));
+            QVERIFY(fieldPicFlag.has_value());
+            QCOMPARE(fieldPicFlag->value().toULongLong(), quint64(1));
+            const auto operand =
+                fieldNamed(QStringLiteral("difference_of_pic_nums_minus1[0]"));
+            QVERIFY(operand.has_value());
+            QCOMPARE(operand->value().toULongLong(), testCase.operandValue);
+            QCOMPARE(operand->location()->sourceSpans().front().start()
+                         .absoluteBitOffset(),
+                     quint64(195));
+            QCOMPARE(operand->location()->logicalRange().bitLength(),
+                     testCase.operandLength);
+
+            if (testCase.expectedState == MaterializationState::Materialized) {
+                QVERIFY(slice->diagnostics().empty());
+            } else {
+                QCOMPARE(slice->diagnostics().size(), std::size_t(1));
+                QCOMPARE(slice->diagnostics().front().fieldPath,
+                         QStringLiteral(
+                             "NonIdrSliceLayerWithoutPartitioningRbsp."
+                             "difference_of_pic_nums_minus1[0]"));
+            }
             const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
             QVERIFY(followingNal.has_value());
             QCOMPARE(followingNal->state(), MaterializationState::Materialized);

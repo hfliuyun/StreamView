@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Implement the scoped clause 7.4.3.3 relational marking bounds
-Next Action: Define the MaxPicNum context needed to validate `difference_of_pic_nums_minus1` for marking operations 1 and 3, then continue the complete Baseline/Main/High slice-header milestone; DPB/order semantics remain deferred (SP/SI slice types are Extended-profile and therefore off this milestone's path)
-Last Verification: Local dev/ci/sanitize builds and CTest each passed 32/32; focused DSL/H.264 suites passed; `svtool rule check` passed; hosted run 31391608560 passed on Ubuntu, Windows, and macOS
+Last Completed Step: Validate marking operation 1/3 against frame- or field-derived MaxPicNum
+Next Action: Define and implement the H.264 `pic_order_cnt_type` 1/2 SPS and slice-header branches; DPB/order semantics remain deferred (SP/SI slice types are Extended-profile and therefore off this milestone's path)
+Last Verification: The MaxPicNum increment has passed focused DSL/H.264 tests, `svtool rule check`, and local dev/ci/sanitize builds with CTest 32/32; hosted verification remains pending
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -967,3 +967,17 @@ Blockers: None
   Qt 6.11.1、Windows 2022 / Qt 6.10.1、macOS 15 / Qt 6.11.1 jobs 全部成功。
   `difference_of_pic_nums_minus1` 的
   MaxPicNum relation、DPB/order/duplicate semantics 明确保留为后续工作。
+- 2026-08-10：完成 marking operation 1/3 的 MaxPicNum relation。ADR-0070 新增受限
+  `power_of_two(u64)` expression leaf：exponent `0..63` 产生 `1 << exponent`，更大值在外层
+  expression 的既有 instruction 内返回致命 `invalid-syntax`；parser/compiler 校验 arity/type，
+  typed IR 保存单 operand `PowerOfTwo` node，VM preflight 在 shift 前验证 descriptor 与 exponent。
+  官方规则把 SPS `log2_max_frame_num_minus4 + 4` 转为 `MaxFrameNum`，再乘以
+  `optional_value(field_pic_flag, 0) + 1` 得到 frame/field `MaxPicNum`，以 repeat-local assertion
+  约束 operation 1/3 的 `difference_of_pic_nums_minus1`。新增 frame fixture 在最小
+  `MaxPicNum == 16` 时提交 operand 16，精确锚定 9-bit codeword 并验证后续 NAL 继续分析。
+  package 升到 `0.1.23`，coverage depth 为 `max-pic-num-marking-slice-header`。定向 DSL/H.264
+  套件为 DSL 64/64、IR 72/72、executor 121/121、H.264 analyzer 104/104，
+  `svtool rule check` 通过；回归同时覆盖 exponent 0/63/64+、operation 1/3 与
+  frame/field MaxPicNum 边界。完整本机 dev/ci/sanitize 构建与 CTest 均为 32/32，
+  hosted verification 待执行。下一步进入
+  `pic_order_cnt_type` 1/2 的 SPS 与 slice-header 分支；DPB/order/duplicate semantics 继续延期。

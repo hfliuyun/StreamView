@@ -557,6 +557,12 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
                     ue difference_of_pic_nums_minus1
                         @spec("ITU-T H.264", "7.3.3.3, 7.4.3.3")
                         @description("Identifies a short-term picture to operate on.");
+                    assert(difference_of_pic_nums_minus1 <
+                           power_of_two(context_value(pic_parameter_set_id,
+                                                      h264_sps,
+                                                      log2_max_frame_num_minus4) + 4) *
+                               (optional_value(field_pic_flag, 0) + 1))
+                        at difference_of_pic_nums_minus1;
                 }
                 if (memory_management_control_operation == 2) {
                     ue long_term_pic_num_mmco
