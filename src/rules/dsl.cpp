@@ -1764,6 +1764,35 @@ private:
             case DslExpressionKind::Identifier:
                 return resolveIdentifier(expression.name, expression.range);
             case DslExpressionKind::Call: {
+                if (expression.name == QStringLiteral("power_of_two")) {
+                    if (expression.operands.size() != 1) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidExpression,
+                             QStringLiteral(
+                                 "power_of_two requires one unsigned exponent"),
+                             expression.range});
+                        return std::nullopt;
+                    }
+                    const auto exponentType = self(self,
+                                                   expression.operands.front(),
+                                                   resolveIdentifier,
+                                                   availableFunctionCount,
+                                                   allowImportedContextReference,
+                                                   resolveOptionalDependency,
+                                                   depth + 1,
+                                                   nodeCount);
+                    if (!exponentType) {
+                        return std::nullopt;
+                    }
+                    if (*exponentType != DslScalarType::U64) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidType,
+                             QStringLiteral("power_of_two exponent must be unsigned"),
+                             expression.operands.front().range});
+                        return std::nullopt;
+                    }
+                    return DslScalarType::U64;
+                }
                 if (allowImportedContextReference &&
                     expression.name == QStringLiteral("context_value")) {
                     if (expression.operands.size() != 3 ||
@@ -1996,10 +2025,16 @@ private:
                             [&function](const DslProgressiveScan& scan) {
                                 return scan.name == function.name;
                             });
-            if (duplicateFunction || conflictsWithDeclaration) {
+            const bool conflictsWithReservedExpression =
+                function.name == QStringLiteral("power_of_two");
+            if (duplicateFunction || conflictsWithDeclaration ||
+                conflictsWithReservedExpression) {
                 result_.diagnostics.push_back(
                     {DslDiagnosticCode::DuplicateName,
-                     QStringLiteral("Pure function names share the top-level namespace"),
+                     conflictsWithReservedExpression
+                         ? QStringLiteral("power_of_two is a reserved expression name")
+                         : QStringLiteral(
+                               "Pure function names share the top-level namespace"),
                      function.range});
             }
             for (std::size_t parameterIndex = 0;

@@ -440,6 +440,20 @@ struct TypedExpressionValidationState final {
         }
         return true;
     }
+    case DslTypedExpressionKind::PowerOfTwo:
+        if (expression.type != DslScalarType::U64 || expression.operands.size() != 1 ||
+            !validateTypedExpression(expression.operands.front(),
+                                     program,
+                                     structure,
+                                     subjectFieldIndex,
+                                     subjectConditions,
+                                     depth + 1,
+                                     state)) {
+            return fail(QStringLiteral("Typed power_of_two expression is invalid"));
+        }
+        return expression.operands.front().type == DslScalarType::U64
+                   ? true
+                   : fail(QStringLiteral("Typed power_of_two exponent is invalid"));
     case DslTypedExpressionKind::OptionalFieldReference: {
         // Deliberately omits the branch-guarantee check that a plain field
         // reference applies: naming a field the path may not materialize is the
@@ -666,6 +680,22 @@ struct ComputedEvaluationResult final {
                 QStringLiteral("Sequence element value is unavailable"));
         }
         return unsignedResult(*elementValue);
+    }
+    case DslTypedExpressionKind::PowerOfTwo: {
+        const ComputedEvaluationResult exponent =
+            evaluateTypedExpression(expression.operands.front(),
+                                    structure,
+                                    fieldValues,
+                                    contextValueResolver,
+                                    sequenceElementValues);
+        if (!exponent.complete()) {
+            return exponent;
+        }
+        if (exponent.value.unsignedValue >= 64) {
+            return invalidSyntax(
+                QStringLiteral("power_of_two exponent must be less than 64"));
+        }
+        return unsignedResult(quint64{1} << exponent.value.unsignedValue);
     }
     case DslTypedExpressionKind::OptionalFieldReference: {
         // A slot holding no value means the executed path never materialized the

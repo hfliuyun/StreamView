@@ -480,6 +480,95 @@ private slots:
         QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(2));
     }
 
+    void evaluatesPowerOfTwoAndRejectsOutOfDomainExponent() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header {
+                bits<7> exponent;
+                computed<u64> value = power_of_two(exponent);
+            }
+            entry Header;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 7);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+
+        struct ValidCase final {
+            unsigned int encodedExponent = 0;
+            quint64 expected = 0;
+        };
+        const std::vector<ValidCase> validCases{
+            {0x00, quint64{1}},
+            {0x08, quint64{16}},
+            {0x7e, quint64{1} << 63U},
+        };
+        for (const auto& testCase : validCases) {
+            MemorySource validSource(bytes({testCase.encodedExponent}));
+            BitReader validReader(validSource, *range);
+            auto validTree = AnalysisTree::create(QStringLiteral("power-of-two-valid"));
+            QVERIFY(validTree.has_value());
+            const auto valid = DslExecutor::decodeStruct(*compiled.program,
+                                                         quint32(0),
+                                                         validReader,
+                                                         *mapping,
+                                                         0,
+                                                         *validTree,
+                                                         validTree->rootId());
+            QCOMPARE(valid.status, DslExecutionStatus::Materialized);
+            const auto validStructure = validTree->node(*valid.structureNode);
+            QVERIFY(validStructure.has_value());
+            const auto validField = validTree->node(validStructure->children().back());
+            QVERIFY(validField.has_value());
+            QCOMPARE(validField->value().toULongLong(), testCase.expected);
+        }
+
+        for (const unsigned int encodedExponent : {0x80U, 0x82U, 0xfeU}) {
+            MemorySource invalidSource(bytes({encodedExponent}));
+            BitReader invalidReader(invalidSource, *range);
+            auto invalidTree = AnalysisTree::create(QStringLiteral("power-of-two-invalid"));
+            QVERIFY(invalidTree.has_value());
+            const auto invalid = DslExecutor::decodeStruct(*compiled.program,
+                                                           quint32(0),
+                                                           invalidReader,
+                                                           *mapping,
+                                                           0,
+                                                           *invalidTree,
+                                                           invalidTree->rootId());
+            QCOMPARE(invalid.status, DslExecutionStatus::InvalidSyntax);
+            QCOMPARE(invalid.bitsConsumed, quint64(7));
+            const auto invalidStructure = invalidTree->node(*invalid.structureNode);
+            QVERIFY(invalidStructure.has_value());
+            QCOMPARE(invalidStructure->diagnostics().size(), std::size_t(1));
+            const auto& diagnostic = invalidStructure->diagnostics().front();
+            QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::InvalidSyntax);
+            QCOMPARE(diagnostic.message,
+                     QStringLiteral("power_of_two exponent must be less than 64"));
+            QCOMPARE(diagnostic.fieldPath,
+                     QStringLiteral("Header.value"));
+            QVERIFY(!diagnostic.location.has_value());
+        }
+
+        auto malformed = *compiled.program;
+        malformed.structs.front().fields.at(1).computedExpression->operands.clear();
+        MemorySource malformedSource(bytes({0x08}));
+        BitReader malformedReader(malformedSource, *range);
+        auto malformedTree = AnalysisTree::create(QStringLiteral("power-of-two-malformed"));
+        QVERIFY(malformedTree.has_value());
+        const auto malformedResult = DslExecutor::decodeStruct(malformed,
+                                                               quint32(0),
+                                                               malformedReader,
+                                                               *mapping,
+                                                               0,
+                                                               *malformedTree,
+                                                               malformedTree->rootId());
+        QCOMPARE(malformedResult.status, DslExecutionStatus::InvalidDefinition);
+        QCOMPARE(malformedResult.instructionsExecuted, quint64(0));
+        QCOMPARE(malformedResult.bitsConsumed, quint64(0));
+    }
+
     void rejectsMalformedRepeatLocalAssertionConditionsBeforeReadingSource() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             struct Header {

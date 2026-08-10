@@ -184,6 +184,44 @@ private slots:
                  DslBinaryOperator::LessEqual);
     }
 
+    void parsesPowerOfTwoCall() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct Header { bits<1> value; "
+            "assert(power_of_two(value) == 2) at value; } entry Header;"));
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& assertion = result.program.structs.front().items.at(1).assertion;
+        QCOMPARE(assertion.condition.kind, DslExpressionKind::Binary);
+        QCOMPARE(assertion.condition.operands.front().kind, DslExpressionKind::Call);
+        QCOMPARE(assertion.condition.operands.front().name, QStringLiteral("power_of_two"));
+    }
+
+    void rejectsInvalidPowerOfTwoCalls() {
+        const std::vector<QString> sources{
+            QStringLiteral(
+                "struct Header { computed<u64> value = power_of_two(); } entry Header;"),
+            QStringLiteral(
+                "struct Header { computed<u64> value = power_of_two(1, 2); } entry Header;"),
+            QStringLiteral(
+                "struct Header { computed<u64> value = power_of_two(true); } entry Header;"),
+            QStringLiteral(
+                "pure u64 power_of_two(u64 value) { return value; } "
+                "struct Header { bits<1> value; } entry Header;"),
+        };
+        for (const QString& source : sources) {
+            const auto result = DslParser::parse(source);
+            QVERIFY(!result.succeeded());
+            QVERIFY(std::any_of(result.diagnostics.begin(),
+                                result.diagnostics.end(),
+                                [](const auto& diagnostic) {
+                                    return diagnostic.message.contains(
+                                        QStringLiteral("power_of_two"));
+                                }));
+        }
+    }
+
     void parsesSequenceElementHeaderValueLeaf() {
         const auto result = DslParser::parse(QStringLiteral(R"(
             struct NalUnitHeader {

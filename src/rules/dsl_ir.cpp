@@ -508,6 +508,40 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             return cloneExpression(*resolved, depth, state, expression.range);
         }
         if (expression.kind == DslExpressionKind::Call) {
+            if (expression.name == QStringLiteral("power_of_two")) {
+                if (!claimExpressionNode(state, depth, expression.range)) {
+                    return std::nullopt;
+                }
+                if (expression.operands.size() != 1) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidExpression,
+                                  QStringLiteral(
+                                      "power_of_two requires one unsigned exponent"),
+                                  expression.range);
+                    return std::nullopt;
+                }
+                const auto exponent = compileExpression(expression.operands.front(),
+                                                        resolveIdentifier,
+                                                        availableFunctionCount,
+                                                        depth + 1,
+                                                        state);
+                if (!exponent) {
+                    return std::nullopt;
+                }
+                if (exponent->type != DslScalarType::U64) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidType,
+                                  QStringLiteral(
+                                      "power_of_two exponent must be unsigned"),
+                                  expression.operands.front().range);
+                    return std::nullopt;
+                }
+                DslTypedExpression power;
+                power.kind = DslTypedExpressionKind::PowerOfTwo;
+                power.type = DslScalarType::U64;
+                power.operands.push_back(*exponent);
+                return power;
+            }
             if (expression.name == QStringLiteral("context_value")) {
                 if (!claimExpressionNode(state, depth, expression.range)) {
                     return std::nullopt;
@@ -842,11 +876,16 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                         [&function](const DslProgressiveScan& scan) {
                             return scan.name == function.name;
                         });
-        if (duplicateName || conflictsWithTopLevel) {
+        const bool conflictsWithReservedExpression =
+            function.name == QStringLiteral("power_of_two");
+        if (duplicateName || conflictsWithTopLevel || conflictsWithReservedExpression) {
             addDiagnostic(result.diagnostics,
                           DslDiagnosticCode::DuplicateName,
-                          QStringLiteral(
-                              "Pure function names share the top-level namespace"),
+                          conflictsWithReservedExpression
+                              ? QStringLiteral(
+                                    "power_of_two is a reserved expression name")
+                              : QStringLiteral(
+                                    "Pure function names share the top-level namespace"),
                           function.range);
         }
         for (std::size_t parameterIndex = 0;

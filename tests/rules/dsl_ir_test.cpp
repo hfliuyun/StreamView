@@ -210,6 +210,32 @@ private slots:
         QCOMPARE(assertionOpcodes, std::ptrdiff_t(2));
     }
 
+    void lowersPowerOfTwoAsAValidatedUnsignedExpression() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header {
+                bits<4> exponent;
+                computed<u64> value = power_of_two(exponent);
+            }
+            entry Header;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& expression =
+            compiled.program->structs.front().fields.at(1).computedExpression;
+        QVERIFY(expression.has_value());
+        QCOMPARE(expression->kind, DslTypedExpressionKind::PowerOfTwo);
+        QCOMPARE(expression->type, DslScalarType::U64);
+        QCOMPARE(expression->operands.size(), std::size_t(1));
+        QCOMPARE(expression->operands.front().kind, DslTypedExpressionKind::FieldReference);
+    }
+
     void lowersImportedContextValuesInSourceAnchoredAssertions() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             pure bool is_disabled(u64 value) {
