@@ -3,8 +3,8 @@
 Status: In Progress
 Current Phase: 3
 Last Completed Step: Decode the bounded High-profile PPS extension without accepting scaling lists
-Next Action: Audit the remaining Baseline/Main/High 8-bit 4:2:0 slice-header syntax gaps and select the next bounded increment; POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: The High-profile PPS extension passed `svtool rule check`, the focused H.264 analyzer suite 121/121, and local dev/ci/sanitize CTest 32/32 with no sanitizer report; hosted verification is pending
+Next Action: Add the non-fatal `0..65535` range contract for IDR `idr_pic_id`, preserving the complete codeword and all following slice-header boundaries; POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: The High-profile PPS extension passed `svtool rule check`, the focused H.264 analyzer suite 121/121, local dev/ci/sanitize CTest 32/32 with no sanitizer report, and hosted run `31496827386` on Ubuntu, Windows, and macOS
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1027,7 +1027,10 @@ Blockers: None
   base-only、transform flag 两种值、正负 second offset 与精确 source span、scaling-matrix
   拒绝、Baseline/Main/Extended profile gate、offset 截断、missing/future/stale SPS、失败 SPS
   重定义恢复，以及失败 NAL 后继续扫描。`svtool rule check` 与 H.264 analyzer 121/121 已通过；
-  本机 dev/ci/sanitize 完整构建与 CTest 均为 32/32，且无 sanitizer 报告。hosted matrix
-  待 push 后记录。设计提交为 `b2b41a8`，实现提交为 `9187cac`。
-  下一步审计 Baseline/Main/High 8-bit 4:2:0 slice-header 的剩余语法缺口；实际 POC、field
-  order、wrap/MMCO-5、DPB 与 output order 继续延期。
+  本机 dev/ci/sanitize 完整构建与 CTest 均为 32/32，且无 sanitizer 报告。hosted run
+  `31496827386` 的 Ubuntu 24.04 / Qt 6.11.1 job `93796543197`、Windows 2022 /
+  Qt 6.10.1 job `93796543158`、macOS 15 / Qt 6.11.1 job `93796543359` 全部成功。设计提交为
+  `b2b41a8`，实现提交为 `9187cac`，双语覆盖记录为 `78377e5`。后续审计确认当前单
+  slice-group、无 scaling-list 的 I/P/B 范围内，clause 7.3.3 位消费分支已经完整；下一步为
+  IDR `idr_pic_id` 增加 `0..65535` 非致命范围校验。实际 POC、field order、wrap/MMCO-5、
+  DPB 与 output order 继续延期。
