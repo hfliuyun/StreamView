@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 3
 Last Completed Step: Add the non-consuming `more_rbsp_data()` DSL source-state prerequisite
 Next Action: Use `more_rbsp_data()` to decode the bounded High-profile PPS extension, while keeping scaling lists layout-critical unsupported; POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: The RBSP source-state increment passed DSL parser 66/66, IR 73/73, executor 122/122, `svtool rule check`, the H.264 analyzer suite 112/112, and local dev/ci/sanitize CTest 32/32; hosted verification is pending
+Last Verification: The RBSP source-state increment passed DSL parser 66/66, IR 73/73, executor 122/122, `svtool rule check`, the H.264 analyzer suite 112/112, local dev/ci/sanitize CTest 32/32, and hosted run `31493517456` on Ubuntu, Windows, and macOS
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1011,7 +1011,9 @@ Blockers: None
   一至八 bit 的 non-trailing、超过八 bit、跨 mapping span、零剩余、truncated/source error、
   malformed descriptor 与 reader 非消费。DSL parser 66/66、IR 73/73、executor 122/122，
   `svtool rule check` 与 H.264 analyzer 112/112 通过；本机 dev/ci/sanitize 完整构建与 CTest
-  均为 32/32。设计与实现分别提交为 `b31144b` 与 `04a49e9`；hosted matrix 待 push 后记录。
+  均为 32/32。设计与实现分别提交为 `b31144b` 与 `04a49e9`。hosted run
+  `31493517456` 的 Ubuntu 24.04 / Qt 6.11.1 job `93785464149`、Windows 2022 /
+  Qt 6.10.1 job `93785464275`、macOS 15 / Qt 6.11.1 job `93785464154` 全部成功。
   下一步消费该 leaf 解码 High-profile PPS 的 `transform_8x8_mode_flag`、受限为零的
   `pic_scaling_matrix_present_flag` 与 `second_chroma_qp_index_offset`，同时保持合法的
   High-profile base-only PPS 可 materialize。
