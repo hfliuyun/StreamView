@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 3
 Last Completed Step: Decode H.264 `pic_order_cnt_type` 1/2 SPS and IDR/non-IDR slice-header branches
 Next Action: Audit the remaining Baseline/Main/High 8-bit 4:2:0 slice-header gaps, beginning with the High-profile PPS extension prerequisite; POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: The POC type 1/2 increment passed `svtool rule check` and the focused H.264 analyzer suite 112/112; local dev/ci/sanitize passed CTest 32/32; hosted matrix verification is pending
+Last Verification: The POC type 1/2 increment passed `svtool rule check`, the focused H.264 analyzer suite 112/112, local dev/ci/sanitize CTest 32/32, and hosted run 31457193468 on Ubuntu, Windows, and macOS
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -993,7 +993,9 @@ Blockers: None
   `picture-order-count-slice-header`。新增回归覆盖 type-1 SPS/source span、IDR 两个 delta、
   non-IDR 一个 delta、always-zero 缺席、场图像抑制第二个 delta、type-2 IDR/non-IDR 缺席、reserved
   type、cycle count 0/256 的边界，以及 cycle entry 截断后继续分析下一 NAL。`svtool rule check`
-  与 H.264 analyzer 112/112 已通过；本机 dev/ci/sanitize 三套 CTest 均为 32/32，hosted matrix
-  尚待本轮验证。
+  与 H.264 analyzer 112/112 已通过；本机 dev/ci/sanitize 三套 CTest 均为 32/32。实现与文档
+  分别提交为 `e1db76a` 与 `0b50428`。hosted run `31457193468` 的 Ubuntu 24.04 /
+  Qt 6.11.1 job `93673379241`、Windows 2022 / Qt 6.10.1 job `93673379325`、macOS 15 /
+  Qt 6.11.1 job `93673379309` 全部成功。
   下一步审计 Baseline/Main/High 8-bit 4:2:0 slice-header 的剩余缺口，优先确认 High-profile PPS
   extension prerequisite；实际 POC、field order、wrap/MMCO-5、DPB 与 output order 继续延期。
