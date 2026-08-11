@@ -85,6 +85,9 @@ ADR-0066 只豁免第一个实参的 branch-guarantee 规则，而这个表达�
 仍在范围之外，那条 ADR-0049 guard 与本条相互独立。本增量移除的是 ADR-0049 所列
 五条前提中的一条，而不是这个写法本身。
 
+后续：ADR-0071 与 package `0.1.24` 已移除该除数及 `pic_order_cnt_lsb` 处的拒绝，并加入
+type-1 delta 分支和不读取字段的 type-2 分支。
+
 接受 `frame_mbs_only_flag == 0` 同时也纳入了 MBAFF 帧，而非只有场图像，因为 MBAFF
 码流把该 flag 置 0 之后编码 `field_pic_flag == 0`。这是有意的，且不需要额外语法：
 两种情况的 slice-header 布局完全相同，宏块自适应帧场编码只改变不透明
@@ -138,6 +141,9 @@ non-IDR 独有的三个 `computed<bool>` slice-type 字段。
 `field_pic_flag` 与 `bottom_field_flag`，不推导 picture order count、不把连续的场
 配成对、也不校验码流的场是否交替出现。MBAFF 宏块布局仍留在不透明的 `slice_data`
 内部。POC type 1 与 2 仍在 `pic_order_cnt_lsb` 处被拒绝。
+
+上面的 ADR-0071 后续说明只取代这一拒绝；picture-order 推导、field pairing 与 output-order
+语义仍不属于本决策范围。
 
 `num_ref_idx_l0_active_minus1` 保留 `@range(0, 31)` 界限，不收紧到帧图像的 15。
 Clause 7.4.3 规定帧图像上限为 15、场图像为 31，但那是对固定宽度字段取值的语义

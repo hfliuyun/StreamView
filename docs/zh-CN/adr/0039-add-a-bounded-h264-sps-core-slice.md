@@ -29,6 +29,9 @@ H.264 SPS 包含依 profile 变化的 scaling list、多个 Exp-Golomb 分支以
 分支不能被静默消费；在后续切片加入
 对应字段前，它们会使 RBSP 保持 invalid。
 
+后续：ADR-0071 与 package `0.1.24` 已加入 type-1 与 type-2 SPS picture-order 分支；本决策
+提到的其他未支持语法仍会被拒绝。
+
 首个结构切片尚不强制 clause 7.4.2.1.1 对 `log2_max_frame_num_minus4` 与
 `log2_max_pic_order_cnt_lsb_minus4` 的 `0..12` 语义范围。它会发布带 source 的字段值，完整
 range conformance 留给下一条 SPS constraint 切片。因此 structure 的 materialized 表示精确

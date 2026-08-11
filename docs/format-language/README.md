@@ -960,14 +960,31 @@ fully decoded, a header-only access unit delimiter is `truncated-source`, a
 header-only end of sequence or end of stream is materialized, and either of
 those types carrying RBSP bytes is `invalid-syntax`. Type `7` decodes the
 8-bit Baseline/Main/Extended SPS core and the constrained High subset with 4:2:0 chroma,
-eight-bit luma/chroma, transform bypass disabled, no scaling matrix, and
-`pic_order_cnt_type == 0`. When `vui_parameters_present_flag` is one, the rule
+eight-bit luma/chroma, transform bypass disabled, no scaling matrix, and all
+three declared picture-order-count syntax branches. Type 0 reads
+`log2_max_pic_order_cnt_lsb_minus4`. Type 1 reads
+`delta_pic_order_always_zero_flag`, `offset_for_non_ref_pic`,
+`offset_for_top_to_bottom_field`, `num_ref_frames_in_pic_order_cnt_cycle`, and
+up to 255 signed `offset_for_ref_frame[index]` entries. Type 2 reads no
+additional SPS POC fields. A reserved POC type is fatal at its complete
+Exp-Golomb codeword. The type-1 cycle count carries a non-fatal
+`@range(0, 255)` warning and also controls `repeat(..., 255)`, so an oversized
+count stops before any undeclared cycle entry can change the following layout.
+When `vui_parameters_present_flag` is one, the rule
 also decodes the bounded Annex E.1.1 VUI core: aspect-ratio information including
 Extended SAR, overscan information, video-signal and optional colour-description
 fields, chroma sample locations, timing information, the NAL/VCL HRD presence
 flags and complete bounded Annex E.1.2 HRD schedules, `low_delay_hrd_flag`,
 `pic_struct_present_flag`, and the complete bitstream-restriction branch. The SPS
 `rbsp_trailing_bits;` remains the exact terminal after the optional VUI.
+
+Two unconditional computed nodes normalize the conditional SPS fields for
+context consumers. `effective_log2_max_pic_order_cnt_lsb_minus4` uses zero when
+the type-0 field is absent, and
+`effective_delta_pic_order_always_zero_flag` uses one when the type-1 flag is
+absent. Both nodes have no source location and are exported with the SPS
+generation; slice guards ensure that each value is consumed only by its
+matching POC branch.
 
 Each present HRD flag selects an independently prefixed schedule with one through
 32 CPB entries and four delay-length fields. Either presence flag causes the shared
@@ -979,8 +996,12 @@ scale fields and derived count remain available as a decoded prefix.
 
 The two chroma sample-location types carry non-fatal `@range(0, 5)` constraints.
 `max_bytes_per_pic_denom`, `max_bits_per_mb_denom`, and both
-`log2_max_mv_length_*` fields carry non-fatal `@range(0, 16)` constraints. Both SPS
-`log2_*_minus4` fields carry the clause 7.4.2.1.1 `@range(0, 12)` bounds. A violation
+`log2_max_mv_length_*` fields carry non-fatal `@range(0, 16)` constraints. The SPS
+`log2_max_frame_num_minus4` field and the conditionally present
+`log2_max_pic_order_cnt_lsb_minus4` field carry the clause 7.4.2.1.1
+`@range(0, 12)` bounds. The type-1
+`num_ref_frames_in_pic_order_cnt_cycle` field carries `@range(0, 255)` in
+addition to its layout-critical repeat bound. A violation
 of these non-layout bounds keeps the field, complete SPS/NAL, and later declared
 fields materialized, and reports a source-located `invalid-syntax` warning on that
 field. Other syntax values remain source-backed, but materialization claims only
@@ -1083,14 +1104,22 @@ The declared PPS fields have the following bounded meanings:
 | `constrained_intra_pred_flag` | Restricts intra prediction to intra-coded neighboring macroblocks. |
 | `redundant_pic_cnt_present_flag` | Signals redundant-picture count syntax in associated slice headers. |
 
-Type `1` decodes `NonIdrSliceLayerWithoutPartitioningRbsp` for bounded
-progressive I, P, and B slices in both reference and non-reference form.
+Type `1` decodes `NonIdrSliceLayerWithoutPartitioningRbsp` for bounded I, P,
+and B slices in frame or field, reference or non-reference form.
 `NonIdrSliceType` accepts I values 2 and 7, P values 0 and 5, and B values 1 and
 6. Three visible computed fields distinguish the layouts: `is_p_slice`,
 `is_b_slice`, and `uses_reference_lists`, which is true for any P or B slice. A
 type-1 header accepts any reference priority, and the structure reads
 `header_value(nal_ref_idc)` to decide whether `dec_ref_pic_marking()` is
 present.
+
+Both type-1 and type-5 slice structures select their picture-order syntax from
+the exact imported SPS generation. POC type 0 keeps the existing
+`pic_order_cnt_lsb` and optional bottom-field delta order. POC type 1 reads no
+slice delta when the normalized always-zero flag is one; otherwise a visible
+computed count selects `delta_pic_order_cnt[0]` and, when the PPS enables the
+bottom-field-in-frame syntax for a frame picture, `delta_pic_order_cnt[1]`.
+POC type 2 reads no POC syntax before the following slice-header field.
 
 A B slice first reads `direct_spatial_mv_pred_flag`. Every P and B slice then
 reads the mandatory `num_ref_idx_active_override_flag`; value 1 selects a bounded
@@ -1149,8 +1178,8 @@ the IDR-only `idr_pic_id`, `no_output_of_prior_pics_flag`, and
 `long_term_reference_flag` fields, which clause 7.3.3.3 reads on the `IdrPicFlag`
 path instead.
 
-Type `5` decodes `IdrSliceLayerWithoutPartitioningRbsp` for the bounded
-progressive all-I `slice_type` values 2 and 7. It imports the exact PPS
+Type `5` decodes `IdrSliceLayerWithoutPartitioningRbsp` for the bounded all-I
+`slice_type` values 2 and 7 in frame or field form. It imports the exact PPS
 generation selected by `pic_parameter_set_id` and that PPS's exact SPS
 dependency. Across the two bounded forms, declared slice fields have these
 meanings:
@@ -1167,8 +1196,11 @@ meanings:
 | `field_pic_flag` | Selects field or frame coding; present only when the bound SPS clears `frame_mbs_only_flag`. |
 | `bottom_field_flag` | Selects the bottom field; present only when `field_pic_flag` is one. |
 | `idr_pic_id` | Identifies the IDR picture. |
-| `pic_order_cnt_lsb` | Uses `log2_max_pic_order_cnt_lsb_minus4 + 4` bits from the bound POC-type-0 SPS. |
-| `delta_pic_order_cnt_bottom` | Carries the signed bottom-field POC delta when the bound PPS enables it and the picture is not a field. |
+| `pic_order_cnt_lsb` | For POC type 0, uses the bound SPS's normalized `effective_log2_max_pic_order_cnt_lsb_minus4 + 4` width. |
+| `has_delta_pic_order_cnt_bottom` | POC-type-0 computed Boolean that is true when the bound PPS enables the bottom-field delta and the picture is not a field; it has no source location. |
+| `delta_pic_order_cnt_bottom` | For POC type 0, carries the signed bottom-field delta when `has_delta_pic_order_cnt_bottom` is true. |
+| `delta_pic_order_cnt_count` | POC-type-1 computed count present when slice deltas are not inferred zero; it is 1, or 2 when the PPS enables the second delta for a frame picture, and has no source location. |
+| `delta_pic_order_cnt[index]` | Carries signed type-1 POC deltas: `[0]` is present whenever the computed count exists, and `[1]` only when that count is 2. |
 | `redundant_pic_cnt` | Identifies the redundant representation when the bound PPS enables it; values outside `0..127` warn. |
 | `direct_spatial_mv_pred_flag` | Selects spatial or temporal direct prediction for a supported B slice. |
 | `num_ref_idx_active_override_flag` | Mandatory for a supported P or B slice; value 1 reads the active-reference overrides and value 0 keeps the PPS defaults. |
@@ -1201,10 +1233,13 @@ meanings:
 | `slice_beta_offset_div2` | Carries the signed beta deblocking offset when filtering is not disabled; its signed bound is deferred. |
 | `slice_data` | Materialized opaque suffix covering every remaining RBSP bit, including any slice trailing bits; CAVLC/CABAC is not decoded. |
 
-Dynamic widths still reject POC types other than 0 before the affected field
-reads source. Exact imported PPS guards select redundant-picture count and
-deblocking-control fields, and a computed guard selects the bottom-field POC
-delta; a false guard consumes no bits and creates no node. Deblocking value 1
+Imported SPS guards select mutually exclusive type-0, type-1, and type-2 POC
+branches. Only type 0 evaluates the dynamic `pic_order_cnt_lsb` width; type 1
+uses the normalized always-zero flag and a bounded count to read zero, one, or
+two deltas; type 2 reads no POC syntax. Reserved types fail while decoding the
+SPS. Exact imported PPS guards select redundant-picture count and
+deblocking-control fields, and a type-0 computed guard selects the bottom-field
+POC delta; a false guard consumes no bits and creates no node. Deblocking value 1
 skips both
 offsets, values 0 and 2 read them, and reserved values fail at the controlling
 codeword. Missing/future/stale parameter-set generations remain
@@ -1214,7 +1249,9 @@ bounded at 64 operations, which is the language maximum for a sentinel repeat.
 These are resource bounds rather than claimed conformance limits. An interlaced
 sequence (`frame_mbs_only_flag == 0`) reads `field_pic_flag`, and a field picture
 reads `bottom_field_flag`; a field picture suppresses
-`delta_pic_order_cnt_bottom` even when its PPS enables that field. MBAFF frames
+`delta_pic_order_cnt_bottom` even when its PPS enables that field. For POC type
+1, a field picture similarly suppresses `delta_pic_order_cnt[1]`, while the SPS
+always-zero flag suppresses both type-1 deltas. MBAFF frames
 are accepted with the same header layout, since macroblock-adaptive coding
 changes only how the opaque `slice_data` is interpreted. The marking loop now
 checks the three per-operation bounds that can be expressed from the imported
@@ -1222,11 +1259,14 @@ SPS `max_num_ref_frames`: operation 2's `long_term_pic_num_mmco`, operations 3
 and 6's `long_term_frame_idx`, and operation 4's
 `max_long_term_frame_idx_plus1`. Operations 1 and 3 also bound
 `difference_of_pic_nums_minus1` by the frame- or field-derived `MaxPicNum`.
-SP/SI slice types, decoded-picture-buffer validation, operation-order/duplicate
-semantics, weight-application semantics, CABAC slice-data decoding, and
-slice-group branches are deferred.
+SP/SI slice types, derived `PicOrderCnt`/`TopFieldOrderCnt`/
+`BottomFieldOrderCnt`, `FrameNumOffset` and wrap state, MMCO-5 effects, field
+pairing and output order, signed POC-offset domains and cycle-sum validation,
+decoded-picture-buffer validation, operation-order/duplicate semantics,
+weight-application semantics, CABAC slice-data decoding, and slice-group
+branches are deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
-Package `0.1.23` advertises coverage depth `max-pic-num-marking-slice-header`;
+Package `0.1.24` advertises coverage depth `picture-order-count-slice-header`;
 this is not yet the complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in

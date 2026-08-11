@@ -718,13 +718,25 @@ header，因此 direct header 之后的字节仍保持 uninterpreted，不会传
 可以完整解码；只有 header 的 access unit delimiter 是 `truncated-source`；只有 header 的
 end of sequence 或 end of stream 是物化；而这两种 type 一旦携带 RBSP 字节即为
 `invalid-syntax`。type `7` 解码 8-bit Baseline/Main/Extended SPS 核心，以及受限的 High 子集：
-4:2:0 chroma、eight-bit luma/chroma、关闭 transform bypass、无 scaling matrix，并要求
-`pic_order_cnt_type == 0`。当 `vui_parameters_present_flag` 为一时，规则还会解码有界的
+4:2:0 chroma、eight-bit luma/chroma、关闭 transform bypass、无 scaling matrix，并覆盖三个
+已声明的 picture-order-count 语法分支。type 0 读取
+`log2_max_pic_order_cnt_lsb_minus4`；type 1 读取
+`delta_pic_order_always_zero_flag`、`offset_for_non_ref_pic`、
+`offset_for_top_to_bottom_field`、`num_ref_frames_in_pic_order_cnt_cycle`，以及最多 255 个
+signed `offset_for_ref_frame[index]`；type 2 不读取额外 SPS POC 字段。reserved POC type
+在完整 Exp-Golomb 码字处致命失败。type-1 cycle count 带非致命 `@range(0, 255)` warning，
+同时控制 `repeat(..., 255)`，因此超限 count 会在任何未声明 cycle entry 改变后续布局前停止。
+当 `vui_parameters_present_flag` 为一时，规则还会解码有界的
 Annex E.1.1 VUI core：aspect-ratio information（包括 Extended SAR）、overscan information、
 video-signal 及可选 colour-description 字段、chroma sample location、timing information、
 NAL/VCL HRD presence flag 与完整的有界 Annex E.1.2 HRD schedule、
 `low_delay_hrd_flag`、`pic_struct_present_flag` 和完整 bitstream-restriction 分支。SPS 的
 `rbsp_trailing_bits;` 仍是可选 VUI 之后的精确终结项。
+
+两个无条件 computed node 会为 context consumer 归一化条件 SPS 字段。
+`effective_log2_max_pic_order_cnt_lsb_minus4` 在 type-0 字段缺席时取零，
+`effective_delta_pic_order_always_zero_flag` 在 type-1 flag 缺席时取一。两个 node 都没有
+source location，并随 SPS generation 导出；slice guard 保证每个值只在匹配的 POC 分支中使用。
 
 每个存在的 HRD flag 选择一套具有独立前缀的 schedule，包含一至 32 个 CPB entry 和四个
 delay-length 字段。任一 presence flag 为一时，两个 schedule 之后都会读取共同的
@@ -734,8 +746,10 @@ entry 前由 layout-critical repeat 边界停止 SPS；scale 字段和派生 cou
 
 两个 chroma sample-location type 带有非致命 `@range(0, 5)`；
 `max_bytes_per_pic_denom`、`max_bits_per_mb_denom` 和两个 `log2_max_mv_length_*` 字段带有
-非致命 `@range(0, 16)`。SPS 的两个 `log2_*_minus4` 字段带有 clause 7.4.2.1.1 的
-`@range(0, 12)`。违反这些非 layout bound 时会保留该字段、完整 SPS/NAL 及其后已声明字段，
+非致命 `@range(0, 16)`。SPS 的 `log2_max_frame_num_minus4` 与条件性存在的
+`log2_max_pic_order_cnt_lsb_minus4` 带 clause 7.4.2.1.1 的 `@range(0, 12)`；type-1
+`num_ref_frames_in_pic_order_cnt_cycle` 除了 layout-critical repeat 边界外还带
+`@range(0, 255)`。违反这些非 layout bound 时会保留该字段、完整 SPS/NAL 及其后已声明字段，
 只在该字段上报告带 source 位置的 `invalid-syntax` warning。其他 syntax 值仍带 source；
 materialized 只表示精确消费了被选中的已声明分支，不表示完整 Annex E 语义 conformant。
 稳定 DSL 缺少所需 fixed-width 或 relational constraint 时，reserved fixed-width table 值、
@@ -829,12 +843,18 @@ generation。若不存在 SPS，PPS structure 仍保持 materialized，但会收
 | `constrained_intra_pred_flag` | 将 intra prediction 限制在 intra-coded 相邻 macroblock。 |
 | `redundant_pic_cnt_present_flag` | 表示关联 slice header 中存在 redundant-picture count 语法。 |
 
-type `1` 为 reference 与 non-reference 两种形态下的有界 progressive I、P 与 B slice 解码
+type `1` 为帧或场、reference 或 non-reference 形态下的有界 I、P 与 B slice 解码
 `NonIdrSliceLayerWithoutPartitioningRbsp`。`NonIdrSliceType` 接受 I 值 2/7、P 值 0/5
 与 B 值 1/6。三个可见 computed field 区分布局：`is_p_slice`、`is_b_slice`，以及对任意
 P 或 B slice 为 true 的 `uses_reference_lists`。type-1 header 接受任意 reference
 priority，structure 通过 `header_value(nal_ref_idc)` 读取该值以决定
 `dec_ref_pic_marking()` 是否存在。
+
+type-1 与 type-5 slice structure 都从精确 imported SPS generation 选择 picture-order
+语法。POC type 0 保持既有 `pic_order_cnt_lsb` 与可选 bottom-field delta 的顺序。POC type 1
+在归一化 always-zero flag 为一时不读取 slice delta；否则可见的 computed count 会选择
+`delta_pic_order_cnt[0]`，并在 PPS 为帧图像启用 bottom-field-in-frame 语法时再选择
+`delta_pic_order_cnt[1]`。POC type 2 在后续 slice-header 字段前不读取 POC 语法。
 
 B slice 首先读取 `direct_spatial_mv_pred_flag`。随后每个 P 与 B slice 都会读取必需的
 `num_ref_idx_active_override_flag`；值 1 会选择有界 `num_ref_idx_l0_active_minus1`
@@ -877,7 +897,7 @@ coding 已启用，all-I 值也会短路全部 reference-list operation。IDR �
 `idr_pic_id`、`no_output_of_prior_pics_flag` 与 `long_term_reference_flag` 不出现——
 clause 7.3.3.3 在 `IdrPicFlag` 路径上读取它们。
 
-type `5` 为有界 progressive all-I `slice_type` 值 2 和 7 解码
+type `5` 为帧或场形态下的有界 all-I `slice_type` 值 2 和 7 解码
 `IdrSliceLayerWithoutPartitioningRbsp`。它导入 `pic_parameter_set_id` 选择的精确 PPS
 generation 以及该 PPS 的精确 SPS dependency。两个有界 shape 中声明的 slice 字段含义如下：
 
@@ -893,8 +913,11 @@ generation 以及该 PPS 的精确 SPS dependency。两个有界 shape 中声明
 | `field_pic_flag` | 选择场编码或帧编码；仅当绑定 SPS 清零 `frame_mbs_only_flag` 时存在。 |
 | `bottom_field_flag` | 选择底场；仅当 `field_pic_flag` 为 1 时存在。 |
 | `idr_pic_id` | 标识 IDR picture。 |
-| `pic_order_cnt_lsb` | 在绑定的 POC-type-0 SPS 下使用 `log2_max_pic_order_cnt_lsb_minus4 + 4` bit。 |
-| `delta_pic_order_cnt_bottom` | 在绑定 PPS 启用且该图像不是场图像时携带 signed bottom-field POC delta。 |
+| `pic_order_cnt_lsb` | 对 POC type 0，使用绑定 SPS 的归一化 `effective_log2_max_pic_order_cnt_lsb_minus4 + 4` 宽度。 |
+| `has_delta_pic_order_cnt_bottom` | POC-type-0 computed Boolean；绑定 PPS 启用 bottom-field delta 且当前不是场图像时为 true，没有 source location。 |
+| `delta_pic_order_cnt_bottom` | 对 POC type 0，在 `has_delta_pic_order_cnt_bottom` 为 true 时携带 signed bottom-field delta。 |
+| `delta_pic_order_cnt_count` | slice delta 未被推断为零时存在的 POC-type-1 computed count；值为 1，或在 PPS 为帧图像启用第二个 delta 时为 2，没有 source location。 |
+| `delta_pic_order_cnt[index]` | 携带 signed type-1 POC delta；computed count 存在时始终发布 `[0]`，仅当 count 为 2 时发布 `[1]`。 |
 | `redundant_pic_cnt` | 在绑定 PPS 启用时标识 redundant representation；超出 `0..127` 时告警。 |
 | `direct_spatial_mv_pred_flag` | 为受支持 B slice 选择 spatial 或 temporal direct prediction。 |
 | `num_ref_idx_active_override_flag` | 受支持 P 或 B slice 的必需字段；值 1 读取 active-reference override，值 0 保留 PPS default。 |
@@ -927,24 +950,30 @@ generation 以及该 PPS 的精确 SPS dependency。两个有界 shape 中声明
 | `slice_beta_offset_div2` | 在 filtering 未禁用时携带 signed beta deblocking offset；signed bound 留待后续。 |
 | `slice_data` | 覆盖全部剩余 RBSP bit 的 materialized opaque suffix，其中包括可能存在的 slice trailing bits；不解码 CAVLC/CABAC。 |
 
-dynamic width 仍会在受影响字段读取 source 前拒绝非零 POC type。
+imported SPS guard 会选择互斥的 type-0、type-1 与 type-2 POC 分支。只有 type 0 会计算
+`pic_order_cnt_lsb` 的 dynamic width；type 1 使用归一化 always-zero flag 与有界 count 读取
+零个、一个或两个 delta；type 2 不读取 POC 语法。reserved type 在 SPS 解码时失败。
 exact imported PPS guard 会选择 redundant-picture count 与 deblocking-control
-字段，bottom-field POC delta 改由 computed guard 选择；false guard 不消费 bit，也不创建
+字段，type-0 bottom-field POC delta 改由 computed guard 选择；false guard 不消费 bit，也不创建
 node。deblocking 值 1 省略两个 offset，值 0 和 2 读取
 它们，reserved 值在 controller 码字处失败。missing/future/stale parameter-set generation 仍报告
 `dependency-unavailable`；保留 partial header，并继续分析后续 NAL。每个 modification loop
 与 marking loop 各自以 64 个 operation 受界，这是 sentinel repeat 的语言上界。它们是资源
 边界，而不是宣称的 conformance limit。隔行序列（`frame_mbs_only_flag == 0`）会读取
 `field_pic_flag`，场图像再读取 `bottom_field_flag`；即使其 PPS 启用了该字段，场图像
-也会抑制 `delta_pic_order_cnt_bottom`。MBAFF 帧以相同的 header 布局被接受，因为宏块
+也会抑制 `delta_pic_order_cnt_bottom`。对 POC type 1，场图像同样会抑制
+`delta_pic_order_cnt[1]`，SPS always-zero flag 则会抑制两个 type-1 delta。MBAFF 帧以相同的 header 布局被接受，因为宏块
 自适应编码只改变不透明 `slice_data` 的解释方式。marking loop 现在会检查可由 imported
 SPS `max_num_ref_frames` 表达的三条 per-operation bound：operation 2 的
 `long_term_pic_num_mmco`、operation 3/6 的 `long_term_frame_idx`，以及 operation 4 的
 `max_long_term_frame_idx_plus1`。operation 1/3 还会用由帧/场形态推导出的 `MaxPicNum`
-约束 `difference_of_pic_nums_minus1`。SP/SI slice type、decoded-picture-buffer validation、
-operation 顺序/重复语义、权重施加语义、CABAC slice-data 解码与 slice-group 分支均留待后续。
+约束 `difference_of_pic_nums_minus1`。SP/SI slice type、派生
+`PicOrderCnt`/`TopFieldOrderCnt`/`BottomFieldOrderCnt`、`FrameNumOffset` 与 wrap state、
+MMCO-5 effect、field pairing 与 output order、signed POC offset domain 与 cycle-sum 校验、
+decoded-picture-buffer validation、operation 顺序/重复语义、权重施加语义、CABAC slice-data
+解码与 slice-group 分支均留待后续。
 type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.23` 发布 coverage depth `max-pic-num-marking-slice-header`；这尚未完成
+`0.1.24` 发布 coverage depth `picture-order-count-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正

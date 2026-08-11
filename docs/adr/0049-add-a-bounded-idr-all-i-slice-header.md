@@ -40,6 +40,9 @@ bits. The PPS already requires one slice group, so no slice-group-change field
 is present. I slices do not carry CABAC-init, reference-list modification, or
 prediction-weight syntax.
 
+Follow-up: ADR-0071 and package `0.1.24` remove the POC-type-0 dynamic-width
+prerequisite and replace it with declared type-0, type-1, and type-2 branches.
+
 The final `compressed_payload slice_data;` maps every remaining RBSP bit into a
 materialized `CompressedPayload` node. The field name follows the H.264 syntax,
 but the remaining-bit terminal represents the complete opaque slice-layer

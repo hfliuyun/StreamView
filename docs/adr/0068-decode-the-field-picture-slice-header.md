@@ -95,6 +95,9 @@ and 2 remain out of scope, and that ADR-0049 guard is independent of this one.
 This increment removes one of the five prerequisites that ADR-0049 listed, not
 the idiom.
 
+Follow-up: ADR-0071 and package `0.1.24` remove this divisor and the rejection
+at `pic_order_cnt_lsb`, adding the type-1 delta and type-2 no-field branches.
+
 Accepting `frame_mbs_only_flag == 0` admits MBAFF frames as well as field
 pictures, since an MBAFF stream sets that flag to zero and then codes
 `field_pic_flag == 0`. This is deliberate and needs no additional syntax: the two
@@ -162,6 +165,10 @@ scope at this depth: the increment decodes and presents `field_pic_flag` and
 consecutive fields, or validate that a stream's fields alternate. MBAFF
 macroblock layout stays inside the opaque `slice_data`. POC types 1 and 2 remain
 rejected at `pic_order_cnt_lsb`.
+
+The ADR-0071 follow-up above supersedes only that rejection. Picture-order
+derivation, field pairing, and output-order semantics remain outside this
+decision.
 
 `num_ref_idx_l0_active_minus1` keeps its `@range(0, 31)` bound rather than being
 tightened to the frame-picture bound of 15. Clause 7.4.3 caps the value at 15 for

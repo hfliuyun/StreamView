@@ -35,6 +35,10 @@ any unimplemented picture-order branch must not
 be silently consumed; their resulting RBSP remains invalid until a later
 slice adds the corresponding fields.
 
+Follow-up: ADR-0071 and package `0.1.24` add the type-1 and type-2 SPS
+picture-order branches. The other unsupported syntax named by this decision
+remains rejected.
+
 This first structural slice does not yet enforce the clause 7.4.2.1.1
 `0..12` semantic bounds on `log2_max_frame_num_minus4` or
 `log2_max_pic_order_cnt_lsb_minus4`. Their source-backed values are published,

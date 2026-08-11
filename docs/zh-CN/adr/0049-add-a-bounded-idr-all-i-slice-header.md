@@ -35,6 +35,9 @@ dynamic-width expression 还会在受影响字段读取 source 前强制布局�
 不存在 slice-group-change 字段；I slice 不携带 CABAC-init、reference-list modification 或
 prediction-weight 语法。
 
+后续：ADR-0071 与 package `0.1.24` 已移除 POC-type-0 dynamic-width 前提，改为显式声明
+type-0、type-1 与 type-2 分支。
+
 最终的 `compressed_payload slice_data;` 把全部剩余 RBSP bit 映射为 materialized
 `CompressedPayload` node。字段名沿用 H.264 语法，但 remaining-bit terminal 表示完整 opaque
 slice-layer suffix，其中包括 entropy-coder alignment 与 slice trailing bits；它不声称已经解码
