@@ -38,6 +38,9 @@ prediction-weight 语法。
 后续：ADR-0071 与 package `0.1.24` 已移除 POC-type-0 dynamic-width 前提，改为显式声明
 type-0、type-1 与 type-2 分支。
 
+后续：ADR-0074 与 package `0.1.26` 增加 clause 7.4.3 的非致命 `idr_pic_id` 范围，同时保留
+完整码字与所有后续 slice-header 边界。
+
 最终的 `compressed_payload slice_data;` 把全部剩余 RBSP bit 映射为 materialized
 `CompressedPayload` node。字段名沿用 H.264 语法，但 remaining-bit terminal 表示完整 opaque
 slice-layer suffix，其中包括 entropy-coder alignment 与 slice trailing bits；它不声称已经解码

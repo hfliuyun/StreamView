@@ -43,6 +43,10 @@ prediction-weight syntax.
 Follow-up: ADR-0071 and package `0.1.24` remove the POC-type-0 dynamic-width
 prerequisite and replace it with declared type-0, type-1, and type-2 branches.
 
+Follow-up: ADR-0074 and package `0.1.26` add the non-fatal clause 7.4.3
+`idr_pic_id` range while preserving the complete codeword and all following
+slice-header boundaries.
+
 The final `compressed_payload slice_data;` maps every remaining RBSP bit into a
 materialized `CompressedPayload` node. The field name follows the H.264 syntax,
 but the remaining-bit terminal represents the complete opaque slice-layer
