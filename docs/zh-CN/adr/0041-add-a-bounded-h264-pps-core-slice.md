@@ -34,6 +34,10 @@ clause 7.3.2.2 base 字段，要求 `num_slice_groups_minus1 == 0` 且不存在 
 已声明结构必须消费完整 RBSP。额外 PPS extension bit 会触发现有 trailing-bits 或精确消费
 检查，不会被误认为已支持字段。package 版本 `0.1.4` 用来发布新增规则资产。
 
+后续：ADR-0073 与 package `0.1.25` 只取代上述无 extension 边界。它们使用
+`more_rbsp_data()` 接受有界 High-profile PPS extension，同时继续把 scaling-list 语法作为
+layout-critical unsupported。
+
 本切片中的 PPS materialized 只表示已声明 base 结构被精确消费。`seq_parameter_set_id` 仍是
 带 source 的 identifier；analyzer 尚不查找 SPS generation、不注册 PPS generation，也不证明
 后续 slice header 可以使用该 parameter set。

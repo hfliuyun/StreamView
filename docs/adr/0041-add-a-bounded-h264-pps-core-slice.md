@@ -42,6 +42,10 @@ therefore fail the existing trailing-bits or exact-consumption checks instead
 of being mistaken for supported fields. Package version `0.1.4` advertises the
 new rule asset.
 
+Follow-up: ADR-0073 and package `0.1.25` supersede only the no-extension
+boundary. They use `more_rbsp_data()` to accept the bounded High-profile PPS
+extension while retaining scaling-list syntax as layout-critical unsupported.
+
 A materialized PPS in this slice means that the declared base structure was
 consumed exactly. `seq_parameter_set_id` remains a source-backed identifier;
 the analyzer does not yet look up an SPS generation, register a PPS generation,
