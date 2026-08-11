@@ -180,6 +180,12 @@ The accepted bounded-power slice adds the reserved
 for larger exponents. It is available under the full expression grammar and
 does not read source or add a presentation node.
 
+The accepted RBSP source-state slice adds the reserved zero-argument
+`more_rbsp_data()` leaf. It reports whether the current logical remainder is
+something other than the complete H.264 trailing pattern without advancing the
+reader. It is available in structure execution expressions but not in pure
+function bodies.
+
 The accepted sequence-element slice adds the reserved
 `header_value(element_field)` form. It resolves one scalar of the sequence
 element structure from within a dispatched payload structure, which lets a
@@ -233,6 +239,7 @@ context_value := "context_value" "(" identifier "," identifier ","
                  identifier ")"
 header_value  := "header_value" "(" identifier ")"
 optional_value := "optional_value" "(" identifier "," expression ")"
+more_rbsp_data := "more_rbsp_data" "(" ")"
 switch        := "switch" "(" identifier ")" "{"
                  switch_case { switch_case } [ switch_default ] "}"
 switch_case   := "case" integer ":" "{" { struct_item } "}"
@@ -366,6 +373,15 @@ The static rules for this subset are:
   invalidate a correct use. The fallback expression is compiled in the calling
   scope and keeps every rule that position already imposes, so a branch-local
   fallback dependency is still rejected.
+- `more_rbsp_data()` is a reserved source-state leaf with no arguments and type
+  `bool`. It is accepted in structure execution expressions, including computed
+  initializers and assertion conditions, but rejected in pure-function bodies;
+  a pure function also may not use the reserved name. Evaluation does not
+  advance the current reader. Zero remaining bits returns false, more than
+  eight returns true, and one through eight returns false exactly when the
+  complete remainder is `1` followed only by zero bits. A probe failure
+  propagates the existing truncated-source or source-error status without
+  moving the cursor.
 - Fixed-width arrays contribute `width * count` bits to static alignment.
   Every element of a little-endian array must therefore have a byte-multiple
   width and the first element must begin at a structure-relative byte boundary.
@@ -488,15 +504,17 @@ The static rules for this subset are:
   the final sentinel field. Fields from later projections are skipped without
   source access or nodes after termination. Local names do not escape, every
   projection counts toward 99,999 fields, and following static alignment is
-  unknown. There is no `break`, `continue`, EOF, remaining-bit, or expression
-  termination form.
+  unknown. There is no `break`, `continue`, EOF-driven repeat, or expression
+  termination form; `more_rbsp_data()` is an expression leaf, not a loop
+  controller.
 - A computed field declares `computed<bool>` or `computed<u64>` and one
   expression. It may reference earlier scalar unsigned `bits`, enum, `ue`, or
   computed fields guaranteed on every path reaching the declaration. Arrays,
   `se`, unknown or future fields, and unavailable branch-local values are
   rejected. Its expression may also include the reserved `context_value(...)`,
-  `header_value(...)`, and `optional_value(...)` leaves under the full expression
-  grammar, each keeping every constraint it carries elsewhere; a computed
+  `header_value(...)`, `optional_value(...)`, and `more_rbsp_data()` leaves under
+  the full expression grammar, each keeping every constraint it carries
+  elsewhere; a computed
   initializer in a structure that declares no matching `@context_import` is
   rejected exactly as a dynamic width is. A computed field consumes zero bits,
   leaves static alignment unchanged, inherits enclosing guards, counts toward
@@ -1623,6 +1641,9 @@ Invalid bounded-power examples include `power_of_two()` or
 `power_of_two(1, 2)`, a Boolean exponent, and a pure function declaration named
 `power_of_two` because the expression name is reserved. Exponents of 64 or
 greater are well-typed but fail when evaluated.
+Invalid RBSP source-state examples include `more_rbsp_data(1)`, assigning its
+Boolean result to `computed<u64>`, using it in a pure-function body, or declaring
+a pure function named `more_rbsp_data`.
 Invalid sentinel-repeat examples include `repeat (0)` or `repeat (65)`, a
 missing `until` clause, an unknown sentinel, a sentinel declared outside or in
 nested control flow, an array, `se`, dynamic-width, computed, or lazy sentinel,
@@ -1954,6 +1975,12 @@ The `power_of_two(...)` leaf lowers to one typed expression node and is evaluate
 inside the enclosing instruction. Its exponent is checked before shifting, so
 malformed typed descriptors cannot trigger an undefined host shift. See
 [ADR-0070](../adr/0070-add-bounded-power-of-two-expression.md).
+
+The `more_rbsp_data()` leaf lowers to a zero-operand Boolean typed-expression
+node and is evaluated inside the enclosing instruction. The VM probes a copy of
+the current reader, so both a successful query and a failed source read leave
+the execution cursor unchanged. See
+[ADR-0072](../adr/0072-observe-remaining-rbsp-data-in-expressions.md).
 
 Publication occurs only after successful materialization, requested exact
 consumption, dependency resolution, and complete typed-payload preparation.

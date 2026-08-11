@@ -146,6 +146,10 @@ guard 与依赖性 repeat count 正是这样表达的。
 抵达要求“每条路径都必须有值”的 position 的。它是 branch-guarantee 规则唯一的豁免之处，
 而且只有第一个实参被豁免。
 
+当前接受的 RBSP source-state 切片新增保留的零参数 leaf `more_rbsp_data()`。它在不推进
+reader 的前提下，报告当前 logical remainder 是否不是完整的 H.264 trailing pattern。
+它可以用于 structure 执行期表达式，但不能用于 pure function body。
+
 当前接受的 sequence-element 切片新增保留形式 `header_value(element_field)`。它在被派发的
 payload structure 内部解析 sequence element structure 的一个 scalar，使 payload 能够依赖
 自己所属的 element header，而不是依赖 parameter set。它是 `u64` leaf，允许出现的位置与
@@ -195,6 +199,7 @@ context_value := "context_value" "(" identifier "," identifier ","
                  identifier ")"
 header_value  := "header_value" "(" identifier ")"
 optional_value := "optional_value" "(" identifier "," expression ")"
+more_rbsp_data := "more_rbsp_data" "(" ")"
 switch        := "switch" "(" identifier ")" "{"
                  switch_case { switch_case } [ switch_default ] "}"
 switch_case   := "case" integer ":" "{" { struct_item } "}"
@@ -302,6 +307,12 @@ primary       := integer | "true" | "false" | identifier
 - `power_of_two(unsigned_expression)` 是有界幂运算 leaf。`u64` exponent 为 `0..63` 时返回
   `1 << exponent`，更大的 exponent 在求值时返回致命 `invalid-syntax`。它遵守完整 expression
   grammar，不读取 source，也不新增 presentation node。
+- `more_rbsp_data()` 是不接受参数、类型为 `bool` 的保留 source-state leaf。它可用于
+  structure 执行期表达式，包括 computed initializer 与 assertion condition，但 pure-function
+  body 会拒绝它，pure function 也不能使用该保留名。求值不推进当前 reader：剩余零 bit 时
+  返回 false，多于八 bit 时返回 true；剩余一至八 bit 时，只有完整 remainder 恰好为 `1`
+  后全零才返回 false。探测失败会沿用现有 truncated-source 或 source-error 状态传播，且
+  cursor 不移动。
 - 固定宽度数组按 `width * count` bit 参与静态对齐。小端数组的每个元素宽度必须是 8 的
   倍数，并且首元素必须从结构内的字节边界开始。`ue` 或 `se` 数组的总宽度未知，因此其
   后续小端字段与单个 Exp-Golomb 字段之后的小端字段一样会被拒绝。
@@ -383,12 +394,13 @@ primary       := integer | "true" | "false" | identifier
   执行一次并在完成后检查 sentinel，终止字段会保留；达到 maximum 仍未命中时，在最终 sentinel
   field 上产生 runtime `invalid-syntax`。命中后，后续 projection 不读取 source、不创建 node。
   local name 不逸出，每个 projection 都计入 99,999-field 上限，statement 后 static alignment 为
-  unknown。不提供 `break`、`continue`、EOF、remaining-bit 或 expression termination。
+  unknown。不提供 `break`、`continue`、EOF 驱动的 repeat 或 expression termination；
+  `more_rbsp_data()` 是 expression leaf，不是 loop controller。
 - 计算字段声明 `computed<bool>` 或 `computed<u64>` 和一条表达式。它可以引用此前声明、
   且在到达当前声明的每条路径上都保证存在的 scalar 无符号 `bits`、enum、`ue` 或计算字段。
   数组、`se`、未知或未来字段，以及路径上不可用的 branch-local 值都会被拒绝。它的表达式
-  还可以按完整 expression 语法包含保留的 `context_value(...)`、`header_value(...)` 与
-  `optional_value(...)` leaf，它们在别处携带的每一项约束都继续适用；若 structure 未声明
+  还可以按完整 expression 语法包含保留的 `context_value(...)`、`header_value(...)`、
+  `optional_value(...)` 与 `more_rbsp_data()` leaf，它们在别处携带的每一项约束都继续适用；若 structure 未声明
   匹配的 `@context_import`，其中的 computed initializer 会被拒绝，方式与 dynamic width
   完全一致。计算字段消耗零 bit，不改变静态对齐，继承外层 guard，计入 99,999 字段投影
   上限，并按与语法字段相同的 scope 规则供后续声明使用。repeat 投影会给它的物化名称
@@ -1307,6 +1319,9 @@ repeat body、repeat 前的 annotation、投影后超过 99,999 字段、在其�
 bounded-power 的非法示例包括 `power_of_two()`、`power_of_two(1, 2)`、Boolean exponent，
 以及命名为 `power_of_two` 的 pure function，因为该 expression name 已保留。exponent 为 64
 或更大值时类型仍合法，但会在求值时失败。
+RBSP source-state 的非法示例包括 `more_rbsp_data(1)`、把 Boolean 结果赋给
+`computed<u64>`、在 pure-function body 中使用它，或声明名为 `more_rbsp_data` 的 pure
+function。
 sentinel repeat 的非法示例包括 `repeat (0)` 或 `repeat (65)`、缺少 `until` clause、未知
 sentinel、sentinel 声明在 body 外或 nested control flow 内、以 array、`se`、dynamic-width、
 computed 或 lazy 项作为 sentinel、termination value 越界，以及使用直接等于整数字面量之外的
@@ -1577,6 +1592,11 @@ scope，因此不会有 index 与后续 projection 混淆。fallback 只在需�
 `power_of_two(...)` leaf 降低为一条 typed expression node，并在外层 instruction 内求值。
 exponent 会在 shift 前检查，因此 malformed typed descriptor 不会触发未定义的 host shift。
 详见 [ADR-0070](../adr/0070-add-bounded-power-of-two-expression.md)。
+
+`more_rbsp_data()` leaf 降低为零 operand 的 Boolean typed-expression node，并在外层
+instruction 内求值。VM 探测当前 reader 的副本，因此查询成功或 source 读取失败都不会改变
+执行 cursor。详见
+[ADR-0072](../adr/0072-observe-remaining-rbsp-data-in-expressions.md)。
 
 只有 structure 成功 materialize、满足请求的精确消费策略、完成 dependency resolution 和
 typed-payload 准备后才会发布。registration 前会预留 payload 与 directory 容量，因此成功
