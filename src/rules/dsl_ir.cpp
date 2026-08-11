@@ -401,6 +401,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         std::size_t nodeCount = 0;
         bool sizeReported = false;
         bool depthReported = false;
+        bool allowSourceStateExpressions = true;
     };
     using ExpressionResolver = std::function<std::optional<DslTypedExpression>(
         const QString&, const DslSourceRange&)>;
@@ -508,6 +509,32 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             return cloneExpression(*resolved, depth, state, expression.range);
         }
         if (expression.kind == DslExpressionKind::Call) {
+            if (expression.name == QStringLiteral("more_rbsp_data")) {
+                if (!claimExpressionNode(state, depth, expression.range)) {
+                    return std::nullopt;
+                }
+                if (!state.allowSourceStateExpressions) {
+                    addDiagnostic(
+                        result.diagnostics,
+                        DslDiagnosticCode::UnknownReference,
+                        QStringLiteral(
+                            "more_rbsp_data is unavailable in pure functions"),
+                        expression.range);
+                    return std::nullopt;
+                }
+                if (!expression.operands.empty()) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidExpression,
+                                  QStringLiteral(
+                                      "more_rbsp_data requires no arguments"),
+                                  expression.range);
+                    return std::nullopt;
+                }
+                DslTypedExpression moreData;
+                moreData.kind = DslTypedExpressionKind::MoreRbspData;
+                moreData.type = DslScalarType::Bool;
+                return moreData;
+            }
             if (expression.name == QStringLiteral("power_of_two")) {
                 if (!claimExpressionNode(state, depth, expression.range)) {
                     return std::nullopt;
@@ -655,6 +682,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             for (const DslExpression& argument : expression.operands) {
                 ExpressionBuildState argumentState;
                 argumentState.work = state.work;
+                argumentState.allowSourceStateExpressions =
+                    state.allowSourceStateExpressions;
                 arguments.push_back(compileExpression(argument,
                                                        resolveIdentifier,
                                                        functionCount,
@@ -877,13 +906,14 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                             return scan.name == function.name;
                         });
         const bool conflictsWithReservedExpression =
-            function.name == QStringLiteral("power_of_two");
+            function.name == QStringLiteral("power_of_two") ||
+            function.name == QStringLiteral("more_rbsp_data");
         if (duplicateName || conflictsWithTopLevel || conflictsWithReservedExpression) {
             addDiagnostic(result.diagnostics,
                           DslDiagnosticCode::DuplicateName,
                           conflictsWithReservedExpression
-                              ? QStringLiteral(
-                                    "power_of_two is a reserved expression name")
+                              ? QStringLiteral("%1 is a reserved expression name")
+                                    .arg(function.name)
                               : QStringLiteral(
                                     "Pure function names share the top-level namespace"),
                           function.range);
@@ -939,6 +969,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             return placeholder;
         };
         ExpressionBuildState state;
+        state.allowSourceStateExpressions = false;
         const auto compiled = compileExpression(
             function.expression, resolveParameter, index, 1, state);
         if (compiled && compiled->type != function.returnType) {

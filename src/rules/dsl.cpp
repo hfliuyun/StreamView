@@ -1733,6 +1733,7 @@ private:
                                             const auto& resolveIdentifier,
                                             std::size_t availableFunctionCount,
                                             bool allowImportedContextReference,
+                                            bool allowSourceStateReference,
                                             const OptionalDependencyResolver&
                                                 resolveOptionalDependency,
                                             std::size_t depth,
@@ -1778,6 +1779,7 @@ private:
                                                    resolveIdentifier,
                                                    availableFunctionCount,
                                                    allowImportedContextReference,
+                                                   allowSourceStateReference,
                                                    resolveOptionalDependency,
                                                    depth + 1,
                                                    nodeCount);
@@ -1792,6 +1794,24 @@ private:
                         return std::nullopt;
                     }
                     return DslScalarType::U64;
+                }
+                if (expression.name == QStringLiteral("more_rbsp_data")) {
+                    if (!allowSourceStateReference) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::UnknownReference,
+                             QStringLiteral(
+                                 "more_rbsp_data is unavailable in pure functions"),
+                             expression.range});
+                        return std::nullopt;
+                    }
+                    if (!expression.operands.empty()) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidExpression,
+                             QStringLiteral("more_rbsp_data requires no arguments"),
+                             expression.range});
+                        return std::nullopt;
+                    }
+                    return DslScalarType::Bool;
                 }
                 if (allowImportedContextReference &&
                     expression.name == QStringLiteral("context_value")) {
@@ -1847,6 +1867,7 @@ private:
                                                    resolveIdentifier,
                                                    availableFunctionCount,
                                                    allowImportedContextReference,
+                                                   allowSourceStateReference,
                                                    resolveOptionalDependency,
                                                    depth + 1,
                                                    nodeCount);
@@ -1879,6 +1900,7 @@ private:
                                                  resolveIdentifier,
                                                  availableFunctionCount,
                                                  allowImportedContextReference,
+                                                 allowSourceStateReference,
                                                  resolveOptionalDependency,
                                                  depth + 1,
                                                  nodeCount));
@@ -1921,6 +1943,7 @@ private:
                                               resolveIdentifier,
                                               availableFunctionCount,
                                               allowImportedContextReference,
+                                              allowSourceStateReference,
                                               resolveOptionalDependency,
                                               depth + 1,
                                               nodeCount);
@@ -1948,6 +1971,7 @@ private:
                                        resolveIdentifier,
                                        availableFunctionCount,
                                        allowImportedContextReference,
+                                       allowSourceStateReference,
                                        resolveOptionalDependency,
                                        depth + 1,
                                        nodeCount);
@@ -1956,6 +1980,7 @@ private:
                                         resolveIdentifier,
                                         availableFunctionCount,
                                         allowImportedContextReference,
+                                        allowSourceStateReference,
                                         resolveOptionalDependency,
                                         depth + 1,
                                         nodeCount);
@@ -2026,13 +2051,15 @@ private:
                                 return scan.name == function.name;
                             });
             const bool conflictsWithReservedExpression =
-                function.name == QStringLiteral("power_of_two");
+                function.name == QStringLiteral("power_of_two") ||
+                function.name == QStringLiteral("more_rbsp_data");
             if (duplicateFunction || conflictsWithDeclaration ||
                 conflictsWithReservedExpression) {
                 result_.diagnostics.push_back(
                     {DslDiagnosticCode::DuplicateName,
                      conflictsWithReservedExpression
-                         ? QStringLiteral("power_of_two is a reserved expression name")
+                         ? QStringLiteral("%1 is a reserved expression name")
+                               .arg(function.name)
                          : QStringLiteral(
                                "Pure function names share the top-level namespace"),
                      function.range});
@@ -2079,6 +2106,7 @@ private:
                                                            function.expression,
                                                            resolveParameter,
                                                            index,
+                                                           false,
                                                            false,
                                                            OptionalDependencyResolver{},
                                                            1,
@@ -2659,6 +2687,7 @@ private:
                             resolveAssertionIdentifier,
                             result_.program.pureFunctions.size(),
                             true,
+                            true,
                             resolveOptionalDependency,
                             1,
                             nodeCount);
@@ -2998,6 +3027,7 @@ private:
                             resolveLazyIdentifier,
                             result_.program.pureFunctions.size(),
                             false,
+                            true,
                             resolveOptionalDependency,
                             1,
                             nodeCount);
@@ -3091,6 +3121,7 @@ private:
                             field.expression,
                             resolveComputedIdentifier,
                             result_.program.pureFunctions.size(),
+                            true,
                             true,
                             resolveOptionalDependency,
                             1,

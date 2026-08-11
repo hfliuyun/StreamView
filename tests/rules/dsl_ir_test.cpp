@@ -236,6 +236,34 @@ private slots:
         QCOMPARE(expression->operands.front().kind, DslTypedExpressionKind::FieldReference);
     }
 
+    void lowersMoreRbspDataAsAValidatedSourceStateExpression() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header {
+                computed<bool> has_extension = more_rbsp_data();
+                if (has_extension) {
+                    bits<1> extension_flag;
+                }
+            }
+            entry Header;
+        )"));
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        const auto& expression =
+            compiled.program->structs.front().fields.front().computedExpression;
+        QVERIFY(expression.has_value());
+        QCOMPARE(expression->kind, DslTypedExpressionKind::MoreRbspData);
+        QCOMPARE(expression->type, DslScalarType::Bool);
+        QVERIFY(expression->operands.empty());
+    }
+
     void lowersImportedContextValuesInSourceAnchoredAssertions() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             pure bool is_disabled(u64 value) {

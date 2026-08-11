@@ -454,6 +454,10 @@ struct TypedExpressionValidationState final {
         return expression.operands.front().type == DslScalarType::U64
                    ? true
                    : fail(QStringLiteral("Typed power_of_two exponent is invalid"));
+    case DslTypedExpressionKind::MoreRbspData:
+        return expression.type == DslScalarType::Bool && expression.operands.empty()
+                   ? true
+                   : fail(QStringLiteral("Typed more_rbsp_data expression is invalid"));
     case DslTypedExpressionKind::OptionalFieldReference: {
         // Deliberately omits the branch-guarantee check that a plain field
         // reference applies: naming a field the path may not materialize is the
@@ -577,6 +581,7 @@ struct ComputedEvaluationResult final {
 
 [[nodiscard]] ComputedEvaluationResult evaluateTypedExpression(
     const DslTypedExpression& expression,
+    const core::BitReader& reader,
     const DslTypedStruct& structure,
     const std::vector<std::optional<quint64>>& fieldValues,
     const DslContextValueResolver& contextValueResolver,
@@ -684,6 +689,7 @@ struct ComputedEvaluationResult final {
     case DslTypedExpressionKind::PowerOfTwo: {
         const ComputedEvaluationResult exponent =
             evaluateTypedExpression(expression.operands.front(),
+                                    reader,
                                     structure,
                                     fieldValues,
                                     contextValueResolver,
@@ -697,6 +703,28 @@ struct ComputedEvaluationResult final {
         }
         return unsignedResult(quint64{1} << exponent.value.unsignedValue);
     }
+    case DslTypedExpressionKind::MoreRbspData: {
+        const quint64 remaining = reader.remainingBits();
+        if (remaining == 0) {
+            return booleanResult(false);
+        }
+        if (remaining > 8) {
+            return booleanResult(true);
+        }
+        core::BitReader probe = reader;
+        const core::BitReadResult remainder =
+            probe.readBits(static_cast<unsigned int>(remaining));
+        if (!remainder.complete()) {
+            return {statusForRead(remainder.status),
+                    {},
+                    remainder.errorMessage.isEmpty()
+                        ? QStringLiteral("Unable to inspect remaining RBSP data")
+                        : remainder.errorMessage,
+                    std::nullopt};
+        }
+        const quint64 trailingPattern = quint64{1} << (remaining - 1U);
+        return booleanResult(remainder.value != trailingPattern);
+    }
     case DslTypedExpressionKind::OptionalFieldReference: {
         // A slot holding no value means the executed path never materialized the
         // field, which is the case this kind exists to answer. Absence is not a
@@ -706,6 +734,7 @@ struct ComputedEvaluationResult final {
             return unsignedResult(*fieldValues.at(expression.fieldIndex));
         }
         return evaluateTypedExpression(expression.operands.front(),
+                                       reader,
                                        structure,
                                        fieldValues,
                                        contextValueResolver,
@@ -714,6 +743,7 @@ struct ComputedEvaluationResult final {
     case DslTypedExpressionKind::Unary: {
         const ComputedEvaluationResult operand =
             evaluateTypedExpression(expression.operands.front(),
+                                    reader,
                                     structure,
                                     fieldValues,
                                     contextValueResolver,
@@ -728,6 +758,7 @@ struct ComputedEvaluationResult final {
 
     const ComputedEvaluationResult left =
         evaluateTypedExpression(expression.operands.at(0),
+                                reader,
                                 structure,
                                 fieldValues,
                                 contextValueResolver,
@@ -745,6 +776,7 @@ struct ComputedEvaluationResult final {
     }
     const ComputedEvaluationResult right =
         evaluateTypedExpression(expression.operands.at(1),
+                                reader,
                                 structure,
                                 fieldValues,
                                 contextValueResolver,
@@ -1915,6 +1947,7 @@ DslExecutionResult DslVirtualMachine::execute(
             if (condition.expression) {
                 const ComputedEvaluationResult evaluated = evaluateTypedExpression(
                     *condition.expression,
+                    reader,
                     structure,
                     fieldValues,
                     contextValueResolver,
@@ -2120,6 +2153,7 @@ DslExecutionResult DslVirtualMachine::execute(
             if (readsFixedBits && field.bitWidthExpression) {
                 const ComputedEvaluationResult evaluated =
                     evaluateTypedExpression(*field.bitWidthExpression,
+                                            reader,
                                             structure,
                                             fieldValues,
                                             contextValueResolver,
@@ -2490,6 +2524,7 @@ DslExecutionResult DslVirtualMachine::execute(
             }
             const ComputedEvaluationResult evaluated =
                 evaluateTypedExpression(*field.computedExpression,
+                                        reader,
                                         structure,
                                         fieldValues,
                                         contextValueResolver,
@@ -2575,6 +2610,7 @@ DslExecutionResult DslVirtualMachine::execute(
 
             const ComputedEvaluationResult evaluated =
                 evaluateTypedExpression(*field.lazyByteCountExpression,
+                                        reader,
                                         structure,
                                         fieldValues,
                                         contextValueResolver,
@@ -2823,6 +2859,7 @@ DslExecutionResult DslVirtualMachine::execute(
             }
             const ComputedEvaluationResult evaluated = evaluateTypedExpression(
                 assertion->condition,
+                reader,
                 structure,
                 fieldValues,
                 contextValueResolver,

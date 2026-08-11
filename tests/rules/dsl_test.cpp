@@ -222,6 +222,47 @@ private slots:
         }
     }
 
+    void parsesMoreRbspDataCall() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct Header { computed<bool> has_extension = more_rbsp_data(); "
+            "if (has_extension) { bits<1> extension_flag; } } entry Header;"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& computed = result.program.structs.front().items.front().computed;
+        QCOMPARE(computed.expression.kind, DslExpressionKind::Call);
+        QCOMPARE(computed.expression.name, QStringLiteral("more_rbsp_data"));
+        QVERIFY(computed.expression.operands.empty());
+    }
+
+    void rejectsInvalidMoreRbspDataCalls() {
+        const std::vector<std::pair<QString, DslDiagnosticCode>> sources{
+            {QStringLiteral(
+                 "struct Header { computed<bool> value = more_rbsp_data(1); } "
+                 "entry Header;"),
+             DslDiagnosticCode::InvalidExpression},
+            {QStringLiteral(
+                 "struct Header { computed<u64> value = more_rbsp_data(); } "
+                 "entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral(
+                 "pure bool inspect() { return more_rbsp_data(); } "
+                 "struct Header { bits<1> value; } entry Header;"),
+             DslDiagnosticCode::UnknownReference},
+            {QStringLiteral(
+                 "pure bool more_rbsp_data() { return true; } "
+                 "struct Header { bits<1> value; } entry Header;"),
+             DslDiagnosticCode::DuplicateName},
+        };
+        for (const auto& [source, expectedCode] : sources) {
+            const auto result = DslParser::parse(source);
+            QVERIFY(!result.succeeded());
+            QVERIFY(hasDiagnostic(result, expectedCode));
+        }
+    }
+
     void parsesSequenceElementHeaderValueLeaf() {
         const auto result = DslParser::parse(QStringLiteral(R"(
             struct NalUnitHeader {

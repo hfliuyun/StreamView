@@ -569,6 +569,250 @@ private slots:
         QCOMPARE(malformedResult.bitsConsumed, quint64(0));
     }
 
+    void observesMoreRbspDataWithoutAdvancingTheReader() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Payload {
+                bits<3> prefix;
+                computed<bool> has_more = more_rbsp_data();
+                if (has_more) {
+                    bits<9> extension;
+                }
+                rbsp_trailing_bits;
+            }
+            entry Payload;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+
+        struct TestCase final {
+            std::vector<std::byte> data;
+            bool expectedHasMore = false;
+            quint64 expectedBits = 0;
+            std::optional<quint64> expectedExtension;
+        };
+        const std::vector<TestCase> cases{
+            {bytes({0xb0}), false, 8, std::nullopt},
+            {bytes({0xaa, 0xa8}), true, 16, quint64(0xaa)},
+        };
+        for (const auto& testCase : cases) {
+            MemorySource source(testCase.data);
+            const auto mapping = mappingForBytes(source.sizeBytes());
+            QVERIFY(mapping.has_value());
+            BitReader reader(source, *mapping);
+            auto tree = AnalysisTree::create(QStringLiteral("more-rbsp-data"));
+            QVERIFY(tree.has_value());
+
+            const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                          quint32(0),
+                                                          reader,
+                                                          *mapping,
+                                                          0,
+                                                          *tree,
+                                                          tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::Materialized);
+            QCOMPARE(result.bitsConsumed, testCase.expectedBits);
+            QCOMPARE(reader.position(), testCase.expectedBits);
+            const auto structure = tree->node(*result.structureNode);
+            QVERIFY(structure.has_value());
+            const auto hasMore = tree->node(structure->children().at(1));
+            QVERIFY(hasMore.has_value());
+            QCOMPARE(hasMore->name(), QStringLiteral("has_more"));
+            QCOMPARE(hasMore->value().toBool(), testCase.expectedHasMore);
+            if (testCase.expectedExtension) {
+                const auto extension = tree->node(structure->children().at(2));
+                QVERIFY(extension.has_value());
+                QCOMPARE(extension->name(), QStringLiteral("extension"));
+                QCOMPARE(extension->value().toULongLong(), *testCase.expectedExtension);
+            }
+        }
+
+        const auto shortParsed = DslParser::parse(QStringLiteral(R"(
+            struct ShortPayload {
+                bits<3> prefix;
+                computed<bool> has_more = more_rbsp_data();
+                if (has_more) {
+                    bits<1> extension;
+                }
+                rbsp_trailing_bits;
+            }
+            entry ShortPayload;
+        )"));
+        const auto shortCompiled = DslCompiler::compile(shortParsed.program);
+        QVERIFY(shortParsed.succeeded());
+        QVERIFY(shortCompiled.succeeded());
+        MemorySource shortSource(bytes({0xa8}));
+        const auto shortMapping = mappingForBytes(1);
+        QVERIFY(shortMapping.has_value());
+        BitReader shortReader(shortSource, *shortMapping);
+        auto shortTree = AnalysisTree::create(QStringLiteral("more-rbsp-data-short"));
+        QVERIFY(shortTree.has_value());
+        const auto shortResult = DslExecutor::decodeStruct(*shortCompiled.program,
+                                                           quint32(0),
+                                                           shortReader,
+                                                           *shortMapping,
+                                                           0,
+                                                           *shortTree,
+                                                           shortTree->rootId());
+        QCOMPARE(shortResult.status, DslExecutionStatus::Materialized);
+        QCOMPARE(shortReader.position(), quint64(8));
+        const auto shortStructure = shortTree->node(*shortResult.structureNode);
+        QVERIFY(shortStructure.has_value());
+        const auto shortHasMore =
+            shortTree->node(shortStructure->children().at(1));
+        QVERIFY(shortHasMore.has_value());
+        QVERIFY(shortHasMore->value().toBool());
+        const auto shortExtension =
+            shortTree->node(shortStructure->children().at(2));
+        QVERIFY(shortExtension.has_value());
+        QCOMPARE(shortExtension->value().toULongLong(), quint64(0));
+
+        MemorySource mappedSource(bytes({0xb0, 0x00}));
+        const auto mappedMapping = mappingForSpans({{0, 4}, {8, 4}});
+        QVERIFY(mappedMapping.has_value());
+        BitReader mappedReader(mappedSource, *mappedMapping);
+        auto mappedTree = AnalysisTree::create(QStringLiteral("more-rbsp-data-mapped"));
+        QVERIFY(mappedTree.has_value());
+        const auto mapped = DslExecutor::decodeStruct(*compiled.program,
+                                                      quint32(0),
+                                                      mappedReader,
+                                                      *mappedMapping,
+                                                      0,
+                                                      *mappedTree,
+                                                      mappedTree->rootId());
+        QCOMPARE(mapped.status, DslExecutionStatus::Materialized);
+        QCOMPARE(mappedReader.position(), quint64(8));
+        const auto mappedStructure = mappedTree->node(*mapped.structureNode);
+        QVERIFY(mappedStructure.has_value());
+        const auto mappedHasMore =
+            mappedTree->node(mappedStructure->children().at(1));
+        QVERIFY(mappedHasMore.has_value());
+        QVERIFY(!mappedHasMore->value().toBool());
+
+        FailingAfterFirstReadSource failingSource(bytes({0xb0}));
+        const auto failingMapping = mappingForBytes(1);
+        QVERIFY(failingMapping.has_value());
+        BitReader failingReader(failingSource, *failingMapping);
+        auto failingTree = AnalysisTree::create(QStringLiteral("more-rbsp-data-failure"));
+        QVERIFY(failingTree.has_value());
+        const auto failed = DslExecutor::decodeStruct(*compiled.program,
+                                                      quint32(0),
+                                                      failingReader,
+                                                      *failingMapping,
+                                                      0,
+                                                      *failingTree,
+                                                      failingTree->rootId());
+        QCOMPARE(failed.status, DslExecutionStatus::SourceError);
+        QCOMPARE(failed.bitsConsumed, quint64(3));
+        QCOMPARE(failingReader.position(), quint64(3));
+        const auto failedStructure = failingTree->node(*failed.structureNode);
+        QVERIFY(failedStructure.has_value());
+        QCOMPARE(failedStructure->children().size(), std::size_t(1));
+        QCOMPARE(failedStructure->diagnostics().front().code,
+                 DiagnosticCode::SourceError);
+        QCOMPARE(failedStructure->diagnostics().front().fieldPath,
+                 QStringLiteral("Payload.has_more"));
+        QVERIFY(!failedStructure->diagnostics().front().location.has_value());
+
+        MemorySource truncatedSource(bytes({0xb0}));
+        const auto truncatedMapping = mappingForBytes(2);
+        const auto truncatedRange =
+            SourceSpan::create(streamview::core::SourceBitAddress(0), 10);
+        QVERIFY(truncatedMapping.has_value());
+        QVERIFY(truncatedRange.has_value());
+        BitReader truncatedReader(truncatedSource, *truncatedRange);
+        auto truncatedTree =
+            AnalysisTree::create(QStringLiteral("more-rbsp-data-truncated"));
+        QVERIFY(truncatedTree.has_value());
+        const auto truncated = DslExecutor::decodeStruct(*compiled.program,
+                                                         quint32(0),
+                                                         truncatedReader,
+                                                         *truncatedMapping,
+                                                         0,
+                                                         *truncatedTree,
+                                                         truncatedTree->rootId());
+        QCOMPARE(truncated.status, DslExecutionStatus::TruncatedSource);
+        QCOMPARE(truncated.bitsConsumed, quint64(3));
+        QCOMPARE(truncatedReader.position(), quint64(3));
+        const auto truncatedStructure =
+            truncatedTree->node(*truncated.structureNode);
+        QVERIFY(truncatedStructure.has_value());
+        QCOMPARE(truncatedStructure->children().size(), std::size_t(1));
+        QCOMPARE(truncatedStructure->diagnostics().front().code,
+                 DiagnosticCode::TruncatedSource);
+        QCOMPARE(truncatedStructure->diagnostics().front().fieldPath,
+                 QStringLiteral("Payload.has_more"));
+        QVERIFY(!truncatedStructure->diagnostics().front().location.has_value());
+
+        const auto emptyParsed = DslParser::parse(QStringLiteral(
+            "struct Empty { computed<bool> has_more = more_rbsp_data(); } "
+            "entry Empty;"));
+        const auto emptyCompiled = DslCompiler::compile(emptyParsed.program);
+        QVERIFY(emptyParsed.succeeded());
+        QVERIFY(emptyCompiled.succeeded());
+        MemorySource emptySource(bytes({0x80}));
+        const auto emptyMapping = mappingForBytes(1);
+        const auto emptyRange =
+            SourceSpan::create(streamview::core::SourceBitAddress(0), 1);
+        QVERIFY(emptyMapping.has_value());
+        QVERIFY(emptyRange.has_value());
+        BitReader emptyReader(emptySource, *emptyRange);
+        QVERIFY(emptyReader.seek(1));
+        auto emptyTree = AnalysisTree::create(QStringLiteral("more-rbsp-data-empty"));
+        QVERIFY(emptyTree.has_value());
+        const auto empty = DslExecutor::decodeStruct(*emptyCompiled.program,
+                                                     quint32(0),
+                                                     emptyReader,
+                                                     *emptyMapping,
+                                                     0,
+                                                     *emptyTree,
+                                                     emptyTree->rootId());
+        QCOMPARE(empty.status, DslExecutionStatus::Materialized);
+        QCOMPARE(emptyReader.position(), quint64(1));
+        const auto emptyStructure = emptyTree->node(*empty.structureNode);
+        QVERIFY(emptyStructure.has_value());
+        const auto emptyHasMore =
+            emptyTree->node(emptyStructure->children().front());
+        QVERIFY(emptyHasMore.has_value());
+        QVERIFY(!emptyHasMore->value().toBool());
+
+        std::vector<DslTypedProgram> malformedPrograms;
+        auto wrongType = *compiled.program;
+        wrongType.structs.front().fields.at(1).computedExpression->type =
+            DslScalarType::U64;
+        malformedPrograms.push_back(std::move(wrongType));
+        auto unexpectedOperand = *compiled.program;
+        DslTypedExpression operand;
+        operand.kind = DslTypedExpressionKind::BooleanLiteral;
+        operand.type = DslScalarType::Bool;
+        unexpectedOperand.structs.front()
+            .fields.at(1)
+            .computedExpression->operands.push_back(operand);
+        malformedPrograms.push_back(std::move(unexpectedOperand));
+        for (auto& malformed : malformedPrograms) {
+            MemorySource malformedSource(bytes({0xb0}));
+            const auto malformedMapping = mappingForBytes(1);
+            QVERIFY(malformedMapping.has_value());
+            BitReader malformedReader(malformedSource, *malformedMapping);
+            auto malformedTree =
+                AnalysisTree::create(QStringLiteral("more-rbsp-data-malformed"));
+            QVERIFY(malformedTree.has_value());
+            const auto malformedResult = DslExecutor::decodeStruct(
+                malformed,
+                quint32(0),
+                malformedReader,
+                *malformedMapping,
+                0,
+                *malformedTree,
+                malformedTree->rootId());
+            QCOMPARE(malformedResult.status,
+                     DslExecutionStatus::InvalidDefinition);
+            QCOMPARE(malformedResult.instructionsExecuted, quint64(0));
+            QCOMPARE(malformedReader.position(), quint64(0));
+            QCOMPARE(malformedSource.readCount(), quint64(0));
+        }
+    }
+
     void rejectsMalformedRepeatLocalAssertionConditionsBeforeReadingSource() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             struct Header {
