@@ -25,6 +25,12 @@ enum SpsProfileIdc {
     high = 100;
 }
 
+enum PicOrderCntType {
+    lsb = 0;
+    delta = 1;
+    frame_num = 2;
+}
+
 @spec("ITU-T H.264", "7.3.2.1.1")
 @description("The supported 8-bit 4:2:0 sequence parameter set core.")
 @context("h264-sps", seq_parameter_set_id)
@@ -52,10 +58,37 @@ struct SequenceParameterSetRbsp {
     ue log2_max_frame_num_minus4 @range(0, 12) @context_export
         @spec("ITU-T H.264", "7.4.2.1.1")
         @description("Sets the frame-number wrap; conformant values are 0 to 12.");
-    ue pic_order_cnt_type @equals(0) @context_export;
-    ue log2_max_pic_order_cnt_lsb_minus4 @range(0, 12) @context_export
-        @spec("ITU-T H.264", "7.4.2.1.1")
-        @description("Sets the picture-order-count wrap; conformant values are 0 to 12.");
+    ue pic_order_cnt_type @enum(PicOrderCntType) @context_export
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+        @description("Selects the supported picture-order-count syntax branch.");
+    if (pic_order_cnt_type == 0) {
+        ue log2_max_pic_order_cnt_lsb_minus4 @range(0, 12)
+            @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+            @description("Sets the type-0 picture-order-count wrap; conformant values are 0 to 12.");
+    }
+    if (pic_order_cnt_type == 1) {
+        bits<1> delta_pic_order_always_zero_flag
+            @spec("ITU-T H.264", "7.3.2.1.1")
+            @description("Infers zero slice deltas when set.");
+        se offset_for_non_ref_pic
+            @spec("ITU-T H.264", "7.3.2.1.1")
+            @description("Adjusts picture order for non-reference pictures.");
+        se offset_for_top_to_bottom_field
+            @spec("ITU-T H.264", "7.3.2.1.1")
+            @description("Adjusts bottom-field order relative to the top field.");
+        ue num_ref_frames_in_pic_order_cnt_cycle @range(0, 255)
+            @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+            @description("Sets the number of signed offsets in one picture-order cycle.");
+        repeat (num_ref_frames_in_pic_order_cnt_cycle, 255) {
+            se offset_for_ref_frame
+                @spec("ITU-T H.264", "7.3.2.1.1")
+                @description("Carries one signed reference-picture cycle offset.");
+        }
+    }
+    computed<u64> effective_log2_max_pic_order_cnt_lsb_minus4 =
+        optional_value(log2_max_pic_order_cnt_lsb_minus4, 0) @context_export;
+    computed<u64> effective_delta_pic_order_always_zero_flag =
+        optional_value(delta_pic_order_always_zero_flag, 1) @context_export;
     ue max_num_ref_frames @context_export;
     bits<1> gaps_in_frame_num_value_allowed_flag;
     ue pic_width_in_mbs_minus1;
@@ -288,20 +321,37 @@ struct IdrSliceLayerWithoutPartitioningRbsp {
     }
     ue idr_pic_id
         @description("Identifies this IDR picture.");
-    bits<(context_value(pic_parameter_set_id,
-                        h264_sps,
-                        log2_max_pic_order_cnt_lsb_minus4) + 4) /
-         (1 - context_value(pic_parameter_set_id, h264_sps, pic_order_cnt_type))> pic_order_cnt_lsb
-        @description("Carries the picture-order-count least-significant bits.");
-    computed<bool> has_delta_pic_order_cnt_bottom =
-        context_value(pic_parameter_set_id,
-                      h264_pps,
-                      bottom_field_pic_order_in_frame_present_flag) == 1 &&
-        optional_value(field_pic_flag, 0) == 0;
-    if (has_delta_pic_order_cnt_bottom) {
-        se delta_pic_order_cnt_bottom
-            @spec("ITU-T H.264", "7.3.3")
-            @description("Carries the bottom-field picture-order-count delta.");
+    if (context_value(pic_parameter_set_id, h264_sps, pic_order_cnt_type) == 0) {
+        bits<(context_value(pic_parameter_set_id,
+                            h264_sps,
+                            effective_log2_max_pic_order_cnt_lsb_minus4) + 4)> pic_order_cnt_lsb
+            @description("Carries the type-0 picture-order-count least-significant bits.");
+        computed<bool> has_delta_pic_order_cnt_bottom =
+            context_value(pic_parameter_set_id,
+                          h264_pps,
+                          bottom_field_pic_order_in_frame_present_flag) == 1 &&
+            optional_value(field_pic_flag, 0) == 0;
+        if (has_delta_pic_order_cnt_bottom) {
+            se delta_pic_order_cnt_bottom
+                @spec("ITU-T H.264", "7.3.3")
+                @description("Carries the type-0 bottom-field picture-order-count delta.");
+        }
+    }
+    if (context_value(pic_parameter_set_id, h264_sps, pic_order_cnt_type) == 1) {
+        if (context_value(pic_parameter_set_id,
+                          h264_sps,
+                          effective_delta_pic_order_always_zero_flag) == 0) {
+            computed<u64> delta_pic_order_cnt_count =
+                1 + context_value(pic_parameter_set_id,
+                                  h264_pps,
+                                  bottom_field_pic_order_in_frame_present_flag) *
+                        (1 - optional_value(field_pic_flag, 0));
+            repeat (delta_pic_order_cnt_count, 2) {
+                se delta_pic_order_cnt
+                    @spec("ITU-T H.264", "7.3.3")
+                    @description("Carries one type-1 picture-order-count delta.");
+            }
+        }
     }
     if (context_value(pic_parameter_set_id,
                       h264_pps,
@@ -338,7 +388,7 @@ struct IdrSliceLayerWithoutPartitioningRbsp {
 }
 
 @spec("ITU-T H.264", "7.3.2.8, 7.3.3")
-@description("The bounded progressive I/P/B non-IDR slice header followed by an opaque suffix.")
+@description("The bounded I/P/B non-IDR slice header followed by an opaque suffix.")
 @context_import("h264-pps", pic_parameter_set_id)
 struct NonIdrSliceLayerWithoutPartitioningRbsp {
     ue first_mb_in_slice
@@ -366,20 +416,37 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
                 @description("Selects the bottom field when this slice codes a field.");
         }
     }
-    bits<(context_value(pic_parameter_set_id,
-                        h264_sps,
-                        log2_max_pic_order_cnt_lsb_minus4) + 4) /
-         (1 - context_value(pic_parameter_set_id, h264_sps, pic_order_cnt_type))> pic_order_cnt_lsb
-        @description("Carries the picture-order-count least-significant bits.");
-    computed<bool> has_delta_pic_order_cnt_bottom =
-        context_value(pic_parameter_set_id,
-                      h264_pps,
-                      bottom_field_pic_order_in_frame_present_flag) == 1 &&
-        optional_value(field_pic_flag, 0) == 0;
-    if (has_delta_pic_order_cnt_bottom) {
-        se delta_pic_order_cnt_bottom
-            @spec("ITU-T H.264", "7.3.3")
-            @description("Carries the bottom-field picture-order-count delta.");
+    if (context_value(pic_parameter_set_id, h264_sps, pic_order_cnt_type) == 0) {
+        bits<(context_value(pic_parameter_set_id,
+                            h264_sps,
+                            effective_log2_max_pic_order_cnt_lsb_minus4) + 4)> pic_order_cnt_lsb
+            @description("Carries the type-0 picture-order-count least-significant bits.");
+        computed<bool> has_delta_pic_order_cnt_bottom =
+            context_value(pic_parameter_set_id,
+                          h264_pps,
+                          bottom_field_pic_order_in_frame_present_flag) == 1 &&
+            optional_value(field_pic_flag, 0) == 0;
+        if (has_delta_pic_order_cnt_bottom) {
+            se delta_pic_order_cnt_bottom
+                @spec("ITU-T H.264", "7.3.3")
+                @description("Carries the type-0 bottom-field picture-order-count delta.");
+        }
+    }
+    if (context_value(pic_parameter_set_id, h264_sps, pic_order_cnt_type) == 1) {
+        if (context_value(pic_parameter_set_id,
+                          h264_sps,
+                          effective_delta_pic_order_always_zero_flag) == 0) {
+            computed<u64> delta_pic_order_cnt_count =
+                1 + context_value(pic_parameter_set_id,
+                                  h264_pps,
+                                  bottom_field_pic_order_in_frame_present_flag) *
+                        (1 - optional_value(field_pic_flag, 0));
+            repeat (delta_pic_order_cnt_count, 2) {
+                se delta_pic_order_cnt
+                    @spec("ITU-T H.264", "7.3.3")
+                    @description("Carries one type-1 picture-order-count delta.");
+            }
+        }
     }
     if (context_value(pic_parameter_set_id,
                       h264_pps,

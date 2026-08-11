@@ -48,6 +48,151 @@ namespace {
     return result;
 }
 
+void appendFixedBits(std::vector<bool>& bits, quint64 value, std::size_t width) {
+    for (std::size_t remaining = width; remaining != 0; --remaining) {
+        bits.push_back(((value >> (remaining - 1)) & 1U) != 0);
+    }
+}
+
+void appendUnsignedExpGolomb(std::vector<bool>& bits, quint64 value) {
+    const auto encoded = unsignedExpGolombBits(value);
+    bits.insert(bits.end(), encoded.begin(), encoded.end());
+}
+
+void appendSignedExpGolomb(std::vector<bool>& bits, qint64 value) {
+    const quint64 codeNum = value <= 0 ? static_cast<quint64>(-value) * 2
+                                      : static_cast<quint64>(value) * 2 - 1;
+    appendUnsignedExpGolomb(bits, codeNum);
+}
+
+[[nodiscard]] std::vector<std::byte> packAnnexBNal(unsigned int header,
+                                                   std::vector<bool> rbspBits,
+                                                   bool appendTrailingBits = true) {
+    if (appendTrailingBits) {
+        rbspBits.push_back(true);
+        while (rbspBits.size() % 8 != 0) {
+            rbspBits.push_back(false);
+        }
+    }
+    Q_ASSERT(rbspBits.size() % 8 == 0);
+
+    auto result = bytes({0x00, 0x00, 0x01, header});
+    for (std::size_t offset = 0; offset < rbspBits.size(); offset += 8) {
+        unsigned int value = 0;
+        for (std::size_t bit = 0; bit < 8; ++bit) {
+            value = (value << 1U) |
+                    static_cast<unsigned int>(rbspBits.at(offset + bit));
+        }
+        result.push_back(static_cast<std::byte>(value));
+    }
+    return result;
+}
+
+void appendNal(std::vector<std::byte>& stream, const std::vector<std::byte>& nal) {
+    stream.insert(stream.end(), nal.begin(), nal.end());
+}
+
+void appendPocSequenceParameterSetPrefix(std::vector<bool>& bits, quint64 pocType) {
+    appendFixedBits(bits, 66, 8);
+    appendFixedBits(bits, 0, 8);
+    appendFixedBits(bits, 30, 8);
+    appendUnsignedExpGolomb(bits, 0);
+    appendUnsignedExpGolomb(bits, 0);
+    appendUnsignedExpGolomb(bits, pocType);
+}
+
+void appendPocSequenceParameterSetSuffix(std::vector<bool>& bits,
+                                         bool frameMbsOnly = true) {
+    appendUnsignedExpGolomb(bits, 1);
+    appendFixedBits(bits, 0, 1);
+    appendUnsignedExpGolomb(bits, 19);
+    appendUnsignedExpGolomb(bits, 14);
+    appendFixedBits(bits, frameMbsOnly ? 1 : 0, 1);
+    if (!frameMbsOnly) {
+        appendFixedBits(bits, 0, 1);
+    }
+    appendFixedBits(bits, 1, 1);
+    appendFixedBits(bits, 0, 1);
+    appendFixedBits(bits, 0, 1);
+}
+
+[[nodiscard]] std::vector<std::byte> pictureOrderCountSequenceParameterSet(
+    quint64 pocType,
+    bool deltaAlwaysZero = false,
+    qint64 nonReferenceOffset = 0,
+    qint64 topToBottomOffset = 0,
+    quint64 cycleCount = 0,
+    std::initializer_list<qint64> cycleOffsets = {},
+    bool frameMbsOnly = true) {
+    std::vector<bool> bits;
+    appendPocSequenceParameterSetPrefix(bits, pocType);
+    if (pocType == 0) {
+        appendUnsignedExpGolomb(bits, 0);
+    } else if (pocType == 1) {
+        appendFixedBits(bits, deltaAlwaysZero ? 1 : 0, 1);
+        appendSignedExpGolomb(bits, nonReferenceOffset);
+        appendSignedExpGolomb(bits, topToBottomOffset);
+        appendUnsignedExpGolomb(bits, cycleCount);
+        for (const qint64 offset : cycleOffsets) {
+            appendSignedExpGolomb(bits, offset);
+        }
+    }
+    appendPocSequenceParameterSetSuffix(bits, frameMbsOnly);
+    return packAnnexBNal(0x67, std::move(bits));
+}
+
+[[nodiscard]] std::vector<std::byte> pictureParameterSet(bool bottomDeltaPresent) {
+    std::vector<bool> bits;
+    appendUnsignedExpGolomb(bits, 0);
+    appendUnsignedExpGolomb(bits, 0);
+    appendFixedBits(bits, 0, 1);
+    appendFixedBits(bits, bottomDeltaPresent ? 1 : 0, 1);
+    appendUnsignedExpGolomb(bits, 0);
+    appendUnsignedExpGolomb(bits, 0);
+    appendUnsignedExpGolomb(bits, 0);
+    appendFixedBits(bits, 0, 1);
+    appendFixedBits(bits, 0, 2);
+    appendSignedExpGolomb(bits, 0);
+    appendSignedExpGolomb(bits, 0);
+    appendSignedExpGolomb(bits, 0);
+    appendFixedBits(bits, 0, 1);
+    appendFixedBits(bits, 0, 1);
+    appendFixedBits(bits, 0, 1);
+    return packAnnexBNal(0x68, std::move(bits));
+}
+
+[[nodiscard]] std::vector<std::byte> pictureOrderCountSlice(
+    bool idr,
+    quint64 pocType,
+    std::initializer_list<qint64> typeOneDeltas = {},
+    bool fieldPic = false) {
+    std::vector<bool> bits;
+    appendUnsignedExpGolomb(bits, 0);
+    appendUnsignedExpGolomb(bits, 2);
+    appendUnsignedExpGolomb(bits, 0);
+    appendFixedBits(bits, 0, 4);
+    if (fieldPic) {
+        appendFixedBits(bits, 1, 1);
+        appendFixedBits(bits, 0, 1);
+    }
+    if (idr) {
+        appendUnsignedExpGolomb(bits, 0);
+    }
+    if (pocType == 0) {
+        appendFixedBits(bits, 3, 4);
+    } else if (pocType == 1) {
+        for (const qint64 delta : typeOneDeltas) {
+            appendSignedExpGolomb(bits, delta);
+        }
+    }
+    if (idr) {
+        appendFixedBits(bits, 0, 1);
+        appendFixedBits(bits, 0, 1);
+    }
+    appendSignedExpGolomb(bits, 0);
+    return packAnnexBNal(idr ? 0x65 : 0x01, std::move(bits));
+}
+
 [[nodiscard]] std::vector<std::byte> replaceCodewordBeforeNextNal(
     std::vector<std::byte> data,
     std::size_t sourceBitOffset,
@@ -488,6 +633,360 @@ private slots:
         QCOMPARE(chroma->value().toULongLong(), quint64(1));
         QCOMPARE(depth->value().toULongLong(), quint64(0));
         QCOMPARE(scaling->value().toULongLong(), quint64(0));
+    }
+
+    void decodesPictureOrderCountTypeOneSequenceParameterSetCycle() {
+        MemorySource source(pictureOrderCountSequenceParameterSet(
+            1, false, -1, 1, 1, {-2}));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sps.has_value());
+        QCOMPARE(sps->state(), MaterializationState::Materialized);
+        QVERIFY(sps->diagnostics().empty());
+
+        const auto fieldNamed = [&](const QString& name) {
+            const auto found = std::find_if(
+                sps->children().begin(), sps->children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == sps->children().end() ? std::nullopt
+                                                 : analyzer->tree().node(*found);
+        };
+        const auto type = fieldNamed(QStringLiteral("pic_order_cnt_type"));
+        const auto alwaysZero =
+            fieldNamed(QStringLiteral("delta_pic_order_always_zero_flag"));
+        const auto nonReference = fieldNamed(QStringLiteral("offset_for_non_ref_pic"));
+        const auto topToBottom =
+            fieldNamed(QStringLiteral("offset_for_top_to_bottom_field"));
+        const auto count =
+            fieldNamed(QStringLiteral("num_ref_frames_in_pic_order_cnt_cycle"));
+        const auto cycleOffset = fieldNamed(QStringLiteral("offset_for_ref_frame[0]"));
+        const auto effectiveLsb = fieldNamed(
+            QStringLiteral("effective_log2_max_pic_order_cnt_lsb_minus4"));
+        const auto effectiveAlwaysZero = fieldNamed(
+            QStringLiteral("effective_delta_pic_order_always_zero_flag"));
+        QVERIFY(type.has_value());
+        QVERIFY(alwaysZero.has_value());
+        QVERIFY(nonReference.has_value());
+        QVERIFY(topToBottom.has_value());
+        QVERIFY(count.has_value());
+        QVERIFY(cycleOffset.has_value());
+        QVERIFY(effectiveLsb.has_value());
+        QVERIFY(effectiveAlwaysZero.has_value());
+        QVERIFY(!fieldNamed(QStringLiteral("log2_max_pic_order_cnt_lsb_minus4"))
+                     .has_value());
+        QCOMPARE(type->value().toULongLong(), quint64(1));
+        QCOMPARE(type->metadata().typeName, QStringLiteral("PicOrderCntType"));
+        QCOMPARE(alwaysZero->value().toULongLong(), quint64(0));
+        QCOMPARE(nonReference->value().toLongLong(), qlonglong(-1));
+        QCOMPARE(topToBottom->value().toLongLong(), qlonglong(1));
+        QCOMPARE(count->value().toULongLong(), quint64(1));
+        QCOMPARE(cycleOffset->value().toLongLong(), qlonglong(-2));
+        QCOMPARE(effectiveLsb->value().toULongLong(), quint64(0));
+        QCOMPARE(effectiveAlwaysZero->value().toULongLong(), quint64(0));
+        QVERIFY(!effectiveLsb->location().has_value());
+        QVERIFY(!effectiveAlwaysZero->location().has_value());
+
+        const std::vector sourceFields{
+            std::pair{type, std::pair{quint64(58), quint64(3)}},
+            std::pair{alwaysZero, std::pair{quint64(61), quint64(1)}},
+            std::pair{nonReference, std::pair{quint64(62), quint64(3)}},
+            std::pair{topToBottom, std::pair{quint64(65), quint64(3)}},
+            std::pair{count, std::pair{quint64(68), quint64(3)}},
+            std::pair{cycleOffset, std::pair{quint64(71), quint64(5)}},
+        };
+        for (const auto& [field, expected] : sourceFields) {
+            QCOMPARE(field->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     expected.first);
+            QCOMPARE(field->location()->logicalRange().bitLength(), expected.second);
+        }
+    }
+
+    void decodesTwoPictureOrderCountTypeOneDeltasInAnIdrSlice() {
+        const auto sps = pictureOrderCountSequenceParameterSet(1, false);
+        const auto pps = pictureParameterSet(true);
+        const auto sliceNal = pictureOrderCountSlice(true, 1, {-1, 1});
+        std::vector<std::byte> stream;
+        appendNal(stream, sps);
+        appendNal(stream, pps);
+        appendNal(stream, sliceNal);
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x0a}));
+        MemorySource source(std::move(stream));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(4));
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Materialized);
+        QVERIFY(slice->diagnostics().empty());
+
+        const auto fieldNamed = [&](const QString& name) {
+            const auto found = std::find_if(
+                slice->children().begin(), slice->children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == slice->children().end() ? std::nullopt
+                                                   : analyzer->tree().node(*found);
+        };
+        const auto count = fieldNamed(QStringLiteral("delta_pic_order_cnt_count"));
+        const auto first = fieldNamed(QStringLiteral("delta_pic_order_cnt[0]"));
+        const auto second = fieldNamed(QStringLiteral("delta_pic_order_cnt[1]"));
+        QVERIFY(count.has_value());
+        QVERIFY(first.has_value());
+        QVERIFY(second.has_value());
+        QVERIFY(!fieldNamed(QStringLiteral("pic_order_cnt_lsb")).has_value());
+        QVERIFY(!fieldNamed(QStringLiteral("has_delta_pic_order_cnt_bottom")).has_value());
+        QCOMPARE(count->value().toULongLong(), quint64(2));
+        QVERIFY(!count->location().has_value());
+        QCOMPARE(first->value().toLongLong(), qlonglong(-1));
+        QCOMPARE(second->value().toLongLong(), qlonglong(1));
+        const quint64 sliceRbspStart = static_cast<quint64>(sps.size() + pps.size() + 4) * 8;
+        QCOMPARE(first->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 sliceRbspStart + 10);
+        QCOMPARE(first->location()->logicalRange().bitLength(), quint64(3));
+        QCOMPARE(second->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 sliceRbspStart + 13);
+        QCOMPARE(second->location()->logicalRange().bitLength(), quint64(3));
+
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+    }
+
+    void decodesOnePictureOrderCountTypeOneDeltaInANonIdrSlice() {
+        const auto sps = pictureOrderCountSequenceParameterSet(1, false);
+        const auto pps = pictureParameterSet(false);
+        std::vector<std::byte> stream;
+        appendNal(stream, sps);
+        appendNal(stream, pps);
+        appendNal(stream, pictureOrderCountSlice(false, 1, {2}));
+        MemorySource source(std::move(stream));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Materialized);
+        const auto fieldNamed = [&](const QString& name) {
+            const auto found = std::find_if(
+                slice->children().begin(), slice->children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == slice->children().end() ? std::nullopt
+                                                   : analyzer->tree().node(*found);
+        };
+        const auto count = fieldNamed(QStringLiteral("delta_pic_order_cnt_count"));
+        const auto delta = fieldNamed(QStringLiteral("delta_pic_order_cnt[0]"));
+        QVERIFY(count.has_value());
+        QVERIFY(delta.has_value());
+        QCOMPARE(count->value().toULongLong(), quint64(1));
+        QCOMPARE(delta->value().toLongLong(), qlonglong(2));
+        QVERIFY(!fieldNamed(QStringLiteral("delta_pic_order_cnt[1]")).has_value());
+        QVERIFY(!fieldNamed(QStringLiteral("pic_order_cnt_lsb")).has_value());
+        QVERIFY(slice->diagnostics().empty());
+    }
+
+    void suppressesSecondPictureOrderCountDeltaForATypeOneFieldPicture() {
+        const auto sps = pictureOrderCountSequenceParameterSet(
+            1, false, 0, 0, 0, {}, false);
+        const auto pps = pictureParameterSet(true);
+        std::vector<std::byte> stream;
+        appendNal(stream, sps);
+        appendNal(stream, pps);
+        appendNal(stream, pictureOrderCountSlice(true, 1, {2}, true));
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x0a}));
+        MemorySource source(std::move(stream));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(4));
+
+        const auto spsNal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(spsNal.has_value());
+        const auto spsRbsp = analyzer->tree().node(spsNal->children().at(2));
+        QVERIFY(spsRbsp.has_value());
+        const auto spsNode = analyzer->tree().node(spsRbsp->children().front());
+        QVERIFY(spsNode.has_value());
+        const auto spsFieldNamed = [&](const QString& name) {
+            const auto found = std::find_if(
+                spsNode->children().begin(), spsNode->children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == spsNode->children().end() ? std::nullopt
+                                                      : analyzer->tree().node(*found);
+        };
+        const auto frameMbsOnly = spsFieldNamed(QStringLiteral("frame_mbs_only_flag"));
+        QVERIFY(frameMbsOnly.has_value());
+        QCOMPARE(frameMbsOnly->value().toULongLong(), quint64(0));
+        QVERIFY(!spsFieldNamed(QStringLiteral("offset_for_ref_frame[0]")).has_value());
+
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Materialized);
+        QVERIFY(slice->diagnostics().empty());
+        const auto fieldNamed = [&](const QString& name) {
+            const auto found = std::find_if(
+                slice->children().begin(), slice->children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == slice->children().end() ? std::nullopt
+                                                    : analyzer->tree().node(*found);
+        };
+        const auto fieldPicFlag = fieldNamed(QStringLiteral("field_pic_flag"));
+        const auto bottomFieldFlag = fieldNamed(QStringLiteral("bottom_field_flag"));
+        const auto count = fieldNamed(QStringLiteral("delta_pic_order_cnt_count"));
+        const auto delta = fieldNamed(QStringLiteral("delta_pic_order_cnt[0]"));
+        QVERIFY(fieldPicFlag.has_value());
+        QVERIFY(bottomFieldFlag.has_value());
+        QVERIFY(count.has_value());
+        QVERIFY(delta.has_value());
+        QCOMPARE(fieldPicFlag->value().toULongLong(), quint64(1));
+        QCOMPARE(bottomFieldFlag->value().toULongLong(), quint64(0));
+        QCOMPARE(count->value().toULongLong(), quint64(1));
+        QVERIFY(!count->location().has_value());
+        QCOMPARE(delta->value().toLongLong(), qlonglong(2));
+        QVERIFY(!fieldNamed(QStringLiteral("delta_pic_order_cnt[1]")).has_value());
+        QVERIFY(!fieldNamed(QStringLiteral("pic_order_cnt_lsb")).has_value());
+
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+    }
+
+    void omitsTypeOneSliceDeltasWhenTheSequenceInfersZero() {
+        const auto sps = pictureOrderCountSequenceParameterSet(1, true);
+        const auto pps = pictureParameterSet(true);
+        std::vector<std::byte> stream;
+        appendNal(stream, sps);
+        appendNal(stream, pps);
+        appendNal(stream, pictureOrderCountSlice(true, 1));
+        MemorySource source(std::move(stream));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::Materialized);
+        for (const auto childId : slice->children()) {
+            const auto child = analyzer->tree().node(childId);
+            QVERIFY(child.has_value());
+            QVERIFY(!child->name().startsWith(QStringLiteral("delta_pic_order_cnt")));
+            QVERIFY(child->name() != QStringLiteral("pic_order_cnt_lsb"));
+        }
+        QVERIFY(slice->diagnostics().empty());
+    }
+
+    void omitsPictureOrderSyntaxFromTypeTwoIdrAndNonIdrSlices() {
+        const auto sps = pictureOrderCountSequenceParameterSet(2);
+        const auto pps = pictureParameterSet(true);
+        std::vector<std::byte> stream;
+        appendNal(stream, sps);
+        appendNal(stream, pps);
+        appendNal(stream, pictureOrderCountSlice(true, 2));
+        appendNal(stream, pictureOrderCountSlice(false, 2));
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x0a}));
+        MemorySource source(std::move(stream));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(5));
+        const auto spsNal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(spsNal.has_value());
+        const auto spsRbsp = analyzer->tree().node(spsNal->children().at(2));
+        QVERIFY(spsRbsp.has_value());
+        const auto spsNode = analyzer->tree().node(spsRbsp->children().front());
+        QVERIFY(spsNode.has_value());
+        QCOMPARE(spsNode->state(), MaterializationState::Materialized);
+        for (const auto childId : spsNode->children()) {
+            const auto child = analyzer->tree().node(childId);
+            QVERIFY(child.has_value());
+            QVERIFY(child->name() != QStringLiteral("log2_max_pic_order_cnt_lsb_minus4"));
+            QVERIFY(child->name() != QStringLiteral("delta_pic_order_always_zero_flag"));
+            QVERIFY(child->name() != QStringLiteral("offset_for_non_ref_pic"));
+            QVERIFY(child->name() != QStringLiteral("offset_for_top_to_bottom_field"));
+            QVERIFY(child->name() !=
+                    QStringLiteral("num_ref_frames_in_pic_order_cnt_cycle"));
+        }
+
+        for (const std::size_t nalIndex : {std::size_t(2), std::size_t(3)}) {
+            const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(nalIndex));
+            QVERIFY(nal.has_value());
+            QCOMPARE(nal->state(), MaterializationState::Materialized);
+            const auto rbsp = analyzer->tree().node(nal->children().at(2));
+            QVERIFY(rbsp.has_value());
+            const auto slice = analyzer->tree().node(rbsp->children().front());
+            QVERIFY(slice.has_value());
+            QCOMPARE(slice->state(), MaterializationState::Materialized);
+            QVERIFY(slice->diagnostics().empty());
+            for (const auto childId : slice->children()) {
+                const auto child = analyzer->tree().node(childId);
+                QVERIFY(child.has_value());
+                QVERIFY(child->name() != QStringLiteral("pic_order_cnt_lsb"));
+                QVERIFY(child->name() != QStringLiteral("has_delta_pic_order_cnt_bottom"));
+                QVERIFY(!child->name().startsWith(QStringLiteral("delta_pic_order_cnt")));
+            }
+        }
+
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
     }
 
     void warnsOnOutOfRangeSequenceParameterSetFrameNumberWrap() {
@@ -1024,9 +1523,11 @@ private slots:
         QCOMPARE(followingNal->state(), MaterializationState::Materialized);
     }
 
-    void rejectsUnsupportedSequenceParameterSetPictureOrderCountType() {
-        MemorySource source(bytes({0x00, 0x00, 0x01, 0x67,
-                                   0x42, 0x00, 0x1e, 0xd2, 0x05, 0x07, 0xe4}));
+    void rejectsReservedSequenceParameterSetPictureOrderCountTypeAndContinues() {
+        std::vector<std::byte> stream;
+        appendNal(stream, pictureOrderCountSequenceParameterSet(3));
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x0a}));
+        MemorySource source(std::move(stream));
         QString errorMessage;
         auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
         QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
@@ -1034,6 +1535,7 @@ private slots:
         const auto batch = analyzer->analyzeBatch();
 
         QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
         const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
         QVERIFY(nal.has_value());
         QCOMPARE(nal->state(), MaterializationState::Invalid);
@@ -1050,9 +1552,129 @@ private slots:
         QVERIFY(picOrder != sps->children().end());
         const auto picOrderNode = analyzer->tree().node(*picOrder);
         QVERIFY(picOrderNode.has_value());
-        QCOMPARE(picOrderNode->value().toULongLong(), quint64(1));
+        QCOMPARE(picOrderNode->value().toULongLong(), quint64(3));
+        QCOMPARE(picOrderNode->metadata().typeName, QStringLiteral("PicOrderCntType"));
+        QCOMPARE(picOrderNode->location()->sourceSpans().front().start()
+                     .absoluteBitOffset(),
+                 quint64(58));
+        QCOMPARE(picOrderNode->location()->logicalRange().bitLength(), quint64(5));
+        QCOMPARE(sps->diagnostics().size(), std::size_t(1));
+        const auto& diagnostic = sps->diagnostics().front();
+        QCOMPARE(diagnostic.code,
+                 streamview::core::DiagnosticCode::InvalidSyntax);
+        QCOMPARE(diagnostic.fieldPath,
+                 QStringLiteral("SequenceParameterSetRbsp.pic_order_cnt_type"));
+        QVERIFY(diagnostic.location.has_value());
+        QCOMPARE(diagnostic.location->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(58));
+        QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(5));
+
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+    }
+
+    void rejectsPictureOrderCountCycleAboveTheDeclaredBoundAndContinues() {
+        std::vector<std::byte> stream;
+        appendNal(stream,
+                  pictureOrderCountSequenceParameterSet(1, false, 0, 0, 256));
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x0a}));
+        MemorySource source(std::move(stream));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sps.has_value());
+        QCOMPARE(sps->state(), MaterializationState::Invalid);
+        const auto count = std::find_if(
+            sps->children().begin(), sps->children().end(), [&](const auto id) {
+                const auto node = analyzer->tree().node(id);
+                return node && node->name() ==
+                                   QStringLiteral(
+                                       "num_ref_frames_in_pic_order_cnt_cycle");
+            });
+        QVERIFY(count != sps->children().end());
+        const auto countNode = analyzer->tree().node(*count);
+        QVERIFY(countNode.has_value());
+        QCOMPARE(countNode->value().toULongLong(), quint64(256));
+        QCOMPARE(countNode->location()->sourceSpans().front().start()
+                     .absoluteBitOffset(),
+                 quint64(64));
+        QCOMPARE(countNode->location()->logicalRange().bitLength(), quint64(17));
+        QCOMPARE(countNode->diagnostics().size(), std::size_t(1));
+        QCOMPARE(countNode->diagnostics().front().severity,
+                 streamview::core::DiagnosticSeverity::Warning);
+        QCOMPARE(sps->diagnostics().size(), std::size_t(1));
         QCOMPARE(sps->diagnostics().front().code,
                  streamview::core::DiagnosticCode::InvalidSyntax);
+        QVERIFY(std::none_of(
+            sps->children().begin(), sps->children().end(), [&](const auto id) {
+                const auto node = analyzer->tree().node(id);
+                return node &&
+                       node->name().startsWith(QStringLiteral("offset_for_ref_frame["));
+            }));
+
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+    }
+
+    void reportsTruncatedPictureOrderCountCycleOffsetAndContinues() {
+        std::vector<bool> bits;
+        appendPocSequenceParameterSetPrefix(bits, 1);
+        appendFixedBits(bits, 0, 1);
+        appendSignedExpGolomb(bits, 0);
+        appendSignedExpGolomb(bits, 0);
+        appendUnsignedExpGolomb(bits, 1);
+        while (bits.size() % 8 != 0) {
+            bits.push_back(false);
+        }
+        std::vector<std::byte> stream;
+        appendNal(stream, packAnnexBNal(0x67, std::move(bits), false));
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x0a}));
+        MemorySource source(std::move(stream));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sps.has_value());
+        QCOMPARE(sps->state(), MaterializationState::Invalid);
+        QCOMPARE(sps->diagnostics().size(), std::size_t(1));
+        const auto& diagnostic = sps->diagnostics().front();
+        QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::TruncatedSource);
+        QCOMPARE(diagnostic.message,
+                 QStringLiteral("Unable to read complete Exp-Golomb codeword"));
+        QCOMPARE(diagnostic.fieldPath,
+                 QStringLiteral("SequenceParameterSetRbsp.offset_for_ref_frame[0]"));
+        QVERIFY(!std::any_of(
+            sps->children().begin(), sps->children().end(), [&](const auto id) {
+                const auto node = analyzer->tree().node(id);
+                return node && node->name() == QStringLiteral("offset_for_ref_frame[0]");
+            }));
+
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
     }
 
     void rejectsInvalidSequenceParameterSetProfileAndReservedBits() {
