@@ -116,6 +116,28 @@ void appendPocSequenceParameterSetSuffix(std::vector<bool>& bits,
     appendFixedBits(bits, 0, 1);
 }
 
+[[nodiscard]] std::vector<std::byte> sequenceParameterSetForProfile(
+    quint64 profileIdc,
+    quint64 sequenceParameterSetId = 0) {
+    std::vector<bool> bits;
+    appendFixedBits(bits, profileIdc, 8);
+    appendFixedBits(bits, 0, 8);
+    appendFixedBits(bits, profileIdc == 100 ? 31 : 30, 8);
+    appendUnsignedExpGolomb(bits, sequenceParameterSetId);
+    if (profileIdc == 100) {
+        appendUnsignedExpGolomb(bits, 1);
+        appendUnsignedExpGolomb(bits, 0);
+        appendUnsignedExpGolomb(bits, 0);
+        appendFixedBits(bits, 0, 1);
+        appendFixedBits(bits, 0, 1);
+    }
+    appendUnsignedExpGolomb(bits, 0);
+    appendUnsignedExpGolomb(bits, 0);
+    appendUnsignedExpGolomb(bits, 0);
+    appendPocSequenceParameterSetSuffix(bits);
+    return packAnnexBNal(0x67, std::move(bits));
+}
+
 [[nodiscard]] std::vector<std::byte> pictureOrderCountSequenceParameterSet(
     quint64 pocType,
     bool deltaAlwaysZero = false,
@@ -141,10 +163,12 @@ void appendPocSequenceParameterSetSuffix(std::vector<bool>& bits,
     return packAnnexBNal(0x67, std::move(bits));
 }
 
-[[nodiscard]] std::vector<std::byte> pictureParameterSet(bool bottomDeltaPresent) {
-    std::vector<bool> bits;
-    appendUnsignedExpGolomb(bits, 0);
-    appendUnsignedExpGolomb(bits, 0);
+void appendPictureParameterSetBase(std::vector<bool>& bits,
+                                   bool bottomDeltaPresent,
+                                   quint64 pictureParameterSetId = 0,
+                                   quint64 sequenceParameterSetId = 0) {
+    appendUnsignedExpGolomb(bits, pictureParameterSetId);
+    appendUnsignedExpGolomb(bits, sequenceParameterSetId);
     appendFixedBits(bits, 0, 1);
     appendFixedBits(bits, bottomDeltaPresent ? 1 : 0, 1);
     appendUnsignedExpGolomb(bits, 0);
@@ -158,7 +182,36 @@ void appendPocSequenceParameterSetSuffix(std::vector<bool>& bits,
     appendFixedBits(bits, 0, 1);
     appendFixedBits(bits, 0, 1);
     appendFixedBits(bits, 0, 1);
+}
+
+[[nodiscard]] std::vector<std::byte> pictureParameterSet(bool bottomDeltaPresent) {
+    std::vector<bool> bits;
+    appendPictureParameterSetBase(bits, bottomDeltaPresent);
     return packAnnexBNal(0x68, std::move(bits));
+}
+
+[[nodiscard]] std::vector<std::byte> pictureParameterSetWithExtension(
+    bool transform8x8,
+    qint64 secondChromaQpOffset,
+    bool scalingMatrixPresent = false,
+    quint64 pictureParameterSetId = 0,
+    quint64 sequenceParameterSetId = 0) {
+    std::vector<bool> bits;
+    appendPictureParameterSetBase(
+        bits, false, pictureParameterSetId, sequenceParameterSetId);
+    appendFixedBits(bits, transform8x8 ? 1 : 0, 1);
+    appendFixedBits(bits, scalingMatrixPresent ? 1 : 0, 1);
+    appendSignedExpGolomb(bits, secondChromaQpOffset);
+    return packAnnexBNal(0x68, std::move(bits));
+}
+
+[[nodiscard]] std::vector<std::byte> pictureParameterSetWithoutSecondOffset() {
+    std::vector<bool> bits;
+    appendPictureParameterSetBase(bits, false, 7, 0);
+    appendFixedBits(bits, 0, 1);
+    appendFixedBits(bits, 0, 1);
+    Q_ASSERT(bits.size() % 8 == 0);
+    return packAnnexBNal(0x68, std::move(bits), false);
 }
 
 [[nodiscard]] std::vector<std::byte> pictureOrderCountSlice(
@@ -1744,7 +1797,7 @@ private slots:
         QCOMPARE(pps->name(), QStringLiteral("PictureParameterSetRbsp"));
         QCOMPARE(pps->state(), MaterializationState::Materialized);
         QCOMPARE(pps->metadata().specification->clause, QStringLiteral("7.3.2.2"));
-        QCOMPARE(pps->children().size(), std::size_t(23));
+        QCOMPARE(pps->children().size(), std::size_t(24));
 
         const auto fieldNamed = [&](const QString& name) {
             const auto found = std::find_if(
@@ -1850,6 +1903,433 @@ private slots:
                      ->value()
                      .toULongLong(),
                  quint64(1));
+    }
+
+    void decodesHighProfilePictureParameterSetWithoutExtension() {
+        const auto spsNal = sequenceParameterSetForProfile(100);
+        std::vector<std::byte> stream;
+        appendNal(stream, spsNal);
+        appendNal(stream, pictureParameterSet(false));
+        MemorySource source(std::move(stream));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto pps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(pps.has_value());
+        QCOMPARE(pps->state(), MaterializationState::Materialized);
+        QVERIFY(pps->diagnostics().empty());
+
+        const auto fieldNamed = [&](const QString& name) {
+            const auto found = std::find_if(
+                pps->children().begin(), pps->children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == pps->children().end() ? std::nullopt
+                                                : analyzer->tree().node(*found);
+        };
+        const auto hasExtension = fieldNamed(QStringLiteral("has_pps_extension"));
+        const auto stop = fieldNamed(QStringLiteral("rbsp_stop_one_bit"));
+        QVERIFY(hasExtension.has_value());
+        QVERIFY(stop.has_value());
+        QCOMPARE(hasExtension->value().toBool(), false);
+        QVERIFY(!hasExtension->location().has_value());
+        QVERIFY(!fieldNamed(QStringLiteral("transform_8x8_mode_flag")).has_value());
+        QVERIFY(!fieldNamed(QStringLiteral("pic_scaling_matrix_present_flag")).has_value());
+        QVERIFY(!fieldNamed(QStringLiteral("second_chroma_qp_index_offset")).has_value());
+        QCOMPARE(stop->location()->sourceSpans().front().start().absoluteBitOffset(),
+                 quint64(spsNal.size() + 4) * 8 + 16);
+    }
+
+    void decodesBoundedHighProfilePictureParameterSetExtensions() {
+        struct ExtensionCase final {
+            bool transform8x8 = false;
+            qint64 secondChromaOffset = 0;
+            quint64 offsetBitLength = 0;
+        };
+        const std::vector<ExtensionCase> cases{
+            {false, 0, 1},
+            {true, 3, 5},
+            {false, -2, 5},
+        };
+
+        for (const auto& testCase : cases) {
+            const auto spsNal = sequenceParameterSetForProfile(100);
+            std::vector<std::byte> stream;
+            appendNal(stream, spsNal);
+            appendNal(stream,
+                      pictureParameterSetWithExtension(
+                          testCase.transform8x8, testCase.secondChromaOffset));
+            MemorySource source(std::move(stream));
+            QString errorMessage;
+            auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+            QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+            const auto batch = analyzer->analyzeBatch();
+
+            QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+            QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+            const auto nal = analyzer->tree().node(batch.nalUnitNodes.back());
+            QVERIFY(nal.has_value());
+            QCOMPARE(nal->state(), MaterializationState::Materialized);
+            const auto rbsp = analyzer->tree().node(nal->children().at(2));
+            QVERIFY(rbsp.has_value());
+            const auto pps = analyzer->tree().node(rbsp->children().front());
+            QVERIFY(pps.has_value());
+            QCOMPARE(pps->state(), MaterializationState::Materialized);
+            QVERIFY(pps->diagnostics().empty());
+
+            const auto fieldNamed = [&](const QString& name) {
+                const auto found = std::find_if(
+                    pps->children().begin(), pps->children().end(), [&](const auto id) {
+                        const auto node = analyzer->tree().node(id);
+                        return node && node->name() == name;
+                    });
+                return found == pps->children().end() ? std::nullopt
+                                                    : analyzer->tree().node(*found);
+            };
+            const auto hasExtension = fieldNamed(QStringLiteral("has_pps_extension"));
+            const auto transform = fieldNamed(QStringLiteral("transform_8x8_mode_flag"));
+            const auto scaling =
+                fieldNamed(QStringLiteral("pic_scaling_matrix_present_flag"));
+            const auto secondOffset =
+                fieldNamed(QStringLiteral("second_chroma_qp_index_offset"));
+            const auto stop = fieldNamed(QStringLiteral("rbsp_stop_one_bit"));
+            QVERIFY(hasExtension.has_value());
+            QVERIFY(transform.has_value());
+            QVERIFY(scaling.has_value());
+            QVERIFY(secondOffset.has_value());
+            QVERIFY(stop.has_value());
+            QCOMPARE(hasExtension->value().toBool(), true);
+            QVERIFY(!hasExtension->location().has_value());
+            QCOMPARE(transform->value().toULongLong(),
+                     quint64(testCase.transform8x8 ? 1 : 0));
+            QCOMPARE(scaling->value().toULongLong(), quint64(0));
+            QCOMPARE(secondOffset->value().toLongLong(),
+                     qlonglong(testCase.secondChromaOffset));
+
+            const quint64 ppsRbspStart = quint64(spsNal.size() + 4) * 8;
+            QCOMPARE(transform->location()->sourceSpans().front().start()
+                         .absoluteBitOffset(),
+                     ppsRbspStart + 16);
+            QCOMPARE(transform->location()->logicalRange().bitLength(), quint64(1));
+            QCOMPARE(transform->location()->sourceSpans().front().bitLength(),
+                     quint64(1));
+            QCOMPARE(scaling->location()->sourceSpans().front().start()
+                         .absoluteBitOffset(),
+                     ppsRbspStart + 17);
+            QCOMPARE(scaling->location()->logicalRange().bitLength(), quint64(1));
+            QCOMPARE(scaling->location()->sourceSpans().front().bitLength(), quint64(1));
+            QCOMPARE(secondOffset->location()->sourceSpans().front().start()
+                         .absoluteBitOffset(),
+                     ppsRbspStart + 18);
+            QCOMPARE(secondOffset->location()->logicalRange().bitLength(),
+                     testCase.offsetBitLength);
+            QCOMPARE(secondOffset->location()->sourceSpans().front().bitLength(),
+                     testCase.offsetBitLength);
+            QCOMPARE(stop->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     ppsRbspStart + 18 + testCase.offsetBitLength);
+            QCOMPARE(stop->location()->sourceSpans().front().bitLength(), quint64(1));
+        }
+    }
+
+    void rejectsHighProfilePictureScalingMatrixAndContinues() {
+        const auto spsNal = sequenceParameterSetForProfile(100);
+        std::vector<std::byte> stream;
+        appendNal(stream, spsNal);
+        appendNal(stream, pictureParameterSetWithExtension(true, 0, true));
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x50}));
+        MemorySource source(std::move(stream));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(3));
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto pps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(pps.has_value());
+        QCOMPARE(pps->state(), MaterializationState::Invalid);
+        QCOMPARE(pps->diagnostics().size(), std::size_t(1));
+        const auto& diagnostic = pps->diagnostics().front();
+        QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::InvalidSyntax);
+        QCOMPARE(diagnostic.fieldPath,
+                 QStringLiteral(
+                     "PictureParameterSetRbsp.pic_scaling_matrix_present_flag"));
+        QVERIFY(diagnostic.location.has_value());
+        const quint64 ppsRbspStart = quint64(spsNal.size() + 4) * 8;
+        QCOMPARE(diagnostic.location->sourceSpans().front().start().absoluteBitOffset(),
+                 ppsRbspStart + 17);
+        QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(1));
+        QVERIFY(!std::any_of(
+            pps->children().begin(), pps->children().end(), [&](const auto id) {
+                const auto node = analyzer->tree().node(id);
+                return node &&
+                       node->name() == QStringLiteral("second_chroma_qp_index_offset");
+            }));
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+    }
+
+    void rejectsPictureParameterSetExtensionsForNonHighProfilesAndContinues() {
+        for (const quint64 profileIdc : {quint64(66), quint64(77), quint64(88)}) {
+            const auto spsNal = sequenceParameterSetForProfile(profileIdc);
+            std::vector<std::byte> stream;
+            appendNal(stream, spsNal);
+            appendNal(stream, pictureParameterSetWithExtension(false, 0));
+            appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x50}));
+            MemorySource source(std::move(stream));
+            QString errorMessage;
+            auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+            QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+            const auto batch = analyzer->analyzeBatch();
+
+            QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+            QCOMPARE(batch.nalUnitNodes.size(), std::size_t(3));
+            const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(1));
+            QVERIFY(nal.has_value());
+            QCOMPARE(nal->state(), MaterializationState::Invalid);
+            const auto rbsp = analyzer->tree().node(nal->children().at(2));
+            QVERIFY(rbsp.has_value());
+            const auto pps = analyzer->tree().node(rbsp->children().front());
+            QVERIFY(pps.has_value());
+            QCOMPARE(pps->state(), MaterializationState::Invalid);
+            QCOMPARE(pps->diagnostics().size(), std::size_t(1));
+            const auto& diagnostic = pps->diagnostics().front();
+            QCOMPARE(diagnostic.code,
+                     streamview::core::DiagnosticCode::InvalidSyntax);
+            QCOMPARE(diagnostic.message,
+                     QStringLiteral("Assertion condition is false"));
+            QCOMPARE(diagnostic.fieldPath,
+                     QStringLiteral("PictureParameterSetRbsp.seq_parameter_set_id"));
+            QVERIFY(diagnostic.location.has_value());
+            QCOMPARE(diagnostic.location->sourceSpans().front().start()
+                         .absoluteBitOffset(),
+                     quint64(spsNal.size() + 4) * 8 + 1);
+            QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(1));
+            QVERIFY(!std::any_of(
+                pps->children().begin(), pps->children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node &&
+                           node->name() == QStringLiteral("transform_8x8_mode_flag");
+                }));
+            const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+            QVERIFY(followingNal.has_value());
+            QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+        }
+    }
+
+    void rejectsTruncatedSecondChromaOffsetAndContinues() {
+        const auto spsNal = sequenceParameterSetForProfile(100);
+        std::vector<std::byte> stream;
+        appendNal(stream, spsNal);
+        appendNal(stream, pictureParameterSetWithoutSecondOffset());
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x50}));
+        MemorySource source(std::move(stream));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(3));
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto pps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(pps.has_value());
+        QCOMPARE(pps->state(), MaterializationState::Invalid);
+        QCOMPARE(pps->diagnostics().size(), std::size_t(1));
+        const auto& diagnostic = pps->diagnostics().front();
+        QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::TruncatedSource);
+        QCOMPARE(diagnostic.message,
+                 QStringLiteral("Unable to read complete Exp-Golomb codeword"));
+        QCOMPARE(diagnostic.fieldPath,
+                 QStringLiteral(
+                     "PictureParameterSetRbsp.second_chroma_qp_index_offset"));
+        QVERIFY(diagnostic.location.has_value());
+        QCOMPARE(diagnostic.location->logicalRange().bitLength(), quint64(0));
+        QVERIFY(diagnostic.location->sourceSpans().empty());
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+    }
+
+    void rejectsPpsExtensionWithoutSequenceParameterSet() {
+        std::vector<std::byte> stream;
+        appendNal(stream, pictureParameterSetWithExtension(false, 0));
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x50}));
+        MemorySource source(std::move(stream));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+        const auto ppsNal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(ppsNal.has_value());
+        QCOMPARE(ppsNal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(ppsNal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto pps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(pps.has_value());
+        QCOMPARE(pps->state(), MaterializationState::WaitingDependency);
+        QCOMPARE(pps->diagnostics().size(), std::size_t(1));
+        QCOMPARE(pps->diagnostics().front().code,
+                 streamview::core::DiagnosticCode::DependencyUnavailable);
+        QCOMPARE(pps->diagnostics().front().fieldPath,
+                 QStringLiteral("PictureParameterSetRbsp.seq_parameter_set_id"));
+        const auto hasExtension = std::find_if(
+            pps->children().begin(), pps->children().end(), [&](const auto id) {
+                const auto node = analyzer->tree().node(id);
+                return node && node->name() == QStringLiteral("has_pps_extension");
+            });
+        QVERIFY(hasExtension != pps->children().end());
+        QCOMPARE(analyzer->tree().node(*hasExtension)->value().toBool(), true);
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+    }
+
+    void doesNotUseFutureSequenceParameterSetForPpsExtension() {
+        std::vector<std::byte> stream;
+        appendNal(stream, pictureParameterSetWithExtension(false, 0));
+        appendNal(stream, sequenceParameterSetForProfile(100));
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x50}));
+        MemorySource source(std::move(stream));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(3));
+        const auto ppsNal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(ppsNal.has_value());
+        QCOMPARE(ppsNal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(ppsNal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto pps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(pps.has_value());
+        QCOMPARE(pps->state(), MaterializationState::WaitingDependency);
+        QCOMPARE(pps->diagnostics().size(), std::size_t(1));
+        QCOMPARE(pps->diagnostics().front().code,
+                 streamview::core::DiagnosticCode::DependencyUnavailable);
+        QCOMPARE(pps->diagnostics().front().fieldPath,
+                 QStringLiteral("PictureParameterSetRbsp.seq_parameter_set_id"));
+        const auto futureSps = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(futureSps.has_value());
+        QCOMPARE(futureSps->state(), MaterializationState::Materialized);
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+    }
+
+    void failedSpsRedefinitionDoesNotHideHighProfileForPpsExtension() {
+        auto malformedSps = sequenceParameterSetForProfile(100);
+        malformedSps.at(4) = std::byte{0x65};
+        std::vector<std::byte> stream;
+        appendNal(stream, sequenceParameterSetForProfile(100));
+        appendNal(stream, malformedSps);
+        appendNal(stream, pictureParameterSetWithExtension(true, -2));
+        MemorySource source(std::move(stream));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(3));
+        const auto malformedNal = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(malformedNal.has_value());
+        QCOMPARE(malformedNal->state(), MaterializationState::Invalid);
+        const auto ppsNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(ppsNal.has_value());
+        QCOMPARE(ppsNal->state(), MaterializationState::Materialized);
+        const auto rbsp = analyzer->tree().node(ppsNal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto pps = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(pps.has_value());
+        QCOMPARE(pps->state(), MaterializationState::Materialized);
+        QVERIFY(pps->diagnostics().empty());
+        const auto fieldNamed = [&](const QString& name) {
+            const auto found = std::find_if(
+                pps->children().begin(), pps->children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == pps->children().end() ? std::nullopt
+                                                : analyzer->tree().node(*found);
+        };
+        const auto hasExtension = fieldNamed(QStringLiteral("has_pps_extension"));
+        const auto transform = fieldNamed(QStringLiteral("transform_8x8_mode_flag"));
+        const auto offset = fieldNamed(QStringLiteral("second_chroma_qp_index_offset"));
+        QVERIFY(hasExtension.has_value());
+        QVERIFY(transform.has_value());
+        QVERIFY(offset.has_value());
+        QCOMPARE(hasExtension->value().toBool(), true);
+        QCOMPARE(transform->value().toULongLong(), quint64(1));
+        QCOMPARE(offset->value().toLongLong(), qlonglong(-2));
+    }
+
+    void rejectsStalePpsAfterSequenceParameterSetRedefinition() {
+        std::vector<std::byte> stream;
+        appendNal(stream, sequenceParameterSetForProfile(100));
+        appendNal(stream, pictureParameterSetWithExtension(false, 0));
+        appendNal(stream, sequenceParameterSetForProfile(66));
+        appendNal(stream, pictureOrderCountSlice(true, 0));
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x50}));
+        MemorySource source(std::move(stream));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(5));
+        const auto sliceNal = analyzer->tree().node(batch.nalUnitNodes.at(3));
+        QVERIFY(sliceNal.has_value());
+        QCOMPARE(sliceNal->state(), MaterializationState::Invalid);
+        const auto rbsp = analyzer->tree().node(sliceNal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto slice = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(slice.has_value());
+        QCOMPARE(slice->state(), MaterializationState::WaitingDependency);
+        QCOMPARE(slice->diagnostics().size(), std::size_t(1));
+        QCOMPARE(slice->diagnostics().front().code,
+                 streamview::core::DiagnosticCode::DependencyUnavailable);
+        QCOMPARE(slice->diagnostics().front().fieldPath,
+                 QStringLiteral(
+                     "IdrSliceLayerWithoutPartitioningRbsp.pic_parameter_set_id"));
+        const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+        QVERIFY(followingNal.has_value());
+        QCOMPARE(followingNal->state(), MaterializationState::Materialized);
     }
 
     void decodesTheBoundedIdrSliceHeaderAndKeepsSliceDataOpaque() {
@@ -5550,12 +6030,10 @@ private slots:
         QCOMPARE(followingNal->state(), MaterializationState::Materialized);
     }
 
-    void rejectsReservedPictureParameterSetValuesAndExtensions() {
+    void rejectsReservedPictureParameterSetValues() {
         const std::vector cases{
             std::pair{std::vector<unsigned int>{0xce, 0xfc, 0x80},
                       QStringLiteral("weighted_bipred_idc")},
-            std::pair{std::vector<unsigned int>{0xce, 0x3c, 0x30},
-                      QStringLiteral("rbsp_stop_one_bit")},
         };
 
         for (const auto& [payload, expectedName] : cases) {

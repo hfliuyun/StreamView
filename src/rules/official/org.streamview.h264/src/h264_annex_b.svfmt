@@ -35,7 +35,7 @@ enum PicOrderCntType {
 @description("The supported 8-bit 4:2:0 sequence parameter set core.")
 @context("h264-sps", seq_parameter_set_id)
 struct SequenceParameterSetRbsp {
-    bits<8> profile_idc @enum(SpsProfileIdc)
+    bits<8> profile_idc @enum(SpsProfileIdc) @context_export
         @description("Identifies the supported H.264 profile.");
     bits<1> constraint_set0_flag;
     bits<1> constraint_set1_flag;
@@ -215,9 +215,10 @@ enum WeightedBipredIdc {
 }
 
 @spec("ITU-T H.264", "7.3.2.2")
-@description("The supported picture parameter set base syntax without slice groups or extensions.")
+@description("The supported picture parameter set syntax without slice groups or scaling lists.")
 @context("h264-pps", pic_parameter_set_id)
 @context_dependency("h264-sps", seq_parameter_set_id)
+@context_import("h264-sps", seq_parameter_set_id)
 struct PictureParameterSetRbsp {
     ue pic_parameter_set_id @range(0, 255)
         @spec("ITU-T H.264", "7.4.2.2")
@@ -253,6 +254,21 @@ struct PictureParameterSetRbsp {
         @description("Restricts intra prediction to intra-coded neighboring macroblocks.");
     bits<1> redundant_pic_cnt_present_flag @context_export
         @description("Signals redundant-picture count syntax in associated slice headers.");
+    computed<bool> has_pps_extension = more_rbsp_data();
+    assert(!has_pps_extension ||
+           context_value(seq_parameter_set_id, h264_sps, profile_idc) == 100)
+        at seq_parameter_set_id;
+    if (has_pps_extension) {
+        bits<1> transform_8x8_mode_flag
+            @spec("ITU-T H.264", "7.3.2.2")
+            @description("Enables 8x8 transform decoding for this picture parameter set.");
+        bits<1> pic_scaling_matrix_present_flag @equals(0)
+            @spec("ITU-T H.264", "7.3.2.2")
+            @description("Signals scaling-list syntax, which is outside the supported subset.");
+        se second_chroma_qp_index_offset
+            @spec("ITU-T H.264", "7.3.2.2")
+            @description("Sets the second chroma quantization-parameter index offset.");
+    }
     rbsp_trailing_bits;
 }
 
