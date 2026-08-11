@@ -520,6 +520,49 @@ private slots:
         QCOMPARE(compiled.program->bytecode.at(3).immediate, quint64(12));
     }
 
+    void lowersFixedAndDynamicUnsignedBitRangesToBoundAssertions() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { bits<4> fixed @range(0, 15); bits<4> width; "
+            "bits<width> dynamic @range(0, 0); } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+
+        const auto& structure = compiled.program->structs.front();
+        QCOMPARE(structure.fields.size(), std::size_t(3));
+        QCOMPARE(structure.fields.at(0).type.kind, DslValueTypeKind::UnsignedBits);
+        QCOMPARE(structure.fields.at(0).type.bitWidth, quint8(4));
+        QCOMPARE(structure.fields.at(0).rangeConstraint->minimum, quint64(0));
+        QCOMPARE(structure.fields.at(0).rangeConstraint->maximum, quint64(15));
+        QVERIFY(structure.fields.at(2).bitWidthExpression.has_value());
+        QCOMPARE(structure.fields.at(2).rangeConstraint->minimum, quint64(0));
+        QCOMPARE(structure.fields.at(2).rangeConstraint->maximum, quint64(0));
+
+        const std::vector<DslOpcode> expected{
+            DslOpcode::BeginStructure,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::AssertRangeMinimum,
+            DslOpcode::AssertRangeMaximum,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::ReadUnsignedBits,
+            DslOpcode::AssertRangeMinimum,
+            DslOpcode::AssertRangeMaximum,
+            DslOpcode::EndStructure,
+        };
+        QCOMPARE(compiled.program->bytecode.size(), expected.size());
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            QCOMPARE(compiled.program->bytecode.at(index).opcode, expected.at(index));
+        }
+        QCOMPARE(compiled.program->bytecode.at(2).operand, quint32(0));
+        QCOMPARE(compiled.program->bytecode.at(3).immediate, quint64(15));
+        QCOMPARE(compiled.program->bytecode.at(6).operand, quint32(2));
+        QCOMPARE(compiled.program->bytecode.at(7).immediate, quint64(0));
+    }
+
     void lowersCoincidentEqualsAndRangeConstraintsInDeclarationOrder() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "struct Header { ue value @equals(4) @range(0, 12); } entry Header;"));

@@ -1237,8 +1237,9 @@ DslExecutionResult DslVirtualMachine::execute(
                 field.type.kind != DslValueTypeKind::UnsignedBits ||
                 field.type.bitWidth != 0 || field.type.endian != DslEndian::Big ||
                 field.type.enumIndex || field.contextEligible ||
-                field.equalsConstraint || field.rangeConstraint ||
-                field.computedExpression) {
+                field.equalsConstraint || field.computedExpression ||
+                (field.rangeConstraint &&
+                 field.rangeConstraint->minimum > field.rangeConstraint->maximum)) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Typed dynamic-width field definition is invalid"),
                             &field,
@@ -1297,12 +1298,21 @@ DslExecutionResult DslVirtualMachine::execute(
                             &field);
                 return result;
             }
+            const bool unsignedBitRange =
+                field.type.kind == DslValueTypeKind::UnsignedBits ||
+                field.type.kind == DslValueTypeKind::Enum;
+            const bool unsignedExpGolombRange =
+                field.type.kind == DslValueTypeKind::UnsignedExpGolomb;
             if (field.rangeConstraint &&
-                (field.type.kind != DslValueTypeKind::UnsignedExpGolomb ||
+                ((!unsignedBitRange && !unsignedExpGolombRange) ||
                  field.rangeConstraint->minimum > field.rangeConstraint->maximum ||
-                 field.rangeConstraint->maximum > maximumUnsignedExpGolombValue)) {
+                 (unsignedBitRange &&
+                  !fitsUnsignedBits(field.rangeConstraint->maximum,
+                                    field.type.bitWidth)) ||
+                 (unsignedExpGolombRange &&
+                  field.rangeConstraint->maximum > maximumUnsignedExpGolombValue))) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
-                            QStringLiteral("Typed ue range constraint is out of range"),
+                            QStringLiteral("Typed unsigned range constraint is out of range"),
                             &field);
                 return result;
             }
@@ -1819,10 +1829,56 @@ DslExecutionResult DslVirtualMachine::execute(
     }
     std::vector<quint32> unsignedExpGolombReadCounts(structure.fields.size());
     std::vector<bool> conflictingEnumReads(structure.fields.size());
+    std::vector<quint32> rangeMinimumCounts(structure.fields.size());
+    std::vector<quint32> rangeMaximumCounts(structure.fields.size());
     for (std::size_t instructionIndex = bytecodeBegin;
          instructionIndex < bytecodeEnd;
          ++instructionIndex) {
         const DslInstruction& instruction = program.bytecode.at(instructionIndex);
+        if (instruction.opcode == DslOpcode::AssertRangeMinimum ||
+            instruction.opcode == DslOpcode::AssertRangeMaximum) {
+            const bool checksMinimum =
+                instruction.opcode == DslOpcode::AssertRangeMinimum;
+            const DslTypedField* field =
+                instruction.operand < structure.fields.size()
+                    ? &structure.fields.at(instruction.operand)
+                    : nullptr;
+            const DslInstruction* previous =
+                instructionIndex > bytecodeBegin
+                    ? &program.bytecode.at(instructionIndex - 1)
+                    : nullptr;
+            const bool followsFieldRead =
+                previous != nullptr &&
+                (previous->opcode == DslOpcode::ReadUnsignedBits ||
+                 previous->opcode == DslOpcode::ReadUnsignedExpGolomb) &&
+                previous->operand == instruction.operand;
+            const bool followsEquals =
+                previous != nullptr && previous->opcode == DslOpcode::AssertEquals &&
+                previous->operand == instruction.operand;
+            const bool followsMinimum =
+                previous != nullptr &&
+                previous->opcode == DslOpcode::AssertRangeMinimum &&
+                previous->operand == instruction.operand;
+            const bool validPosition =
+                checksMinimum
+                    ? (field != nullptr && field->equalsConstraint ? followsEquals
+                                                                  : followsFieldRead)
+                    : followsMinimum;
+            if (field == nullptr || !field->rangeConstraint || !validPosition ||
+                instruction.immediate !=
+                    (checksMinimum ? field->rangeConstraint->minimum
+                                   : field->rangeConstraint->maximum)) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed range bytecode is invalid"),
+                            field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            ++(checksMinimum ? rangeMinimumCounts.at(instruction.operand)
+                             : rangeMaximumCounts.at(instruction.operand));
+        }
         if (instruction.operand >= structure.fields.size()) {
             continue;
         }
@@ -1835,6 +1891,17 @@ DslExecutionResult DslVirtualMachine::execute(
     }
     for (std::size_t fieldIndex = 0; fieldIndex < structure.fields.size(); ++fieldIndex) {
         const DslTypedField& field = structure.fields.at(fieldIndex);
+        if (field.rangeConstraint &&
+            (rangeMinimumCounts.at(fieldIndex) != 1 ||
+             rangeMaximumCounts.at(fieldIndex) != 1)) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed range bytecode is incomplete"),
+                        &field,
+                        std::nullopt,
+                        std::nullopt,
+                        false);
+            return result;
+        }
         if (field.type.kind != DslValueTypeKind::UnsignedExpGolomb ||
             !field.type.enumIndex) {
             continue;
@@ -2954,7 +3021,9 @@ DslExecutionResult DslVirtualMachine::execute(
             if (!result.structureNode || !lastField || *lastField != instruction.operand ||
                 field == nullptr || !field->rangeConstraint ||
                 field->kind != DslTypedFieldKind::Declared ||
-                field->type.kind != DslValueTypeKind::UnsignedExpGolomb ||
+                (field->type.kind != DslValueTypeKind::UnsignedBits &&
+                 field->type.kind != DslValueTypeKind::Enum &&
+                 field->type.kind != DslValueTypeKind::UnsignedExpGolomb) ||
                 (checksMinimum ? field->rangeConstraint->minimum
                                : field->rangeConstraint->maximum) != instruction.immediate ||
                 (lastFieldSkipped ? lastValue.has_value() : !lastValue.has_value())) {

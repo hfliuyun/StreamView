@@ -321,7 +321,8 @@ struct IdrSliceLayerWithoutPartitioningRbsp {
         @description("Selects the active picture parameter set.");
     bits<(context_value(pic_parameter_set_id,
                         h264_sps,
-                        log2_max_frame_num_minus4) + 4)> frame_num
+                        log2_max_frame_num_minus4) + 4)> frame_num @range(0, 0)
+        @spec("ITU-T H.264", "7.3.3, 7.4.3")
         @description("Identifies the decoded picture within the frame-number wrap.");
     if (context_value(pic_parameter_set_id,
                       h264_sps,

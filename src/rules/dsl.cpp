@@ -2442,10 +2442,12 @@ private:
                                  annotation.range});
                         }
                         rangeSeen = true;
-                        if (field.encoding != DslFieldEncoding::UnsignedExpGolomb) {
+                        if (field.encoding != DslFieldEncoding::Bits &&
+                            field.encoding != DslFieldEncoding::UnsignedExpGolomb) {
                             result_.diagnostics.push_back(
                                 {DslDiagnosticCode::InvalidAnnotation,
-                                 QStringLiteral("@range is only supported on ue fields"),
+                                 QStringLiteral(
+                                     "@range is only supported on bits and ue fields"),
                                  annotation.range});
                             continue;
                         }
@@ -2471,11 +2473,21 @@ private:
                         }
                         constexpr quint64 maximumUnsignedExpGolombValue =
                             std::numeric_limits<quint64>::max() - 1;
-                        if (maximum > maximumUnsignedExpGolombValue) {
+                        if (field.encoding == DslFieldEncoding::UnsignedExpGolomb &&
+                            maximum > maximumUnsignedExpGolombValue) {
                             result_.diagnostics.push_back(
                                 {DslDiagnosticCode::ConstraintOutOfRange,
                                  QStringLiteral(
                                      "@range maximum exceeds the largest supported ue value"),
+                                 annotation.range});
+                        } else if (field.encoding == DslFieldEncoding::Bits &&
+                                   !field.widthExpression && field.width != 0 &&
+                                   field.width < 64 &&
+                                   maximum >= (quint64{1} << field.width)) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::ConstraintOutOfRange,
+                                 QStringLiteral(
+                                     "@range maximum does not fit the field width"),
                                  annotation.range});
                         }
                         continue;

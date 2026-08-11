@@ -713,11 +713,25 @@ private slots:
         QCOMPARE(annotation.arguments.at(1).integerValue, quint64{12});
     }
 
+    void acceptsRangeOnFixedAndDynamicUnsignedBitFields() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct Header { bits<4> width; bits<4> fixed @range(0, 15); "
+            "bits<width> dynamic @range(0, 0); } entry Header;"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& items = result.program.structs.front().items;
+        QCOMPARE(items.at(1).field.annotations.front().name, QStringLiteral("range"));
+        QCOMPARE(items.at(2).field.annotations.front().name, QStringLiteral("range"));
+    }
+
     void rejectsInvalidRangeAnnotations() {
         const auto repeated = DslParser::parse(QStringLiteral(
             "struct Header { ue value @range(0, 1) @range(0, 2); } entry Header;"));
-        const auto onBits = DslParser::parse(
-            QStringLiteral("struct Header { bits<8> value @range(0, 12); } entry Header;"));
+        const auto fixedBitsTooNarrow = DslParser::parse(
+            QStringLiteral("struct Header { bits<4> value @range(0, 16); } entry Header;"));
         const auto onSigned = DslParser::parse(
             QStringLiteral("struct Header { se value @range(0, 12); } entry Header;"));
         const auto oneArgument = DslParser::parse(
@@ -730,7 +744,8 @@ private slots:
             QStringLiteral("struct Header { ue value @range(12, 0); } entry Header;"));
 
         QVERIFY(hasDiagnostic(repeated, DslDiagnosticCode::InvalidAnnotation));
-        QVERIFY(hasDiagnostic(onBits, DslDiagnosticCode::InvalidAnnotation));
+        QVERIFY(hasDiagnostic(fixedBitsTooNarrow,
+                              DslDiagnosticCode::ConstraintOutOfRange));
         QVERIFY(hasDiagnostic(onSigned, DslDiagnosticCode::InvalidAnnotation));
         QVERIFY(hasDiagnostic(oneArgument, DslDiagnosticCode::InvalidAnnotation));
         QVERIFY(hasDiagnostic(threeArguments, DslDiagnosticCode::InvalidAnnotation));

@@ -179,14 +179,6 @@ void collectFields(const std::vector<DslStructItem>& items,
                           annotation.range);
             continue;
         }
-        if (candidate.maximum > maximumUnsignedExpGolombValue) {
-            addDiagnostic(diagnostics,
-                          DslDiagnosticCode::ConstraintOutOfRange,
-                          QStringLiteral(
-                              "@range maximum exceeds the largest supported ue value"),
-                          annotation.range);
-            continue;
-        }
         if (!result) {
             result = candidate;
         }
@@ -1940,9 +1932,27 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                               }());
             }
             typedField.rangeConstraint =
-                isUnsignedExpGolomb ? rangeConstraint(field, result.diagnostics)
-                                    : std::nullopt;
-            if (!isUnsignedExpGolomb &&
+                (isBits || isUnsignedExpGolomb)
+                    ? rangeConstraint(field, result.diagnostics)
+                    : std::nullopt;
+            if (isUnsignedExpGolomb && typedField.rangeConstraint &&
+                typedField.rangeConstraint->maximum >
+                    maximumUnsignedExpGolombValue) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::ConstraintOutOfRange,
+                              QStringLiteral(
+                                  "@range maximum exceeds the largest supported ue value"),
+                              field.range);
+            }
+            if (isBits && !isDynamicBits && typedField.rangeConstraint &&
+                field.width < 64 &&
+                typedField.rangeConstraint->maximum >= (quint64{1} << field.width)) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::ConstraintOutOfRange,
+                              QStringLiteral("@range maximum does not fit the field width"),
+                              field.range);
+            }
+            if (!isBits && !isUnsignedExpGolomb &&
                 std::any_of(field.annotations.begin(),
                             field.annotations.end(),
                             [](const DslAnnotation& annotation) {
@@ -1950,7 +1960,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                             })) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidAnnotation,
-                              QStringLiteral("@range is only supported on ue fields"),
+                              QStringLiteral(
+                                  "@range is only supported on bits and ue fields"),
                               field.range);
             }
             const quint32 firstTypedIndex =
