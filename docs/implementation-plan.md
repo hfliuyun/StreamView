@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Decode H.264 `pic_order_cnt_type` 1/2 SPS and IDR/non-IDR slice-header branches
-Next Action: Audit the remaining Baseline/Main/High 8-bit 4:2:0 slice-header gaps, beginning with the High-profile PPS extension prerequisite; POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: The POC type 1/2 increment passed `svtool rule check`, the focused H.264 analyzer suite 112/112, local dev/ci/sanitize CTest 32/32, and hosted run 31457193468 on Ubuntu, Windows, and macOS
+Last Completed Step: Add the non-consuming `more_rbsp_data()` DSL source-state prerequisite
+Next Action: Use `more_rbsp_data()` to decode the bounded High-profile PPS extension, while keeping scaling lists layout-critical unsupported; POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: The RBSP source-state increment passed DSL parser 66/66, IR 73/73, executor 122/122, `svtool rule check`, the H.264 analyzer suite 112/112, and local dev/ci/sanitize CTest 32/32; hosted verification is pending
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -999,3 +999,19 @@ Blockers: None
   Qt 6.11.1 job `93673379309` 全部成功。
   下一步审计 Baseline/Main/High 8-bit 4:2:0 slice-header 的剩余缺口，优先确认 High-profile PPS
   extension prerequisite；实际 POC、field order、wrap/MMCO-5、DPB 与 output order 继续延期。
+- 2026-08-11：完成 High-profile PPS extension 所需的 `more_rbsp_data()` DSL source-state
+  prerequisite。ADR-0072 拒绝用 profile 猜测 extension presence，也不引入通用 EOF、remaining
+  count 或任意 lookahead；零参数 leaf 只在 structure 执行期 expression 中返回 `bool`，pure
+  function body 与同名 pure declaration 均被拒绝。parser/compiler 独立检查作用域与 arity，
+  typed IR 新增零 operand `MoreRbspData` kind，VM 在外层 expression instruction 内探测当前
+  `BitReader` 的副本：剩余零 bit 返回 false，多于八 bit 返回 true，一至八 bit 仅在完整
+  remainder 为 `1` 后全零时返回 false。成功、`EndOfSource` 与 source error 都不移动执行
+  cursor；错误沿用 truncated/source-error 状态。本增量不新增 opcode、不修改 bundled H.264
+  规则，因此 package 版本保持 `0.1.24`。测试覆盖 parser 正反例、typed lowering、trailing-only、
+  一至八 bit 的 non-trailing、超过八 bit、跨 mapping span、零剩余、truncated/source error、
+  malformed descriptor 与 reader 非消费。DSL parser 66/66、IR 73/73、executor 122/122，
+  `svtool rule check` 与 H.264 analyzer 112/112 通过；本机 dev/ci/sanitize 完整构建与 CTest
+  均为 32/32。设计与实现分别提交为 `b31144b` 与 `04a49e9`；hosted matrix 待 push 后记录。
+  下一步消费该 leaf 解码 High-profile PPS 的 `transform_8x8_mode_flag`、受限为零的
+  `pic_scaling_matrix_present_flag` 与 `second_chroma_qp_index_offset`，同时保持合法的
+  High-profile base-only PPS 可 materialize。
