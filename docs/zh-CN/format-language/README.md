@@ -935,7 +935,7 @@ generation 以及该 PPS 的精确 SPS dependency。两个有界 shape 中声明
 | `frame_num` | 使用绑定 SPS 的 `log2_max_frame_num_minus4 + 4` bit。 |
 | `field_pic_flag` | 选择场编码或帧编码；仅当绑定 SPS 清零 `frame_mbs_only_flag` 时存在。 |
 | `bottom_field_flag` | 选择底场；仅当 `field_pic_flag` 为 1 时存在。 |
-| `idr_pic_id` | 标识 IDR picture。 |
+| `idr_pic_id` | 标识 IDR picture；超出 `0..65535` 时告警，但不改变后续字段边界。 |
 | `pic_order_cnt_lsb` | 对 POC type 0，使用绑定 SPS 的归一化 `effective_log2_max_pic_order_cnt_lsb_minus4 + 4` 宽度。 |
 | `has_delta_pic_order_cnt_bottom` | POC-type-0 computed Boolean；绑定 PPS 启用 bottom-field delta 且当前不是场图像时为 true，没有 source location。 |
 | `delta_pic_order_cnt_bottom` | 对 POC type 0，在 `has_delta_pic_order_cnt_bottom` 为 true 时携带 signed bottom-field delta。 |
@@ -997,7 +997,7 @@ decoded-picture-buffer validation、operation 顺序/重复语义、权重施加
 解码与 slice-group 分支均留待后续。PPS scaling list 与 signed QP-offset domain 校验也留待
 后续。
 type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.25` 发布 coverage depth `picture-order-count-slice-header`；这尚未完成
+`0.1.26` 发布 coverage depth `picture-order-count-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正

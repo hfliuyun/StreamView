@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Decode the bounded High-profile PPS extension without accepting scaling lists
-Next Action: Add the non-fatal `0..65535` range contract for IDR `idr_pic_id`, preserving the complete codeword and all following slice-header boundaries; POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: The High-profile PPS extension passed `svtool rule check`, the focused H.264 analyzer suite 121/121, local dev/ci/sanitize CTest 32/32 with no sanitizer report, and hosted run `31496827386` on Ubuntu, Windows, and macOS
+Last Completed Step: Validate the IDR picture identifier range without moving following fields
+Next Action: Extend the non-fatal `@range` contract to unsigned fixed and dynamic `bits`, then require IDR `frame_num == 0` while preserving all following slice-header boundaries; POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: The IDR picture identifier bound passed `svtool rule check`, the focused H.264 analyzer suite 122/122, and local dev/ci/sanitize CTest 32/32 with no sanitizer report; hosted matrix verification is pending
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1034,3 +1034,15 @@ Blockers: None
   slice-group、无 scaling-list 的 I/P/B 范围内，clause 7.3.3 位消费分支已经完整；下一步为
   IDR `idr_pic_id` 增加 `0..65535` 非致命范围校验。实际 POC、field order、wrap/MMCO-5、
   DPB 与 output order 继续延期。
+- 2026-08-11：完成 IDR `idr_pic_id` 的 `0..65535` 非致命值域校验。ADR-0074 将该约束
+  定义为不改变布局的 semantic value domain：完整 Exp-Golomb 码字仍决定后续字段起点，
+  越界时只在字段节点附加 source-located `invalid-syntax` warning，slice 保持 materialized。
+  官方规则增加 `@range(0, 65535)` 与 clause 7.3.3/7.4.3 引用，package 升到 `0.1.26`，
+  coverage depth 保持 `picture-order-count-slice-header`。回归覆盖上界 `65535` 与首个非法值
+  `65536`；两者均为 33-bit 码字，并精确验证后续 POC、IDR marking、QP、opaque payload
+  位置及下一 NAL 未移动。设计提交为 `60a85b2`，实现提交为 `d3b6587`；英中 bundled-profile
+  字段说明与 package 记录已同步。`svtool rule check` 与 H.264 analyzer 122/122 通过；本机
+  dev/ci/sanitize 重新配置、完整构建与 CTest 均为 32/32，且无 sanitizer 报告。hosted matrix
+  验证待 push 后记录。下一步把既有非致命 `@range` 合同扩展到 unsigned fixed/dynamic
+  `bits`，再约束 IDR `frame_num == 0`；实际 POC、field order、wrap/MMCO-5、DPB 与
+  output order 继续延期。

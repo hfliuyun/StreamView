@@ -1225,7 +1225,7 @@ meanings:
 | `frame_num` | Uses `log2_max_frame_num_minus4 + 4` bits from the bound SPS. |
 | `field_pic_flag` | Selects field or frame coding; present only when the bound SPS clears `frame_mbs_only_flag`. |
 | `bottom_field_flag` | Selects the bottom field; present only when `field_pic_flag` is one. |
-| `idr_pic_id` | Identifies the IDR picture. |
+| `idr_pic_id` | Identifies the IDR picture; values outside `0..65535` warn without changing following field boundaries. |
 | `pic_order_cnt_lsb` | For POC type 0, uses the bound SPS's normalized `effective_log2_max_pic_order_cnt_lsb_minus4 + 4` width. |
 | `has_delta_pic_order_cnt_bottom` | POC-type-0 computed Boolean that is true when the bound PPS enables the bottom-field delta and the picture is not a field; it has no source location. |
 | `delta_pic_order_cnt_bottom` | For POC type 0, carries the signed bottom-field delta when `has_delta_pic_order_cnt_bottom` is true. |
@@ -1297,7 +1297,7 @@ weight-application semantics, CABAC slice-data decoding, and slice-group
 branches are deferred. PPS scaling lists and signed QP-offset domain validation
 are also deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
-Package `0.1.25` advertises coverage depth `picture-order-count-slice-header`;
+Package `0.1.26` advertises coverage depth `picture-order-count-slice-header`;
 this is not yet the complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
