@@ -218,7 +218,8 @@ void appendPictureParameterSetBase(std::vector<bool>& bits,
     bool idr,
     quint64 pocType,
     std::initializer_list<qint64> typeOneDeltas = {},
-    bool fieldPic = false) {
+    bool fieldPic = false,
+    quint64 idrPictureId = 0) {
     std::vector<bool> bits;
     appendUnsignedExpGolomb(bits, 0);
     appendUnsignedExpGolomb(bits, 2);
@@ -229,7 +230,7 @@ void appendPictureParameterSetBase(std::vector<bool>& bits,
         appendFixedBits(bits, 0, 1);
     }
     if (idr) {
-        appendUnsignedExpGolomb(bits, 0);
+        appendUnsignedExpGolomb(bits, idrPictureId);
     }
     if (pocType == 0) {
         appendFixedBits(bits, 3, 4);
@@ -2408,6 +2409,104 @@ private slots:
                      ->logicalRange()
                      .bitLength(),
                  quint64(4));
+    }
+
+    void validatesIdrPictureIdentifierRangeWithoutMovingFollowingFields() {
+        for (const quint64 identifier : {quint64(65535), quint64(65536)}) {
+            const auto spsNal = sequenceParameterSetForProfile(66);
+            const auto ppsNal = pictureParameterSet(false);
+            std::vector<std::byte> stream;
+            appendNal(stream, spsNal);
+            appendNal(stream, ppsNal);
+            appendNal(stream, pictureOrderCountSlice(true, 0, {}, false, identifier));
+            appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x50}));
+            MemorySource source(std::move(stream));
+            QString errorMessage;
+            auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+            QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+            const auto batch = analyzer->analyzeBatch();
+
+            QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+            QCOMPARE(batch.nalUnitNodes.size(), std::size_t(4));
+            const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+            QVERIFY(nal.has_value());
+            QCOMPARE(nal->state(), MaterializationState::Materialized);
+            const auto rbsp = analyzer->tree().node(nal->children().at(2));
+            QVERIFY(rbsp.has_value());
+            const auto slice = analyzer->tree().node(rbsp->children().front());
+            QVERIFY(slice.has_value());
+            QCOMPARE(slice->state(), MaterializationState::Materialized);
+
+            const auto fieldNamed = [&](const QString& name) {
+                const auto found = std::find_if(
+                    slice->children().begin(), slice->children().end(), [&](const auto id) {
+                        const auto node = analyzer->tree().node(id);
+                        return node && node->name() == name;
+                    });
+                return found == slice->children().end() ? std::nullopt
+                                                       : analyzer->tree().node(*found);
+            };
+            const auto idrPictureId = fieldNamed(QStringLiteral("idr_pic_id"));
+            const auto pictureOrder = fieldNamed(QStringLiteral("pic_order_cnt_lsb"));
+            const auto noOutput =
+                fieldNamed(QStringLiteral("no_output_of_prior_pics_flag"));
+            const auto qp = fieldNamed(QStringLiteral("slice_qp_delta"));
+            const auto payload = fieldNamed(QStringLiteral("slice_data"));
+            QVERIFY(idrPictureId.has_value());
+            QVERIFY(pictureOrder.has_value());
+            QVERIFY(noOutput.has_value());
+            QVERIFY(qp.has_value());
+            QVERIFY(payload.has_value());
+            QCOMPARE(idrPictureId->value().toULongLong(), identifier);
+            QCOMPARE(idrPictureId->metadata().specification->clause,
+                     QStringLiteral("7.3.3, 7.4.3"));
+
+            const quint64 sliceRbspStart = quint64(spsNal.size() + ppsNal.size() + 4) * 8;
+            QCOMPARE(idrPictureId->location()->sourceSpans().front().start()
+                         .absoluteBitOffset(),
+                     sliceRbspStart + 9);
+            QCOMPARE(idrPictureId->location()->logicalRange().bitLength(), quint64(33));
+            QCOMPARE(idrPictureId->location()->sourceSpans().front().bitLength(),
+                     quint64(33));
+            QCOMPARE(pictureOrder->location()->sourceSpans().front().start()
+                         .absoluteBitOffset(),
+                     sliceRbspStart + 42);
+            QCOMPARE(noOutput->location()->sourceSpans().front().start()
+                         .absoluteBitOffset(),
+                     sliceRbspStart + 46);
+            QCOMPARE(qp->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     sliceRbspStart + 48);
+            QCOMPARE(payload->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     sliceRbspStart + 49);
+            QCOMPARE(payload->location()->logicalRange().bitLength(), quint64(7));
+
+            if (identifier == 65535) {
+                QVERIFY(idrPictureId->diagnostics().empty());
+            } else {
+                QCOMPARE(idrPictureId->diagnostics().size(), std::size_t(1));
+                const auto& diagnostic = idrPictureId->diagnostics().front();
+                QCOMPARE(diagnostic.code,
+                         streamview::core::DiagnosticCode::InvalidSyntax);
+                QCOMPARE(diagnostic.severity,
+                         streamview::core::DiagnosticSeverity::Warning);
+                QCOMPARE(diagnostic.message,
+                         QStringLiteral("Field value is above its @range maximum"));
+                QCOMPARE(diagnostic.fieldPath,
+                         QStringLiteral(
+                             "IdrSliceLayerWithoutPartitioningRbsp.idr_pic_id"));
+                QVERIFY(diagnostic.location.has_value());
+                QCOMPARE(diagnostic.location->sourceSpans().front().start()
+                             .absoluteBitOffset(),
+                         sliceRbspStart + 9);
+                QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(),
+                         quint64(33));
+            }
+
+            const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+            QVERIFY(followingNal.has_value());
+            QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+        }
     }
 
     void decodesTheBoundedNonIdrAllISliceHeaderAndKeepsSliceDataOpaque() {

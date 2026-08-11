@@ -335,7 +335,8 @@ struct IdrSliceLayerWithoutPartitioningRbsp {
                 @description("Selects the bottom field when this slice codes a field.");
         }
     }
-    ue idr_pic_id
+    ue idr_pic_id @range(0, 65535)
+        @spec("ITU-T H.264", "7.3.3, 7.4.3")
         @description("Identifies this IDR picture.");
     if (context_value(pic_parameter_set_id, h264_sps, pic_order_cnt_type) == 0) {
         bits<(context_value(pic_parameter_set_id,
