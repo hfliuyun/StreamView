@@ -76,3 +76,9 @@ controller. It does not introduce a general expression-valued constraint, a
 rule-selectable severity, or a way to promote a range violation to a fatal
 error. It does not revisit `@equals` semantics, and it does not add the
 remaining SPS optional syntax deferred by ADR-0039.
+
+## Follow-up
+
+ADR-0075 later extended this same non-fatal contract to unsigned fixed-width
+and dynamic-width `bits` fields. The original `ue` scope above records the
+boundary of this first slice rather than the final language capability.

@@ -38,3 +38,9 @@ field and payload locations, and continued scanning of the next NAL.
 This decision does not bound `first_mb_in_slice`, derive picture size, require
 IDR `frame_num` to be zero, validate signed QP or deblocking domains, or add
 picture-order, decoded-picture-buffer, MMCO, or output-order semantics.
+
+## Follow-up
+
+ADR-0075 later extended non-fatal `@range` checks to unsigned bit fields and
+used that capability to require IDR `frame_num` to be zero without stopping the
+remaining slice header.

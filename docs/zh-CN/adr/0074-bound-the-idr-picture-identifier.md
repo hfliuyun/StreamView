@@ -32,3 +32,8 @@ NAL。
 本决策不约束 `first_mb_in_slice`，不派生 picture size，不要求 IDR `frame_num` 为零，不校验
 signed QP 或 deblocking 值域，也不增加 picture-order、decoded-picture-buffer、MMCO 或
 output-order 语义。
+
+## 后续
+
+ADR-0075 随后把非致命 `@range` 校验扩展到无符号 bit 字段，并用该能力要求 IDR
+`frame_num` 为零，同时不停止 slice header 的剩余部分。
