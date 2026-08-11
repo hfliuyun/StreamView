@@ -243,8 +243,9 @@ primary       := integer | "true" | "false" | identifier
   没有被使用，也会独立完成类型检查和表达式边界检查。
 - 字面量 `bits<N>` 的宽度必须是 `1..64` 的整数。非字面量宽度是 checked `u64`
   arithmetic expression，只允许用于 big-endian、非数组的 `bits` 字段；runtime 结果同样必须
-  位于 `1..64`。dynamic 字段不能使用 enum、equality/range constraint，也不能作为 context
-  key、dependency、import 或 export。它的 runtime width 会使后续精确静态 offset 变为未知。
+  位于 `1..64`。dynamic 字段不能使用 enum 或 equality constraint，也不能作为 context
+  key、dependency、import 或 export；它可以使用 semantic `@range` constraint。它的 runtime
+  width 会使后续精确静态 offset 变为未知。
   字段按声明顺序以 MSB-first 消耗输入。
   省略第二个类型参数或写成 `big` 时，得到大端无符号值。`little` 只允许宽度为 8 的倍数、
   字段在结构内从字节边界开始，并且执行时字段的绝对逻辑起点与首个解析出的 source bit 都
@@ -252,8 +253,9 @@ primary       := integer | "true" | "false" | identifier
   字节的数值权重，不改变实际消耗的 bit 顺序。
 - `ue` 和 `se` 是变长 Exp-Golomb 字段，不接受宽度或 endian 参数，并始终按
   MSB-first 消耗编码码字。由于宽度不能静态确定，变长字段之后的小端字段会被拒绝，除非
-  后续语言功能能够证明其对齐。无符号 `ue` 字段可以带一个 `@equals(integer)` constraint 和
-  一个 `@range(minimum, maximum)` constraint；有符号 `se` 字段两者都不可以。
+  后续语言功能能够证明其对齐。无符号 `ue` 字段可以带一个 `@equals(integer)` constraint。
+  无符号固定或动态宽度 `bits` 字段与 `ue` 字段都可以带一个
+  `@range(minimum, maximum)` constraint；有符号 `se` 字段两者都不可以。
 - scalar 字段可以带一个 `[count]` 固定数组后缀。`count` 必须是大于零的无符号整数字面量；
   不接受表达式、额外维度、结构数组或运行时长度。重复名称检查仍使用声明的基础字段名。
   一个结构展开后最多投影 99,999 个 scalar 字段，从而在默认 100,000 个物化节点预算内
@@ -451,16 +453,20 @@ primary       := integer | "true" | "false" | identifier
 - `@equals(integer)` 字段注解是会执行检查的约束，在一个 `bits` 或 `ue` 字段上最多出现一次。
   `bits` 字段的参数值必须能由其无符号 bit 宽度表示；`ue` 接受完整的受支持无符号范围
   `0..2^64 - 2`。
-- `@range(minimum, maximum)` 是只能用在 `ue` 字段上的语义范围约束，最多出现一次，参数是
-  两个无符号整数字面量，且必须满足 `minimum <= maximum`、`maximum <= 2^64 - 2`。它与
-  `@equals` 表达同一字段的不同约束层级，因此同一个 `ue` 字段可以同时带 `@equals` 和
-  `@range`。与其他所有受检约束不同，`@range` 违规不属于结构性失败：它记录 H.264
-  clause 7.4.2.1.1 这类值域规则，而这类违规不会破坏后续字段的 bit 位置。
+- `@range(minimum, maximum)` 是可用于无符号 `bits` 或 `ue` 字段的语义范围约束，最多出现
+  一次；两个参数都是无符号整数字面量，且必须满足 `minimum <= maximum`。固定
+  `bits<N>` 的 maximum 必须能由 `N` bit 表示；动态 `bits` 接受完整的
+  `0..2^64 - 1` annotation 值域；`ue` maximum 为 `2^64 - 2`。它与 `@equals` 表达同一
+  字段的不同约束层级，因此同一字段可以同时带 `@equals` 和 `@range`。与其他所有受检约束
+  不同，`@range` 违规不属于结构性失败：它记录 H.264 clause 7.4.3 这类值域规则，而这类
+  违规不会破坏后续字段的 bit 位置。详见
+  [ADR-0075](../adr/0075-extend-non-fatal-ranges-to-unsigned-bit-fields.md)。
   `@enum(Type)` 只能出现在 `bits` 或 `ue` 字段上，最多出现一次，参数必须是已声明 enum 类型。
   `bits` enum 的每个 member 值必须能由字段宽度表示；`ue` enum member 必须位于
   `0..2^64 - 2`。enum 字段仍解码为无符号整数，enum 为该数值提供名称与致命有效值检查。
-  `ue` 字段可以同时带 `@enum`、`@equals` 与 `@range`：先执行致命 membership 与 equality
-  检查，再执行非致命 range bound。`se` 拒绝这三种注解。`@description("text")` 提供项目编写的
+  固定 `bits` 或 `ue` 字段可以同时带 `@enum`、`@equals` 与 `@range`：先执行致命
+  membership 与 equality 检查，再执行非致命 range bound。动态 `bits` 在这三种注解中只
+  接受 `@range`；`se` 全部拒绝。`@description("text")` 提供项目编写的
   展示说明，`@spec("standard", "clause")` 提供规范引用。字段默认继承所属结构的规范
   引用，也可以用自己的注解覆盖。数组声明解析出的类型、注解、metadata 和约束会分别
   应用到每个展开元素。计算字段可在声明前或表达式后使用 `@description` 和 `@spec`，但
@@ -577,7 +583,10 @@ typed execution 非法，并且不消耗该字段。后续 source-span 边界不
 诊断。`@equals` 不匹配时保留该字段，再用 invalid-syntax 诊断标记结构。`@range` 违规不同：
 它保留字段和已解码值，把结构留在 materialized 状态，继续解码后续字段，并在该字段节点上
 附加一条带精确 source location 的 warning-severity `invalid-syntax` 诊断。一个结构可以因此
-累积多条 `@range` warning。同一字段上的 `@equals` 会先执行；`@equals` 失败时该字段不再
+累积多条 `@range` warning。VM 会在读取 source 前验证每个 range descriptor 对应的两条相邻
+bytecode instruction、operand、immediate 与顺序。固定、动态或 Exp-Golomb 字段的完整 range
+已经成功消耗，因此 range 违规不会改变任何后续字段位置。同一字段上的 `@equals` 会先执行；
+`@equals` 失败时该字段不再
 计算 `@range`。每个展开的数组元素
 都是独立 syntax-field 节点，source location 只覆盖该元素；失败时保留之前完成的元素，不为
 未完成元素创建节点，并把 `Header.values[2]` 这样的展开路径写入诊断。mapped backing 的后续
@@ -932,7 +941,7 @@ generation 以及该 PPS 的精确 SPS dependency。两个有界 shape 中声明
 | `is_b_slice` | type-1 computed Boolean，值 1/6 时为 true；没有 source location。 |
 | `uses_reference_lists` | type-1 computed Boolean，任意 P 或 B slice 为 true；没有 source location。 |
 | `pic_parameter_set_id` | 选择此前精确 PPS generation，超出 `0..255` 时告警。 |
-| `frame_num` | 使用绑定 SPS 的 `log2_max_frame_num_minus4 + 4` bit。 |
+| `frame_num` | 使用绑定 SPS 的 `log2_max_frame_num_minus4 + 4` bit。IDR slice 要求值为零；非零值告警但不移动后续边界。non-IDR slice 保留该宽度的完整值域。 |
 | `field_pic_flag` | 选择场编码或帧编码；仅当绑定 SPS 清零 `frame_mbs_only_flag` 时存在。 |
 | `bottom_field_flag` | 选择底场；仅当 `field_pic_flag` 为 1 时存在。 |
 | `idr_pic_id` | 标识 IDR picture；超出 `0..65535` 时告警，但不改变后续字段边界。 |
@@ -997,7 +1006,7 @@ decoded-picture-buffer validation、operation 顺序/重复语义、权重施加
 解码与 slice-group 分支均留待后续。PPS scaling list 与 signed QP-offset domain 校验也留待
 后续。
 type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.26` 发布 coverage depth `picture-order-count-slice-header`；这尚未完成
+`0.1.27` 发布 coverage depth `picture-order-count-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
@@ -1311,7 +1320,7 @@ entry nal_units;
 
 最小非法示例包括 `bits<0> flag;`、`bits<65> flag;`、`bits<12, little> value;`、
 位于未对齐字段之后的小端字段、`se value @equals(0);`、`se value @enum(Type);`、
-`bits<4> value @range(0, 12);`、`se value @range(0, 12);`、
+`bits<4> value @range(0, 16);`、`se value @range(0, 12);`、
 `computed<u64> value = 1 @range(0, 12);`、`ue value @range(12, 0);`、
 `ue value @range(0);`、`ue value @range(0, 12) @range(0, 6);`、
 变长字段之后的小端字段、`bits<1> flags[0];`、`bits<1> flags[];`、数组长度表达式或第二

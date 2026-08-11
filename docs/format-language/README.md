@@ -289,8 +289,9 @@ The static rules for this subset are:
 - A literal `bits<N>` width is an integer in `1..64`. A non-literal width is a
   checked `u64` arithmetic expression and is accepted only for a big-endian,
   non-array `bits` field. Its runtime result must also be in `1..64`. Dynamic
-  fields cannot use an enum, equality or range constraint, or serve as a context
-  key, dependency, import, or export. Their runtime width makes the following
+  fields cannot use an enum or equality constraint, or serve as a context key,
+  dependency, import, or export. They may use a semantic `@range` constraint.
+  Their runtime width makes the following
   exact static offset unknown. Fields consume input in
   declaration order, most-significant bit first. With no second type argument,
   or with `big`, the resulting unsigned value is big-endian. `little` is
@@ -303,7 +304,8 @@ The static rules for this subset are:
   endian argument and always consume the encoded codeword most-significant bit
   first. Because their width is not statically known, a later little-endian
   field is rejected unless a future language feature can prove its alignment.
-  An unsigned `ue` field may use one `@equals(integer)` constraint and one
+  An unsigned `ue` field may use one `@equals(integer)` constraint. Unsigned
+  fixed- or dynamic-width `bits` fields and `ue` fields may use one
   `@range(minimum, maximum)` constraint; a signed `se` field cannot use either.
 - A scalar field may have one fixed array suffix `[count]`. `count` is an
   unsigned integer literal greater than zero; expressions, additional array
@@ -587,18 +589,22 @@ The static rules for this subset are:
   unsigned bit width; a `ue` accepts `0..2^64 - 2`, its complete supported
   unsigned range.
 - A `@range(minimum, maximum)` field annotation is a checked semantic
-  constraint and may appear at most once, on a `ue` field only. Both arguments
-  are unsigned integer literals satisfying
-  `minimum <= maximum <= 2^64 - 2`. A field may carry both `@equals` and
-  `@range`. Unlike every other checked constraint, a `@range` violation is not
-  fatal: see the runtime semantics below.
+  constraint and may appear at most once on an unsigned `bits` or `ue` field.
+  Both arguments are unsigned integer literals with `minimum <= maximum`.
+  A fixed `bits<N>` maximum must fit in `N` bits, a dynamic `bits` field accepts
+  the complete `0..2^64 - 1` annotation domain, and a `ue` maximum is
+  `2^64 - 2`. A field may carry both `@equals` and `@range`. Unlike every other
+  checked constraint, a `@range` violation is not fatal: see the runtime
+  semantics below and
+  [ADR-0075](../adr/0075-extend-non-fatal-ranges-to-unsigned-bit-fields.md).
   An `@enum(Type)` annotation may appear at most once on a `bits` or `ue` field
   and requires a declared enum type. Every declared member value must fit a
   `bits` field's bit width; a `ue` enum member must be in `0..2^64 - 2`. Enum
   values are still decoded as unsigned integers; the enum supplies names and
-  fatal validation for the decoded value. A `ue` field may combine `@enum`,
-  `@equals`, and `@range`: membership and equality are checked fatally before
-  the non-fatal range bounds. `se` rejects all three annotations.
+  fatal validation for the decoded value. A fixed `bits` or `ue` field may
+  combine `@enum`, `@equals`, and `@range`: membership and equality are checked
+  fatally before the non-fatal range bounds. A dynamic `bits` field accepts only
+  `@range` among those three annotations. `se` rejects all three annotations.
   `@description("text")` supplies project-authored presentation text, and
   `@spec("standard", "clause")` supplies a specification reference. Fields
   inherit their structure's specification unless they provide their own. An
@@ -762,9 +768,11 @@ retains the field, then marks the structure invalid with an invalid-syntax
 diagnostic. A `@range` violation instead keeps the structure and every later
 field materialized: it retains the decoded value and attaches a warning
 `invalid-syntax` diagnostic to that field node, reporting whether the value fell
-below the minimum or above the maximum. Decoding continues because a
-non-conformant `ue` value still consumed a well-formed codeword, so no
-subsequent field position depends on the violation. A value equal to either
+below the minimum or above the maximum. Before source access, the VM validates
+every range descriptor's two adjacent bytecode instructions, operands,
+immediates, and ordering. Decoding continues because the complete fixed,
+dynamic, or Exp-Golomb field range was consumed successfully, so no subsequent
+field position depends on the violation. A value equal to either
 bound conforms and reports nothing. When a field carries both constraints, the
 `@equals` check runs first, so a mismatch marks the structure invalid before any
 range warning is attached. Each expanded array element becomes a separate syntax-field node
@@ -1222,7 +1230,7 @@ meanings:
 | `is_b_slice` | Type-1 computed Boolean that is true for values 1 and 6; it has no source location. |
 | `uses_reference_lists` | Type-1 computed Boolean that is true for any P or B slice; it has no source location. |
 | `pic_parameter_set_id` | Selects the exact prior PPS generation and warns outside `0..255`. |
-| `frame_num` | Uses `log2_max_frame_num_minus4 + 4` bits from the bound SPS. |
+| `frame_num` | Uses `log2_max_frame_num_minus4 + 4` bits from the bound SPS. An IDR slice requires zero; a nonzero value warns without moving later boundaries. Non-IDR slices retain the full represented domain. |
 | `field_pic_flag` | Selects field or frame coding; present only when the bound SPS clears `frame_mbs_only_flag`. |
 | `bottom_field_flag` | Selects the bottom field; present only when `field_pic_flag` is one. |
 | `idr_pic_id` | Identifies the IDR picture; values outside `0..65535` warn without changing following field boundaries. |
@@ -1297,7 +1305,7 @@ weight-application semantics, CABAC slice-data decoding, and slice-group
 branches are deferred. PPS scaling lists and signed QP-offset domain validation
 are also deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
-Package `0.1.26` advertises coverage depth `picture-order-count-slice-header`;
+Package `0.1.27` advertises coverage depth `picture-order-count-slice-header`;
 this is not yet the complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
@@ -1626,7 +1634,7 @@ entry Sps;
 Invalid minimum examples include `bits<0> flag;`, `bits<65> flag;`,
 `bits<12, little> value;`, a little-endian field after an unaligned field,
 `se value @equals(0);`, `se value @enum(Type);`, `se value @range(0, 12);`,
-`bits<8> value @range(0, 12);`, `ue value @range(12, 0);`,
+`bits<4> value @range(0, 16);`, `ue value @range(12, 0);`,
 `ue value @range(12);`, `ue value @range(0, 1, 2);`,
 `ue value @range(0, "twelve");`, a repeated `@range`, a little-endian field
 after a

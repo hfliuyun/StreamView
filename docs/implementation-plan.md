@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Validate the IDR picture identifier range without moving following fields
-Next Action: Extend the non-fatal `@range` contract to unsigned fixed and dynamic `bits`, then require IDR `frame_num == 0` while preserving all following slice-header boundaries; POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: The IDR picture identifier bound passed `svtool rule check`, the focused H.264 analyzer suite 122/122, local dev/ci/sanitize CTest 32/32 with no sanitizer report, and hosted run `31499322192` on Ubuntu, Windows, and macOS
+Last Completed Step: Extend non-fatal ranges to unsigned bit fields and require zero IDR frame numbers without moving following fields
+Next Action: Extend the static non-fatal `@range` contract to signed `se`, then constrain `slice_alpha_c0_offset_div2` and `slice_beta_offset_div2` to `-6..6`; the SPS/PPS-dependent `slice_qp_delta` domain, POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: Unsigned fixed/dynamic `bits @range` and the IDR frame-number bound passed `svtool rule check`, parser 67/67, IR 74/74, executor 124/124, the focused H.264 analyzer suite 123/123, and local dev/ci/sanitize CTest 32/32 with no sanitizer report; hosted matrix verification awaits push
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1050,3 +1050,19 @@ Blockers: None
   24.04 / Qt 6.11.1 job `93804895854`、Windows 2022 / Qt 6.10.1 job `93804895734`、
   macOS 15 / Qt 6.11.1 job `93804895870` 的 Configure、Build、Test、Install 与 Upload
   全部通过。
+- 2026-08-11：完成 unsigned fixed/dynamic `bits` 的非致命 `@range` 与 IDR
+  `frame_num == 0` 值域校验。ADR-0075 把既有 range contract 扩展到 fixed `bits<N>` 与
+  dynamic `bits<expression>`：前者的 maximum 必须适配静态 width，后者接受完整 `u64`
+  annotation domain；`ue` 仍以 `2^64 - 2` 为上界，`se` 暂时拒绝 `@range`。enum-backed
+  fixed bits 可同时执行 fatal enum/equality 与 non-fatal range，dynamic bits 只接受 range。
+  VM 在读取 source 前预检 range descriptor、两条相邻 opcode、operand、immediate、顺序与
+  数量，malformed typed IR 不消耗 bit、不移动 reader 且不创建节点。官方 H.264 规则仅在
+  IDR branch 给 dynamic-width `frame_num` 添加 `@range(0, 0)`；非 IDR branch 保留该 width
+  的完整表示域，违规 IDR 仍完整物化后续 POC、marking、QP 与 opaque payload。package 升到
+  `0.1.27`，coverage depth 保持 `picture-order-count-slice-header`。设计提交为 `6f2f4ee`，
+  实现提交为 `282ecab`。parser 67/67、IR 74/74、executor 124/124、H.264 analyzer 123/123
+  与 `svtool rule check` 通过；本机 dev/ci/sanitize 重新配置、完整构建与 CTest 均为 32/32，
+  且无 sanitizer 报告。hosted matrix 验证待 push 后记录。下一步扩展静态非致命 range 到
+  signed `se`，并约束 `slice_alpha_c0_offset_div2` 与 `slice_beta_offset_div2` 为 `-6..6`；
+  SPS/PPS-dependent `slice_qp_delta`、实际 POC、field order、wrap/MMCO-5、DPB 与 output
+  order 继续延期。
