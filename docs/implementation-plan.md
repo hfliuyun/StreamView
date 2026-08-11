@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 3
 Last Completed Step: Validate the IDR picture identifier range without moving following fields
 Next Action: Extend the non-fatal `@range` contract to unsigned fixed and dynamic `bits`, then require IDR `frame_num == 0` while preserving all following slice-header boundaries; POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: The IDR picture identifier bound passed `svtool rule check`, the focused H.264 analyzer suite 122/122, and local dev/ci/sanitize CTest 32/32 with no sanitizer report; hosted matrix verification is pending
+Last Verification: The IDR picture identifier bound passed `svtool rule check`, the focused H.264 analyzer suite 122/122, local dev/ci/sanitize CTest 32/32 with no sanitizer report, and hosted run `31499322192` on Ubuntu, Windows, and macOS
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1046,3 +1046,7 @@ Blockers: None
   验证待 push 后记录。下一步把既有非致命 `@range` 合同扩展到 unsigned fixed/dynamic
   `bits`，再约束 IDR `frame_num == 0`；实际 POC、field order、wrap/MMCO-5、DPB 与
   output order 继续延期。
+- 2026-08-11：确认 IDR picture identifier 增量的 hosted run `31499322192` 成功：Ubuntu
+  24.04 / Qt 6.11.1 job `93804895854`、Windows 2022 / Qt 6.10.1 job `93804895734`、
+  macOS 15 / Qt 6.11.1 job `93804895870` 的 Configure、Build、Test、Install 与 Upload
+  全部通过。
