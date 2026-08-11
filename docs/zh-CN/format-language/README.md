@@ -825,15 +825,22 @@ materialized 只表示精确消费了被选中的已声明分支，不表示完�
 | `*_dpb_output_delay_length_minus1` | 给出 DPB output delay 的 bit length 减一。 |
 | `*_time_offset_length` | 给出 signed time-offset bit length；零表示不存在 time-offset 语法。 |
 
-type `8` 解码 clause 7.3.2.2 的 base PPS，要求只有一个 slice group
-且不存在 PPS extension。PPS/SPS identifier 或默认 reference-index count 越界时，会用字段
-warning 保留完整 PPS；非零 `num_slice_groups_minus1`、reserved `weighted_bipred_idc` 或
-extension 语法会改变或扩展已声明布局，因此成为 `invalid-syntax`。materialized PPS 会解析
-该 PPS NAL 之前具有声明 ID 的最近 available SPS，并在发布自身 generation 时绑定这个精确
-generation。若不存在 SPS，PPS structure 仍保持 materialized，但会收到带 source 位置的
-`dependency-unavailable` diagnostic；所属 RBSP 与 NAL 变为 invalid，不发布任何 generation，
-并继续分析后续 NAL。下面的有界 type-1 与 type-5 slice header 会使用通用 context import；
-其余所有 type 的 `rbsp_payload` region 保持原样。
+type `8` 解码 clause 7.3.2.2 的 base PPS，要求只有一个 slice group，并支持有界的可选
+High-profile extension。可见的 `has_pps_extension` computed field 会在 base 字段后调用
+`more_rbsp_data()`，因此合法的 base-only High-profile PPS 不会被误认为截断的 extension。
+存在 extension 语法时，精确 imported SPS generation 必须满足 `profile_idc == 100`；
+Baseline、Main 与 Extended 码流会在读取任何 extension 字段前，于带 source 的
+`seq_parameter_set_id` 上失败。
+
+PPS/SPS identifier 或默认 reference-index count 越界时，会用字段 warning 保留完整 PPS。
+非零 `num_slice_groups_minus1`、reserved `weighted_bipred_idc` 或
+`pic_scaling_matrix_present_flag == 1` 会改变后续布局，因此成为 `invalid-syntax`。
+materialized PPS 会解析该 PPS NAL 之前具有声明 ID 的最近 available SPS，并在发布自身
+generation 时绑定这个精确 generation。missing 或 future SPS 会报告
+`dependency-unavailable`，不发布 PPS，但不阻止分析后续 NAL。已经绑定并发布的 PPS 在新
+合法 SPS generation 替换其 dependency 后，会对更晚的 consumer 变为不可用；此时由
+consumer 报告 `dependency-unavailable`。下面的有界 type-1 与 type-5 slice header 也会使用
+通用 context import；其余所有 type 的 `rbsp_payload` region 保持原样。
 
 已声明 PPS 字段具有以下有界含义：
 
@@ -854,6 +861,10 @@ generation。若不存在 SPS，PPS structure 仍保持 materialized，但会收
 | `deblocking_filter_control_present_flag` | 表示关联 slice header 中存在 deblocking-filter control 语法。 |
 | `constrained_intra_pred_flag` | 将 intra prediction 限制在 intra-coded 相邻 macroblock。 |
 | `redundant_pic_cnt_present_flag` | 表示关联 slice header 中存在 redundant-picture count 语法。 |
+| `has_pps_extension` | 用非消费方式区分可选 extension 与 terminal RBSP pattern 的 computed Boolean；没有 source location。 |
+| `transform_8x8_mode_flag` | 在有界 High-profile extension 中启用 8x8 transform decoding。 |
+| `pic_scaling_matrix_present_flag` | 必须为零，因为 PPS scaling-list 语法仍属于 layout-critical unsupported。 |
+| `second_chroma_qp_index_offset` | 设置第二个 chroma QP index offset；signed bound 留待后续。 |
 
 type `1` 为帧或场、reference 或 non-reference 形态下的有界 I、P 与 B slice 解码
 `NonIdrSliceLayerWithoutPartitioningRbsp`。`NonIdrSliceType` 接受 I 值 2/7、P 值 0/5
@@ -983,9 +994,10 @@ SPS `max_num_ref_frames` 表达的三条 per-operation bound：operation 2 的
 `PicOrderCnt`/`TopFieldOrderCnt`/`BottomFieldOrderCnt`、`FrameNumOffset` 与 wrap state、
 MMCO-5 effect、field pairing 与 output order、signed POC offset domain 与 cycle-sum 校验、
 decoded-picture-buffer validation、operation 顺序/重复语义、权重施加语义、CABAC slice-data
-解码与 slice-group 分支均留待后续。
+解码与 slice-group 分支均留待后续。PPS scaling list 与 signed QP-offset domain 校验也留待
+后续。
 type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.24` 发布 coverage depth `picture-order-count-slice-header`；这尚未完成
+`0.1.25` 发布 coverage depth `picture-order-count-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正

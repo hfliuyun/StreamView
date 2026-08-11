@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Add the non-consuming `more_rbsp_data()` DSL source-state prerequisite
-Next Action: Use `more_rbsp_data()` to decode the bounded High-profile PPS extension, while keeping scaling lists layout-critical unsupported; POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: The RBSP source-state increment passed DSL parser 66/66, IR 73/73, executor 122/122, `svtool rule check`, the H.264 analyzer suite 112/112, local dev/ci/sanitize CTest 32/32, and hosted run `31493517456` on Ubuntu, Windows, and macOS
+Last Completed Step: Decode the bounded High-profile PPS extension without accepting scaling lists
+Next Action: Audit the remaining Baseline/Main/High 8-bit 4:2:0 slice-header syntax gaps and select the next bounded increment; POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: The High-profile PPS extension passed `svtool rule check`, the focused H.264 analyzer suite 121/121, and local dev/ci/sanitize CTest 32/32 with no sanitizer report; hosted verification is pending
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1017,3 +1017,17 @@ Blockers: None
   下一步消费该 leaf 解码 High-profile PPS 的 `transform_8x8_mode_flag`、受限为零的
   `pic_scaling_matrix_present_flag` 与 `second_chroma_qp_index_offset`，同时保持合法的
   High-profile base-only PPS 可 materialize。
+- 2026-08-11：完成有界 High-profile PPS extension。ADR-0073 要求 SPS 导出无条件
+  `profile_idc`，PPS 在保留 SPS dependency 的同时导入同一 generation；base 字段后的
+  `has_pps_extension = more_rbsp_data()` 区分合法 base-only PPS 与实际 extension。只有
+  `profile_idc == 100` 可进入 extension，并按顺序解码 `transform_8x8_mode_flag`、受限为零的
+  `pic_scaling_matrix_present_flag` 与 signed `second_chroma_qp_index_offset`；scaling-list 分支
+  继续作为 layout-critical unsupported，terminal `rbsp_trailing_bits` 保持最终无条件 item。
+  package 升到 `0.1.25`，coverage depth 保持 `picture-order-count-slice-header`。回归覆盖 High
+  base-only、transform flag 两种值、正负 second offset 与精确 source span、scaling-matrix
+  拒绝、Baseline/Main/Extended profile gate、offset 截断、missing/future/stale SPS、失败 SPS
+  重定义恢复，以及失败 NAL 后继续扫描。`svtool rule check` 与 H.264 analyzer 121/121 已通过；
+  本机 dev/ci/sanitize 完整构建与 CTest 均为 32/32，且无 sanitizer 报告。hosted matrix
+  待 push 后记录。设计提交为 `b2b41a8`，实现提交为 `9187cac`。
+  下一步审计 Baseline/Main/High 8-bit 4:2:0 slice-header 的剩余语法缺口；实际 POC、field
+  order、wrap/MMCO-5、DPB 与 output order 继续延期。

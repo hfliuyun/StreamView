@@ -1088,19 +1088,27 @@ present HRD schedule:
 | `*_dpb_output_delay_length_minus1` | Gives one less than the bit length of DPB output delays. |
 | `*_time_offset_length` | Gives the signed time-offset bit length; zero means no time-offset syntax. |
 
-Type `8` decodes the clause
-7.3.2.2 base PPS with one slice group and no PPS extension. Out-of-range PPS/SPS
-identifiers or default reference-index counts retain the complete PPS with a
-field warning. A nonzero `num_slice_groups_minus1`, reserved
-`weighted_bipred_idc`, or extension syntax is `invalid-syntax` because the
-unsupported input changes or extends the declared layout. A materialized PPS
-resolves the most recent available SPS with the declared identifier before the
-PPS NAL and binds that exact generation when it publishes its own generation.
-If no SPS is available, the PPS structure remains materialized but receives a
-source-located `dependency-unavailable` diagnostic; its RBSP and NAL are invalid,
-nothing is published, and later NAL units are still analyzed. Generic context
-import is used by the bounded type-1 and type-5 slice headers below. Every other
-type keeps the uninterpreted `rbsp_payload` region unchanged.
+Type `8` decodes the clause 7.3.2.2 base PPS with one slice group and the
+bounded optional High-profile extension. A visible `has_pps_extension` computed
+field uses `more_rbsp_data()` after the base fields, so a legal base-only
+High-profile PPS is not mistaken for a truncated extension. When extension
+syntax is present, the exact imported SPS generation must have
+`profile_idc == 100`; Baseline, Main, and Extended streams fail at the
+source-backed `seq_parameter_set_id` before an extension field is read.
+
+Out-of-range PPS/SPS identifiers or default reference-index counts retain the
+complete PPS with a field warning. A nonzero `num_slice_groups_minus1`, reserved
+`weighted_bipred_idc`, or `pic_scaling_matrix_present_flag == 1` is
+`invalid-syntax` because the unsupported input changes the following layout.
+A materialized PPS resolves the most recent available SPS with the declared
+identifier before the PPS NAL and binds that exact generation when it publishes
+its own generation. A missing or future SPS reports `dependency-unavailable`,
+publishes no PPS, and does not prevent later NAL units from being analyzed. A
+PPS already bound and published becomes unavailable to later consumers when a
+new valid SPS generation replaces its dependency; the consumer then reports
+`dependency-unavailable`. Generic context import is also used by the bounded
+type-1 and type-5 slice headers below. Every other type keeps the uninterpreted
+`rbsp_payload` region unchanged.
 
 The declared PPS fields have the following bounded meanings:
 
@@ -1121,6 +1129,10 @@ The declared PPS fields have the following bounded meanings:
 | `deblocking_filter_control_present_flag` | Signals deblocking-filter control syntax in associated slice headers. |
 | `constrained_intra_pred_flag` | Restricts intra prediction to intra-coded neighboring macroblocks. |
 | `redundant_pic_cnt_present_flag` | Signals redundant-picture count syntax in associated slice headers. |
+| `has_pps_extension` | Non-consuming computed Boolean that distinguishes optional extension syntax from the terminal RBSP pattern; it has no source location. |
+| `transform_8x8_mode_flag` | Enables 8x8 transform decoding when the bounded High-profile extension is present. |
+| `pic_scaling_matrix_present_flag` | Must be zero because PPS scaling-list syntax remains layout-critical unsupported. |
+| `second_chroma_qp_index_offset` | Sets the second chroma QP index offset; its signed bound is deferred. |
 
 Type `1` decodes `NonIdrSliceLayerWithoutPartitioningRbsp` for bounded I, P,
 and B slices in frame or field, reference or non-reference form.
@@ -1282,9 +1294,10 @@ SP/SI slice types, derived `PicOrderCnt`/`TopFieldOrderCnt`/
 pairing and output order, signed POC-offset domains and cycle-sum validation,
 decoded-picture-buffer validation, operation-order/duplicate semantics,
 weight-application semantics, CABAC slice-data decoding, and slice-group
-branches are deferred.
+branches are deferred. PPS scaling lists and signed QP-offset domain validation
+are also deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
-Package `0.1.24` advertises coverage depth `picture-order-count-slice-header`;
+Package `0.1.25` advertises coverage depth `picture-order-count-slice-header`;
 this is not yet the complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
