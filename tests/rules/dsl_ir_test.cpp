@@ -563,6 +563,60 @@ private slots:
         QCOMPARE(compiled.program->bytecode.at(7).immediate, quint64(0));
     }
 
+    void lowersSignedExpGolombRangesToTwosComplementBoundAssertions() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { se offset @range(-6, 6); } entry Header;"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+
+        const auto& structure = compiled.program->structs.front();
+        QCOMPARE(structure.fields.size(), std::size_t(1));
+        QCOMPARE(structure.fields.at(0).type.kind, DslValueTypeKind::SignedExpGolomb);
+        QVERIFY(!structure.fields.at(0).rangeConstraint.has_value());
+        QVERIFY(structure.fields.at(0).signedRangeConstraint.has_value());
+        QCOMPARE(structure.fields.at(0).signedRangeConstraint->minimum, qint64(-6));
+        QCOMPARE(structure.fields.at(0).signedRangeConstraint->maximum, qint64(6));
+
+        const std::vector<DslOpcode> expected{
+            DslOpcode::BeginStructure,
+            DslOpcode::ReadSignedExpGolomb,
+            DslOpcode::AssertRangeMinimum,
+            DslOpcode::AssertRangeMaximum,
+            DslOpcode::EndStructure,
+        };
+        QCOMPARE(compiled.program->bytecode.size(), expected.size());
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            QCOMPARE(compiled.program->bytecode.at(index).opcode, expected.at(index));
+        }
+        QCOMPARE(compiled.program->bytecode.at(2).operand, quint32(0));
+        QCOMPARE(compiled.program->bytecode.at(2).immediate,
+                 static_cast<quint64>(qint64(-6)));
+        QCOMPARE(compiled.program->bytecode.at(3).operand, quint32(0));
+        QCOMPARE(compiled.program->bytecode.at(3).immediate, quint64(6));
+    }
+
+    void rejectsSignedRangeBoundsOutsideTheEncodingDomainInCompiler() {
+        const auto belowDomain = DslParser::parse(
+            QStringLiteral("struct Header { se value "
+                           "@range(-9223372036854775808, 0); } entry Header;"));
+        const auto inverted = DslParser::parse(
+            QStringLiteral("struct Header { se value @range(6, -6); } entry Header;"));
+        const auto negativeOnUnsigned = DslParser::parse(
+            QStringLiteral("struct Header { ue value @range(-1, 6); } entry Header;"));
+        QVERIFY(belowDomain.program.structs.size() == std::size_t(1));
+        QVERIFY(inverted.program.structs.size() == std::size_t(1));
+        QVERIFY(negativeOnUnsigned.program.structs.size() == std::size_t(1));
+
+        QVERIFY(!DslCompiler::compile(belowDomain.program).succeeded());
+        QVERIFY(!DslCompiler::compile(inverted.program).succeeded());
+        QVERIFY(!DslCompiler::compile(negativeOnUnsigned.program).succeeded());
+    }
+
     void lowersCoincidentEqualsAndRangeConstraintsInDeclarationOrder() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "struct Header { ue value @equals(4) @range(0, 12); } entry Header;"));

@@ -97,6 +97,11 @@ struct DslTypedUnsignedRange final {
     quint64 maximum = 0;
 };
 
+struct DslTypedSignedRange final {
+    qint64 minimum = 0;
+    qint64 maximum = 0;
+};
+
 struct DslTypedField final {
     DslTypedFieldKind kind = DslTypedFieldKind::Declared;
     QString name;
@@ -105,6 +110,7 @@ struct DslTypedField final {
     std::optional<DslTypedExpression> bitWidthExpression;
     std::optional<quint64> equalsConstraint;
     std::optional<DslTypedUnsignedRange> rangeConstraint;
+    std::optional<DslTypedSignedRange> signedRangeConstraint;
     std::optional<DslTypedExpression> computedExpression;
     std::optional<DslTypedExpression> lazyByteCountExpression;
     std::vector<DslTypedFieldCondition> conditions;

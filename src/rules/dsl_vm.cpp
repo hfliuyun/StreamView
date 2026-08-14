@@ -1850,7 +1850,8 @@ DslExecutionResult DslVirtualMachine::execute(
             const bool followsFieldRead =
                 previous != nullptr &&
                 (previous->opcode == DslOpcode::ReadUnsignedBits ||
-                 previous->opcode == DslOpcode::ReadUnsignedExpGolomb) &&
+                 previous->opcode == DslOpcode::ReadUnsignedExpGolomb ||
+                 previous->opcode == DslOpcode::ReadSignedExpGolomb) &&
                 previous->operand == instruction.operand;
             const bool followsEquals =
                 previous != nullptr && previous->opcode == DslOpcode::AssertEquals &&
@@ -1864,10 +1865,26 @@ DslExecutionResult DslVirtualMachine::execute(
                     ? (field != nullptr && field->equalsConstraint ? followsEquals
                                                                   : followsFieldRead)
                     : followsMinimum;
-            if (field == nullptr || !field->rangeConstraint || !validPosition ||
-                instruction.immediate !=
-                    (checksMinimum ? field->rangeConstraint->minimum
-                                   : field->rangeConstraint->maximum)) {
+            const bool signedField =
+                field != nullptr &&
+                field->type.kind == DslValueTypeKind::SignedExpGolomb;
+            const bool constraintMatchesEncoding =
+                field != nullptr &&
+                (signedField ? (field->signedRangeConstraint.has_value() &&
+                                !field->rangeConstraint.has_value())
+                             : (field->rangeConstraint.has_value() &&
+                                !field->signedRangeConstraint.has_value()));
+            const quint64 expectedImmediate =
+                !constraintMatchesEncoding
+                    ? 0
+                    : (signedField
+                           ? static_cast<quint64>(
+                                 checksMinimum ? field->signedRangeConstraint->minimum
+                                               : field->signedRangeConstraint->maximum)
+                           : (checksMinimum ? field->rangeConstraint->minimum
+                                            : field->rangeConstraint->maximum));
+            if (field == nullptr || !constraintMatchesEncoding || !validPosition ||
+                instruction.immediate != expectedImmediate) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Typed range bytecode is invalid"),
                             field,
@@ -1891,7 +1908,7 @@ DslExecutionResult DslVirtualMachine::execute(
     }
     for (std::size_t fieldIndex = 0; fieldIndex < structure.fields.size(); ++fieldIndex) {
         const DslTypedField& field = structure.fields.at(fieldIndex);
-        if (field.rangeConstraint &&
+        if ((field.rangeConstraint || field.signedRangeConstraint) &&
             (rangeMinimumCounts.at(fieldIndex) != 1 ||
              rangeMaximumCounts.at(fieldIndex) != 1)) {
             markFailure(DslExecutionStatus::InvalidDefinition,
@@ -2001,6 +2018,7 @@ DslExecutionResult DslVirtualMachine::execute(
     stagedContextImports.reserve(structure.contextImports.size());
     std::optional<quint32> lastField;
     std::optional<quint64> lastValue;
+    std::optional<qlonglong> lastSignedValue;
     std::optional<core::AnalysisNodeId> lastFieldNode;
     bool lastFieldSkipped = false;
     quint32 nextFieldIndex = 0;
@@ -2211,6 +2229,7 @@ DslExecutionResult DslVirtualMachine::execute(
             if (!*fieldPresent) {
                 lastField = instruction.operand;
                 lastValue.reset();
+                lastSignedValue.reset();
                 lastFieldSkipped = true;
                 ++nextFieldIndex;
                 break;
@@ -2380,6 +2399,9 @@ DslExecutionResult DslVirtualMachine::execute(
             lastValue = readsFixedBits || readsUnsignedExpGolomb
                              ? std::optional<quint64>(unsignedValue)
                              : std::nullopt;
+            lastSignedValue = readsFixedBits || readsUnsignedExpGolomb
+                                  ? std::nullopt
+                                  : std::optional<qlonglong>(signedValue);
             lastFieldSkipped = false;
             ++nextFieldIndex;
             if (enumeration != nullptr && !enumContains(*enumeration, unsignedValue)) {
@@ -2499,6 +2521,7 @@ DslExecutionResult DslVirtualMachine::execute(
                     MaterializedFieldRange{fieldStart, 1};
                 lastField = instruction.operand + fieldCount;
                 lastValue = readResult.value;
+                lastSignedValue.reset();
                 lastFieldSkipped = false;
                 if (readResult.value != *field.equalsConstraint) {
                     markFailure(DslExecutionStatus::InvalidSyntax,
@@ -2566,6 +2589,7 @@ DslExecutionResult DslVirtualMachine::execute(
             if (!*fieldPresent) {
                 lastField = instruction.operand;
                 lastValue.reset();
+                lastSignedValue.reset();
                 lastFieldSkipped = true;
                 ++nextFieldIndex;
                 break;
@@ -2630,6 +2654,7 @@ DslExecutionResult DslVirtualMachine::execute(
             fieldRanges.at(instruction.operand).reset();
             lastField = instruction.operand;
             lastValue.reset();
+            lastSignedValue.reset();
             lastFieldSkipped = false;
             ++nextFieldIndex;
             break;
@@ -2670,6 +2695,7 @@ DslExecutionResult DslVirtualMachine::execute(
             if (!*fieldPresent) {
                 lastField = instruction.operand;
                 lastValue.reset();
+                lastSignedValue.reset();
                 lastFieldSkipped = true;
                 ++nextFieldIndex;
                 break;
@@ -2780,6 +2806,7 @@ DslExecutionResult DslVirtualMachine::execute(
             fieldRanges.at(instruction.operand) = MaterializedFieldRange{fieldStart, bitCount};
             lastField = instruction.operand;
             lastValue.reset();
+            lastSignedValue.reset();
             lastFieldSkipped = false;
             ++nextFieldIndex;
             break;
@@ -2882,6 +2909,7 @@ DslExecutionResult DslVirtualMachine::execute(
                 MaterializedFieldRange{fieldStart, bitCount};
             lastField = instruction.operand;
             lastValue.reset();
+            lastSignedValue.reset();
             lastFieldSkipped = false;
             ++nextFieldIndex;
             break;
@@ -3018,15 +3046,31 @@ DslExecutionResult DslVirtualMachine::execute(
             const DslTypedField* field = instruction.operand < structure.fields.size()
                                              ? &structure.fields.at(instruction.operand)
                                              : nullptr;
+            const bool signedField =
+                field != nullptr &&
+                field->type.kind == DslValueTypeKind::SignedExpGolomb;
+            const bool constraintMatchesEncoding =
+                field != nullptr &&
+                (signedField ? (field->signedRangeConstraint.has_value() &&
+                                !field->rangeConstraint.has_value())
+                             : (field->rangeConstraint.has_value() &&
+                                !field->signedRangeConstraint.has_value()));
+            const bool valueMissing =
+                signedField ? !lastSignedValue.has_value() : !lastValue.has_value();
             if (!result.structureNode || !lastField || *lastField != instruction.operand ||
-                field == nullptr || !field->rangeConstraint ||
+                field == nullptr || !constraintMatchesEncoding ||
                 field->kind != DslTypedFieldKind::Declared ||
-                (field->type.kind != DslValueTypeKind::UnsignedBits &&
+                (!signedField && field->type.kind != DslValueTypeKind::UnsignedBits &&
                  field->type.kind != DslValueTypeKind::Enum &&
                  field->type.kind != DslValueTypeKind::UnsignedExpGolomb) ||
-                (checksMinimum ? field->rangeConstraint->minimum
-                               : field->rangeConstraint->maximum) != instruction.immediate ||
-                (lastFieldSkipped ? lastValue.has_value() : !lastValue.has_value())) {
+                (signedField
+                     ? static_cast<quint64>(checksMinimum
+                                                ? field->signedRangeConstraint->minimum
+                                                : field->signedRangeConstraint->maximum)
+                     : (checksMinimum ? field->rangeConstraint->minimum
+                                      : field->rangeConstraint->maximum)) !=
+                    instruction.immediate ||
+                (lastFieldSkipped ? !valueMissing : valueMissing)) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Typed IR range instruction is invalid"),
                             nullptr);
@@ -3035,8 +3079,14 @@ DslExecutionResult DslVirtualMachine::execute(
             if (lastFieldSkipped) {
                 break;
             }
-            if (checksMinimum ? *lastValue >= instruction.immediate
-                              : *lastValue <= instruction.immediate) {
+            const bool withinBound =
+                signedField
+                    ? (checksMinimum
+                           ? *lastSignedValue >= static_cast<qlonglong>(instruction.immediate)
+                           : *lastSignedValue <= static_cast<qlonglong>(instruction.immediate))
+                    : (checksMinimum ? *lastValue >= instruction.immediate
+                                     : *lastValue <= instruction.immediate);
+            if (withinBound) {
                 break;
             }
             if (!lastFieldNode) {

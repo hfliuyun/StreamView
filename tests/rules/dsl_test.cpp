@@ -727,13 +727,63 @@ private slots:
         QCOMPARE(items.at(2).field.annotations.front().name, QStringLiteral("range"));
     }
 
+    void acceptsRangeOnSignedExpGolombFields() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct Header { se slice_alpha_c0_offset_div2 @range(-6, 6); } entry Header;"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& annotation =
+            result.program.structs.front().items.front().field.annotations.front();
+        QCOMPARE(annotation.name, QStringLiteral("range"));
+        QCOMPARE(annotation.arguments.size(), std::size_t{2});
+        QCOMPARE(annotation.arguments.at(0).integerValue, quint64{6});
+        QVERIFY(annotation.arguments.at(0).negative);
+        QCOMPARE(annotation.arguments.at(1).integerValue, quint64{6});
+        QVERIFY(!annotation.arguments.at(1).negative);
+    }
+
+    void normalizesNegativeZeroAndAcceptsTheSignedDomainExtremes() {
+        const auto negativeZero = DslParser::parse(
+            QStringLiteral("struct Header { se value @range(-0, 0); } entry Header;"));
+        const auto extremes = DslParser::parse(
+            QStringLiteral("struct Header { se value "
+                           "@range(-9223372036854775807, 9223372036854775807); } "
+                           "entry Header;"));
+
+        QVERIFY2(negativeZero.succeeded(),
+                 negativeZero.diagnostics.empty()
+                     ? ""
+                     : qPrintable(negativeZero.diagnostics.front().message));
+        const auto& normalized =
+            negativeZero.program.structs.front().items.front().field.annotations.front();
+        QCOMPARE(normalized.arguments.at(0).integerValue, quint64{0});
+        QVERIFY(!normalized.arguments.at(0).negative);
+        QVERIFY2(extremes.succeeded(),
+                 extremes.diagnostics.empty()
+                     ? ""
+                     : qPrintable(extremes.diagnostics.front().message));
+    }
+
     void rejectsInvalidRangeAnnotations() {
         const auto repeated = DslParser::parse(QStringLiteral(
             "struct Header { ue value @range(0, 1) @range(0, 2); } entry Header;"));
         const auto fixedBitsTooNarrow = DslParser::parse(
             QStringLiteral("struct Header { bits<4> value @range(0, 16); } entry Header;"));
-        const auto onSigned = DslParser::parse(
-            QStringLiteral("struct Header { se value @range(0, 12); } entry Header;"));
+        const auto negativeOnUnsignedExpGolomb = DslParser::parse(
+            QStringLiteral("struct Header { ue value @range(-1, 12); } entry Header;"));
+        const auto negativeOnBits = DslParser::parse(
+            QStringLiteral("struct Header { bits<4> value @range(-1, 3); } entry Header;"));
+        const auto signedBelowDomain = DslParser::parse(
+            QStringLiteral("struct Header { se value "
+                           "@range(-9223372036854775808, 0); } entry Header;"));
+        const auto signedAboveDomain = DslParser::parse(
+            QStringLiteral("struct Header { se value "
+                           "@range(0, 9223372036854775808); } entry Header;"));
+        const auto signedInverted = DslParser::parse(
+            QStringLiteral("struct Header { se value @range(6, -6); } entry Header;"));
         const auto oneArgument = DslParser::parse(
             QStringLiteral("struct Header { ue value @range(12); } entry Header;"));
         const auto threeArguments = DslParser::parse(
@@ -746,11 +796,25 @@ private slots:
         QVERIFY(hasDiagnostic(repeated, DslDiagnosticCode::InvalidAnnotation));
         QVERIFY(hasDiagnostic(fixedBitsTooNarrow,
                               DslDiagnosticCode::ConstraintOutOfRange));
-        QVERIFY(hasDiagnostic(onSigned, DslDiagnosticCode::InvalidAnnotation));
+        QVERIFY(hasDiagnostic(negativeOnUnsignedExpGolomb,
+                              DslDiagnosticCode::ConstraintOutOfRange));
+        QVERIFY(hasDiagnostic(negativeOnBits, DslDiagnosticCode::ConstraintOutOfRange));
+        QVERIFY(hasDiagnostic(signedBelowDomain,
+                              DslDiagnosticCode::ConstraintOutOfRange));
+        QVERIFY(hasDiagnostic(signedAboveDomain,
+                              DslDiagnosticCode::ConstraintOutOfRange));
+        QVERIFY(hasDiagnostic(signedInverted, DslDiagnosticCode::ConstraintOutOfRange));
         QVERIFY(hasDiagnostic(oneArgument, DslDiagnosticCode::InvalidAnnotation));
         QVERIFY(hasDiagnostic(threeArguments, DslDiagnosticCode::InvalidAnnotation));
         QVERIFY(hasDiagnostic(nonInteger, DslDiagnosticCode::InvalidAnnotation));
         QVERIFY(hasDiagnostic(inverted, DslDiagnosticCode::ConstraintOutOfRange));
+    }
+
+    void rejectsNegativeEqualsValues() {
+        const auto negative = DslParser::parse(
+            QStringLiteral("struct Header { ue value @equals(-1); } entry Header;"));
+
+        QVERIFY(hasDiagnostic(negative, DslDiagnosticCode::ConstraintOutOfRange));
     }
 
     void acceptsCoincidentRangeAndEqualsOnUnsignedExpGolombFields() {

@@ -166,7 +166,8 @@ void appendPocSequenceParameterSetSuffix(std::vector<bool>& bits,
 void appendPictureParameterSetBase(std::vector<bool>& bits,
                                    bool bottomDeltaPresent,
                                    quint64 pictureParameterSetId = 0,
-                                   quint64 sequenceParameterSetId = 0) {
+                                   quint64 sequenceParameterSetId = 0,
+                                   bool deblockingControlPresent = false) {
     appendUnsignedExpGolomb(bits, pictureParameterSetId);
     appendUnsignedExpGolomb(bits, sequenceParameterSetId);
     appendFixedBits(bits, 0, 1);
@@ -179,7 +180,7 @@ void appendPictureParameterSetBase(std::vector<bool>& bits,
     appendSignedExpGolomb(bits, 0);
     appendSignedExpGolomb(bits, 0);
     appendSignedExpGolomb(bits, 0);
-    appendFixedBits(bits, 0, 1);
+    appendFixedBits(bits, deblockingControlPresent ? 1 : 0, 1);
     appendFixedBits(bits, 0, 1);
     appendFixedBits(bits, 0, 1);
 }
@@ -188,6 +189,35 @@ void appendPictureParameterSetBase(std::vector<bool>& bits,
     std::vector<bool> bits;
     appendPictureParameterSetBase(bits, bottomDeltaPresent);
     return packAnnexBNal(0x68, std::move(bits));
+}
+
+[[nodiscard]] std::vector<std::byte> pictureParameterSetWithDeblockingControl() {
+    std::vector<bool> bits;
+    appendPictureParameterSetBase(bits, false, 0, 0, true);
+    return packAnnexBNal(0x68, std::move(bits));
+}
+
+[[nodiscard]] std::vector<std::byte> deblockingOffsetSlice(bool idr,
+                                                           qint64 alphaOffset,
+                                                           qint64 betaOffset) {
+    std::vector<bool> bits;
+    appendUnsignedExpGolomb(bits, 0);
+    appendUnsignedExpGolomb(bits, 2);
+    appendUnsignedExpGolomb(bits, 0);
+    appendFixedBits(bits, 0, 4);
+    if (idr) {
+        appendUnsignedExpGolomb(bits, 0);
+    }
+    appendFixedBits(bits, 3, 4);
+    if (idr) {
+        appendFixedBits(bits, 0, 1);
+        appendFixedBits(bits, 0, 1);
+    }
+    appendSignedExpGolomb(bits, 0);
+    appendUnsignedExpGolomb(bits, 0);
+    appendSignedExpGolomb(bits, alphaOffset);
+    appendSignedExpGolomb(bits, betaOffset);
+    return packAnnexBNal(idr ? 0x65 : 0x01, std::move(bits));
 }
 
 [[nodiscard]] std::vector<std::byte> pictureParameterSetWithExtension(
@@ -6028,6 +6058,191 @@ private slots:
         const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
         QVERIFY(followingNal.has_value());
         QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+    }
+
+    void validatesSliceDeblockingOffsetsWithoutMovingFollowingFields() {
+        struct Probe final {
+            std::size_t diagnosticCount = 0;
+            QString message;
+            QString fieldPath;
+            quint64 diagnosticStart = 0;
+            quint64 diagnosticLength = 0;
+            quint64 sliceRbspStart = 0;
+            quint64 alphaStart = 0;
+            quint64 alphaLength = 0;
+            quint64 betaStart = 0;
+            quint64 betaLength = 0;
+            quint64 payloadStart = 0;
+            quint64 payloadLength = 0;
+            qlonglong alphaValue = 0;
+            qlonglong betaValue = 0;
+        };
+
+        const auto probe = [](bool idr,
+                              const QString& offending,
+                              qint64 alphaOffset,
+                              qint64 betaOffset,
+                              Probe& out) {
+            const auto spsNal = sequenceParameterSetForProfile(66);
+            const auto ppsNal = pictureParameterSetWithDeblockingControl();
+            std::vector<std::byte> stream;
+            appendNal(stream, spsNal);
+            appendNal(stream, ppsNal);
+            appendNal(stream, deblockingOffsetSlice(idr, alphaOffset, betaOffset));
+            appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x50}));
+            MemorySource source(std::move(stream));
+            QString errorMessage;
+            auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+            QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+            const auto batch = analyzer->analyzeBatch();
+
+            QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+            QCOMPARE(batch.nalUnitNodes.size(), std::size_t(4));
+            const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+            QVERIFY(nal.has_value());
+            QCOMPARE(nal->state(), MaterializationState::Materialized);
+            const auto rbsp = analyzer->tree().node(nal->children().at(2));
+            QVERIFY(rbsp.has_value());
+            const auto slice = analyzer->tree().node(rbsp->children().front());
+            QVERIFY(slice.has_value());
+            QCOMPARE(slice->state(), MaterializationState::Materialized);
+
+            const auto fieldNamed = [&](const QString& name) {
+                const auto found = std::find_if(
+                    slice->children().begin(), slice->children().end(), [&](const auto id) {
+                        const auto node = analyzer->tree().node(id);
+                        return node && node->name() == name;
+                    });
+                return found == slice->children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+            };
+            const auto alpha = fieldNamed(QStringLiteral("slice_alpha_c0_offset_div2"));
+            const auto beta = fieldNamed(QStringLiteral("slice_beta_offset_div2"));
+            const auto payload = fieldNamed(QStringLiteral("slice_data"));
+            QVERIFY(alpha.has_value());
+            QVERIFY(beta.has_value());
+            QVERIFY(payload.has_value());
+
+            out.sliceRbspStart = quint64(spsNal.size() + ppsNal.size() + 4) * 8;
+            out.alphaValue = alpha->value().toLongLong();
+            out.betaValue = beta->value().toLongLong();
+            out.alphaStart =
+                alpha->location()->sourceSpans().front().start().absoluteBitOffset();
+            out.alphaLength = alpha->location()->sourceSpans().front().bitLength();
+            out.betaStart =
+                beta->location()->sourceSpans().front().start().absoluteBitOffset();
+            out.betaLength = beta->location()->sourceSpans().front().bitLength();
+            out.payloadStart =
+                payload->location()->sourceSpans().front().start().absoluteBitOffset();
+            out.payloadLength = payload->location()->logicalRange().bitLength();
+            QCOMPARE(payload->kind(), AnalysisNodeKind::CompressedPayload);
+
+            const auto sibling = offending == QStringLiteral("slice_alpha_c0_offset_div2")
+                                     ? beta
+                                     : alpha;
+            QVERIFY(sibling->diagnostics().empty());
+
+            const auto offender = fieldNamed(offending);
+            QVERIFY(offender.has_value());
+            out.diagnosticCount = offender->diagnostics().size();
+            if (out.diagnosticCount == 1) {
+                const auto& diagnostic = offender->diagnostics().front();
+                QCOMPARE(diagnostic.code,
+                         streamview::core::DiagnosticCode::InvalidSyntax);
+                QCOMPARE(diagnostic.severity,
+                         streamview::core::DiagnosticSeverity::Warning);
+                out.message = diagnostic.message;
+                out.fieldPath = diagnostic.fieldPath;
+                QVERIFY(diagnostic.location.has_value());
+                out.diagnosticStart = diagnostic.location->sourceSpans()
+                                          .front()
+                                          .start()
+                                          .absoluteBitOffset();
+                out.diagnosticLength =
+                    diagnostic.location->sourceSpans().front().bitLength();
+            }
+
+            const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+            QVERIFY(followingNal.has_value());
+            QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+        };
+
+        struct Case final {
+            bool idr;
+            const char* structure;
+            const char* offending;
+            qint64 legalAlpha;
+            qint64 legalBeta;
+            qint64 illegalAlpha;
+            qint64 illegalBeta;
+            const char* message;
+        };
+        const Case cases[] = {
+            {true, "IdrSliceLayerWithoutPartitioningRbsp", "slice_alpha_c0_offset_div2",
+             6, 0, 7, 0, "Field value is above its @range maximum"},
+            {true, "IdrSliceLayerWithoutPartitioningRbsp", "slice_alpha_c0_offset_div2",
+             -6, 0, -7, 0, "Field value is below its @range minimum"},
+            {true, "IdrSliceLayerWithoutPartitioningRbsp", "slice_beta_offset_div2",
+             0, 6, 0, 7, "Field value is above its @range maximum"},
+            {true, "IdrSliceLayerWithoutPartitioningRbsp", "slice_beta_offset_div2",
+             0, -6, 0, -7, "Field value is below its @range minimum"},
+            {false, "NonIdrSliceLayerWithoutPartitioningRbsp",
+             "slice_alpha_c0_offset_div2", -6, 0, -7, 0,
+             "Field value is below its @range minimum"},
+            {false, "NonIdrSliceLayerWithoutPartitioningRbsp", "slice_beta_offset_div2",
+             0, 6, 0, 7, "Field value is above its @range maximum"},
+        };
+
+        for (const auto& testCase : cases) {
+            const QString offending = QString::fromLatin1(testCase.offending);
+            Probe legal;
+            probe(testCase.idr, offending, testCase.legalAlpha, testCase.legalBeta, legal);
+            if (QTest::currentTestFailed()) {
+                return;
+            }
+            Probe illegal;
+            probe(testCase.idr,
+                  offending,
+                  testCase.illegalAlpha,
+                  testCase.illegalBeta,
+                  illegal);
+            if (QTest::currentTestFailed()) {
+                return;
+            }
+
+            QCOMPARE(legal.diagnosticCount, std::size_t(0));
+            QCOMPARE(legal.alphaValue, qlonglong(testCase.legalAlpha));
+            QCOMPARE(legal.betaValue, qlonglong(testCase.legalBeta));
+            QCOMPARE(illegal.diagnosticCount, std::size_t(1));
+            QCOMPARE(illegal.alphaValue, qlonglong(testCase.illegalAlpha));
+            QCOMPARE(illegal.betaValue, qlonglong(testCase.illegalBeta));
+            QCOMPARE(illegal.message, QString::fromLatin1(testCase.message));
+            QCOMPARE(illegal.fieldPath,
+                     QString::fromLatin1(testCase.structure) + QLatin1Char('.') +
+                         offending);
+
+            const quint64 offenderStart =
+                offending == QStringLiteral("slice_alpha_c0_offset_div2")
+                    ? illegal.alphaStart
+                    : illegal.betaStart;
+            QCOMPARE(illegal.diagnosticStart, offenderStart);
+            QCOMPARE(illegal.diagnosticLength, quint64(7));
+
+            QCOMPARE(illegal.sliceRbspStart, legal.sliceRbspStart);
+            QCOMPARE(illegal.alphaStart, legal.alphaStart);
+            QCOMPARE(illegal.alphaLength, legal.alphaLength);
+            QCOMPARE(illegal.betaStart, legal.betaStart);
+            QCOMPARE(illegal.betaLength, legal.betaLength);
+            QCOMPARE(illegal.payloadStart, legal.payloadStart);
+            QCOMPARE(illegal.payloadLength, legal.payloadLength);
+
+            const quint64 headerBits = testCase.idr ? 18 : 15;
+            QCOMPARE(illegal.alphaStart, illegal.sliceRbspStart + headerBits);
+            QCOMPARE(illegal.betaStart,
+                     illegal.alphaStart + illegal.alphaLength);
+            QCOMPARE(illegal.payloadStart, illegal.betaStart + illegal.betaLength);
+        }
     }
 
     void decodesWithinSliceDeblockingModeAndOffsets() {

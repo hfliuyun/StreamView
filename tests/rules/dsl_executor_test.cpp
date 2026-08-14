@@ -1815,6 +1815,166 @@ private slots:
         }
     }
 
+    void materializesSignedExpGolombFieldsWithinTheirDeclaredRange() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { se offset @range(-6, 6); bits<1> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+
+        // offset=-6 is code number 12 (0001101); offset=6 is code number 11 (0001100).
+        const std::vector<std::pair<quint8, qint64>> legal{{0b00011011, -6},
+                                                           {0b00011001, 6}};
+        for (const auto& [encoded, expected] : legal) {
+            MemorySource source(bytes({encoded}));
+            BitReader reader(source, *range);
+            auto tree = AnalysisTree::create(
+                QStringLiteral("signed-range-legal-%1").arg(expected));
+            QVERIFY(tree.has_value());
+            const auto result = DslExecutor::decodeStruct(
+                *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::Materialized);
+            QCOMPARE(result.bitsConsumed, quint64(8));
+            const auto structure = tree->node(*result.structureNode);
+            QVERIFY(structure.has_value());
+            QCOMPARE(structure->children().size(), std::size_t(2));
+            const auto offset = tree->node(structure->children().at(0));
+            QVERIFY(offset.has_value());
+            QCOMPARE(offset->value().toLongLong(), expected);
+            QVERIFY(offset->diagnostics().empty());
+            const auto tail = tree->node(structure->children().at(1));
+            QVERIFY(tail.has_value());
+            QVERIFY(tail->diagnostics().empty());
+            QCOMPARE(tail->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     quint64(7));
+        }
+    }
+
+    void reportsSignedExpGolombRangeViolationsWithoutStoppingDecoding() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Header { se offset @range(-6, 6); bits<1> tail; } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+
+        // offset=-7 is code number 14 (0001111); offset=7 is code number 13 (0001110).
+        const std::vector<std::pair<quint8, qint64>> violations{{0b00011111, -7},
+                                                                {0b00011101, 7}};
+        for (const auto& [encoded, expected] : violations) {
+            MemorySource source(bytes({encoded}));
+            BitReader reader(source, *range);
+            auto tree = AnalysisTree::create(
+                QStringLiteral("signed-range-violation-%1").arg(expected));
+            QVERIFY(tree.has_value());
+            const auto result = DslExecutor::decodeStruct(
+                *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+
+            QCOMPARE(result.status, DslExecutionStatus::Materialized);
+            QCOMPARE(result.bitsConsumed, quint64(8));
+            const auto structure = tree->node(*result.structureNode);
+            QVERIFY(structure.has_value());
+            QCOMPARE(structure->state(), MaterializationState::Materialized);
+            QVERIFY(structure->diagnostics().empty());
+            QCOMPARE(structure->children().size(), std::size_t(2));
+
+            const auto offset = tree->node(structure->children().at(0));
+            QVERIFY(offset.has_value());
+            QCOMPARE(offset->value().toLongLong(), expected);
+            QCOMPARE(offset->diagnostics().size(), std::size_t(1));
+            QCOMPARE(offset->diagnostics().front().severity,
+                     streamview::core::DiagnosticSeverity::Warning);
+            QCOMPARE(offset->diagnostics().front().code,
+                     streamview::core::DiagnosticCode::InvalidSyntax);
+            QCOMPARE(offset->diagnostics().front().message,
+                     expected < 0
+                         ? QStringLiteral("Field value is below its @range minimum")
+                         : QStringLiteral("Field value is above its @range maximum"));
+            QCOMPARE(offset->diagnostics()
+                         .front()
+                         .location->sourceSpans()
+                         .front()
+                         .start()
+                         .absoluteBitOffset(),
+                     quint64(0));
+            QCOMPARE(
+                offset->diagnostics().front().location->sourceSpans().front().bitLength(),
+                quint64(7));
+
+            const auto tail = tree->node(structure->children().at(1));
+            QVERIFY(tail.has_value());
+            QCOMPARE(tail->value().toULongLong(), quint64(1));
+            QVERIFY(tail->diagnostics().empty());
+            QCOMPARE(tail->location()->sourceSpans().front().start().absoluteBitOffset(),
+                     quint64(7));
+        }
+    }
+
+    void rejectsMalformedTypedSignedRangeConstraints() {
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct Header { se offset @range(-6, 6); } entry Header;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        std::vector<DslTypedProgram> malformed;
+        auto missingConstraint = *compiled.program;
+        missingConstraint.structs.front().fields.front().signedRangeConstraint.reset();
+        malformed.push_back(std::move(missingConstraint));
+        auto mismatchedImmediate = *compiled.program;
+        mismatchedImmediate.structs.front().fields.front().signedRangeConstraint->maximum = 5;
+        malformed.push_back(std::move(mismatchedImmediate));
+        auto invertedRange = *compiled.program;
+        invertedRange.structs.front().fields.front().signedRangeConstraint =
+            streamview::rules::DslTypedSignedRange{6, -6};
+        malformed.push_back(std::move(invertedRange));
+        auto bothConstraints = *compiled.program;
+        bothConstraints.structs.front().fields.front().rangeConstraint =
+            streamview::rules::DslTypedUnsignedRange{0, 6};
+        malformed.push_back(std::move(bothConstraints));
+        auto unsignedConstraintOnSignedField = *compiled.program;
+        unsignedConstraintOnSignedField.structs.front()
+            .fields.front()
+            .signedRangeConstraint.reset();
+        unsignedConstraintOnSignedField.structs.front().fields.front().rangeConstraint =
+            streamview::rules::DslTypedUnsignedRange{
+                static_cast<quint64>(qint64(-6)), 6};
+        malformed.push_back(std::move(unsignedConstraintOnSignedField));
+        auto signedConstraintOnUnsignedField = *compiled.program;
+        signedConstraintOnUnsignedField.structs.front().fields.front().type.kind =
+            DslValueTypeKind::UnsignedExpGolomb;
+        signedConstraintOnUnsignedField.bytecode.at(1).opcode =
+            DslOpcode::ReadUnsignedExpGolomb;
+        malformed.push_back(std::move(signedConstraintOnUnsignedField));
+
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        QVERIFY(mapping.has_value());
+        QVERIFY(range.has_value());
+        for (std::size_t index = 0; index < malformed.size(); ++index) {
+            MemorySource source(bytes({0b00011011}));
+            BitReader reader(source, *range);
+            auto tree =
+                AnalysisTree::create(QStringLiteral("malformed-signed-range-%1").arg(index));
+            QVERIFY(tree.has_value());
+            const auto result = DslExecutor::decodeStruct(
+                malformed.at(index), quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+            QCOMPARE(result.bitsConsumed, quint64(0));
+            QCOMPARE(result.nodesCreated, quint64(0));
+            QCOMPARE(reader.position(), quint64(0));
+            QCOMPARE(source.readCount(), quint64(0));
+            QVERIFY(!result.structureNode.has_value());
+        }
+    }
+
     void materializesRbspTrailingBitsAtTheNextLogicalByteBoundary() {
         const auto parsed = DslParser::parse(QStringLiteral(
             "struct Payload { bits<3> primary_pic_type; rbsp_trailing_bits; } "

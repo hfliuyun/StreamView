@@ -392,10 +392,10 @@ struct IdrSliceLayerWithoutPartitioningRbsp {
             @description("Selects the deblocking-filter mode for this slice.");
         if (disable_deblocking_filter_idc == 1) {
         } else {
-            se slice_alpha_c0_offset_div2
+            se slice_alpha_c0_offset_div2 @range(-6, 6)
                 @spec("ITU-T H.264", "7.3.3, 7.4.3")
                 @description("Carries half the alpha and c0 deblocking-filter offset.");
-            se slice_beta_offset_div2
+            se slice_beta_offset_div2 @range(-6, 6)
                 @spec("ITU-T H.264", "7.3.3, 7.4.3")
                 @description("Carries half the beta deblocking-filter offset.");
         }
@@ -704,10 +704,10 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
             @description("Selects the deblocking-filter mode for this slice.");
         if (disable_deblocking_filter_idc == 1) {
         } else {
-            se slice_alpha_c0_offset_div2
+            se slice_alpha_c0_offset_div2 @range(-6, 6)
                 @spec("ITU-T H.264", "7.3.3, 7.4.3")
                 @description("Carries half the alpha and c0 deblocking-filter offset.");
-            se slice_beta_offset_div2
+            se slice_beta_offset_div2 @range(-6, 6)
                 @spec("ITU-T H.264", "7.3.3, 7.4.3")
                 @description("Carries half the beta deblocking-filter offset.");
         }

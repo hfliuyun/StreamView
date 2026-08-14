@@ -11,6 +11,12 @@ namespace streamview::rules {
 
 namespace {
 
+[[nodiscard]] qint64 signedAnnotationBound(const DslAnnotationValue& argument) noexcept {
+    const quint64 magnitude = argument.integerValue;
+    return argument.negative ? -static_cast<qint64>(magnitude)
+                             : static_cast<qint64>(magnitude);
+}
+
 [[nodiscard]] bool isIdentifierStart(QChar character) noexcept {
     return character == QLatin1Char('_') ||
            (character >= QLatin1Char('a') && character <= QLatin1Char('z')) ||
@@ -776,9 +782,18 @@ private:
                 if (!at(DslTokenKind::RightParen)) {
                     while (true) {
                         DslAnnotationValue argument;
+                        const bool negated =
+                            at(DslTokenKind::Minus) &&
+                            index_ + 1 < lexResult_.tokens.size() &&
+                            lexResult_.tokens.at(index_ + 1).kind ==
+                                DslTokenKind::IntegerLiteral;
+                        if (negated) {
+                            consume();
+                        }
                         if (at(DslTokenKind::IntegerLiteral)) {
                             argument.kind = DslAnnotationValueKind::Integer;
                             argument.integerValue = consume().integerValue;
+                            argument.negative = negated && argument.integerValue != 0;
                         } else if (at(DslTokenKind::StringLiteral)) {
                             argument.kind = DslAnnotationValueKind::String;
                             argument.text = consume().lexeme;
@@ -2442,12 +2457,15 @@ private:
                                  annotation.range});
                         }
                         rangeSeen = true;
+                        const bool signedRangeField =
+                            field.encoding == DslFieldEncoding::SignedExpGolomb;
                         if (field.encoding != DslFieldEncoding::Bits &&
-                            field.encoding != DslFieldEncoding::UnsignedExpGolomb) {
+                            field.encoding != DslFieldEncoding::UnsignedExpGolomb &&
+                            !signedRangeField) {
                             result_.diagnostics.push_back(
                                 {DslDiagnosticCode::InvalidAnnotation,
                                  QStringLiteral(
-                                     "@range is only supported on bits and ue fields"),
+                                     "@range is only supported on bits, ue, and se fields"),
                                  annotation.range});
                             continue;
                         }
@@ -2463,8 +2481,40 @@ private:
                                  annotation.range});
                             continue;
                         }
-                        const quint64 minimum = annotation.arguments.at(0).integerValue;
-                        const quint64 maximum = annotation.arguments.at(1).integerValue;
+                        const DslAnnotationValue& minimumArgument = annotation.arguments.at(0);
+                        const DslAnnotationValue& maximumArgument = annotation.arguments.at(1);
+                        if (!signedRangeField &&
+                            (minimumArgument.negative || maximumArgument.negative)) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::ConstraintOutOfRange,
+                                 QStringLiteral(
+                                     "@range bounds cannot be negative on bits and ue fields"),
+                                 annotation.range});
+                            continue;
+                        }
+                        if (signedRangeField) {
+                            constexpr quint64 maximumSignedExpGolombMagnitude =
+                                static_cast<quint64>(std::numeric_limits<qint64>::max());
+                            if (minimumArgument.integerValue >
+                                    maximumSignedExpGolombMagnitude ||
+                                maximumArgument.integerValue >
+                                    maximumSignedExpGolombMagnitude) {
+                                result_.diagnostics.push_back(
+                                    {DslDiagnosticCode::ConstraintOutOfRange,
+                                     QStringLiteral(
+                                         "@range bound exceeds the supported se value domain"),
+                                     annotation.range});
+                            } else if (signedAnnotationBound(minimumArgument) >
+                                       signedAnnotationBound(maximumArgument)) {
+                                result_.diagnostics.push_back(
+                                    {DslDiagnosticCode::ConstraintOutOfRange,
+                                     QStringLiteral("@range minimum cannot exceed its maximum"),
+                                     annotation.range});
+                            }
+                            continue;
+                        }
+                        const quint64 minimum = minimumArgument.integerValue;
+                        const quint64 maximum = maximumArgument.integerValue;
                         if (minimum > maximum) {
                             result_.diagnostics.push_back(
                                 {DslDiagnosticCode::ConstraintOutOfRange,
@@ -2515,6 +2565,11 @@ private:
                         result_.diagnostics.push_back(
                             {DslDiagnosticCode::InvalidAnnotation,
                              QStringLiteral("@equals requires one integer argument"),
+                             annotation.range});
+                    } else if (annotation.arguments.front().negative) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::ConstraintOutOfRange,
+                             QStringLiteral("@equals value cannot be negative"),
                              annotation.range});
                     }
                 }

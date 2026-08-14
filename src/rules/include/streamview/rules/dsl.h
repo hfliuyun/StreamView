@@ -117,6 +117,7 @@ enum class DslAnnotationValueKind : quint8 {
 struct DslAnnotationValue final {
     DslAnnotationValueKind kind = DslAnnotationValueKind::Identifier;
     quint64 integerValue = 0;
+    bool negative = false;
     QString text;
 };
 
