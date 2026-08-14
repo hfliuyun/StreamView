@@ -1154,20 +1154,26 @@ DslExecutionResult DslVirtualMachine::execute(
             if (condition.expression) {
                 TypedExpressionValidationState validation;
                 validation.allowImportedContextReferences = true;
+                const bool validExprKind =
+                    condition.expression->kind ==
+                        DslTypedExpressionKind::ImportedContextReference ||
+                    condition.expression->kind ==
+                        DslTypedExpressionKind::SequenceElementReference ||
+                    condition.expression->kind ==
+                        DslTypedExpressionKind::MoreRbspData;
+                const bool validType =
+                    condition.expression->type == DslScalarType::U64 ||
+                    condition.expression->type == DslScalarType::Bool;
                 if (condition.fieldIndex != 0 ||
                     condition.op != DslConditionOperator::Equal ||
-                    (condition.expression->kind !=
-                         DslTypedExpressionKind::ImportedContextReference &&
-                     condition.expression->kind !=
-                         DslTypedExpressionKind::SequenceElementReference) ||
+                    !validExprKind || !validType ||
                     !validateTypedExpression(*condition.expression,
                                              program,
                                              structure,
                                              subjectFieldIndex,
                                              conditions,
                                              1,
-                                             validation) ||
-                    condition.expression->type != DslScalarType::U64) {
+                                             validation)) {
                     markFailure(DslExecutionStatus::InvalidDefinition,
                                 QStringLiteral("Typed IR %1 imported condition is invalid")
                                     .arg(subjectName),
@@ -1674,6 +1680,89 @@ DslExecutionResult DslVirtualMachine::execute(
         previousSentinelAssertionPosition = repeat.assertionFieldIndex;
     }
 
+    quint32 previousWhileRepeatAssertionPosition = 0;
+    for (std::size_t repeatIndex = 0;
+         repeatIndex < structure.whileRepeats.size();
+         ++repeatIndex) {
+        const DslTypedWhileRepeat& repeat =
+            structure.whileRepeats.at(repeatIndex);
+        const bool ordered =
+            repeatIndex == 0 ||
+            repeat.assertionFieldIndex >= previousWhileRepeatAssertionPosition;
+        if (!ordered || repeat.firstFieldIndices.empty() ||
+            repeat.firstFieldIndices.size() !=
+                repeat.maximumIterationsCount ||
+            repeat.maximumIterationsCount >
+                DslTypedWhileRepeat::maximumIterations() ||
+            repeat.assertionFieldIndex > structure.fields.size()) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed IR while repeat is invalid"),
+                        nullptr);
+            return result;
+        }
+        std::vector<DslTypedFieldCondition> expectedConditions =
+            repeat.conditions;
+        DslTypedExpression moreDataExpr;
+        moreDataExpr.kind = DslTypedExpressionKind::MoreRbspData;
+        moreDataExpr.type = DslScalarType::Bool;
+        expectedConditions.push_back(
+            {0, 1, false, DslConditionOperator::Equal, moreDataExpr});
+
+        quint32 previousFirstFieldIndex = 0;
+        for (std::size_t iterIndex = 0;
+             iterIndex < repeat.firstFieldIndices.size();
+             ++iterIndex) {
+            const quint32 firstFieldIndex =
+                repeat.firstFieldIndices.at(iterIndex);
+            const bool iterOrdered =
+                iterIndex == 0 || firstFieldIndex > previousFirstFieldIndex;
+            const quint32 iterationEnd =
+                iterIndex + 1 < repeat.firstFieldIndices.size()
+                    ? repeat.firstFieldIndices.at(iterIndex + 1)
+                    : repeat.assertionFieldIndex;
+            if (!iterOrdered || firstFieldIndex >= iterationEnd ||
+                iterationEnd > repeat.assertionFieldIndex ||
+                firstFieldIndex >= structure.fields.size()) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral(
+                                "Typed IR while repeat field index is invalid"),
+                            nullptr);
+                return result;
+            }
+            for (quint32 projectedFieldIndex = firstFieldIndex;
+                 projectedFieldIndex < iterationEnd;
+                 ++projectedFieldIndex) {
+                const DslTypedField& projected =
+                    structure.fields.at(projectedFieldIndex);
+                if (projected.conditions.size() < expectedConditions.size() ||
+                    !std::equal(expectedConditions.begin(),
+                                expectedConditions.end(),
+                                projected.conditions.begin(),
+                                [](const DslTypedFieldCondition& left,
+                                   const DslTypedFieldCondition& right) {
+                                    return sameCondition(left, right);
+                                })) {
+                    markFailure(
+                        DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral(
+                            "Typed IR while repeat projection guard is invalid"),
+                        &projected);
+                    return result;
+                }
+            }
+            previousFirstFieldIndex = firstFieldIndex;
+        }
+        const DslTypedField& firstField =
+            structure.fields.at(repeat.firstFieldIndices.front());
+        if (!validateConditions(repeat.conditions,
+                                repeat.firstFieldIndices.front(),
+                                &firstField,
+                                QStringLiteral("while repeat"))) {
+            return result;
+        }
+        previousWhileRepeatAssertionPosition = repeat.assertionFieldIndex;
+    }
+
     if (structure.assertions.size() >
         DslTypedAssertion::maximumPerStructure()) {
         markFailure(DslExecutionStatus::InvalidDefinition,
@@ -1771,6 +1860,7 @@ DslExecutionResult DslVirtualMachine::execute(
     const std::size_t bytecodeBegin = structure.bytecodeOffset;
     const std::size_t bytecodeEnd = bytecodeBegin + structure.bytecodeLength;
     std::size_t nextSentinelOpcodeIndex = 0;
+    std::size_t nextWhileRepeatOpcodeIndex = 0;
     std::size_t nextAssertionOpcodeIndex = 0;
     std::size_t nextRepeatOpcodeIndex = 0;
     quint32 assertionFieldPosition = 0;
@@ -1780,6 +1870,11 @@ DslExecutionResult DslVirtualMachine::execute(
     const auto sentinelPendingAtOrBefore = [&]() {
         return nextSentinelOpcodeIndex < structure.sentinelRepeats.size() &&
                structure.sentinelRepeats.at(nextSentinelOpcodeIndex)
+                       .assertionFieldIndex <= assertionFieldPosition;
+    };
+    const auto whileRepeatPendingAtOrBefore = [&]() {
+        return nextWhileRepeatOpcodeIndex < structure.whileRepeats.size() &&
+               structure.whileRepeats.at(nextWhileRepeatOpcodeIndex)
                        .assertionFieldIndex <= assertionFieldPosition;
     };
     const auto assertionPendingAtOrBefore = [&]() {
@@ -1842,6 +1937,7 @@ DslExecutionResult DslVirtualMachine::execute(
         case DslOpcode::RegisterLazyBytes:
         case DslOpcode::RegisterCompressedPayload:
             if (!assertionBytecodeBegan || sentinelPendingAtOrBefore() ||
+                whileRepeatPendingAtOrBefore() ||
                 assertionPendingAtOrBefore() || repeatPendingAtOrBefore()) {
                 rejectPositionedAssertionBytecode(nullptr);
                 return result;
@@ -1850,6 +1946,7 @@ DslExecutionResult DslVirtualMachine::execute(
             break;
         case DslOpcode::ReadRbspTrailingBits:
             if (!assertionBytecodeBegan || sentinelPendingAtOrBefore() ||
+                whileRepeatPendingAtOrBefore() ||
                 assertionPendingAtOrBefore() || repeatPendingAtOrBefore()) {
                 rejectPositionedAssertionBytecode(nullptr);
                 return result;
@@ -1865,7 +1962,7 @@ DslExecutionResult DslVirtualMachine::execute(
                 instruction.operand != nextAssertionOpcodeIndex ||
                 instruction.immediate != 0 ||
                 assertion->assertionFieldIndex != assertionFieldPosition ||
-                sentinelPendingAtOrBefore()) {
+                sentinelPendingAtOrBefore() || whileRepeatPendingAtOrBefore()) {
                 rejectPositionedAssertionBytecode(
                     assertion != nullptr
                         ? &structure.fields.at(assertion->anchorFieldIndex)
@@ -1884,7 +1981,8 @@ DslExecutionResult DslVirtualMachine::execute(
                 instruction.operand != nextRepeatOpcodeIndex ||
                 instruction.immediate != repeat->maximumCount ||
                 repeat->firstFieldIndex != assertionFieldPosition ||
-                sentinelPendingAtOrBefore() || assertionPendingAtOrBefore()) {
+                sentinelPendingAtOrBefore() || whileRepeatPendingAtOrBefore() ||
+                assertionPendingAtOrBefore()) {
                 rejectPositionedAssertionBytecode(nullptr);
                 return result;
             }
@@ -1906,9 +2004,25 @@ DslExecutionResult DslVirtualMachine::execute(
             ++nextSentinelOpcodeIndex;
             break;
         }
+        case DslOpcode::AssertWhileRepeatTerminated: {
+            const DslTypedWhileRepeat* repeat =
+                nextWhileRepeatOpcodeIndex < structure.whileRepeats.size()
+                    ? &structure.whileRepeats.at(nextWhileRepeatOpcodeIndex)
+                    : nullptr;
+            if (!assertionBytecodeBegan || repeat == nullptr ||
+                instruction.operand != nextWhileRepeatOpcodeIndex ||
+                instruction.immediate != repeat->maximumIterationsCount ||
+                repeat->assertionFieldIndex != assertionFieldPosition) {
+                rejectPositionedAssertionBytecode(nullptr);
+                return result;
+            }
+            ++nextWhileRepeatOpcodeIndex;
+            break;
+        }
         case DslOpcode::EndStructure:
             if (!assertionBytecodeBegan || instruction.operand != structureIndex ||
                 instruction.immediate != 0 || sentinelPendingAtOrBefore() ||
+                whileRepeatPendingAtOrBefore() ||
                 assertionPendingAtOrBefore() || repeatPendingAtOrBefore()) {
                 rejectPositionedAssertionBytecode(nullptr);
                 return result;
@@ -1924,6 +2038,7 @@ DslExecutionResult DslVirtualMachine::execute(
     if (requiresPositionedAssertionPreflight &&
         (!assertionBytecodeBegan || !assertionBytecodeEnded ||
          nextSentinelOpcodeIndex != structure.sentinelRepeats.size() ||
+         nextWhileRepeatOpcodeIndex != structure.whileRepeats.size() ||
          nextAssertionOpcodeIndex != structure.assertions.size() ||
          nextRepeatOpcodeIndex != structure.repeatBounds.size())) {
         rejectPositionedAssertionBytecode(nullptr);
@@ -2127,6 +2242,7 @@ DslExecutionResult DslVirtualMachine::execute(
     bool lastFieldSkipped = false;
     quint32 nextFieldIndex = 0;
     quint32 nextSentinelRepeatIndex = 0;
+    quint32 nextWhileRepeatIndex = 0;
     quint32 nextAssertionIndex = 0;
     bool ended = false;
     const auto conditionsPresent = [&](const std::vector<DslTypedFieldCondition>& conditions,
@@ -2141,7 +2257,9 @@ DslExecutionResult DslVirtualMachine::execute(
                     fieldValues,
                     contextValueResolver,
                     &options.sequenceElementValues);
-                if (!evaluated.complete() || evaluated.value.type != DslScalarType::U64) {
+                if (!evaluated.complete() ||
+                    (evaluated.value.type != DslScalarType::U64 &&
+                     evaluated.value.type != DslScalarType::Bool)) {
                     const DslTypedField* diagnosticField = subject;
                     std::optional<quint64> diagnosticPosition;
                     std::optional<quint64> diagnosticBits;
@@ -2165,7 +2283,11 @@ DslExecutionResult DslVirtualMachine::execute(
                                 diagnosticPosition.has_value());
                     return std::nullopt;
                 }
-                const bool matches = evaluated.value.unsignedValue == condition.expectedValue;
+                const bool matches = evaluated.value.type == DslScalarType::Bool
+                                         ? evaluated.value.booleanValue ==
+                                               (condition.expectedValue != 0)
+                                         : evaluated.value.unsignedValue ==
+                                               condition.expectedValue;
                 if (condition.negated ? matches : !matches) {
                     return false;
                 }
@@ -3377,10 +3499,68 @@ DslExecutionResult DslVirtualMachine::execute(
                 lastSentinelRange.has_value());
             return result;
         }
+        case DslOpcode::AssertWhileRepeatTerminated: {
+            const DslTypedWhileRepeat* repeat =
+                instruction.operand < structure.whileRepeats.size()
+                    ? &structure.whileRepeats.at(instruction.operand)
+                    : nullptr;
+            if (!result.structureNode || repeat == nullptr ||
+                instruction.operand != nextWhileRepeatIndex ||
+                repeat->assertionFieldIndex != nextFieldIndex ||
+                repeat->maximumIterationsCount != instruction.immediate) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral(
+                                "Typed IR while repeat assertion is invalid"),
+                            nullptr);
+                return result;
+            }
+            ++nextWhileRepeatIndex;
+            const DslTypedField& firstField =
+                structure.fields.at(repeat->firstFieldIndices.front());
+            const std::optional<bool> repeatPresent = conditionsPresent(
+                repeat->conditions,
+                &firstField,
+                QStringLiteral("while repeat"));
+            if (!repeatPresent) {
+                return result;
+            }
+            if (!*repeatPresent) {
+                break;
+            }
+            const quint64 remaining = reader.remainingBits();
+            bool moreRbspData = false;
+            if (remaining > 8) {
+                moreRbspData = true;
+            } else if (remaining > 0) {
+                core::BitReader probe = reader;
+                const core::BitReadResult remainder =
+                    probe.readBits(static_cast<unsigned int>(remaining));
+                if (!remainder.complete()) {
+                    markFailure(statusForRead(remainder.status),
+                                remainder.errorMessage.isEmpty()
+                                    ? QStringLiteral("Unable to inspect remaining RBSP data")
+                                    : remainder.errorMessage,
+                                nullptr);
+                    return result;
+                }
+                const quint64 trailingPattern = quint64{1} << (remaining - 1U);
+                moreRbspData = (remainder.value != trailingPattern);
+            }
+            if (moreRbspData) {
+                markFailure(
+                    DslExecutionStatus::InvalidSyntax,
+                    QStringLiteral(
+                        "While repeat did not terminate within its declared maximum"),
+                    &firstField);
+                return result;
+            }
+            break;
+        }
         case DslOpcode::EndStructure: {
             if (!result.structureNode || instruction.operand != structureIndex ||
                 nextFieldIndex != structure.fields.size() ||
                 nextSentinelRepeatIndex != structure.sentinelRepeats.size() ||
+                nextWhileRepeatIndex != structure.whileRepeats.size() ||
                 nextAssertionIndex != structure.assertions.size()) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Typed IR end instruction is invalid"),

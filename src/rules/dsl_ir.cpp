@@ -49,7 +49,8 @@ void collectFields(const std::vector<DslStructItem>& items,
                 collectFields(arm.items, fields);
             }
         } else if (item.kind == DslStructItemKind::Repeat ||
-                   item.kind == DslStructItemKind::SentinelRepeat) {
+                   item.kind == DslStructItemKind::SentinelRepeat ||
+                   item.kind == DslStructItemKind::WhileRepeat) {
             collectFields(item.repeatItems, fields);
         }
     }
@@ -82,7 +83,8 @@ void collectFields(const std::vector<DslStructItem>& items,
                 itemProjection = add(itemProjection, expandedFieldProjection(arm.items));
             }
         } else if (item.kind == DslStructItemKind::Repeat ||
-                   item.kind == DslStructItemKind::SentinelRepeat) {
+                   item.kind == DslStructItemKind::SentinelRepeat ||
+                   item.kind == DslStructItemKind::WhileRepeat) {
             const quint64 bodyProjection = expandedFieldProjection(item.repeatItems);
             if (item.repeatMaximum == 0) {
                 itemProjection = 0;
@@ -1083,7 +1085,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                         self(self, arm.items, false);
                     }
                 } else if (item.kind == DslStructItemKind::Repeat ||
-                           item.kind == DslStructItemKind::SentinelRepeat) {
+                           item.kind == DslStructItemKind::SentinelRepeat ||
+                           item.kind == DslStructItemKind::WhileRepeat) {
                     self(self, item.repeatItems, false);
                 }
             }
@@ -2819,6 +2822,80 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     fieldOffset = std::nullopt;
                     continue;
                 }
+                if (item.kind == DslStructItemKind::WhileRepeat) {
+                    const quint64 bodyProjection =
+                        expandedFieldProjection(item.repeatItems);
+                    const quint64 currentFields =
+                        static_cast<quint64>(typedStruct.fields.size());
+                    const quint64 remaining =
+                        maximumExpandedFieldsPerStructure - currentFields;
+                    if (item.repeatMaximum == 0 ||
+                        item.repeatMaximum >
+                            DslTypedWhileRepeat::maximumIterations()) {
+                        addDiagnostic(
+                            result.diagnostics,
+                            DslDiagnosticCode::InvalidArrayLength,
+                            QStringLiteral(
+                                "While repeat maximum must be in the range 1..1024"),
+                            item.repeatMaximumRange);
+                    } else if (bodyProjection == 0) {
+                        addDiagnostic(
+                            result.diagnostics,
+                            DslDiagnosticCode::InvalidCondition,
+                            QStringLiteral(
+                                "A while repeat body must contain at least one field"),
+                            item.range);
+                    } else if (bodyProjection > remaining ||
+                               item.repeatMaximum > remaining / bodyProjection) {
+                        addDiagnostic(
+                            result.diagnostics,
+                            DslDiagnosticCode::InvalidArrayLength,
+                            QStringLiteral(
+                                "While repeat expansion exceeds the structure "
+                                "materialization limit"),
+                            item.range);
+                    } else {
+                        DslTypedWhileRepeat typedRepeat;
+                        typedRepeat.maximumIterationsCount = item.repeatMaximum;
+                        typedRepeat.conditions = conditions;
+                        typedRepeat.range = item.range;
+
+                        DslTypedExpression moreDataExpr;
+                        moreDataExpr.kind = DslTypedExpressionKind::MoreRbspData;
+                        moreDataExpr.type = DslScalarType::Bool;
+
+                        DslTypedFieldCondition whileCondition;
+                        whileCondition.fieldIndex = 0;
+                        whileCondition.expectedValue = 1;
+                        whileCondition.negated = false;
+                        whileCondition.op = DslConditionOperator::Equal;
+                        whileCondition.expression = moreDataExpr;
+
+                        std::vector<DslTypedFieldCondition> iterationConditions =
+                            conditions;
+                        iterationConditions.push_back(whileCondition);
+
+                        for (quint64 iteration = 0;
+                             iteration < item.repeatMaximum;
+                             ++iteration) {
+                            const std::size_t scopeStart = declaredFields.size();
+                            typedRepeat.firstFieldIndices.push_back(
+                                static_cast<quint32>(typedStruct.fields.size()));
+                            repeatIndices.push_back(iteration);
+                            fieldOffset = self(self,
+                                               item.repeatItems,
+                                               iterationConditions,
+                                               fieldOffset);
+                            repeatIndices.pop_back();
+                            declaredFields.resize(scopeStart);
+                        }
+                        typedRepeat.assertionFieldIndex =
+                            static_cast<quint32>(typedStruct.fields.size());
+                        typedStruct.whileRepeats.push_back(std::move(typedRepeat));
+                    }
+                    fieldOffset = std::nullopt;
+                    continue;
+                }
                 if (item.kind != DslStructItemKind::Switch) {
                     addDiagnostic(result.diagnostics,
                                   DslDiagnosticCode::InvalidCondition,
@@ -3076,6 +3153,13 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 return left.assertionFieldIndex < right.assertionFieldIndex;
             });
         std::stable_sort(
+            typedStruct.whileRepeats.begin(),
+            typedStruct.whileRepeats.end(),
+            [](const DslTypedWhileRepeat& left,
+               const DslTypedWhileRepeat& right) {
+                return left.assertionFieldIndex < right.assertionFieldIndex;
+            });
+        std::stable_sort(
             typedStruct.assertions.begin(),
             typedStruct.assertions.end(),
             [](const DslTypedAssertion& left, const DslTypedAssertion& right) {
@@ -3306,10 +3390,11 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         }
         structure.bytecodeOffset = static_cast<quint32>(typed.bytecode.size());
         bool emitted = appendInstruction({DslOpcode::BeginStructure, structIndex, 0});
-        std::size_t repeatBoundIndex = 0;
-        std::size_t sentinelRepeatIndex = 0;
-        std::size_t assertionIndex = 0;
-        for (std::size_t fieldIndex = 0; emitted && fieldIndex <= structure.fields.size();
+        quint32 repeatBoundIndex = 0;
+        quint32 sentinelRepeatIndex = 0;
+        quint32 whileRepeatIndex = 0;
+        quint32 assertionIndex = 0;
+        for (std::size_t fieldIndex = 0; fieldIndex <= structure.fields.size();
              ++fieldIndex) {
             while (emitted &&
                    sentinelRepeatIndex < structure.sentinelRepeats.size() &&
@@ -3321,6 +3406,15 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                      structure.sentinelRepeats.at(sentinelRepeatIndex)
                          .terminatingValue});
                 ++sentinelRepeatIndex;
+            }
+            while (emitted && whileRepeatIndex < structure.whileRepeats.size() &&
+                   structure.whileRepeats.at(whileRepeatIndex).assertionFieldIndex ==
+                       fieldIndex) {
+                emitted = appendInstruction(
+                    {DslOpcode::AssertWhileRepeatTerminated,
+                     static_cast<quint32>(whileRepeatIndex),
+                     structure.whileRepeats.at(whileRepeatIndex).maximumIterationsCount});
+                ++whileRepeatIndex;
             }
             while (emitted && assertionIndex < structure.assertions.size() &&
                    structure.assertions.at(assertionIndex).assertionFieldIndex ==
@@ -3425,6 +3519,14 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                           DslDiagnosticCode::InvalidCondition,
                           QStringLiteral(
                               "Typed sentinel repeat assertion position is invalid"),
+                          {});
+            emitted = false;
+        }
+        if (whileRepeatIndex != structure.whileRepeats.size()) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidCondition,
+                          QStringLiteral(
+                              "Typed while repeat assertion position is invalid"),
                           {});
             emitted = false;
         }

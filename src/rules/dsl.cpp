@@ -1287,41 +1287,71 @@ private:
                   QStringLiteral("Expected repeat maximum count"));
         }
         expect(DslTokenKind::RightParen, QStringLiteral("')' after repeat maximum"));
-        if (expect(DslTokenKind::LeftBrace, QStringLiteral("'{' after repeat header"))) {
-            parseStructItems(item.repeatItems);
-            expect(DslTokenKind::RightBrace, QStringLiteral("'}' after repeat body"));
-        } else {
-            recoverField();
-        }
-        if (item.kind == DslStructItemKind::SentinelRepeat) {
-            if (!isIdentifier(QStringLiteral("until"))) {
-                error(DslDiagnosticCode::MissingToken,
-                      QStringLiteral("Expected until clause after sentinel repeat body"));
+        if (item.kind == DslStructItemKind::SentinelRepeat &&
+            isIdentifier(QStringLiteral("while"))) {
+            item.kind = DslStructItemKind::WhileRepeat;
+            consume();
+            expect(DslTokenKind::LeftParen, QStringLiteral("'(' after while"));
+            if (!matchIdentifier(QStringLiteral("more_rbsp_data"))) {
+                error(DslDiagnosticCode::InvalidCondition,
+                      QStringLiteral("Expected 'more_rbsp_data' in while condition"));
             } else {
-                consume();
-            }
-            expect(DslTokenKind::LeftParen, QStringLiteral("'(' after until"));
-            if (at(DslTokenKind::Identifier)) {
-                item.sentinelFieldRange = current().range;
-                item.sentinelFieldName = consume().lexeme;
-            } else {
-                error(DslDiagnosticCode::MissingToken,
-                      QStringLiteral("Expected sentinel field name"));
-            }
-            expect(DslTokenKind::EqualEqual,
-                   QStringLiteral("'==' after sentinel field name"));
-            if (at(DslTokenKind::IntegerLiteral)) {
-                const DslToken value = consume();
-                item.sentinelValue = value.integerValue;
-                item.sentinelValueRange = value.range;
-            } else {
-                error(DslDiagnosticCode::MissingToken,
-                      QStringLiteral("Expected sentinel termination value"));
+                expect(DslTokenKind::LeftParen,
+                       QStringLiteral("'(' after more_rbsp_data"));
+                expect(DslTokenKind::RightParen,
+                       QStringLiteral("')' after more_rbsp_data"));
             }
             expect(DslTokenKind::RightParen,
-                   QStringLiteral("')' after sentinel termination value"));
-            expect(DslTokenKind::Semicolon,
-                   QStringLiteral("';' after sentinel repeat"));
+                   QStringLiteral("')' after while condition"));
+            if (expect(DslTokenKind::LeftBrace,
+                       QStringLiteral("'{' after while condition"))) {
+                parseStructItems(item.repeatItems);
+                expect(DslTokenKind::RightBrace,
+                       QStringLiteral("'}' after while repeat body"));
+            } else {
+                recoverField();
+            }
+            match(DslTokenKind::Semicolon);
+        } else {
+            if (expect(DslTokenKind::LeftBrace,
+                       QStringLiteral("'{' after repeat header"))) {
+                parseStructItems(item.repeatItems);
+                expect(DslTokenKind::RightBrace,
+                       QStringLiteral("'}' after repeat body"));
+            } else {
+                recoverField();
+            }
+            if (item.kind == DslStructItemKind::SentinelRepeat) {
+                if (!isIdentifier(QStringLiteral("until"))) {
+                    error(DslDiagnosticCode::MissingToken,
+                          QStringLiteral(
+                              "Expected until clause after sentinel repeat body"));
+                } else {
+                    consume();
+                }
+                expect(DslTokenKind::LeftParen, QStringLiteral("'(' after until"));
+                if (at(DslTokenKind::Identifier)) {
+                    item.sentinelFieldRange = current().range;
+                    item.sentinelFieldName = consume().lexeme;
+                } else {
+                    error(DslDiagnosticCode::MissingToken,
+                          QStringLiteral("Expected sentinel field name"));
+                }
+                expect(DslTokenKind::EqualEqual,
+                       QStringLiteral("'==' after sentinel field name"));
+                if (at(DslTokenKind::IntegerLiteral)) {
+                    const DslToken value = consume();
+                    item.sentinelValue = value.integerValue;
+                    item.sentinelValueRange = value.range;
+                } else {
+                    error(DslDiagnosticCode::MissingToken,
+                          QStringLiteral("Expected sentinel termination value"));
+                }
+                expect(DslTokenKind::RightParen,
+                       QStringLiteral("')' after sentinel termination value"));
+                expect(DslTokenKind::Semicolon,
+                       QStringLiteral("';' after sentinel repeat"));
+            }
         }
         item.range = {start, lexResult_.tokens.at(index_ - 1).range.end};
         items.push_back(std::move(item));
@@ -1536,7 +1566,8 @@ private:
                         self(self, arm.items, false, repeatLocal);
                     }
                 } else if (item.kind == DslStructItemKind::Repeat ||
-                           item.kind == DslStructItemKind::SentinelRepeat) {
+                           item.kind == DslStructItemKind::SentinelRepeat ||
+                           item.kind == DslStructItemKind::WhileRepeat) {
                     self(self, item.repeatItems, false, true);
                 }
             }
@@ -2660,7 +2691,8 @@ private:
                         }
                     }
                     if ((item.kind == DslStructItemKind::Repeat ||
-                         item.kind == DslStructItemKind::SentinelRepeat) &&
+                         item.kind == DslStructItemKind::SentinelRepeat ||
+                         item.kind == DslStructItemKind::WhileRepeat) &&
                         self(self, item.repeatItems)) {
                         return true;
                     }
@@ -3044,6 +3076,30 @@ private:
                         continue;
                     }
 
+                    if (item.kind == DslStructItemKind::WhileRepeat) {
+                        if (item.repeatMaximum == 0 ||
+                            item.repeatMaximum >
+                                DslStructItem::maximumWhileRepeatIterations()) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidArrayLength,
+                                 QStringLiteral(
+                                     "While repeat maximum must be in the range 1..1024"),
+                                 item.repeatMaximumRange});
+                        }
+                        if (!containsField(containsField, item.repeatItems)) {
+                            result_.diagnostics.push_back(
+                                {DslDiagnosticCode::InvalidCondition,
+                                 QStringLiteral(
+                                     "A while repeat body must contain at least one field"),
+                                 item.range});
+                        }
+                        const std::size_t scopeStart = declaredFields.size();
+                        (void)self(self, item.repeatItems, active, fieldOffset);
+                        declaredFields.resize(scopeStart);
+                        fieldOffset = std::nullopt;
+                        continue;
+                    }
+
                     if (item.kind == DslStructItemKind::LazyRegion) {
                         const DslLazyRegion& region = item.lazyRegion;
                         validateLazyAnnotations(region);
@@ -3408,6 +3464,7 @@ private:
                 break;
             case DslStructItemKind::Repeat:
             case DslStructItemKind::SentinelRepeat:
+            case DslStructItemKind::WhileRepeat:
                 if (declaresName(item.repeatItems, name)) {
                     return true;
                 }

@@ -1993,6 +1993,59 @@ private slots:
         QVERIFY(!missingClosing.succeeded());
         QVERIFY(hasDiagnostic(missingClosing, DslDiagnosticCode::MissingToken));
     }
+
+    void parsesWhileRepeatSyntax() {
+        const auto result = DslParser::parse(QStringLiteral(R"(
+            struct SeiRbsp {
+                repeat (64) while (more_rbsp_data()) {
+                    bits<8> payload_type;
+                    bits<8> payload_size;
+                }
+                rbsp_trailing_bits;
+            }
+            entry SeiRbsp;
+        )"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        QCOMPARE(result.program.structs.size(), std::size_t(1));
+        const auto& s = result.program.structs.front();
+        QCOMPARE(s.items.size(), std::size_t(2));
+
+        QCOMPARE(s.items.at(0).kind, DslStructItemKind::WhileRepeat);
+        QCOMPARE(s.items.at(0).repeatMaximum, quint64(64));
+        QCOMPARE(s.items.at(0).repeatItems.size(), std::size_t(2));
+
+        QCOMPARE(s.items.at(1).kind, DslStructItemKind::RbspTrailingBits);
+    }
+
+    void rejectsInvalidWhileRepeatMaximum() {
+        const auto zeroResult = DslParser::parse(QStringLiteral(
+            "struct S { repeat (0) while (more_rbsp_data()) { bits<8> x; } } entry S;"));
+        QVERIFY(!zeroResult.succeeded());
+        QVERIFY(hasDiagnostic(zeroResult, DslDiagnosticCode::InvalidArrayLength));
+
+        const auto overflowResult = DslParser::parse(QStringLiteral(
+            "struct S { repeat (1025) while (more_rbsp_data()) { bits<8> x; } } entry S;"));
+        QVERIFY(!overflowResult.succeeded());
+        QVERIFY(hasDiagnostic(overflowResult, DslDiagnosticCode::InvalidArrayLength));
+    }
+
+    void rejectsNonMoreRbspDataInWhileRepeatCondition() {
+        const auto badFunc = DslParser::parse(QStringLiteral(
+            "struct S { repeat (64) while (foo()) { bits<8> x; } } entry S;"));
+        QVERIFY(!badFunc.succeeded());
+        QVERIFY(hasDiagnostic(badFunc, DslDiagnosticCode::InvalidCondition));
+    }
+
+    void rejectsEmptyWhileRepeatBody() {
+        const auto emptyBody = DslParser::parse(QStringLiteral(
+            "struct S { repeat (64) while (more_rbsp_data()) { } } entry S;"));
+        QVERIFY(!emptyBody.succeeded());
+        QVERIFY(hasDiagnostic(emptyBody, DslDiagnosticCode::InvalidCondition));
+    }
 };
 
 QTEST_GUILESS_MAIN(DslTest)

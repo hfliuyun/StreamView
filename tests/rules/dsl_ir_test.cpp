@@ -3148,6 +3148,57 @@ private slots:
         QCOMPARE(compiled.program->bytecode.at(s.bytecodeOffset + 1).opcode,
                  streamview::rules::DslOpcode::ReadFfCoded);
     }
+
+    void lowersWhileRepeatToTypedIr() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct SeiRbsp {
+                repeat (4) while (more_rbsp_data()) {
+                    bits<8> payload_type;
+                }
+                rbsp_trailing_bits;
+            }
+            entry SeiRbsp;
+        )"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        QVERIFY(compiled.program.has_value());
+
+        const auto& s = compiled.program->structs.front();
+        QCOMPARE(s.whileRepeats.size(), std::size_t(1));
+        const auto& repeat = s.whileRepeats.front();
+        QCOMPARE(repeat.maximumIterationsCount, quint64(4));
+        QCOMPARE(repeat.firstFieldIndices.size(), std::size_t(4));
+        QCOMPARE(repeat.assertionFieldIndex, quint32(4));
+
+        // Each repeated field should have MoreRbspData condition
+        for (quint32 i = 0; i < 4; ++i) {
+            const auto& field = s.fields.at(i);
+            QCOMPARE(field.name, QStringLiteral("payload_type[%1]").arg(i));
+            QCOMPARE(field.conditions.size(), std::size_t(1));
+            QVERIFY(field.conditions.front().expression.has_value());
+            QCOMPARE(field.conditions.front().expression->kind,
+                     streamview::rules::DslTypedExpressionKind::MoreRbspData);
+            QCOMPARE(field.conditions.front().expectedValue, quint64(1));
+            QVERIFY(!field.conditions.front().negated);
+        }
+
+        // Bytecode has AssertWhileRepeatTerminated opcode
+        bool hasWhileRepeatAssertion = false;
+        for (const auto& instruction : compiled.program->bytecode) {
+            if (instruction.opcode ==
+                streamview::rules::DslOpcode::AssertWhileRepeatTerminated) {
+                hasWhileRepeatAssertion = true;
+                QCOMPARE(instruction.operand, quint32(0));
+                QCOMPARE(instruction.immediate, quint64(4));
+            }
+        }
+        QVERIFY(hasWhileRepeatAssertion);
+    }
 };
 
 QTEST_GUILESS_MAIN(DslIrTest)

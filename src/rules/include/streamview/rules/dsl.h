@@ -275,6 +275,7 @@ enum class DslStructItemKind : quint8 {
     Switch,
     Repeat,
     SentinelRepeat,
+    WhileRepeat,
 };
 
 enum class DslSwitchArmKind : quint8 {
@@ -285,6 +286,9 @@ enum class DslSwitchArmKind : quint8 {
 struct DslStructItem final {
     [[nodiscard]] static constexpr quint64 maximumSentinelRepeatIterations() noexcept {
         return 64;
+    }
+    [[nodiscard]] static constexpr quint64 maximumWhileRepeatIterations() noexcept {
+        return 1024;
     }
 
     struct SwitchArm final {

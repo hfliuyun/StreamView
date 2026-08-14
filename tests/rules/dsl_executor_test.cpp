@@ -7291,6 +7291,128 @@ private slots:
         QVERIFY(userDataNode.has_value());
         QCOMPARE(userDataNode->value().toULongLong(), quint64(0xaa));
     }
+
+    void decodesWhileRepeatZeroIterationsWhenAtRbspEnd() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct SeiRbsp {
+                repeat (4) while (more_rbsp_data()) {
+                    bits<8> payload_type;
+                }
+                rbsp_trailing_bits;
+            }
+            entry SeiRbsp;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        // 0x80 is rbsp_trailing_bits (10000000)
+        MemorySource source(bytes({0x80}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        auto tree = AnalysisTree::create(QStringLiteral("test"));
+        QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+        BitReader reader(source, *range);
+
+        const auto result = DslExecutor::decodeStruct(
+            *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+
+        QVERIFY2(result.status == DslExecutionStatus::Materialized, qPrintable(result.errorMessage));
+        QCOMPARE(result.bitsConsumed, quint64(8));
+        const auto structNode = tree->node(*result.structureNode);
+        QVERIFY(structNode.has_value());
+        // Only rbsp_stop_one_bit and alignment bits
+        QCOMPARE(structNode->children().size(), std::size_t(8));
+        QCOMPARE(tree->node(structNode->children().front())->name(),
+                 QStringLiteral("rbsp_stop_one_bit"));
+    }
+
+    void decodesWhileRepeatMultipleIterationsUntilRbspTrailingBits() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct SeiRbsp {
+                repeat (8) while (more_rbsp_data()) {
+                    bits<8> payload_type;
+                    bits<8> payload_size;
+                }
+                rbsp_trailing_bits;
+            }
+            entry SeiRbsp;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        // Message 1: 0x05, 0x02
+        // Message 2: 0x01, 0x04
+        // rbsp_trailing_bits: 0x80
+        MemorySource source(bytes({0x05, 0x02, 0x01, 0x04, 0x80}));
+        const auto mapping = mappingForBytes(5);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 40);
+        auto tree = AnalysisTree::create(QStringLiteral("test"));
+        QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+        BitReader reader(source, *range);
+
+        const auto result = DslExecutor::decodeStruct(
+            *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(40));
+        const auto structNode = tree->node(*result.structureNode);
+        QVERIFY(structNode.has_value());
+        // 4 fields for 2 iterations + 8 trailing bit fields = 12 fields
+        QCOMPARE(structNode->children().size(), std::size_t(12));
+
+        const std::vector<QString> expectedNames{
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+            QStringLiteral("payload_type[1]"),
+            QStringLiteral("payload_size[1]"),
+            QStringLiteral("rbsp_stop_one_bit"),
+            QStringLiteral("rbsp_alignment_zero_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5]"),
+            QStringLiteral("rbsp_alignment_zero_bit[6]"),
+        };
+        for (std::size_t i = 0; i < expectedNames.size(); ++i) {
+            const auto child = tree->node(structNode->children().at(i));
+            QVERIFY(child.has_value());
+            QCOMPARE(child->name(), expectedNames.at(i));
+        }
+
+        QCOMPARE(tree->node(structNode->children().at(0))->value().toULongLong(), quint64(5));
+        QCOMPARE(tree->node(structNode->children().at(1))->value().toULongLong(), quint64(2));
+        QCOMPARE(tree->node(structNode->children().at(2))->value().toULongLong(), quint64(1));
+        QCOMPARE(tree->node(structNode->children().at(3))->value().toULongLong(), quint64(4));
+    }
+
+    void rejectsWhileRepeatExceedingMaximumIterations() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct SeiRbsp {
+                repeat (2) while (more_rbsp_data()) {
+                    bits<8> payload_type;
+                }
+                rbsp_trailing_bits;
+            }
+            entry SeiRbsp;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        // 3 bytes of data + 0x80 trailing bits, but repeat maximum is 2
+        MemorySource source(bytes({0x01, 0x02, 0x03, 0x80}));
+        const auto mapping = mappingForBytes(4);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 32);
+        auto tree = AnalysisTree::create(QStringLiteral("test"));
+        QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+        BitReader reader(source, *range);
+
+        const auto result = DslExecutor::decodeStruct(
+            *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::InvalidSyntax);
+        QVERIFY(result.errorMessage.contains(QStringLiteral("While repeat did not terminate")));
+    }
 };
 
 QTEST_GUILESS_MAIN(DslExecutorTest)

@@ -139,6 +139,16 @@ struct DslTypedSentinelRepeat final {
     DslSourceRange range;
 };
 
+struct DslTypedWhileRepeat final {
+    [[nodiscard]] static constexpr quint64 maximumIterations() noexcept { return 1024; }
+
+    std::vector<quint32> firstFieldIndices;
+    quint32 assertionFieldIndex = 0;
+    quint64 maximumIterationsCount = 0;
+    std::vector<DslTypedFieldCondition> conditions;
+    DslSourceRange range;
+};
+
 struct DslTypedAssertion final {
     [[nodiscard]] static constexpr std::size_t maximumPerStructure() noexcept {
         return 1'024;
@@ -182,6 +192,7 @@ struct DslTypedStruct final {
     std::vector<DslTypedField> fields;
     std::vector<DslTypedRepeatBound> repeatBounds;
     std::vector<DslTypedSentinelRepeat> sentinelRepeats;
+    std::vector<DslTypedWhileRepeat> whileRepeats;
     std::vector<DslTypedAssertion> assertions;
     std::optional<DslTypedContextDefinition> contextDefinition;
     std::vector<DslTypedContextImport> contextImports;
@@ -240,6 +251,7 @@ enum class DslOpcode : quint8 {
     AssertRangeMaximum,
     AssertRepeatCount,
     AssertSentinelTerminated,
+    AssertWhileRepeatTerminated,
     AssertExpression,
     EndStructure,
 };
