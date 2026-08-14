@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Implement bounded repeat while (more_rbsp_data()) in DSL compiler and VM runtime (T5b / ADR-0080)
-Next Action: Specify and implement SEI container structure and dispatch (Task T6); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31821440613 (macOS job 94835366232, Windows job 94835366114, Ubuntu job 94835366166) passed 100%
+Last Completed Step: Specify and implement SEI container structure and dispatch (Task T6 / package 0.1.31 / ADR-0080)
+Next Action: Specify and implement Task T7 (user_data_unregistered SEI payload parsing); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31824494864 (Ubuntu job 94845285948, macOS job 94845285989, Windows job 94845286130) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -184,7 +184,7 @@ Blockers: None
     non-fatal value-domain constraint。
   - [x] 有界 HRD parameters。
 - [x] 完成 Baseline/Main/High 8-bit 4:2:0 slice header；slice data 标记为压缩载荷。
-- [ ] 所有 SEI 解析 payloadType/payloadSize。
+- [x] 所有 SEI 解析 payloadType/payloadSize。
 - [ ] 深入解析 buffering period、pic timing、用户数据、recovery point、frame packing 和 display orientation。
 - [x] 支持同 ID SPS/PPS 中途重定义和按位置选择。
 - [ ] 为声明范围内每个字段建立规范引用、双语说明、合法/非法样例和 source-span 断言。
@@ -1183,3 +1183,20 @@ Blockers: None
      - tests/rules/dsl_ir_test.cpp：覆盖 DslTypedWhileRepeat 生成、MoreRbspData 迭代条件以及 AssertWhileRepeatTerminated 指令生成；
      - tests/rules/dsl_executor_test.cpp：覆盖 0 次迭代退出（直接遇到 rbsp_trailing_bits）、多迭代正常解码以及超过最大迭代次数时的 InvalidSyntax 报错。
   svtool rule check 通过；本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告。hosted run 31821440613 在 macOS 15 / Qt 6.11.1（job 94835366232）、Windows 2022 / Qt 6.10.1（job 94835366114）、Ubuntu 24.04 / Qt 6.11.1（job 94835366166）全部成功。
+- 2026-08-15：完成 SEI 容器结构与派发实现（任务 T6 / 阶段 3 第 3 项 / ADR-0080）。
+  1. 官方规则包（`src/rules/official/org.streamview.h264/src/h264_annex_b.svfmt`）：
+     - 新增 `SeiRbsp` 结构体，包含 `repeat (64) while (more_rbsp_data())` 循环，每个 message 解析 `ff_coded<8> payload_type`、`ff_coded<64> payload_size`、`@lazy(payload_size) bytes payload_data`，以 `rbsp_trailing_bits;` 结尾；
+     - 在 `payload<rbsp> nal_units` 派发表中加入 `case 6: SeiRbsp;`；
+     - `rule.toml` 包版本升级至 `0.1.31`。
+  2. VM 与编译器增强：
+     - `src/rules/dsl_vm.cpp`：在 `executeStructure` 中增加 `WhileRepeatRuntimeState`，动态在每次迭代起始点探测 `more_rbsp_data()` 并跨该迭代内的所有字段保持 active 状态；
+     - `src/rules/dsl_ir.cpp` 与 `dsl.cpp`：完善 `OffsetTracker` 对 while repeat 和 lazy byte region 的字节对齐检查与传播。
+  3. 自动化测试套件（`tests/rules/h264_annex_b_analyzer_test.cpp`）：
+     - 新增 5 个 SEI 针对性测试用例：单 SEI 消息、同一 NAL 内多 SEI 消息、跨字节 `ff_coded` payload type 与 size（256/257）、0 长度 SEI payload、截断 SEI 码流安全回滚；
+     - 验证所有节点均具有完整有序子节点列表与准确 source spans。
+  4. 测试与验证：
+     - `svtool rule check` 通过；
+     - H.264 analyzer 套件增至 133/133；DSL parser 77/77、DSL IR 77/77、executor 127/127 全部通过；
+     - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
+     - hosted run `31824494864` 在 Ubuntu 24.04 / Qt 6.11.1（job `94845285948`）、macOS 15 / Qt 6.11.1（job `94845285989`）、Windows 2022 / Qt 6.10.1（job `94845286130`）全部成功。
+  勾选阶段 3 第 3 项（所有 SEI 解析 payloadType/payloadSize）。Next Action 指向 Task T7。
