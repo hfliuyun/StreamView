@@ -285,6 +285,33 @@ void appendPictureParameterSetBase(std::vector<bool>& bits,
     return packAnnexBNal(idr ? 0x65 : 0x01, std::move(bits));
 }
 
+void appendFfCoded(std::vector<bool>& bits, quint64 value) {
+    while (value >= 0xff) {
+        appendFixedBits(bits, 0xff, 8);
+        value -= 0xff;
+    }
+    appendFixedBits(bits, value, 8);
+}
+
+struct SeiMessagePayload {
+    quint64 payloadType = 0;
+    std::vector<quint8> payloadBytes;
+};
+
+[[nodiscard]] std::vector<std::byte> packSeiNal(
+    const std::vector<SeiMessagePayload>& messages,
+    bool appendTrailingBits = true) {
+    std::vector<bool> bits;
+    for (const auto& msg : messages) {
+        appendFfCoded(bits, msg.payloadType);
+        appendFfCoded(bits, msg.payloadBytes.size());
+        for (const quint8 byteVal : msg.payloadBytes) {
+            appendFixedBits(bits, byteVal, 8);
+        }
+    }
+    return packAnnexBNal(0x06, std::move(bits), appendTrailingBits);
+}
+
 [[nodiscard]] std::vector<std::byte> replaceCodewordBeforeNextNal(
     std::vector<std::byte> data,
     std::size_t sourceBitOffset,
@@ -584,7 +611,7 @@ private slots:
         QVERIFY2(!source.isEmpty(), qPrintable(errorMessage));
         const auto parsed = DslParser::parse(source);
         QVERIFY(parsed.succeeded());
-        QCOMPARE(parsed.program.structs.size(), std::size_t(6));
+        QCOMPARE(parsed.program.structs.size(), std::size_t(7));
         QCOMPARE(parsed.program.structs.at(0).name, QStringLiteral("NalUnitHeader"));
         QCOMPARE(parsed.program.structs.at(0).items.size(), std::size_t(4));
         QCOMPARE(parsed.program.structs.at(0).items.back().kind,
@@ -610,6 +637,10 @@ private slots:
                  QStringLiteral("NonIdrSliceLayerWithoutPartitioningRbsp"));
         QCOMPARE(parsed.program.structs.at(5).items.back().kind,
                  streamview::rules::DslStructItemKind::CompressedPayload);
+        QCOMPARE(parsed.program.structs.at(6).name,
+                 QStringLiteral("SeiRbsp"));
+        QCOMPARE(parsed.program.structs.at(6).items.back().kind,
+                 streamview::rules::DslStructItemKind::RbspTrailingBits);
         QCOMPARE(parsed.program.scans.size(), std::size_t(1));
         QCOMPARE(parsed.program.entry.targetName, QStringLiteral("nal_units"));
         QVERIFY(parsed.program.payloadDispatch.has_value());
@@ -617,12 +648,17 @@ private slots:
         QCOMPARE(dispatch.viewKind, QStringLiteral("rbsp"));
         QCOMPARE(dispatch.sequenceName, QStringLiteral("nal_units"));
         QCOMPARE(dispatch.controllerFieldName, QStringLiteral("nal_unit_type"));
-        QCOMPARE(dispatch.cases.size(), std::size_t(7));
+        QCOMPARE(dispatch.cases.size(), std::size_t(8));
         QCOMPARE(dispatch.cases.at(0).value, quint64(1));
         QCOMPARE(dispatch.cases.at(0).kind,
                  streamview::rules::DslPayloadCaseKind::Structure);
         QCOMPARE(dispatch.cases.at(0).targetName,
                  QStringLiteral("NonIdrSliceLayerWithoutPartitioningRbsp"));
+        QCOMPARE(dispatch.cases.at(2).value, quint64(6));
+        QCOMPARE(dispatch.cases.at(2).kind,
+                 streamview::rules::DslPayloadCaseKind::Structure);
+        QCOMPARE(dispatch.cases.at(2).targetName,
+                 QStringLiteral("SeiRbsp"));
     }
 
     void decodesTheSupportedBaselineSequenceParameterSetPayload() {
@@ -8212,6 +8248,314 @@ private slots:
                  limitedRoot->state());
         QCOMPARE(limitedAnalyzer->analyzeBatch().status,
                  H264AnnexBAnalysisStatus::ResourceLimit);
+    }
+
+    void decodesTheSupportedSeiPayloadWithSingleMessage() {
+        const auto stream = packSeiNal({{5, {0x11, 0x22, 0x33, 0x44}}});
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        QCOMPARE(rbsp->state(), MaterializationState::Materialized);
+        QCOMPARE(rbsp->children().size(), std::size_t(1));
+
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->name(), QStringLiteral("SeiRbsp"));
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+        QCOMPARE(sei->metadata().specification->clause, QStringLiteral("7.3.2.3"));
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        QStringList expectedChildren = {
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+            QStringLiteral("payload_data[0]"),
+            QStringLiteral("rbsp_stop_one_bit"),
+        };
+        for (std::size_t index = 0; index < 7; ++index) {
+            expectedChildren.append(
+                QStringLiteral("rbsp_alignment_zero_bit[%1]").arg(index));
+        }
+        QCOMPARE(childNamesOf(*sei), expectedChildren);
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        const auto payloadType = fieldNamed(*sei, QStringLiteral("payload_type[0]"));
+        QVERIFY(payloadType.has_value());
+        QCOMPARE(payloadType->value().toULongLong(), quint64(5));
+        QCOMPARE(payloadType->location()->logicalRange().bitLength(), quint64(8));
+        QCOMPARE(payloadType->metadata().specification->clause, QStringLiteral("7.3.2.3.1"));
+
+        const auto payloadSize = fieldNamed(*sei, QStringLiteral("payload_size[0]"));
+        QVERIFY(payloadSize.has_value());
+        QCOMPARE(payloadSize->value().toULongLong(), quint64(4));
+        QCOMPARE(payloadSize->location()->logicalRange().bitLength(), quint64(8));
+        QCOMPARE(payloadSize->metadata().specification->clause, QStringLiteral("7.3.2.3.1"));
+
+        const auto payloadData = fieldNamed(*sei, QStringLiteral("payload_data[0]"));
+        QVERIFY(payloadData.has_value());
+        QCOMPARE(payloadData->state(), MaterializationState::Lazy);
+        QCOMPARE(payloadData->location()->logicalRange().bitLength(), quint64(32));
+        QCOMPARE(payloadData->metadata().specification->clause, QStringLiteral("7.3.2.3.1"));
+
+        const auto stopBit = fieldNamed(*sei, QStringLiteral("rbsp_stop_one_bit"));
+        QVERIFY(stopBit.has_value());
+        QCOMPARE(stopBit->value().toULongLong(), quint64(1));
+        QCOMPARE(stopBit->location()->logicalRange().bitLength(), quint64(1));
+
+        for (std::size_t index = 0; index < 7; ++index) {
+            const auto alignBit = fieldNamed(
+                *sei, QStringLiteral("rbsp_alignment_zero_bit[%1]").arg(index));
+            QVERIFY(alignBit.has_value());
+            QCOMPARE(alignBit->value().toULongLong(), quint64(0));
+            QCOMPARE(alignBit->location()->logicalRange().bitLength(), quint64(1));
+        }
+    }
+
+    void decodesMultipleSeiMessagesInSingleNalUnit() {
+        const auto stream = packSeiNal({
+            {5, {0xaa, 0xbb}},
+            {6, {0x01, 0x02, 0x03}}
+        });
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        QStringList expectedChildren = {
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+            QStringLiteral("payload_data[0]"),
+            QStringLiteral("payload_type[1]"),
+            QStringLiteral("payload_size[1]"),
+            QStringLiteral("payload_data[1]"),
+            QStringLiteral("rbsp_stop_one_bit"),
+        };
+        for (std::size_t index = 0; index < 7; ++index) {
+            expectedChildren.append(
+                QStringLiteral("rbsp_alignment_zero_bit[%1]").arg(index));
+        }
+        QCOMPARE(childNamesOf(*sei), expectedChildren);
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        const auto type0 = fieldNamed(*sei, QStringLiteral("payload_type[0]"));
+        QVERIFY(type0.has_value());
+        QCOMPARE(type0->value().toULongLong(), quint64(5));
+
+        const auto size0 = fieldNamed(*sei, QStringLiteral("payload_size[0]"));
+        QVERIFY(size0.has_value());
+        QCOMPARE(size0->value().toULongLong(), quint64(2));
+
+        const auto data0 = fieldNamed(*sei, QStringLiteral("payload_data[0]"));
+        QVERIFY(data0.has_value());
+        QCOMPARE(data0->location()->logicalRange().bitLength(), quint64(16));
+
+        const auto type1 = fieldNamed(*sei, QStringLiteral("payload_type[1]"));
+        QVERIFY(type1.has_value());
+        QCOMPARE(type1->value().toULongLong(), quint64(6));
+
+        const auto size1 = fieldNamed(*sei, QStringLiteral("payload_size[1]"));
+        QVERIFY(size1.has_value());
+        QCOMPARE(size1->value().toULongLong(), quint64(3));
+
+        const auto data1 = fieldNamed(*sei, QStringLiteral("payload_data[1]"));
+        QVERIFY(data1.has_value());
+        QCOMPARE(data1->location()->logicalRange().bitLength(), quint64(24));
+    }
+
+    void decodesSeiMessageWithFfCodedPayloadTypeAndSize() {
+        std::vector<quint8> payloadBytes(257, 0x42);
+        const auto stream = packSeiNal({{256, payloadBytes}});
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        const auto payloadType = fieldNamed(*sei, QStringLiteral("payload_type[0]"));
+        QVERIFY(payloadType.has_value());
+        QCOMPARE(payloadType->value().toULongLong(), quint64(256));
+        QCOMPARE(payloadType->location()->logicalRange().bitLength(), quint64(16));
+
+        const auto payloadSize = fieldNamed(*sei, QStringLiteral("payload_size[0]"));
+        QVERIFY(payloadSize.has_value());
+        QCOMPARE(payloadSize->value().toULongLong(), quint64(257));
+        QCOMPARE(payloadSize->location()->logicalRange().bitLength(), quint64(16));
+
+        const auto payloadData = fieldNamed(*sei, QStringLiteral("payload_data[0]"));
+        QVERIFY(payloadData.has_value());
+        QCOMPARE(payloadData->location()->logicalRange().bitLength(), quint64(257 * 8));
+    }
+
+    void decodesSeiMessageWithZeroPayloadSize() {
+        const auto stream = packSeiNal({{1, {}}});
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        const QStringList expectedChildren = {
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+            QStringLiteral("payload_data[0]"),
+            QStringLiteral("rbsp_stop_one_bit"),
+            QStringLiteral("rbsp_alignment_zero_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5]"),
+            QStringLiteral("rbsp_alignment_zero_bit[6]"),
+        };
+        QCOMPARE(childNamesOf(*sei), expectedChildren);
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        const auto payloadSize = fieldNamed(*sei, QStringLiteral("payload_size[0]"));
+        QVERIFY(payloadSize.has_value());
+        QCOMPARE(payloadSize->value().toULongLong(), quint64(0));
+        QCOMPARE(payloadSize->location()->logicalRange().bitLength(), quint64(8));
+
+        const auto payloadData = fieldNamed(*sei, QStringLiteral("payload_data[0]"));
+        QVERIFY(payloadData.has_value());
+        QCOMPARE(payloadData->location()->logicalRange().bitLength(), quint64(0));
+    }
+
+    void reportsTruncatedSeiPayloadAndContinues() {
+        std::vector<bool> truncatedBits;
+        appendFfCoded(truncatedBits, 5);
+        appendFfCoded(truncatedBits, 20);
+        appendFixedBits(truncatedBits, 0x11, 8);
+        appendFixedBits(truncatedBits, 0x22, 8);
+        auto stream = packAnnexBNal(0x06, std::move(truncatedBits), false);
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x50}));
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+
+        const auto seiNal = analyzer->tree().node(batch.nalUnitNodes.at(0));
+        QVERIFY(seiNal.has_value());
+        QCOMPARE(seiNal->state(), MaterializationState::Invalid);
+
+        const auto audNal = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(audNal.has_value());
+        QCOMPARE(audNal->state(), MaterializationState::Materialized);
     }
 
     void reportsInputWithoutAStartCodeAsInvalid() {

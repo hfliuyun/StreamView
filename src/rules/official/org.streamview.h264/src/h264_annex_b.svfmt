@@ -719,6 +719,24 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
         @spec("ITU-T H.264", "7.3.2.10");
 }
 
+@spec("ITU-T H.264", "7.3.2.3")
+@description("Supplemental enhancement information (SEI) raw byte sequence payload.")
+struct SeiRbsp {
+    repeat (64) while (more_rbsp_data()) {
+        ff_coded<8> payload_type
+            @spec("ITU-T H.264", "7.3.2.3.1")
+            @description("Identifies the SEI message payload type.");
+        ff_coded<64> payload_size
+            @spec("ITU-T H.264", "7.3.2.3.1")
+            @description("Specifies the SEI message payload byte size.");
+        @lazy(payload_size)
+        bytes payload_data
+            @spec("ITU-T H.264", "7.3.2.3.1")
+            @description("Carries the raw SEI message payload bytes.");
+    }
+    rbsp_trailing_bits;
+}
+
 @index(progressive)
 sequence<NalUnitHeader> nal_units = scan(h264_start_code);
 
@@ -727,6 +745,7 @@ sequence<NalUnitHeader> nal_units = scan(h264_start_code);
 payload<rbsp> nal_units switch (nal_unit_type) {
     case 1: NonIdrSliceLayerWithoutPartitioningRbsp;
     case 5: IdrSliceLayerWithoutPartitioningRbsp;
+    case 6: SeiRbsp;
     case 7: SequenceParameterSetRbsp;
     case 8: PictureParameterSetRbsp;
     case 9: AccessUnitDelimiterRbsp;

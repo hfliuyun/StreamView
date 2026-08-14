@@ -1727,10 +1727,14 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             return elementReference;
         };
         sequenceElementResolver = resolveHeaderValue;
+        struct OffsetTracker {
+            std::optional<quint64> exactBitOffset = 0;
+            bool byteAligned = true;
+        };
         const auto compileField = [&](const DslBitField& field,
                                       const std::vector<DslTypedFieldCondition>& conditions,
-                                      std::optional<quint64> fieldOffset)
-            -> std::optional<quint64> {
+                                      OffsetTracker tracker)
+            -> OffsetTracker {
             const quint64 elementCount = field.arrayLength.value_or(1);
             if (elementCount == 0 ||
                 elementCount > maximumExpandedFieldsPerStructure - typedStruct.fields.size()) {
@@ -1746,7 +1750,9 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                           DslScalarType::U64,
                                           std::nullopt,
                                           conditions});
-                return std::nullopt;
+                tracker.exactBitOffset = std::nullopt;
+                tracker.byteAligned = false;
+                return tracker;
             }
             const bool isBits = field.encoding == DslFieldEncoding::Bits;
             const bool isUnsignedExpGolomb =
@@ -1766,7 +1772,9 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                           DslScalarType::U64,
                                           std::nullopt,
                                           conditions});
-                return std::nullopt;
+                tracker.exactBitOffset = std::nullopt;
+                tracker.byteAligned = false;
+                return tracker;
             }
             if (isBits && !isDynamicBits &&
                 (field.width == 0 || field.width > 64)) {
@@ -1780,7 +1788,9 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                           DslScalarType::U64,
                                           std::nullopt,
                                           conditions});
-                return std::nullopt;
+                tracker.exactBitOffset = std::nullopt;
+                tracker.byteAligned = false;
+                return tracker;
             }
             if (isFfCoded && (field.maxBytes < 1 || field.maxBytes > 64)) {
                 addDiagnostic(result.diagnostics,
@@ -1793,7 +1803,9 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                           DslScalarType::U64,
                                           std::nullopt,
                                           conditions});
-                return std::nullopt;
+                tracker.exactBitOffset = std::nullopt;
+                tracker.byteAligned = false;
+                return tracker;
             }
             if (!isBits && field.width != 0) {
                 addDiagnostic(result.diagnostics,
@@ -1840,7 +1852,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                               field.range);
             }
             if (isBits && field.endian == DslEndian::Little &&
-                (!fieldOffset || *fieldOffset % 8 != 0)) {
+                (!tracker.exactBitOffset || *tracker.exactBitOffset % 8 != 0)) {
                 addDiagnostic(
                     result.diagnostics,
                     DslDiagnosticCode::InvalidEndian,
@@ -2096,31 +2108,44 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                       DslScalarType::U64,
                                       firstTypedIndex,
                                       conditions});
-            if (!isBits) {
-                return std::nullopt;
+            if (field.encoding == DslFieldEncoding::FfCoded) {
+                tracker.exactBitOffset = std::nullopt;
+                // tracker.byteAligned is unchanged
+                return tracker;
             }
-            if (isDynamicBits) {
-                return std::nullopt;
+            if (!isBits || isDynamicBits) {
+                tracker.exactBitOffset = std::nullopt;
+                tracker.byteAligned = false;
+                return tracker;
             }
             if (elementCount > std::numeric_limits<quint64>::max() / field.width) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidArrayLength,
                               QStringLiteral("Fixed array bit width is too large"),
                               field.range);
-                return std::nullopt;
-            }
-            if (!fieldOffset) {
-                return std::nullopt;
+                tracker.exactBitOffset = std::nullopt;
+                tracker.byteAligned = false;
+                return tracker;
             }
             const quint64 totalWidth = elementCount * field.width;
-            if (*fieldOffset > std::numeric_limits<quint64>::max() - totalWidth) {
-                addDiagnostic(result.diagnostics,
-                              DslDiagnosticCode::InvalidType,
-                              QStringLiteral("Structure bit width is too large"),
-                              structure.range);
-                return std::nullopt;
+            if (tracker.exactBitOffset &&
+                *tracker.exactBitOffset <= std::numeric_limits<quint64>::max() - totalWidth) {
+                *tracker.exactBitOffset += totalWidth;
+                tracker.byteAligned = (*tracker.exactBitOffset % 8 == 0);
+            } else {
+                if (tracker.exactBitOffset &&
+                    *tracker.exactBitOffset > std::numeric_limits<quint64>::max() - totalWidth) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidType,
+                                  QStringLiteral("Structure bit width is too large"),
+                                  structure.range);
+                }
+                tracker.exactBitOffset = std::nullopt;
+                if (totalWidth % 8 != 0) {
+                    tracker.byteAligned = false;
+                }
             }
-            return *fieldOffset + totalWidth;
+            return tracker;
         };
         const auto validatePresentationOnlyAnnotations =
             [&result](const std::vector<DslAnnotation>& annotations,
@@ -2151,7 +2176,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         const auto compileComputed =
             [&](const DslComputedField& field,
                 const std::vector<DslTypedFieldCondition>& conditions,
-                std::optional<quint64> fieldOffset) -> std::optional<quint64> {
+                OffsetTracker tracker) -> OffsetTracker {
             if (typedStruct.fields.size() >= maximumExpandedFieldsPerStructure) {
                 addDiagnostic(
                     result.diagnostics, DslDiagnosticCode::InvalidArrayLength,
@@ -2160,7 +2185,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     field.range);
                 declaredFields.push_back(
                     {field.name, nullptr, &field, field.type, std::nullopt, conditions});
-                return fieldOffset;
+                return tracker;
             }
             if (!validScalarType(field.type)) {
                 addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidType,
@@ -2244,23 +2269,25 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             }
             declaredFields.push_back(
                 {field.name, nullptr, &field, field.type, typedIndex, conditions});
-            return fieldOffset;
+            return tracker;
         };
         const auto compileLazyRegion =
             [&](const DslLazyRegion& region,
                 const std::vector<DslTypedFieldCondition>& conditions,
-                std::optional<quint64> fieldOffset) -> std::optional<quint64> {
+                OffsetTracker tracker) -> OffsetTracker {
             if (typedStruct.fields.size() >= maximumExpandedFieldsPerStructure) {
                 addDiagnostic(
                     result.diagnostics, DslDiagnosticCode::InvalidArrayLength,
                     QStringLiteral(
                         "Lazy byte region expansion exceeds the structure materialization limit"),
                     region.range);
-                return std::nullopt;
+                tracker.exactBitOffset = std::nullopt;
+                tracker.byteAligned = false;
+                return tracker;
             }
             validatePresentationOnlyAnnotations(
                 region.annotations, QStringLiteral("Lazy byte regions"));
-            if (!fieldOffset || *fieldOffset % 8 != 0) {
+            if (!tracker.byteAligned) {
                 addDiagnostic(
                     result.diagnostics, DslDiagnosticCode::InvalidEndian,
                     QStringLiteral(
@@ -2300,21 +2327,27 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             for (const quint64 repeatIndex : repeatIndices) {
                 typedField.name += QStringLiteral("[%1]").arg(repeatIndex);
             }
-            typedField.type = {DslValueTypeKind::LazyBytes, quint8(0), DslEndian::Big,
+            typedField.kind = DslTypedFieldKind::Declared;
+            typedField.type = {DslValueTypeKind::LazyBytes,
+                               quint8(0),
+                               DslEndian::Big,
                                std::nullopt};
-            typedField.lazyByteCountExpression = expression;
             typedField.conditions = conditions;
+            typedField.lazyByteCountExpression = expression;
             typedField.metadata =
                 metadataForAnnotations(region.annotations, typedStruct.metadata.specification);
             typedField.metadata.typeName = QStringLiteral("bytes");
             typedField.range = region.range;
             typedStruct.fields.push_back(std::move(typedField));
-            return std::nullopt;
+            tracker.exactBitOffset = std::nullopt;
+            tracker.byteAligned = false;
+            return tracker;
         };
         const auto compileCompressedPayload =
             [&](const DslCompressedPayload& payload,
-                const std::vector<DslTypedFieldCondition>& conditions)
-            -> std::optional<quint64> {
+                const std::vector<DslTypedFieldCondition>& conditions,
+                OffsetTracker tracker)
+            -> OffsetTracker {
             if (!conditions.empty() || !repeatIndices.empty()) {
                 addDiagnostic(
                     result.diagnostics,
@@ -2336,13 +2369,16 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     QStringLiteral(
                         "Compressed payload exceeds the structure materialization limit"),
                     payload.range);
-                return std::nullopt;
+                tracker.exactBitOffset = std::nullopt;
+                tracker.byteAligned = false;
+                return tracker;
             }
             validatePresentationOnlyAnnotations(
                 payload.annotations, QStringLiteral("Compressed payloads"));
 
             DslTypedField typedField;
             typedField.name = payload.name;
+            typedField.kind = DslTypedFieldKind::Declared;
             typedField.type = {DslValueTypeKind::CompressedPayload,
                                quint8(0),
                                DslEndian::Big,
@@ -2352,7 +2388,9 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             typedField.metadata.typeName = QStringLiteral("compressed_payload");
             typedField.range = payload.range;
             typedStruct.fields.push_back(std::move(typedField));
-            return std::nullopt;
+            tracker.exactBitOffset = std::nullopt;
+            tracker.byteAligned = false;
+            return tracker;
         };
         const auto compileAssertion =
             [&](const DslAssertion& assertion,
@@ -2488,18 +2526,18 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         const auto compileItems =
             [&](const auto& self, const std::vector<DslStructItem>& items,
                 const std::vector<DslTypedFieldCondition>& conditions,
-                std::optional<quint64> fieldOffset) -> std::optional<quint64> {
+                OffsetTracker tracker) -> OffsetTracker {
             for (const DslStructItem& item : items) {
                 if (item.kind == DslStructItemKind::Field) {
-                    fieldOffset = compileField(item.field, conditions, fieldOffset);
+                    tracker = compileField(item.field, conditions, tracker);
                     continue;
                 }
                 if (item.kind == DslStructItemKind::Computed) {
-                    fieldOffset = compileComputed(item.computed, conditions, fieldOffset);
+                    tracker = compileComputed(item.computed, conditions, tracker);
                     continue;
                 }
                 if (item.kind == DslStructItemKind::LazyRegion) {
-                    fieldOffset = compileLazyRegion(item.lazyRegion, conditions, fieldOffset);
+                    tracker = compileLazyRegion(item.lazyRegion, conditions, tracker);
                     continue;
                 }
                 if (item.kind == DslStructItemKind::Assertion) {
@@ -2507,8 +2545,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     continue;
                 }
                 if (item.kind == DslStructItemKind::CompressedPayload) {
-                    fieldOffset =
-                        compileCompressedPayload(item.compressedPayload, conditions);
+                    tracker =
+                        compileCompressedPayload(item.compressedPayload, conditions, tracker);
                     continue;
                 }
                 if (item.kind == DslStructItemKind::RbspTrailingBits) {
@@ -2520,7 +2558,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                             QStringLiteral(
                                 "rbsp_trailing_bits must be an unconditional top-level item"),
                             item.range);
-                        fieldOffset = std::nullopt;
+                        tracker.exactBitOffset = std::nullopt;
+                        tracker.byteAligned = false;
                         continue;
                     }
                     const bool reservesADeclaredName =
@@ -2538,7 +2577,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                             QStringLiteral(
                                 "rbsp_trailing_bits reserves generated field names"),
                             item.range);
-                        fieldOffset = std::nullopt;
+                        tracker.exactBitOffset = std::nullopt;
+                        tracker.byteAligned = false;
                         continue;
                     }
                     if (reservedFieldCount > maximumExpandedFieldsPerStructure -
@@ -2549,7 +2589,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                             QStringLiteral(
                                 "rbsp_trailing_bits exceeds the structure materialization limit"),
                             item.range);
-                        fieldOffset = std::nullopt;
+                        tracker.exactBitOffset = std::nullopt;
+                        tracker.byteAligned = false;
                         continue;
                     }
                     for (quint32 index = 0; index < reservedFieldCount; ++index) {
@@ -2578,7 +2619,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                         typedField.range = item.rbspTrailingBits.range;
                         typedStruct.fields.push_back(std::move(typedField));
                     }
-                    fieldOffset = std::nullopt;
+                    tracker.exactBitOffset = std::nullopt;
+                    tracker.byteAligned = true;
                     continue;
                 }
                 if (item.kind == DslStructItemKind::Conditional) {
@@ -2591,17 +2633,19 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                         negated.negated = true;
                         elseConditions.push_back(negated);
                     }
-                    const auto thenOffset =
-                        self(self, item.thenItems, thenConditions, fieldOffset);
-                    const auto elseOffset = item.elseItems.empty()
-                                                ? fieldOffset
+                    const auto thenTracker =
+                        self(self, item.thenItems, thenConditions, tracker);
+                    const auto elseTracker = item.elseItems.empty()
+                                                ? tracker
                                                 : self(self,
                                                        item.elseItems,
                                                        elseConditions,
-                                                       fieldOffset);
-                    fieldOffset = thenOffset && elseOffset && *thenOffset == *elseOffset
-                                      ? thenOffset
+                                                       tracker);
+                    tracker.exactBitOffset = thenTracker.exactBitOffset && elseTracker.exactBitOffset && *thenTracker.exactBitOffset == *elseTracker.exactBitOffset
+                                      ? thenTracker.exactBitOffset
                                       : std::nullopt;
+                    tracker.byteAligned =
+                        thenTracker.byteAligned && elseTracker.byteAligned;
                     continue;
                 }
                 if (item.kind == DslStructItemKind::Repeat) {
@@ -2670,13 +2714,16 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                      std::nullopt});
                             }
                             repeatIndices.push_back(iteration);
-                            fieldOffset =
-                                self(self, item.repeatItems, iterationConditions, fieldOffset);
+                            tracker = self(self,
+                                           item.repeatItems,
+                                           iterationConditions,
+                                           tracker);
                             repeatIndices.pop_back();
                             declaredFields.resize(scopeStart);
                         }
                     }
-                    fieldOffset = std::nullopt;
+                    tracker.exactBitOffset = std::nullopt;
+                    tracker.byteAligned = false;
                     continue;
                 }
                 if (item.kind == DslStructItemKind::SentinelRepeat) {
@@ -2777,10 +2824,10 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                             typedRepeat.firstFieldIndices.push_back(
                                 static_cast<quint32>(typedStruct.fields.size()));
                             repeatIndices.push_back(iteration);
-                            fieldOffset = self(self,
-                                               item.repeatItems,
-                                               iterationConditions,
-                                               fieldOffset);
+                            tracker = self(self,
+                                           item.repeatItems,
+                                           iterationConditions,
+                                           tracker);
                             repeatIndices.pop_back();
                             if (validSentinel) {
                                 const auto projectedSentinel = std::find_if(
@@ -2819,7 +2866,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                 std::move(typedRepeat));
                         }
                     }
-                    fieldOffset = std::nullopt;
+                    tracker.exactBitOffset = std::nullopt;
+                    tracker.byteAligned = false;
                     continue;
                 }
                 if (item.kind == DslStructItemKind::WhileRepeat) {
@@ -2882,10 +2930,10 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                             typedRepeat.firstFieldIndices.push_back(
                                 static_cast<quint32>(typedStruct.fields.size()));
                             repeatIndices.push_back(iteration);
-                            fieldOffset = self(self,
-                                               item.repeatItems,
-                                               iterationConditions,
-                                               fieldOffset);
+                            (void)self(self,
+                                       item.repeatItems,
+                                       iterationConditions,
+                                       OffsetTracker{std::nullopt, true});
                             repeatIndices.pop_back();
                             declaredFields.resize(scopeStart);
                         }
@@ -2893,7 +2941,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                             static_cast<quint32>(typedStruct.fields.size());
                         typedStruct.whileRepeats.push_back(std::move(typedRepeat));
                     }
-                    fieldOffset = std::nullopt;
+                    tracker.exactBitOffset = std::nullopt;
+                    tracker.byteAligned = false;
                     continue;
                 }
                 if (item.kind != DslStructItemKind::Switch) {
@@ -2901,7 +2950,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                   DslDiagnosticCode::InvalidCondition,
                                   QStringLiteral("Structure item kind is invalid"),
                                   item.range);
-                    fieldOffset = std::nullopt;
+                    tracker.exactBitOffset = std::nullopt;
+                    tracker.byteAligned = false;
                     continue;
                 }
 
@@ -2971,8 +3021,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                   item.range);
                 }
 
-                std::vector<std::optional<quint64>> armOffsets;
-                armOffsets.reserve(item.switchArms.size() +
+                std::vector<OffsetTracker> armTrackers;
+                armTrackers.reserve(item.switchArms.size() +
                                    (defaultSeen ? 0 : 1));
                 std::size_t caseGuardIndex = 0;
                 for (const DslStructItem::SwitchArm& arm : item.switchArms) {
@@ -2993,33 +3043,39 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                             armConditions.push_back(guard);
                         }
                     }
-                    armOffsets.push_back(
-                        self(self, arm.items, armConditions, fieldOffset));
+                    armTrackers.push_back(
+                        self(self, arm.items, armConditions, tracker));
                 }
                 if (!defaultSeen) {
-                    armOffsets.push_back(fieldOffset);
+                    armTrackers.push_back(tracker);
                 }
                 const auto firstKnown = std::find_if(
-                    armOffsets.begin(),
-                    armOffsets.end(),
-                    [](const std::optional<quint64>& offset) {
-                        return offset.has_value();
+                    armTrackers.begin(),
+                    armTrackers.end(),
+                    [](const OffsetTracker& t) {
+                        return t.exactBitOffset.has_value();
                     });
-                if (firstKnown == armOffsets.end() ||
+                if (firstKnown == armTrackers.end() ||
                     std::any_of(
-                        armOffsets.begin(),
-                        armOffsets.end(),
-                        [&firstKnown](const std::optional<quint64>& offset) {
-                            return !offset || *offset != **firstKnown;
+                        armTrackers.begin(),
+                        armTrackers.end(),
+                        [&firstKnown](const OffsetTracker& t) {
+                            return !t.exactBitOffset ||
+                                   *t.exactBitOffset !=
+                                       *firstKnown->exactBitOffset;
                         })) {
-                    fieldOffset = std::nullopt;
+                    tracker.exactBitOffset = std::nullopt;
                 } else {
-                    fieldOffset = *firstKnown;
+                    tracker.exactBitOffset = firstKnown->exactBitOffset;
                 }
+                tracker.byteAligned = std::all_of(
+                    armTrackers.begin(),
+                    armTrackers.end(),
+                    [](const OffsetTracker& t) { return t.byteAligned; });
             }
-            return fieldOffset;
+            return tracker;
         };
-        (void)compileItems(compileItems, structure.items, {}, quint64(0));
+        (void)compileItems(compileItems, structure.items, {}, OffsetTracker{quint64(0), true});
 
         if (dependencyAnnotations.size() >
             DslTypedContextDefinition::maximumDependencies()) {

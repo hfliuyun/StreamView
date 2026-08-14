@@ -2699,11 +2699,15 @@ private:
                 }
                 return false;
             };
+            struct OffsetTracker {
+                std::optional<quint64> exactBitOffset = 0;
+                bool byteAligned = true;
+            };
             const auto validateItems = [&](const auto& self,
                                            const std::vector<DslStructItem>& items,
                                            const std::vector<ActiveCondition>& active,
-                                           std::optional<quint64> fieldOffset)
-                -> std::optional<quint64> {
+                                           OffsetTracker tracker)
+                -> OffsetTracker {
                 for (const DslStructItem& item : items) {
                     if (item.kind == DslStructItemKind::Assertion) {
                         const DslAssertion& assertion = item.assertion;
@@ -2820,9 +2824,6 @@ private:
                         }
                         continue;
                     }
-                    if (item.kind == DslStructItemKind::RbspTrailingBits) {
-                        continue;
-                    }
                     if (item.kind == DslStructItemKind::CompressedPayload) {
                         const DslCompressedPayload& payload = item.compressedPayload;
                         validateCompressedPayloadAnnotations(payload);
@@ -2835,7 +2836,8 @@ private:
                                  payload.range});
                         }
                         declaredFieldNames.push_back(payload.name);
-                        fieldOffset = std::nullopt;
+                        tracker.exactBitOffset = std::nullopt;
+                        tracker.byteAligned = false;
                         continue;
                     }
                     if (item.kind == DslStructItemKind::Conditional) {
@@ -2848,21 +2850,23 @@ private:
                         thenConditions.push_back({conditionName,
                                                   item.condition.expectedValue,
                                                   false});
-                        const auto thenOffset =
-                            self(self, item.thenItems, thenConditions, fieldOffset);
+                        const auto thenTracker =
+                            self(self, item.thenItems, thenConditions, tracker);
                         std::vector<ActiveCondition> elseConditions = active;
                         elseConditions.push_back({conditionName,
                                                   item.condition.expectedValue,
                                                   true});
-                        const auto elseOffset = item.elseItems.empty()
-                                                    ? fieldOffset
+                        const auto elseTracker = item.elseItems.empty()
+                                                    ? tracker
                                                     : self(self,
                                                            item.elseItems,
                                                            elseConditions,
-                                                           fieldOffset);
-                        fieldOffset = thenOffset && elseOffset && *thenOffset == *elseOffset
-                                          ? thenOffset
+                                                           tracker);
+                        tracker.exactBitOffset = thenTracker.exactBitOffset && elseTracker.exactBitOffset && *thenTracker.exactBitOffset == *elseTracker.exactBitOffset
+                                          ? thenTracker.exactBitOffset
                                           : std::nullopt;
+                        tracker.byteAligned =
+                            thenTracker.byteAligned && elseTracker.byteAligned;
                         continue;
                     }
                     if (item.kind == DslStructItemKind::Switch) {
@@ -2924,8 +2928,8 @@ private:
                                  item.range});
                         }
 
-                        std::vector<std::optional<quint64>> armOffsets;
-                        armOffsets.reserve(item.switchArms.size() +
+                        std::vector<OffsetTracker> armTrackers;
+                        armTrackers.reserve(item.switchArms.size() +
                                            (defaultSeen ? 0 : 1));
                         for (const DslStructItem::SwitchArm& arm : item.switchArms) {
                             std::vector<ActiveCondition> armConditions = active;
@@ -2938,29 +2942,35 @@ private:
                                         {item.switchFieldName, caseArm->caseValue, true});
                                 }
                             }
-                            armOffsets.push_back(
-                                self(self, arm.items, armConditions, fieldOffset));
+                            armTrackers.push_back(
+                                self(self, arm.items, armConditions, tracker));
                         }
                         if (!defaultSeen) {
-                            armOffsets.push_back(fieldOffset);
+                            armTrackers.push_back(tracker);
                         }
                         const auto firstKnown = std::find_if(
-                            armOffsets.begin(),
-                            armOffsets.end(),
-                            [](const std::optional<quint64>& offset) {
-                                return offset.has_value();
+                            armTrackers.begin(),
+                            armTrackers.end(),
+                            [](const OffsetTracker& t) {
+                                return t.exactBitOffset.has_value();
                             });
-                        if (firstKnown == armOffsets.end() ||
+                        if (firstKnown == armTrackers.end() ||
                             std::any_of(
-                                armOffsets.begin(),
-                                armOffsets.end(),
-                                [&firstKnown](const std::optional<quint64>& offset) {
-                                    return !offset || *offset != **firstKnown;
+                                armTrackers.begin(),
+                                armTrackers.end(),
+                                [&firstKnown](const OffsetTracker& t) {
+                                    return !t.exactBitOffset ||
+                                           *t.exactBitOffset !=
+                                               *firstKnown->exactBitOffset;
                                 })) {
-                            fieldOffset = std::nullopt;
+                            tracker.exactBitOffset = std::nullopt;
                         } else {
-                            fieldOffset = *firstKnown;
+                            tracker.exactBitOffset = firstKnown->exactBitOffset;
                         }
+                        tracker.byteAligned = std::all_of(
+                            armTrackers.begin(),
+                            armTrackers.end(),
+                            [](const OffsetTracker& t) { return t.byteAligned; });
                         continue;
                     }
                     if (item.kind == DslStructItemKind::Repeat) {
@@ -2996,9 +3006,10 @@ private:
                                  item.range});
                         }
                         const std::size_t scopeStart = declaredFields.size();
-                        (void)self(self, item.repeatItems, active, fieldOffset);
+                        (void)self(self, item.repeatItems, active, tracker);
                         declaredFields.resize(scopeStart);
-                        fieldOffset = std::nullopt;
+                        tracker.exactBitOffset = std::nullopt;
+                        tracker.byteAligned = false;
                         continue;
                     }
                     if (item.kind == DslStructItemKind::SentinelRepeat) {
@@ -3070,12 +3081,12 @@ private:
                             }
                         }
                         const std::size_t scopeStart = declaredFields.size();
-                        (void)self(self, item.repeatItems, active, fieldOffset);
+                        (void)self(self, item.repeatItems, active, tracker);
                         declaredFields.resize(scopeStart);
-                        fieldOffset = std::nullopt;
+                        tracker.exactBitOffset = std::nullopt;
+                        tracker.byteAligned = false;
                         continue;
                     }
-
                     if (item.kind == DslStructItemKind::WhileRepeat) {
                         if (item.repeatMaximum == 0 ||
                             item.repeatMaximum >
@@ -3094,12 +3105,12 @@ private:
                                  item.range});
                         }
                         const std::size_t scopeStart = declaredFields.size();
-                        (void)self(self, item.repeatItems, active, fieldOffset);
+                        (void)self(self, item.repeatItems, active, tracker);
                         declaredFields.resize(scopeStart);
-                        fieldOffset = std::nullopt;
+                        tracker.exactBitOffset = std::nullopt;
+                        tracker.byteAligned = false;
                         continue;
                     }
-
                     if (item.kind == DslStructItemKind::LazyRegion) {
                         const DslLazyRegion& region = item.lazyRegion;
                         validateLazyAnnotations(region);
@@ -3172,7 +3183,7 @@ private:
                             resolveLazyIdentifier,
                             result_.program.pureFunctions.size(),
                             false,
-                            true,
+                            false,
                             resolveOptionalDependency,
                             1,
                             nodeCount);
@@ -3182,7 +3193,7 @@ private:
                                  QStringLiteral("Lazy byte-count expression must be u64"),
                                  region.byteCountExpression.range});
                         }
-                        if (!fieldOffset || *fieldOffset % 8 != 0) {
+                        if (!tracker.byteAligned) {
                             result_.diagnostics.push_back(
                                 {DslDiagnosticCode::InvalidEndian,
                                  QStringLiteral(
@@ -3191,7 +3202,8 @@ private:
                                  region.range});
                         }
                         declaredFieldNames.push_back(region.name);
-                        fieldOffset = std::nullopt;
+                        tracker.exactBitOffset = std::nullopt;
+                        tracker.byteAligned = false;
                         continue;
                     }
 
@@ -3220,7 +3232,7 @@ private:
                                 result_.diagnostics.push_back(
                                     {DslDiagnosticCode::UnknownReference,
                                      QStringLiteral(
-                                         "Computed field dependency must be declared earlier"),
+                                         "Computed dependency must be declared earlier"),
                                      range});
                                 return std::nullopt;
                             }
@@ -3240,8 +3252,8 @@ private:
                                 result_.diagnostics.push_back(
                                     {DslDiagnosticCode::InvalidCondition,
                                      QStringLiteral(
-                                         "Computed field dependency is not guaranteed on the "
-                                         "current branch"),
+                                         "Computed dependency is not guaranteed on the current "
+                                         "branch"),
                                      range});
                                 return std::nullopt;
                             }
@@ -3275,12 +3287,28 @@ private:
                             result_.diagnostics.push_back(
                                 {DslDiagnosticCode::InvalidType,
                                  QStringLiteral(
-                                     "Computed expression type does not match its declaration"),
+                                     "Computed expression does not match declared type"),
                                  field.expression.range});
                         }
+                        DeclaredField declared;
+                        declared.name = field.name;
+                        declared.type = field.type;
+                        declared.conditions = active;
+                        declared.computed = &field;
+                        declaredFields.push_back(std::move(declared));
                         declaredFieldNames.push_back(field.name);
-                        declaredFields.push_back(
-                            {field.name, nullptr, &field, field.type, active});
+                        continue;
+                    }
+
+                    if (item.kind == DslStructItemKind::RbspTrailingBits) {
+                        declaredFieldNames.push_back(
+                            QStringLiteral("rbsp_trailing_bits"));
+                        tracker.exactBitOffset = std::nullopt;
+                        tracker.byteAligned = true;
+                        continue;
+                    }
+
+                    if (item.kind != DslStructItemKind::Field) {
                         continue;
                     }
 
@@ -3294,11 +3322,16 @@ private:
                              QStringLiteral("Duplicate field name"),
                              field.range});
                     }
+                    DeclaredField declared;
+                    declared.name = field.name;
+                    declared.type = DslScalarType::U64;
+                    declared.conditions = active;
+                    declared.syntax = &field;
+                    declaredFields.push_back(std::move(declared));
                     declaredFieldNames.push_back(field.name);
-                    declaredFields.push_back(
-                        {field.name, &field, nullptr, DslScalarType::U64, active});
+
                     if (field.endian == DslEndian::Little &&
-                        (!fieldOffset || *fieldOffset % 8 != 0)) {
+                        (!tracker.exactBitOffset || *tracker.exactBitOffset % 8 != 0)) {
                         result_.diagnostics.push_back(
                             {DslDiagnosticCode::InvalidEndian,
                              QStringLiteral(
@@ -3306,9 +3339,15 @@ private:
                                  "structure"),
                              field.range});
                     }
+                    if (field.encoding == DslFieldEncoding::FfCoded) {
+                        tracker.exactBitOffset = std::nullopt;
+                        // byteAligned remains unchanged
+                        continue;
+                    }
                     if (field.encoding != DslFieldEncoding::Bits || field.width == 0 ||
-                        !fieldOffset || (field.arrayLength && *field.arrayLength == 0)) {
-                        fieldOffset = std::nullopt;
+                        (field.arrayLength && *field.arrayLength == 0)) {
+                        tracker.exactBitOffset = std::nullopt;
+                        tracker.byteAligned = false;
                         continue;
                     }
                     const quint64 elementCount = field.arrayLength.value_or(1);
@@ -3318,20 +3357,26 @@ private:
                             {DslDiagnosticCode::InvalidArrayLength,
                              QStringLiteral("Fixed array bit width is too large"),
                              field.range});
-                        fieldOffset = std::nullopt;
+                        tracker.exactBitOffset = std::nullopt;
+                        tracker.byteAligned = false;
                         continue;
                     }
                     const quint64 totalWidth = elementCount * field.width;
-                    if (*fieldOffset <=
-                        std::numeric_limits<quint64>::max() - totalWidth) {
-                        *fieldOffset += totalWidth;
+                    if (tracker.exactBitOffset &&
+                        *tracker.exactBitOffset <=
+                            std::numeric_limits<quint64>::max() - totalWidth) {
+                        *tracker.exactBitOffset += totalWidth;
+                        tracker.byteAligned = (*tracker.exactBitOffset % 8 == 0);
                     } else {
-                        fieldOffset = std::nullopt;
+                        tracker.exactBitOffset = std::nullopt;
+                        if (totalWidth % 8 != 0) {
+                            tracker.byteAligned = false;
+                        }
                     }
                 }
-                return fieldOffset;
+                return tracker;
             };
-            (void)validateItems(validateItems, structure.items, {}, quint64(0));
+            (void)validateItems(validateItems, structure.items, {}, OffsetTracker{quint64(0), true});
             if (!structure.items.empty() && declaredFieldNames.empty() &&
                 !containsField(containsField, structure.items)) {
                 result_.diagnostics.push_back(

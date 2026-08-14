@@ -2245,11 +2245,70 @@ DslExecutionResult DslVirtualMachine::execute(
     quint32 nextWhileRepeatIndex = 0;
     quint32 nextAssertionIndex = 0;
     bool ended = false;
+    struct WhileRepeatRuntimeState {
+        quint32 currentIteration = std::numeric_limits<quint32>::max();
+        bool active = false;
+        bool terminated = false;
+    };
+    std::vector<WhileRepeatRuntimeState> whileRepeatStates(structure.whileRepeats.size());
     const auto conditionsPresent = [&](const std::vector<DslTypedFieldCondition>& conditions,
                                        const DslTypedField* subject,
                                        const QString& subjectName) -> std::optional<bool> {
         for (const DslTypedFieldCondition& condition : conditions) {
             if (condition.expression) {
+                if (condition.expression->kind == DslTypedExpressionKind::MoreRbspData && subject) {
+                    const std::size_t subjectIndex =
+                        static_cast<std::size_t>(subject - structure.fields.data());
+                    if (subjectIndex < structure.fields.size()) {
+                        bool handled = false;
+                        for (std::size_t r = 0; r < structure.whileRepeats.size(); ++r) {
+                            const DslTypedWhileRepeat& repeat = structure.whileRepeats.at(r);
+                            if (subjectIndex >= repeat.firstFieldIndices.front() &&
+                                subjectIndex < repeat.assertionFieldIndex) {
+                                WhileRepeatRuntimeState& state = whileRepeatStates.at(r);
+                                for (std::size_t iter = 0; iter < repeat.firstFieldIndices.size(); ++iter) {
+                                    if (repeat.firstFieldIndices.at(iter) == subjectIndex) {
+                                        if (state.terminated) {
+                                            state.active = false;
+                                        } else {
+                                            const ComputedEvaluationResult evaluated =
+                                                evaluateTypedExpression(*condition.expression,
+                                                                        reader,
+                                                                        structure,
+                                                                        fieldValues,
+                                                                        contextValueResolver,
+                                                                        &options.sequenceElementValues);
+                                            if (!evaluated.complete() ||
+                                                evaluated.value.type != DslScalarType::Bool) {
+                                                markFailure(evaluated.status,
+                                                            evaluated.errorMessage.isEmpty()
+                                                                ? QStringLiteral("Unable to evaluate while-repeat condition")
+                                                                : evaluated.errorMessage,
+                                                            subject);
+                                                return std::nullopt;
+                                            }
+                                            state.active = evaluated.value.booleanValue;
+                                            if (!state.active) {
+                                                state.terminated = true;
+                                            }
+                                        }
+                                        state.currentIteration = static_cast<quint32>(iter);
+                                        break;
+                                    }
+                                }
+                                const bool matches = state.active == (condition.expectedValue != 0);
+                                if (condition.negated ? matches : !matches) {
+                                    return false;
+                                }
+                                handled = true;
+                                break;
+                            }
+                        }
+                        if (handled) {
+                            continue;
+                        }
+                    }
+                }
                 const ComputedEvaluationResult evaluated = evaluateTypedExpression(
                     *condition.expression,
                     reader,
