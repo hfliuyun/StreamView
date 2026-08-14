@@ -67,3 +67,9 @@ signed bounds, a general warning assertion, rule-selected severity, or a custom
 diagnostic message. It does not validate `first_mb_in_slice`, signed QP or
 deblocking domains, derived picture order, decoded-picture-buffer state, MMCO-5,
 or output order.
+
+## Follow-up
+
+ADR-0076 later extended non-fatal `@range` checks to signed fields, added
+negative annotation literals, and used that capability to bound the two
+deblocking-filter offsets without stopping the remaining slice header.

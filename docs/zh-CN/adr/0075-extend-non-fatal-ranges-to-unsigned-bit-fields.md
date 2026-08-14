@@ -53,3 +53,8 @@ statement。DSL reference 必须改为说明按类型区分的静态 maximum，�
 字段。它不增加 expression-valued 或 signed bound、通用 warning assertion、由规则选择的
 severity 或自定义 diagnostic message。它不校验 `first_mb_in_slice`、signed QP 或 deblocking
 值域，也不增加派生 picture order、decoded-picture-buffer state、MMCO-5 或 output order。
+
+## 后续
+
+ADR-0076 随后把非致命 `@range` 校验扩展到有符号字段，增加了负注解字面量，并用该能力约束两个
+deblocking-filter offset，同时不停止 slice header 的剩余部分。
