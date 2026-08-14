@@ -515,9 +515,14 @@ The static rules for this subset are:
   the final sentinel field. Fields from later projections are skipped without
   source access or nodes after termination. Local names do not escape, every
   projection counts toward 99,999 fields, and following static alignment is
-  unknown. There is no `break`, `continue`, EOF-driven repeat, or expression
-  termination form; `more_rbsp_data()` is an expression leaf, not a loop
-  controller.
+  unknown. There is no `break`, `continue`, or EOF-driven repeat.
+- A bounded while repeat has the pre-tested form
+  `repeat (maximum) while (more_rbsp_data()) { ... };`, with `maximum` in
+  `1..1024` (ADR-0080). Before each iteration (including the first), the runtime
+  evaluates `more_rbsp_data()`. If true, the iteration body executes; if false,
+  the loop terminates cleanly and execution proceeds to subsequent fields. If
+  `maximum` iterations execute and `more_rbsp_data()` remains true, the decode
+  fails with an `invalid-syntax` diagnostic.
 - A computed field declares `computed<bool>` or `computed<u64>` and one
   expression. It may reference earlier scalar unsigned `bits`, enum, `ue`, or
   computed fields guaranteed on every path reaching the declaration. Arrays,

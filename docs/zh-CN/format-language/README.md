@@ -402,8 +402,12 @@ primary       := integer | "true" | "false" | identifier
   执行一次并在完成后检查 sentinel，终止字段会保留；达到 maximum 仍未命中时，在最终 sentinel
   field 上产生 runtime `invalid-syntax`。命中后，后续 projection 不读取 source、不创建 node。
   local name 不逸出，每个 projection 都计入 99,999-field 上限，statement 后 static alignment 为
-  unknown。不提供 `break`、`continue`、EOF 驱动的 repeat 或 expression termination；
-  `more_rbsp_data()` 是 expression leaf，不是 loop controller。
+  unknown。不提供 `break`、`continue` 或 EOF 驱动的 repeat。
+- 有界 while repeat 使用 pre-tested
+  `repeat (maximum) while (more_rbsp_data()) { ... };`，maximum 为 `1..1024`（ADR-0080）。
+  每次迭代执行前（包括首次迭代），运行时评估 `more_rbsp_data()`；若为 true 则执行
+  该次迭代体，若为 false 则循环正常退出并进入后续字段。若已执行 maximum 次迭代且
+  `more_rbsp_data()` 仍为 true，解码失败并生成 `invalid-syntax` 诊断。
 - 计算字段声明 `computed<bool>` 或 `computed<u64>` 和一条表达式。它可以引用此前声明、
   且在到达当前声明的每条路径上都保证存在的 scalar 无符号 `bits`、enum、`ue` 或计算字段。
   数组、`se`、未知或未来字段，以及路径上不可用的 branch-local 值都会被拒绝。它的表达式
