@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Probe DSL capabilities and specify SEI payload length/type accumulation decoding and more_rbsp_data bounded loop (T4 / ADR-0079 & ADR-0080)
-Next Action: Implement ff_coded<max_bytes> scalar field encoding in DSL compiler and VM runtime (Phase 3 item 3 & T5a); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: SEI DSL capability probing confirmed scratch compiler errors with svtool rule check; bilingual ADR-0079 (ff_coded<max_bytes>) and ADR-0080 (repeat while more_rbsp_data()) committed and pushed; documentation symmetry verified
+Last Completed Step: Implement ff_coded<max_bytes> scalar field encoding in DSL compiler and VM runtime (T5a / ADR-0079)
+Next Action: Implement bounded repeat while (more_rbsp_data()) in DSL compiler and VM runtime (T5b / ADR-0080); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31802120848 (macOS job 94772297778, Windows job 94772297785, Ubuntu job 94772297818) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1148,9 +1148,21 @@ Blockers: None
      - ADR-0080（`docs/adr/0080-*.md` / `docs/zh-CN/adr/0080-*.md`）：引入 `repeat (max_iterations) while (more_rbsp_data()) { ... }` 由码流剩余数据状态驱动的有界重复循环；
      - 在双语格式语言参考中同步更新对应语法说明。
   Next Action 指向 T5a：实现 `ff_coded<max_bytes>` 语言能力（DSL parser/IR/VM 及定向测试）。
-
-
-
-
-
-
+- 2026-08-14：完成 ff_coded<max_bytes> 变长字节累加标量编码语言能力实现（任务 T5a / ADR-0079）。
+  1. DSL 语法与语义（src/rules/dsl.h / dsl.cpp）：
+     - 新增 DslFieldEncoding::FfCoded 与 quint64 maxBytes 字段声明；
+     - 实现 ff_coded<max_bytes> 词法与语法解析，严格校验 1 <= max_bytes <= 64（越界报错 InvalidBitWidth）；
+     - 允许 ff_coded 作为控制字段参与条件、循环界限控制，并支持 @range 与 @equals 约束声明。
+  2. 静态类型 IR（src/rules/dsl_ir.h / dsl_ir.cpp）：
+     - 新增 DslValueTypeKind::FfCoded 与 DslOpcode::ReadFfCoded；
+     - 将 FfCoded AST 节点 lower 为类型化字段（metadata.typeName = "ff_coded<N>"），保留 context export 资格，并生成 ReadFfCoded 字节码指令。
+  3. VM 运行时（src/rules/dsl_vm.cpp）：
+     - 实现 readFfCoded(core::BitReader&, quint64 maxBytes) 执行引擎：按 8-bit 读取字节，若为 0xFF 则累加 255 并继续循环，直至遇到 < 0xFF 的终止字节；
+     - 若累计字节数达到 maxBytes 仍未遇到终止字节，报错 InvalidSyntax（"ff_coded field exceeded maximum byte limit"）；
+     - 截断保护与事务回滚：若码流在非完整字节处截断，回滚 reader 位置并返回 TruncatedSource；
+     - 字段物化为 SyntaxField、u64 标量值，source span 覆盖所有消耗字节。
+  4. 自动化测试套件：
+     - tests/rules/dsl_test.cpp：覆盖合法解析（ff_coded<8>、ff_coded<64>）、非法界限（ff_coded<0>、ff_coded<65> 报 InvalidBitWidth）与残缺语法报错；
+     - tests/rules/dsl_ir_test.cpp：覆盖类型推导、ReadFfCoded 指令生成及 @range/@equals 约束；
+     - tests/rules/dsl_executor_test.cpp：覆盖单字节直接解码（0x04 -> 4）、多字节 0xFF 累加解码（0xFF 0xFF 0x03 -> 513）、超限拒绝与截断回滚。
+  svtool rule check 通过；本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告。hosted run 31802120848 在 macOS 15 / Qt 6.11.1（job 94772297778）、Windows 2022 / Qt 6.10.1（job 94772297785）、Ubuntu 24.04 / Qt 6.11.1（job 94772297818）全部成功。
