@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Apply non-fatal signed @range bounds to PPS QP offsets (pic_init_qs_minus26 at -26..25 and both chroma_qp_index_offset fields at -12..12) without moving following fields
-Next Action: Lock in-stream SPS/PPS redefinition and positional generation binding with end-to-end analyzer regressions and bilingual documentation (Phase 3 item 5); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: Signed @range on PPS QP offsets passed svtool rule check, parser 70/70, IR 76/76, executor 127/127, the focused H.264 analyzer suite 125/125, and local dev/ci/sanitize CTest 32/32 with no sanitizer report; hosted run 31791302960 succeeded on Ubuntu 24.04, Windows 2022, and macOS 15
+Last Completed Step: Lock in-stream SPS/PPS redefinition and positional generation binding with end-to-end analyzer regressions and bilingual documentation (Phase 3 item 5)
+Next Action: Audit remaining Baseline/Main/High 8-bit 4:2:0 slice-header coverage gaps against clause 7.3.3 and close Phase 3 item 2; pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: In-stream parameter set redefinition and generation binding passed svtool rule check, parser 70/70, IR 76/76, executor 127/127, the focused H.264 analyzer suite 127/127, and local dev/ci/sanitize CTest 32/32 with no sanitizer report; hosted run 31792636283 succeeded on Ubuntu 24.04, Windows 2022, and macOS 15
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -186,7 +186,7 @@ Blockers: None
 - [ ] 完成 Baseline/Main/High 8-bit 4:2:0 slice header；slice data 标记为压缩载荷。
 - [ ] 所有 SEI 解析 payloadType/payloadSize。
 - [ ] 深入解析 buffering period、pic timing、用户数据、recovery point、frame packing 和 display orientation。
-- [ ] 支持同 ID SPS/PPS 中途重定义和按位置选择。
+- [x] 支持同 ID SPS/PPS 中途重定义和按位置选择。
 - [ ] 为声明范围内每个字段建立规范引用、双语说明、合法/非法样例和 source-span 断言。
 
 ## 阶段 4：AAC-LC 正式结构支持
@@ -1112,8 +1112,9 @@ Blockers: None
   parser 70/70、IR 76/76、executor 127/127、H.264 analyzer 125/125 通过；本机
   dev/ci/sanitize 重新配置、完整构建与 CTest 均为 32/32，且无 sanitizer 报告。
   hosted run `31791302960` 在 Ubuntu 24.04 / Qt 6.11.1（job `94738594523`）、
-  Windows 2022 / Qt 6.10.1（job `94738594486`）、macOS 15 / Qt 6.11.1
-  （job `94738594522`）全部成功。下一步进入 SPS/PPS 同 ID 中途重定义与按位置选择
-  端到端验收（阶段 3 第 5 项）；SPS 依赖的 `pic_init_qp_minus26` 与 `slice_qp_delta`、
-  实际 POC、field order、wrap/MMCO-5、DPB 与 output order 继续延期。
+- 2026-08-14：完成同 ID SPS/PPS 中途重定义与按位置选择的格式级验收（阶段 3 第 5 项）。新增双语
+  ADR-0078（`docs/adr/0078-bind-redefined-parameter-sets-by-stream-position.md` 与
+  `docs/zh-CN/adr/0078-bind-redefined-parameter-sets-by-stream-position.md`），并在双语格式语言说明中补充重定义 generation 激活语义。
+  在 H.264 analyzer 测试套件中增加正反例回归：正向用例验证 SPS id 0（`log2_max_frame_num_minus4=0`）经 PPS id 0 激活 Slice A（`frame_num` 为 4 bit），随后 SPS id 0 重定义（`log2_max_frame_num_minus4=2`）并重绑 PPS id 0 动态激活 Slice B（`frame_num` 为 6 bit），两个 slice 的完整有序子节点列表与物化状态均保持正确且无漂移；负向用例验证非法 SPS id 1（保留 profile 99）进入 invalid 状态且不污染 generation 表，依赖该 SPS 的 PPS id 1 与 Slice B 报告 `dependency-unavailable` 诊断，而先前的 Slice A 仍保持完整物化。`svtool rule check`、parser 70/70、IR 76/76、executor 127/127、H.264 analyzer 127/127 通过；本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告。hosted run `31792636283` 在 Ubuntu 24.04 / Qt 6.11.1（job `94742760146`）、Windows 2022 / Qt 6.10.1（job `94742760226`）、macOS 15 / Qt 6.11.1（job `94742760849`）全部成功。下一步进入 Baseline/Main/High slice-header 缺口审计并关闭阶段 3 第 2 项；SPS 依赖的 `pic_init_qp_minus26` 与 `slice_qp_delta`、实际 POC、field order、wrap/MMCO-5、DPB 与 output order 继续延期。
+
 
