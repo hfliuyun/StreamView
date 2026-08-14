@@ -308,6 +308,14 @@ The static rules for this subset are:
   fixed- or dynamic-width `bits` fields, `ue` fields, and signed `se` fields may
   use one `@range(minimum, maximum)` constraint; a signed `se` field cannot use
   `@equals`.
+- `ff_coded<max_bytes>` is a variable-length byte-accumulated scalar field encoding
+  (ADR-0079). `max_bytes` is a required compile-time positive integer literal
+  bounding the maximum allowed byte length (`1 <= max_bytes <= 64`). The decoder
+  reads 8-bit bytes sequentially, adding 255 for each `0xFF` byte, and terminates
+  upon reading the first byte less than `0xFF`. It produces an unsigned scalar `u64`
+  value (`255 * N + last_byte`) with a single contiguous source span covering all
+  consumed bytes. If `max_bytes` bytes are read without encountering a terminating
+  byte (< 0xFF), decoding fails with an `invalid-syntax` diagnostic.
 - A scalar field may have one fixed array suffix `[count]`. `count` is an
   unsigned integer literal greater than zero; expressions, additional array
   dimensions, structure arrays, and runtime-sized arrays are not accepted.

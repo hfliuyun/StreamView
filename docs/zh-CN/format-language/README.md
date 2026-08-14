@@ -256,6 +256,12 @@ primary       := integer | "true" | "false" | identifier
   后续语言功能能够证明其对齐。无符号 `ue` 字段可以带一个 `@equals(integer)` constraint。
   无符号固定或动态宽度 `bits` 字段、`ue` 字段与有符号 `se` 字段都可以带一个
   `@range(minimum, maximum)` constraint；有符号 `se` 字段不接受 `@equals`。
+- `ff_coded<max_bytes>` 是变长字节累加标量字段编码（ADR-0079）。`max_bytes` 是
+  必须的编译期正整数字面量，用于约束允许读取的最大字节数（`1 <= max_bytes <= 64`）。
+  解码器按顺序连续读取 8-bit 字节，对每个 `0xFF` 字节累加 255，并在读取到首个小于
+  `0xFF` 的字节时结束解码。该字段产出无符号标量 `u64` 值（`255 * N + last_byte`），
+  其 source span 完整覆盖所消费的连续字节范围。若读取达到 `max_bytes` 仍未遇到终止
+  字节（< 0xFF），解码失败并生成 `invalid-syntax` 诊断。
 - scalar 字段可以带一个 `[count]` 固定数组后缀。`count` 必须是大于零的无符号整数字面量；
   不接受表达式、额外维度、结构数组或运行时长度。重复名称检查仍使用声明的基础字段名。
   一个结构展开后最多投影 99,999 个 scalar 字段，从而在默认 100,000 个物化节点预算内
