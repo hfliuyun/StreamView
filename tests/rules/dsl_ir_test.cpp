@@ -3105,6 +3105,49 @@ private slots:
         QVERIFY(hasDiagnostic(tooManyImportsCompiled,
                               DslDiagnosticCode::InvalidContext));
     }
+
+    void lowersFfCodedFieldToTypedIr() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct SeiPayload {
+                ff_coded<8> payload_type @range(0, 1000);
+                ff_coded<64> payload_size;
+            }
+            entry SeiPayload;
+        )"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+        QVERIFY(compiled.program.has_value());
+
+        const auto& s = compiled.program->structs.front();
+        QCOMPARE(s.fields.size(), std::size_t(2));
+
+        const auto& field0 = s.fields.at(0);
+        QCOMPARE(field0.name, QStringLiteral("payload_type"));
+        QCOMPARE(field0.type.kind, streamview::rules::DslValueTypeKind::FfCoded);
+        QCOMPARE(field0.type.maxBytes, quint64(8));
+        QCOMPARE(field0.metadata.typeName, QStringLiteral("ff_coded<8>"));
+        QVERIFY(field0.contextEligible);
+        QVERIFY(field0.rangeConstraint.has_value());
+        QCOMPARE(field0.rangeConstraint->minimum, quint64(0));
+        QCOMPARE(field0.rangeConstraint->maximum, quint64(1000));
+
+        const auto& field1 = s.fields.at(1);
+        QCOMPARE(field1.name, QStringLiteral("payload_size"));
+        QCOMPARE(field1.type.kind, streamview::rules::DslValueTypeKind::FfCoded);
+        QCOMPARE(field1.type.maxBytes, quint64(64));
+        QCOMPARE(field1.metadata.typeName, QStringLiteral("ff_coded<64>"));
+        QVERIFY(field1.contextEligible);
+
+        // Verify opcode emission
+        QVERIFY(s.bytecodeLength >= 4);
+        QCOMPARE(compiled.program->bytecode.at(s.bytecodeOffset + 1).opcode,
+                 streamview::rules::DslOpcode::ReadFfCoded);
+    }
 };
 
 QTEST_GUILESS_MAIN(DslIrTest)

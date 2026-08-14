@@ -172,6 +172,7 @@ constexpr quint64 maximumUnsignedExpGolombValue = std::numeric_limits<quint64>::
         field.type.kind == DslValueTypeKind::UnsignedBits ||
         field.type.kind == DslValueTypeKind::Enum ||
         field.type.kind == DslValueTypeKind::UnsignedExpGolomb ||
+        field.type.kind == DslValueTypeKind::FfCoded ||
         field.type.kind == DslValueTypeKind::ComputedUnsigned;
     return field.kind == DslTypedFieldKind::Declared && field.contextEligible &&
            field.conditions.empty() && unsignedScalar;
@@ -273,6 +274,7 @@ constexpr quint64 maximumUnsignedExpGolombValue = std::numeric_limits<quint64>::
     case DslValueTypeKind::UnsignedBits:
     case DslValueTypeKind::Enum:
     case DslValueTypeKind::UnsignedExpGolomb:
+    case DslValueTypeKind::FfCoded:
     case DslValueTypeKind::ComputedUnsigned:
         return DslScalarType::U64;
     case DslValueTypeKind::ComputedBool:
@@ -924,6 +926,80 @@ struct ExpGolombReadResult final {
     return {DslExecutionStatus::Materialized, 0, decoded, bitCount, 0, {}};
 }
 
+struct FfCodedReadResult final {
+    DslExecutionStatus status = DslExecutionStatus::Materialized;
+    quint64 value = 0;
+    quint64 bitCount = 0;
+    quint64 diagnosticBits = 0;
+    QString errorMessage;
+
+    [[nodiscard]] bool complete() const noexcept {
+        return status == DslExecutionStatus::Materialized;
+    }
+};
+
+[[nodiscard]] FfCodedReadResult readFfCoded(core::BitReader& reader,
+                                            quint64 maxBytes) {
+    const quint64 start = reader.position();
+    const quint64 rangeLength = reader.logicalBitLength();
+    const quint64 availableAtStart = rangeLength >= start ? rangeLength - start : 0;
+    const auto fail = [&](DslExecutionStatus status,
+                          const QString& message,
+                          quint64 diagnosticBits) {
+        (void)reader.seek(start);
+        return FfCodedReadResult{status, 0, 0,
+                                 std::min(availableAtStart, diagnosticBits), message};
+    };
+    const auto readFailure = [&](const core::BitReadResult& readResult,
+                                 quint64 bitsRead,
+                                 quint64 requestedBits) {
+        const DslExecutionStatus status = statusForRead(readResult.status);
+        quint64 diagnosticBits = bitsRead;
+        if (readResult.status == core::BitReadStatus::EndOfRange) {
+            diagnosticBits = availableAtStart;
+        } else if (readResult.status == core::BitReadStatus::EndOfSource) {
+            diagnosticBits = bitsRead < std::numeric_limits<quint64>::max()
+                                  ? bitsRead + std::max<quint64>(requestedBits, 1)
+                                  : bitsRead;
+        } else if (diagnosticBits == 0) {
+            diagnosticBits = 8;
+        }
+        return fail(status,
+                    readResult.errorMessage.isEmpty()
+                        ? QStringLiteral("Unable to read complete ff_coded byte")
+                        : readResult.errorMessage,
+                    diagnosticBits);
+    };
+
+    quint64 accumulated = 0;
+    quint64 bytesRead = 0;
+    while (true) {
+        if (bytesRead >= maxBytes) {
+            return fail(DslExecutionStatus::InvalidSyntax,
+                        QStringLiteral("ff_coded field exceeded maximum byte limit"),
+                        bytesRead * 8);
+        }
+        const core::BitReadResult byteResult = reader.readBits(8);
+        if (!byteResult.complete()) {
+            return readFailure(byteResult, reader.position() - start, 8);
+        }
+        ++bytesRead;
+        if (byteResult.value == 0xFF) {
+            accumulated += 255;
+        } else {
+            accumulated += byteResult.value;
+            break;
+        }
+    }
+    return FfCodedReadResult{
+        DslExecutionStatus::Materialized,
+        accumulated,
+        bytesRead * 8,
+        bytesRead * 8,
+        {}
+    };
+}
+
 } // namespace
 
 DslExecutionResult DslVirtualMachine::execute(
@@ -1053,6 +1129,13 @@ DslExecutionResult DslVirtualMachine::execute(
                controller.type.bitWidth == 0 && controller.type.endian == DslEndian::Big &&
                validUnsignedExpGolombEnum(program, controller.type.enumIndex);
     };
+    const auto validFfCodedController = [](const DslTypedField& controller) noexcept {
+        return controller.kind == DslTypedFieldKind::Declared &&
+               controller.type.kind == DslValueTypeKind::FfCoded &&
+               controller.type.bitWidth == 0 && controller.type.maxBytes >= 1 &&
+               controller.type.maxBytes <= 64 && controller.type.endian == DslEndian::Big &&
+               !controller.type.enumIndex;
+    };
     const auto validComputedController = [](const DslTypedField& controller,
                                             DslValueTypeKind expectedKind) {
         return controller.kind == DslTypedFieldKind::Declared &&
@@ -1106,6 +1189,7 @@ DslExecutionResult DslVirtualMachine::execute(
             const bool fixedController = validFixedController(controller);
             const bool unsignedExpGolombController =
                 validUnsignedExpGolombController(controller);
+            const bool ffCodedController = validFfCodedController(controller);
             const bool computedUnsignedController =
                 validComputedController(controller, DslValueTypeKind::ComputedUnsigned);
             const bool computedBooleanController =
@@ -1113,10 +1197,10 @@ DslExecutionResult DslVirtualMachine::execute(
             const bool validController =
                 condition.op == DslConditionOperator::Equal
                     ? fixedController || computedUnsignedController ||
-                          unsignedExpGolombController ||
+                          unsignedExpGolombController || ffCodedController ||
                           (computedBooleanController && condition.expectedValue == 1)
                     : fixedController || unsignedExpGolombController ||
-                          computedUnsignedController;
+                          ffCodedController || computedUnsignedController;
             if (!validOperator || !validController ||
                 (fixedController &&
                  !fitsUnsignedBits(condition.expectedValue, controller.type.bitWidth)) ||
@@ -1290,6 +1374,20 @@ DslExecutionResult DslVirtualMachine::execute(
                             false);
                 return result;
             }
+            if (field.type.kind == DslValueTypeKind::FfCoded) {
+                if (field.type.maxBytes < 1 || field.type.maxBytes > 64 ||
+                    field.type.bitWidth != 0 || field.type.endian != DslEndian::Big ||
+                    field.type.enumIndex || field.bitWidthExpression ||
+                    field.signedRangeConstraint) {
+                    markFailure(DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Typed ff_coded field definition is invalid"),
+                                &field,
+                                std::nullopt,
+                                std::nullopt,
+                                false);
+                    return result;
+                }
+            }
             if (field.type.kind == DslValueTypeKind::UnsignedExpGolomb &&
                 field.equalsConstraint &&
                 *field.equalsConstraint > maximumUnsignedExpGolombValue) {
@@ -1303,8 +1401,10 @@ DslExecutionResult DslVirtualMachine::execute(
                 field.type.kind == DslValueTypeKind::Enum;
             const bool unsignedExpGolombRange =
                 field.type.kind == DslValueTypeKind::UnsignedExpGolomb;
+            const bool unsignedFfCodedRange =
+                field.type.kind == DslValueTypeKind::FfCoded;
             if (field.rangeConstraint &&
-                ((!unsignedBitRange && !unsignedExpGolombRange) ||
+                ((!unsignedBitRange && !unsignedExpGolombRange && !unsignedFfCodedRange) ||
                  field.rangeConstraint->minimum > field.rangeConstraint->maximum ||
                  (unsignedBitRange &&
                   !fitsUnsignedBits(field.rangeConstraint->maximum,
@@ -1425,6 +1525,7 @@ DslExecutionResult DslVirtualMachine::execute(
         const bool computedUnsignedController =
             validComputedController(controller, DslValueTypeKind::ComputedUnsigned);
         if ((!fixedController && !validUnsignedExpGolombController(controller) &&
+             !validFfCodedController(controller) &&
              !computedUnsignedController) ||
             (fixedController &&
              !fitsUnsignedBits(repeat.maximumCount, controller.type.bitWidth))) {
@@ -1736,6 +1837,7 @@ DslExecutionResult DslVirtualMachine::execute(
         case DslOpcode::ReadUnsignedBits:
         case DslOpcode::ReadUnsignedExpGolomb:
         case DslOpcode::ReadSignedExpGolomb:
+        case DslOpcode::ReadFfCoded:
         case DslOpcode::EvaluateComputed:
         case DslOpcode::RegisterLazyBytes:
         case DslOpcode::RegisterCompressedPayload:
@@ -1851,7 +1953,8 @@ DslExecutionResult DslVirtualMachine::execute(
                 previous != nullptr &&
                 (previous->opcode == DslOpcode::ReadUnsignedBits ||
                  previous->opcode == DslOpcode::ReadUnsignedExpGolomb ||
-                 previous->opcode == DslOpcode::ReadSignedExpGolomb) &&
+                 previous->opcode == DslOpcode::ReadSignedExpGolomb ||
+                 previous->opcode == DslOpcode::ReadFfCoded) &&
                 previous->operand == instruction.operand;
             const bool followsEquals =
                 previous != nullptr && previous->opcode == DslOpcode::AssertEquals &&
@@ -1902,7 +2005,8 @@ DslExecutionResult DslVirtualMachine::execute(
         if (instruction.opcode == DslOpcode::ReadUnsignedExpGolomb) {
             ++unsignedExpGolombReadCounts.at(instruction.operand);
         } else if (instruction.opcode == DslOpcode::ReadUnsignedBits ||
-                   instruction.opcode == DslOpcode::ReadSignedExpGolomb) {
+                   instruction.opcode == DslOpcode::ReadSignedExpGolomb ||
+                   instruction.opcode == DslOpcode::ReadFfCoded) {
             conflictingEnumReads.at(instruction.operand) = true;
         }
     }
@@ -2121,7 +2225,8 @@ DslExecutionResult DslVirtualMachine::execute(
         }
         case DslOpcode::ReadUnsignedBits:
         case DslOpcode::ReadUnsignedExpGolomb:
-        case DslOpcode::ReadSignedExpGolomb: {
+        case DslOpcode::ReadSignedExpGolomb:
+        case DslOpcode::ReadFfCoded: {
             if (!result.structureNode || instruction.operand != nextFieldIndex ||
                 instruction.operand >= structure.fields.size()) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
@@ -2139,6 +2244,8 @@ DslExecutionResult DslVirtualMachine::execute(
             const bool readsFixedBits = instruction.opcode == DslOpcode::ReadUnsignedBits;
             const bool readsUnsignedExpGolomb =
                 instruction.opcode == DslOpcode::ReadUnsignedExpGolomb;
+            const bool readsFfCoded =
+                instruction.opcode == DslOpcode::ReadFfCoded;
             const DslTypedEnum* enumeration = nullptr;
             if (readsFixedBits) {
                 const bool dynamicWidth = field.bitWidthExpression.has_value();
@@ -2189,6 +2296,7 @@ DslExecutionResult DslVirtualMachine::execute(
                     break;
                 case DslValueTypeKind::UnsignedExpGolomb:
                 case DslValueTypeKind::SignedExpGolomb:
+                case DslValueTypeKind::FfCoded:
                 case DslValueTypeKind::ComputedBool:
                 case DslValueTypeKind::ComputedUnsigned:
                     markFailure(DslExecutionStatus::InvalidDefinition,
@@ -2198,6 +2306,17 @@ DslExecutionResult DslVirtualMachine::execute(
                 default:
                     markFailure(DslExecutionStatus::InvalidDefinition,
                                 QStringLiteral("Typed IR field type kind is invalid"),
+                                &field);
+                    return result;
+                }
+            } else if (readsFfCoded) {
+                if (field.type.kind != DslValueTypeKind::FfCoded ||
+                    field.type.maxBytes < 1 || field.type.maxBytes > 64 ||
+                    field.type.bitWidth != 0 || field.type.endian != DslEndian::Big ||
+                    field.type.enumIndex || field.signedRangeConstraint ||
+                    field.bitWidthExpression) {
+                    markFailure(DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Typed ff_coded field definition is invalid"),
                                 &field);
                     return result;
                 }
@@ -2337,6 +2456,20 @@ DslExecutionResult DslVirtualMachine::execute(
                 }
                 consumedBits = bitWidth;
                 unsignedValue = decodeValue(readResult.value, field.type);
+            } else if (readsFfCoded) {
+                const FfCodedReadResult readResult =
+                    readFfCoded(reader, field.type.maxBytes);
+                result.bitsConsumed = reader.position();
+                if (!readResult.complete()) {
+                    markFailure(readResult.status,
+                                readResult.errorMessage,
+                                &field,
+                                fieldStart,
+                                readResult.diagnosticBits);
+                    return result;
+                }
+                consumedBits = readResult.bitCount;
+                unsignedValue = readResult.value;
             } else {
                 const ExpGolombReadResult readResult =
                     readExpGolomb(reader, !readsUnsignedExpGolomb);
@@ -2374,7 +2507,7 @@ DslExecutionResult DslVirtualMachine::execute(
             fieldSpec.kind = core::AnalysisNodeKind::SyntaxField;
             fieldSpec.name = field.name;
             fieldSpec.state = core::MaterializationState::Materialized;
-            fieldSpec.value = readsFixedBits || readsUnsignedExpGolomb
+            fieldSpec.value = readsFixedBits || readsUnsignedExpGolomb || readsFfCoded
                                   ? QVariant::fromValue<qulonglong>(unsignedValue)
                                   : QVariant::fromValue<qlonglong>(signedValue);
             fieldSpec.location = *location;
@@ -2390,16 +2523,16 @@ DslExecutionResult DslVirtualMachine::execute(
             lastFieldNode = fieldNode;
             ++result.nodesCreated;
             fieldValues.at(instruction.operand) =
-                readsFixedBits || readsUnsignedExpGolomb
+                readsFixedBits || readsUnsignedExpGolomb || readsFfCoded
                     ? std::optional<quint64>(unsignedValue)
                     : std::nullopt;
             fieldRanges.at(instruction.operand) =
                 MaterializedFieldRange{fieldStart, consumedBits};
             lastField = instruction.operand;
-            lastValue = readsFixedBits || readsUnsignedExpGolomb
+            lastValue = readsFixedBits || readsUnsignedExpGolomb || readsFfCoded
                              ? std::optional<quint64>(unsignedValue)
                              : std::nullopt;
-            lastSignedValue = readsFixedBits || readsUnsignedExpGolomb
+            lastSignedValue = readsFixedBits || readsUnsignedExpGolomb || readsFfCoded
                                   ? std::nullopt
                                   : std::optional<qlonglong>(signedValue);
             lastFieldSkipped = false;

@@ -1295,7 +1295,9 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                           : syntaxScalar &&
                                 (found->source->encoding == DslFieldEncoding::Bits ||
                                  found->source->encoding ==
-                                     DslFieldEncoding::UnsignedExpGolomb);
+                                     DslFieldEncoding::UnsignedExpGolomb ||
+                                 found->source->encoding ==
+                                     DslFieldEncoding::FfCoded);
             if (!supported || !found->typedIndex) {
                 QString message = QStringLiteral(
                     "Controllers require a previous scalar bits, enum, ue, or "
@@ -1748,8 +1750,9 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 field.encoding == DslFieldEncoding::UnsignedExpGolomb;
             const bool isSignedExpGolomb =
                 field.encoding == DslFieldEncoding::SignedExpGolomb;
+            const bool isFfCoded = field.encoding == DslFieldEncoding::FfCoded;
             const bool isDynamicBits = isBits && field.widthExpression.has_value();
-            if (!isBits && !isUnsignedExpGolomb && !isSignedExpGolomb) {
+            if (!isBits && !isUnsignedExpGolomb && !isSignedExpGolomb && !isFfCoded) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidType,
                               QStringLiteral("Field encoding is invalid"),
@@ -1776,10 +1779,23 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                           conditions});
                 return std::nullopt;
             }
+            if (isFfCoded && (field.maxBytes < 1 || field.maxBytes > 64)) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidBitWidth,
+                              QStringLiteral("ff_coded maximum bytes must be between 1 and 64"),
+                              field.range);
+                declaredFields.push_back({field.name,
+                                          &field,
+                                          nullptr,
+                                          DslScalarType::U64,
+                                          std::nullopt,
+                                          conditions});
+                return std::nullopt;
+            }
             if (!isBits && field.width != 0) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidType,
-                              QStringLiteral("Exp-Golomb fields cannot have a fixed bit width"),
+                              QStringLiteral("Non-bits fields cannot have a fixed bit width"),
                               field.range);
             }
             if (!isBits && field.widthExpression) {
@@ -1803,7 +1819,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             if (!isBits && field.endian != DslEndian::Big) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidEndian,
-                              QStringLiteral("Exp-Golomb fields use the default bit order"),
+                              QStringLiteral("Non-bits fields use the default bit order"),
                               field.range);
             }
             if (isBits && field.endian == DslEndian::Little && field.width % 8 != 0) {
@@ -1837,10 +1853,13 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             const DslValueTypeKind valueKind =
                 isBits ? DslValueTypeKind::UnsignedBits
                        : (isUnsignedExpGolomb ? DslValueTypeKind::UnsignedExpGolomb
-                                              : DslValueTypeKind::SignedExpGolomb);
+                                              : (isSignedExpGolomb ? DslValueTypeKind::SignedExpGolomb
+                                                                   : DslValueTypeKind::FfCoded));
             typedField.type = {valueKind,
                                isBits && !isDynamicBits ? field.width : quint8(0),
-                               isBits ? field.endian : DslEndian::Big, std::nullopt};
+                               isBits ? field.endian : DslEndian::Big,
+                               std::nullopt,
+                               isFfCoded ? field.maxBytes : quint64(0)};
             typedField.contextEligible = !isDynamicBits && !field.arrayLength &&
                                          conditions.empty() && repeatIndices.empty() &&
                                          !isSignedExpGolomb;
@@ -1849,7 +1868,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 metadataForAnnotations(field.annotations, typedStruct.metadata.specification);
             typedField.metadata.typeName = isBits ? QStringLiteral("bits")
                                                   : (isUnsignedExpGolomb ? QStringLiteral("ue")
-                                                                         : QStringLiteral("se"));
+                                                                         : (isSignedExpGolomb ? QStringLiteral("se")
+                                                                                              : QStringLiteral("ff_coded<%1>").arg(field.maxBytes)));
             typedField.range = field.range;
             if (isDynamicBits) {
                 const ExpressionResolver resolveWidthField =
@@ -1970,7 +1990,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 }
             }
             typedField.equalsConstraint =
-                ((isBits && !isDynamicBits) || isUnsignedExpGolomb)
+                ((isBits && !isDynamicBits) || isUnsignedExpGolomb || isFfCoded)
                     ? equalsConstraint(field, result.diagnostics)
                     : std::nullopt;
             if (isDynamicBits && hasAnnotation(QStringLiteral("equals"))) {
@@ -2008,7 +2028,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                               }());
             }
             typedField.rangeConstraint =
-                (isBits || isUnsignedExpGolomb)
+                (isBits || isUnsignedExpGolomb || isFfCoded)
                     ? rangeConstraint(field, result.diagnostics)
                     : std::nullopt;
             typedField.signedRangeConstraint =
@@ -2031,7 +2051,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                               QStringLiteral("@range maximum does not fit the field width"),
                               field.range);
             }
-            if (!isBits && !isUnsignedExpGolomb && !isSignedExpGolomb &&
+            if (!isBits && !isUnsignedExpGolomb && !isSignedExpGolomb && !isFfCoded &&
                 std::any_of(field.annotations.begin(),
                             field.annotations.end(),
                             [](const DslAnnotation& annotation) {
@@ -2972,6 +2992,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 found->type.kind == DslValueTypeKind::UnsignedBits ||
                 found->type.kind == DslValueTypeKind::Enum ||
                 found->type.kind == DslValueTypeKind::UnsignedExpGolomb ||
+                found->type.kind == DslValueTypeKind::FfCoded ||
                 found->type.kind == DslValueTypeKind::ComputedUnsigned;
             if (found->kind != DslTypedFieldKind::Declared ||
                 !found->contextEligible || !found->conditions.empty() ||
@@ -3348,6 +3369,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     return DslOpcode::ReadUnsignedExpGolomb;
                 case DslValueTypeKind::SignedExpGolomb:
                     return DslOpcode::ReadSignedExpGolomb;
+                case DslValueTypeKind::FfCoded:
+                    return DslOpcode::ReadFfCoded;
                 case DslValueTypeKind::ComputedBool:
                 case DslValueTypeKind::ComputedUnsigned:
                     return DslOpcode::EvaluateComputed;

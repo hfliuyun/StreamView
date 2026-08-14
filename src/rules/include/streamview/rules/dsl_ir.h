@@ -17,6 +17,7 @@ enum class DslValueTypeKind : quint8 {
     Enum,
     UnsignedExpGolomb,
     SignedExpGolomb,
+    FfCoded,
     ComputedBool,
     ComputedUnsigned,
     LazyBytes,
@@ -28,6 +29,7 @@ struct DslValueType final {
     quint8 bitWidth = 0;
     DslEndian endian = DslEndian::Big;
     std::optional<quint32> enumIndex;
+    quint64 maxBytes = 0;
 };
 
 struct DslTypedEnumValue final {
@@ -228,6 +230,7 @@ enum class DslOpcode : quint8 {
     ReadUnsignedBits,
     ReadUnsignedExpGolomb,
     ReadSignedExpGolomb,
+    ReadFfCoded,
     EvaluateComputed,
     RegisterLazyBytes,
     RegisterCompressedPayload,

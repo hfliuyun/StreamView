@@ -7150,6 +7150,147 @@ private slots:
         QVERIFY(root.has_value());
         QCOMPARE(root->diagnostics().front().code, DiagnosticCode::ResourceLimit);
     }
+
+    void decodesFfCodedSingleByte() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct SeiPayload { ff_coded<8> payload_type; } entry SeiPayload;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0x04}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        auto tree = AnalysisTree::create(QStringLiteral("test"));
+        QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+        BitReader reader(source, *range);
+
+        const auto result = DslExecutor::decodeStruct(
+            *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(8));
+        QVERIFY(result.structureNode.has_value());
+        const auto structNode = tree->node(*result.structureNode);
+        QVERIFY(structNode.has_value());
+        QCOMPARE(structNode->children().size(), std::size_t(1));
+        const auto fieldNode = tree->node(structNode->children().front());
+        QVERIFY(fieldNode.has_value());
+        QCOMPARE(fieldNode->name(), QStringLiteral("payload_type"));
+        QCOMPARE(fieldNode->value().toULongLong(), quint64(4));
+        QVERIFY(fieldNode->location().has_value());
+        QCOMPARE(fieldNode->location()->logicalRange().bitLength(), quint64(8));
+    }
+
+    void decodesFfCodedAccumulatedBytes() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct SeiPayload { ff_coded<8> payload_type; } entry SeiPayload;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0xff, 0xff, 0x03}));
+        const auto mapping = mappingForBytes(3);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 24);
+        auto tree = AnalysisTree::create(QStringLiteral("test"));
+        QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+        BitReader reader(source, *range);
+
+        const auto result = DslExecutor::decodeStruct(
+            *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(24));
+        QVERIFY(result.structureNode.has_value());
+        const auto structNode = tree->node(*result.structureNode);
+        QVERIFY(structNode.has_value());
+        QCOMPARE(structNode->children().size(), std::size_t(1));
+        const auto fieldNode = tree->node(structNode->children().front());
+        QVERIFY(fieldNode.has_value());
+        QCOMPARE(fieldNode->name(), QStringLiteral("payload_type"));
+        QCOMPARE(fieldNode->value().toULongLong(), quint64(513)); // 255 + 255 + 3
+        QVERIFY(fieldNode->location().has_value());
+        QCOMPARE(fieldNode->location()->logicalRange().bitLength(), quint64(24));
+    }
+
+    void rejectsFfCodedExceedingMaxBytes() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct SeiPayload { ff_coded<2> payload_type; } entry SeiPayload;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        // 3 bytes of 0xFF -> exceeds max_bytes = 2
+        MemorySource source(bytes({0xff, 0xff, 0x01}));
+        const auto mapping = mappingForBytes(3);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 24);
+        auto tree = AnalysisTree::create(QStringLiteral("test"));
+        QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+        BitReader reader(source, *range);
+
+        const auto result = DslExecutor::decodeStruct(
+            *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::InvalidSyntax);
+    }
+
+    void handlesFfCodedTruncationRollback() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct SeiPayload { ff_coded<4> payload_type; } entry SeiPayload;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        // 0xFF means more bytes needed, but source ends
+        MemorySource source(bytes({0xff}));
+        const auto mapping = mappingForBytes(1);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        auto tree = AnalysisTree::create(QStringLiteral("test"));
+        QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+        BitReader reader(source, *range);
+
+        const auto result = DslExecutor::decodeStruct(
+            *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::TruncatedSource);
+        QCOMPARE(reader.position(), quint64(0)); // Rolled back
+    }
+
+    void evaluatesFfCodedInConditionAndComputed() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct SeiPayload {
+                ff_coded<8> payload_type;
+                computed<u64> double_type = payload_type * 2;
+                if (payload_type == 5) {
+                    bits<8> user_data;
+                }
+            }
+            entry SeiPayload;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+
+        MemorySource source(bytes({0x05, 0xaa}));
+        const auto mapping = mappingForBytes(2);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 16);
+        auto tree = AnalysisTree::create(QStringLiteral("test"));
+        QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+        BitReader reader(source, *range);
+
+        const auto result = DslExecutor::decodeStruct(
+            *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(16));
+        const auto structNode = tree->node(*result.structureNode);
+        QVERIFY(structNode.has_value());
+        QCOMPARE(structNode->children().size(), std::size_t(3));
+        const auto doubleNode = tree->node(structNode->children().at(1));
+        QVERIFY(doubleNode.has_value());
+        QCOMPARE(doubleNode->value().toULongLong(), quint64(10));
+        const auto userDataNode = tree->node(structNode->children().at(2));
+        QVERIFY(userDataNode.has_value());
+        QCOMPARE(userDataNode->value().toULongLong(), quint64(0xaa));
+    }
 };
 
 QTEST_GUILESS_MAIN(DslExecutorTest)

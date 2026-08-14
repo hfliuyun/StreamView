@@ -136,6 +136,7 @@ enum class DslFieldEncoding : quint8 {
     Bits,
     UnsignedExpGolomb,
     SignedExpGolomb,
+    FfCoded,
 };
 
 enum class DslScalarType : quint8 {
@@ -215,6 +216,7 @@ struct DslBitField final {
     DslFieldEncoding encoding = DslFieldEncoding::Bits;
     quint8 width = 0;
     std::optional<DslExpression> widthExpression;
+    quint64 maxBytes = 0;
     DslEndian endian = DslEndian::Big;
     std::optional<quint64> arrayLength;
     std::vector<DslAnnotation> annotations;

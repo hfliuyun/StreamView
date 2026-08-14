@@ -980,9 +980,26 @@ private:
             field.encoding = DslFieldEncoding::UnsignedExpGolomb;
         } else if (matchIdentifier(QStringLiteral("se"))) {
             field.encoding = DslFieldEncoding::SignedExpGolomb;
+        } else if (matchIdentifier(QStringLiteral("ff_coded"))) {
+            field.encoding = DslFieldEncoding::FfCoded;
+            expect(DslTokenKind::Less, QStringLiteral("'<' after ff_coded"));
+            if (at(DslTokenKind::IntegerLiteral)) {
+                const DslToken maxBytesToken = consume();
+                field.maxBytes = maxBytesToken.integerValue;
+                if (field.maxBytes < 1 || field.maxBytes > 64) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidBitWidth,
+                         QStringLiteral("ff_coded maximum bytes must be between 1 and 64"),
+                         maxBytesToken.range});
+                }
+            } else {
+                error(DslDiagnosticCode::MissingToken,
+                      QStringLiteral("Expected maximum byte count literal for ff_coded"));
+            }
+            expect(DslTokenKind::Greater, QStringLiteral("'>' after ff_coded maximum bytes"));
         } else {
             error(DslDiagnosticCode::UnexpectedToken,
-                  QStringLiteral("Expected bits<N[, endian]>, ue, or se field type"));
+                  QStringLiteral("Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type"));
             recoverField();
             return;
         }
@@ -2302,7 +2319,9 @@ private:
                               : syntaxScalar &&
                                     (found->syntax->encoding == DslFieldEncoding::Bits ||
                                      found->syntax->encoding ==
-                                         DslFieldEncoding::UnsignedExpGolomb);
+                                         DslFieldEncoding::UnsignedExpGolomb ||
+                                     found->syntax->encoding ==
+                                         DslFieldEncoding::FfCoded);
                 if (!supported) {
                     QString message = QStringLiteral(
                         "Controllers require a previous scalar bits, enum, ue, or "
@@ -2459,13 +2478,15 @@ private:
                         rangeSeen = true;
                         const bool signedRangeField =
                             field.encoding == DslFieldEncoding::SignedExpGolomb;
-                        if (field.encoding != DslFieldEncoding::Bits &&
-                            field.encoding != DslFieldEncoding::UnsignedExpGolomb &&
-                            !signedRangeField) {
+                        const bool isUnsignedScalar =
+                            field.encoding == DslFieldEncoding::Bits ||
+                            field.encoding == DslFieldEncoding::UnsignedExpGolomb ||
+                            field.encoding == DslFieldEncoding::FfCoded;
+                        if (!isUnsignedScalar && !signedRangeField) {
                             result_.diagnostics.push_back(
                                 {DslDiagnosticCode::InvalidAnnotation,
                                  QStringLiteral(
-                                     "@range is only supported on bits, ue, and se fields"),
+                                     "@range is only supported on bits, ue, se, and ff_coded fields"),
                                  annotation.range});
                             continue;
                         }
@@ -2488,7 +2509,7 @@ private:
                             result_.diagnostics.push_back(
                                 {DslDiagnosticCode::ConstraintOutOfRange,
                                  QStringLiteral(
-                                     "@range bounds cannot be negative on bits and ue fields"),
+                                     "@range bounds cannot be negative on unsigned fields"),
                                  annotation.range});
                             continue;
                         }
@@ -2553,10 +2574,11 @@ private:
                     }
                     equalsSeen = true;
                     if (field.encoding != DslFieldEncoding::Bits &&
-                        field.encoding != DslFieldEncoding::UnsignedExpGolomb) {
+                        field.encoding != DslFieldEncoding::UnsignedExpGolomb &&
+                        field.encoding != DslFieldEncoding::FfCoded) {
                         result_.diagnostics.push_back(
                             {DslDiagnosticCode::InvalidAnnotation,
-                             QStringLiteral("@equals is only supported on bits and ue fields"),
+                             QStringLiteral("@equals is only supported on bits, ue, and ff_coded fields"),
                              annotation.range});
                         continue;
                     }

@@ -1942,6 +1942,57 @@ private slots:
                                 return diagnostic.code == DslDiagnosticCode::UnterminatedString;
                             }));
     }
+
+    void parsesFfCodedFieldEncoding() {
+        const auto result = DslParser::parse(QStringLiteral(R"(
+            struct SeiPayload {
+                ff_coded<8> payload_type;
+                ff_coded<64> payload_size;
+            }
+            entry SeiPayload;
+        )"));
+
+        QVERIFY(result.succeeded());
+        QCOMPARE(result.program.structs.size(), std::size_t(1));
+        const auto& s = result.program.structs.front();
+        QCOMPARE(s.items.size(), std::size_t(2));
+
+        QCOMPARE(s.items.at(0).kind, DslStructItemKind::Field);
+        const auto& field1 = s.items.at(0).field;
+        QCOMPARE(field1.name, QStringLiteral("payload_type"));
+        QCOMPARE(field1.encoding, DslFieldEncoding::FfCoded);
+        QCOMPARE(field1.maxBytes, quint64(8));
+
+        QCOMPARE(s.items.at(1).kind, DslStructItemKind::Field);
+        const auto& field2 = s.items.at(1).field;
+        QCOMPARE(field2.name, QStringLiteral("payload_size"));
+        QCOMPARE(field2.encoding, DslFieldEncoding::FfCoded);
+        QCOMPARE(field2.maxBytes, quint64(64));
+    }
+
+    void rejectsInvalidFfCodedMaximumBytes() {
+        const auto zeroResult = DslParser::parse(QStringLiteral(
+            "struct S { ff_coded<0> field; } entry S;"));
+        QVERIFY(!zeroResult.succeeded());
+        QVERIFY(hasDiagnostic(zeroResult, DslDiagnosticCode::InvalidBitWidth));
+
+        const auto overflowResult = DslParser::parse(QStringLiteral(
+            "struct S { ff_coded<65> field; } entry S;"));
+        QVERIFY(!overflowResult.succeeded());
+        QVERIFY(hasDiagnostic(overflowResult, DslDiagnosticCode::InvalidBitWidth));
+    }
+
+    void rejectsMalformedFfCodedSyntax() {
+        const auto missingAngle = DslParser::parse(QStringLiteral(
+            "struct S { ff_coded 8> field; } entry S;"));
+        QVERIFY(!missingAngle.succeeded());
+        QVERIFY(hasDiagnostic(missingAngle, DslDiagnosticCode::MissingToken));
+
+        const auto missingClosing = DslParser::parse(QStringLiteral(
+            "struct S { ff_coded<8 field; } entry S;"));
+        QVERIFY(!missingClosing.succeeded());
+        QVERIFY(hasDiagnostic(missingClosing, DslDiagnosticCode::MissingToken));
+    }
 };
 
 QTEST_GUILESS_MAIN(DslTest)
