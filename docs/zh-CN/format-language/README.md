@@ -1012,7 +1012,7 @@ decoded-picture-buffer validation、operation 顺序/重复语义、权重施加
 解码与 slice-group 分支均留待后续。PPS scaling list 与依赖 SPS 的 `pic_init_qp_minus26` 和 `slice_qp_delta` domain 校验也留待
 后续。
 type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.29` 发布 coverage depth `baseline-main-high-slice-header`，完成了
+`0.1.30` 发布 coverage depth `baseline-main-high-slice-header`，完成了
 Baseline/Main/High 8-bit 4:2:0 单 slice group 的 slice header 里程碑，并将
 slice data 整体作为不透明压缩载荷。
 
