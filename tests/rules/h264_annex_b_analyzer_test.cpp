@@ -2488,7 +2488,125 @@ private slots:
         QCOMPARE(audNal->state(), MaterializationState::Materialized);
     }
 
-    void failedParameterSetRedefinitionDoesNotCorruptPriorGenerations() {
+    void failedSpsRedefinitionPreservesPriorGenerationForSubsequentSlices() {
+        std::vector<std::byte> stream;
+        // SPS id 0 (gen 0): valid Baseline profile 66, log2_max_frame_num_minus4 = 0 (4-bit frame_num)
+        appendNal(stream, sequenceParameterSetForProfile(66, 0, 0));
+        // PPS id 0 (gen 0): references SPS id 0
+        appendNal(stream, pictureParameterSet(false, 0, 0));
+        // Slice A: IDR slice referencing PPS id 0, frame_num length = 4 bits
+        appendNal(stream, pictureOrderCountSlice(true, 0, {}, false, 0, 0, 4, 0));
+        // Malformed SPS id 0 (failed redefinition attempt): reserved profile 99, same seq_parameter_set_id = 0, log2_max_frame_num_minus4 = 2
+        appendNal(stream, sequenceParameterSetForProfile(99, 0, 2));
+        // PPS id 0 re-sent: references SPS id 0, still successfully binds to prior valid gen 0
+        appendNal(stream, pictureParameterSet(false, 0, 0));
+        // Slice B: IDR slice referencing PPS id 0 after failed redefinition; should still bind gen 0 (4-bit frame_num)
+        appendNal(stream, pictureOrderCountSlice(true, 0, {}, false, 1, 0, 4, 0));
+        // AUD trailing NAL
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x50}));
+
+        MemorySource source(std::move(stream));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(7));
+
+        const QStringList expectedSliceChildren = {
+            QStringLiteral("first_mb_in_slice"),
+            QStringLiteral("slice_type"),
+            QStringLiteral("pic_parameter_set_id"),
+            QStringLiteral("frame_num"),
+            QStringLiteral("idr_pic_id"),
+            QStringLiteral("pic_order_cnt_lsb"),
+            QStringLiteral("has_delta_pic_order_cnt_bottom"),
+            QStringLiteral("no_output_of_prior_pics_flag"),
+            QStringLiteral("long_term_reference_flag"),
+            QStringLiteral("slice_qp_delta"),
+            QStringLiteral("slice_data"),
+        };
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        // NAL 0: SPS 0 gen 0 (Materialized)
+        const auto sps0Nal = analyzer->tree().node(batch.nalUnitNodes.at(0));
+        QVERIFY(sps0Nal.has_value());
+        QCOMPARE(sps0Nal->state(), MaterializationState::Materialized);
+
+        // NAL 1: PPS 0 gen 0 (Materialized)
+        const auto pps0Nal = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(pps0Nal.has_value());
+        QCOMPARE(pps0Nal->state(), MaterializationState::Materialized);
+
+        // NAL 2: Slice A (Materialized, 4 bits frame_num, bound to gen 0)
+        const auto sliceANal = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(sliceANal.has_value());
+        QCOMPARE(sliceANal->state(), MaterializationState::Materialized);
+        const auto rbspA = analyzer->tree().node(sliceANal->children().at(2));
+        QVERIFY(rbspA.has_value());
+        const auto sliceA = analyzer->tree().node(rbspA->children().front());
+        QVERIFY(sliceA.has_value());
+        QCOMPARE(sliceA->state(), MaterializationState::Materialized);
+        QVERIFY(sliceA->diagnostics().empty());
+        QCOMPARE(childNamesOf(*sliceA), expectedSliceChildren);
+        const auto frameNumA = fieldNamed(*sliceA, QStringLiteral("frame_num"));
+        QVERIFY(frameNumA.has_value());
+        QCOMPARE(frameNumA->location()->logicalRange().bitLength(), quint64(4));
+
+        // NAL 3: Malformed SPS 0 (Invalid)
+        const auto malformedSpsNal = analyzer->tree().node(batch.nalUnitNodes.at(3));
+        QVERIFY(malformedSpsNal.has_value());
+        QCOMPARE(malformedSpsNal->state(), MaterializationState::Invalid);
+
+        // NAL 4: PPS 0 re-sent (Materialized, still successfully resolves prior gen 0 of SPS 0)
+        const auto pps0PostNal = analyzer->tree().node(batch.nalUnitNodes.at(4));
+        QVERIFY(pps0PostNal.has_value());
+        QCOMPARE(pps0PostNal->state(), MaterializationState::Materialized);
+        QVERIFY(pps0PostNal->diagnostics().empty());
+
+        // NAL 5: Slice B (Materialized, 4 bits frame_num, still bound to gen 0 because failed redefinition published no new generation)
+        const auto sliceBNal = analyzer->tree().node(batch.nalUnitNodes.at(5));
+        QVERIFY(sliceBNal.has_value());
+        QCOMPARE(sliceBNal->state(), MaterializationState::Materialized);
+        const auto rbspB = analyzer->tree().node(sliceBNal->children().at(2));
+        QVERIFY(rbspB.has_value());
+        const auto sliceB = analyzer->tree().node(rbspB->children().front());
+        QVERIFY(sliceB.has_value());
+        QCOMPARE(sliceB->state(), MaterializationState::Materialized);
+        QVERIFY(sliceB->diagnostics().empty());
+        QCOMPARE(childNamesOf(*sliceB), expectedSliceChildren);
+        const auto frameNumB = fieldNamed(*sliceB, QStringLiteral("frame_num"));
+        QVERIFY(frameNumB.has_value());
+        QCOMPARE(frameNumB->location()->logicalRange().bitLength(), quint64(4));
+
+        // NAL 6: AUD (Materialized)
+        const auto audNal = analyzer->tree().node(batch.nalUnitNodes.at(6));
+        QVERIFY(audNal.has_value());
+        QCOMPARE(audNal->state(), MaterializationState::Materialized);
+    }
+
+    void invalidParameterSetDefinitionDoesNotPublishOrFallBack() {
         std::vector<std::byte> stream;
         // SPS id 0: valid Baseline profile 66
         appendNal(stream, sequenceParameterSetForProfile(66, 0));
