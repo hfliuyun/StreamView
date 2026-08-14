@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Implement ff_coded<max_bytes> scalar field encoding in DSL compiler and VM runtime (T5a / ADR-0079)
-Next Action: Implement bounded repeat while (more_rbsp_data()) in DSL compiler and VM runtime (T5b / ADR-0080); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31802120848 (macOS job 94772297778, Windows job 94772297785, Ubuntu job 94772297818) passed 100%
+Last Completed Step: Implement bounded repeat while (more_rbsp_data()) in DSL compiler and VM runtime (T5b / ADR-0080)
+Next Action: Specify and implement SEI container structure and dispatch (Task T6); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31821440613 (macOS job 94835366232, Windows job 94835366114, Ubuntu job 94835366166) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1166,3 +1166,20 @@ Blockers: None
      - tests/rules/dsl_ir_test.cpp：覆盖类型推导、ReadFfCoded 指令生成及 @range/@equals 约束；
      - tests/rules/dsl_executor_test.cpp：覆盖单字节直接解码（0x04 -> 4）、多字节 0xFF 累加解码（0xFF 0xFF 0x03 -> 513）、超限拒绝与截断回滚。
   svtool rule check 通过；本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告。hosted run 31802120848 在 macOS 15 / Qt 6.11.1（job 94772297778）、Windows 2022 / Qt 6.10.1（job 94772297785）、Ubuntu 24.04 / Qt 6.11.1（job 94772297818）全部成功。
+- 2026-08-14：完成 repeat (maximum) while (more_rbsp_data()) 有界循环语言能力实现（任务 T5b / ADR-0080）。
+  1. DSL 语法与语义（src/rules/dsl.h / dsl.cpp）：
+     - 在 DslStructItemKind 中新增 WhileRepeat，定义 maximumWhileRepeatIterations() = 1024；
+     - 扩展 parseRepeat 解析 repeat (maximum) while (more_rbsp_data()) { ... }；严格校验 1 <= maximum <= 1024（越界报 InvalidArrayLength）与循环谓词只能为 more_rbsp_data()（非法报 InvalidCondition）；
+     - 校验 repeat body 非空且包含至少一个字段。
+  2. 静态类型 IR（src/rules/dsl_ir.h / dsl_ir.cpp）：
+     - 新增 DslTypedWhileRepeat 与 DslOpcode::AssertWhileRepeatTerminated；
+     - 将 WhileRepeat 展开为 maximum 次迭代字段投影，每个投影附加 MoreRbspData == true 条件约束，在末尾发射 AssertWhileRepeatTerminated 字节码指令。
+  3. VM 运行时（src/rules/dsl_vm.cpp）：
+     - 在结构体预检中校验 whileRepeats 的有序性、投影 guard 一致性；
+     - conditionsPresent 扩展支持 Bool 类型的表达式求值（MoreRbspData）；
+     - 在 AssertWhileRepeatTerminated 执行时探测 reader.moreRbspData()：若 maximum 次迭代执行完毕后仍有 RBSP 数据，报错 InvalidSyntax（"While repeat did not terminate within its declared maximum"）；若无剩余数据则正常退出循环。
+  4. 自动化测试套件：
+     - tests/rules/dsl_test.cpp：覆盖合法语法（repeat (64) while (more_rbsp_data())）、非法界限（0, 1025）、非法条件函数与空循环体报错；
+     - tests/rules/dsl_ir_test.cpp：覆盖 DslTypedWhileRepeat 生成、MoreRbspData 迭代条件以及 AssertWhileRepeatTerminated 指令生成；
+     - tests/rules/dsl_executor_test.cpp：覆盖 0 次迭代退出（直接遇到 rbsp_trailing_bits）、多迭代正常解码以及超过最大迭代次数时的 InvalidSyntax 报错。
+  svtool rule check 通过；本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告。hosted run 31821440613 在 macOS 15 / Qt 6.11.1（job 94835366232）、Windows 2022 / Qt 6.10.1（job 94835366114）、Ubuntu 24.04 / Qt 6.11.1（job 94835366166）全部成功。
