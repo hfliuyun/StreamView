@@ -1142,15 +1142,15 @@ The declared PPS fields have the following bounded meanings:
 | `weighted_pred_flag` | Enables weighted prediction for P and SP slices. |
 | `weighted_bipred_idc` | Selects disabled, explicit, or implicit weighted biprediction; value 3 is reserved. |
 | `pic_init_qp_minus26` | Sets the initial luma QP relative to 26; its SPS-dependent signed bound is deferred. |
-| `pic_init_qs_minus26` | Sets the initial SP/SI QP relative to 26; its signed bound is deferred. |
-| `chroma_qp_index_offset` | Sets the first chroma QP index offset; its signed bound is deferred. |
+| `pic_init_qs_minus26` | Sets the initial SP/SI QP relative to 26; clause 7.4.2.2 constrains it to `-26..25`, and an out-of-range value warns without moving later boundaries. |
+| `chroma_qp_index_offset` | Sets the first chroma QP index offset; clause 7.4.2.2 constrains it to `-12..12`, and an out-of-range value warns without moving later boundaries. |
 | `deblocking_filter_control_present_flag` | Signals deblocking-filter control syntax in associated slice headers. |
 | `constrained_intra_pred_flag` | Restricts intra prediction to intra-coded neighboring macroblocks. |
 | `redundant_pic_cnt_present_flag` | Signals redundant-picture count syntax in associated slice headers. |
 | `has_pps_extension` | Non-consuming computed Boolean that distinguishes optional extension syntax from the terminal RBSP pattern; it has no source location. |
 | `transform_8x8_mode_flag` | Enables 8x8 transform decoding when the bounded High-profile extension is present. |
 | `pic_scaling_matrix_present_flag` | Must be zero because PPS scaling-list syntax remains layout-critical unsupported. |
-| `second_chroma_qp_index_offset` | Sets the second chroma QP index offset; its signed bound is deferred. |
+| `second_chroma_qp_index_offset` | Sets the second chroma QP index offset; clause 7.4.2.2 constrains it to `-12..12`, and an out-of-range value warns without moving later boundaries. |
 
 Type `1` decodes `NonIdrSliceLayerWithoutPartitioningRbsp` for bounded I, P,
 and B slices in frame or field, reference or non-reference form.
@@ -1312,7 +1312,7 @@ SP/SI slice types, derived `PicOrderCnt`/`TopFieldOrderCnt`/
 pairing and output order, signed POC-offset domains and cycle-sum validation,
 decoded-picture-buffer validation, operation-order/duplicate semantics,
 weight-application semantics, CABAC slice-data decoding, and slice-group
-branches are deferred. PPS scaling lists and signed QP-offset domain validation
+branches are deferred. PPS scaling lists and SPS-dependent `pic_init_qp_minus26` and `slice_qp_delta` domain validation
 are also deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
 Package `0.1.28` advertises coverage depth `picture-order-count-slice-header`;

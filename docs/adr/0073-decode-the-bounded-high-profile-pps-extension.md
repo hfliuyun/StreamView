@@ -72,3 +72,8 @@ This decision does not decode PPS scaling lists, flexible macroblock ordering,
 or other unsupported SPS profiles and chroma formats. It does not validate the
 signed QP-offset value domains, derive transform or quantization semantics, or
 add picture-order, decoded-picture-buffer, or output-order state.
+
+## Follow-up
+
+ADR-0077 and package `0.1.29` subsequently apply non-fatal signed
+`@range(-12, 12)` to `second_chroma_qp_index_offset`.

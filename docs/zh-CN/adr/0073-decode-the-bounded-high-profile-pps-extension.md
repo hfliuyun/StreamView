@@ -58,3 +58,8 @@ missing/future/stale SPS generation、失败重定义恢复，以及失败 NAL �
 本决策不解码 PPS scaling list、flexible macroblock ordering，或其他未支持的 SPS profile 与
 chroma format。它不校验 signed QP-offset 数值域，不推导 transform 或 quantization 语义，
 也不增加 picture-order、decoded-picture-buffer 或 output-order 状态。
+
+## 后续
+
+ADR-0077 与 package `0.1.29` 随后为 `second_chroma_qp_index_offset` 应用非致命 signed
+`@range(-12, 12)` 约束。

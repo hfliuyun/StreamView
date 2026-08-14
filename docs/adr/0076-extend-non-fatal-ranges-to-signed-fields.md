@@ -78,3 +78,10 @@ general warning assertion, rule-selected severity, or a custom diagnostic
 message. It does not bound `slice_qp_delta`, whose conformant domain depends on
 the active SPS and PPS, and it does not validate `first_mb_in_slice`, derived
 picture order, decoded-picture-buffer state, MMCO-5, or output order.
+
+## Follow-up
+
+ADR-0077 and package `0.1.29` subsequently applied signed `@range` bounds to the
+literal-domain PPS QP offsets: `pic_init_qs_minus26` (`-26..25`),
+`chroma_qp_index_offset` (`-12..12`), and `second_chroma_qp_index_offset`
+(`-12..12`).

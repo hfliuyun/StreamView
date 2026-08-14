@@ -36,7 +36,8 @@ clause 7.3.2.2 base 字段，要求 `num_slice_groups_minus1 == 0` 且不存在 
 
 后续：ADR-0073 与 package `0.1.25` 只取代上述无 extension 边界。它们使用
 `more_rbsp_data()` 接受有界 High-profile PPS extension，同时继续把 scaling-list 语法作为
-layout-critical unsupported。
+layout-critical unsupported。ADR-0077 与 package `0.1.29` 随后为 `pic_init_qs_minus26`
+（`-26..25`）与 `chroma_qp_index_offset`（`-12..12`）应用非致命 signed `@range` 约束。
 
 本切片中的 PPS materialized 只表示已声明 base 结构被精确消费。`seq_parameter_set_id` 仍是
 带 source 的 identifier；analyzer 尚不查找 SPS generation、不注册 PPS generation，也不证明

@@ -59,3 +59,9 @@ maximum 之外说明有符号静态值域。
 不增加 expression-valued bound、通用 warning assertion、由规则选择的 severity 或自定义
 diagnostic message。它不约束 `slice_qp_delta`——其合规值域取决于生效的 SPS 与 PPS——也不校验
 `first_mb_in_slice`、派生 picture order、decoded-picture-buffer state、MMCO-5 或 output order。
+
+## 后续
+
+ADR-0077 与 package `0.1.29` 随后为字面量值域的 PPS QP offset 应用了 signed `@range`
+约束：`pic_init_qs_minus26`（`-26..25`）、`chroma_qp_index_offset`（`-12..12`）与
+`second_chroma_qp_index_offset`（`-12..12`）。

@@ -45,6 +45,8 @@ new rule asset.
 Follow-up: ADR-0073 and package `0.1.25` supersede only the no-extension
 boundary. They use `more_rbsp_data()` to accept the bounded High-profile PPS
 extension while retaining scaling-list syntax as layout-critical unsupported.
+ADR-0077 and package `0.1.29` subsequently apply non-fatal signed `@range`
+bounds to `pic_init_qs_minus26` (`-26..25`) and `chroma_qp_index_offset` (`-12..12`).
 
 A materialized PPS in this slice means that the declared base structure was
 consumed exactly. `seq_parameter_set_id` remains a source-backed identifier;

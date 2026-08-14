@@ -871,15 +871,15 @@ consumer 报告 `dependency-unavailable`。下面的有界 type-1 与 type-5 sli
 | `weighted_pred_flag` | 为 P 与 SP slice 启用 weighted prediction。 |
 | `weighted_bipred_idc` | 选择关闭、explicit 或 implicit weighted biprediction；值 3 为 reserved。 |
 | `pic_init_qp_minus26` | 设置相对 26 的初始 luma QP；依赖 SPS 的 signed bound 留待后续。 |
-| `pic_init_qs_minus26` | 设置相对 26 的初始 SP/SI QP；signed bound 留待后续。 |
-| `chroma_qp_index_offset` | 设置第一个 chroma QP index offset；signed bound 留待后续。 |
+| `pic_init_qs_minus26` | 设置相对 26 的初始 SP/SI QP；clause 7.4.2.2 将其限制在 `-26..25`，越界值只告警且不移动后续边界。 |
+| `chroma_qp_index_offset` | 设置第一个 chroma QP index offset；clause 7.4.2.2 将其限制在 `-12..12`，越界值只告警且不移动后续边界。 |
 | `deblocking_filter_control_present_flag` | 表示关联 slice header 中存在 deblocking-filter control 语法。 |
 | `constrained_intra_pred_flag` | 将 intra prediction 限制在 intra-coded 相邻 macroblock。 |
 | `redundant_pic_cnt_present_flag` | 表示关联 slice header 中存在 redundant-picture count 语法。 |
 | `has_pps_extension` | 用非消费方式区分可选 extension 与 terminal RBSP pattern 的 computed Boolean；没有 source location。 |
 | `transform_8x8_mode_flag` | 在有界 High-profile extension 中启用 8x8 transform decoding。 |
 | `pic_scaling_matrix_present_flag` | 必须为零，因为 PPS scaling-list 语法仍属于 layout-critical unsupported。 |
-| `second_chroma_qp_index_offset` | 设置第二个 chroma QP index offset；signed bound 留待后续。 |
+| `second_chroma_qp_index_offset` | 设置第二个 chroma QP index offset；clause 7.4.2.2 将其限制在 `-12..12`，越界值只告警且不移动后续边界。 |
 
 type `1` 为帧或场、reference 或 non-reference 形态下的有界 I、P 与 B slice 解码
 `NonIdrSliceLayerWithoutPartitioningRbsp`。`NonIdrSliceType` 接受 I 值 2/7、P 值 0/5
@@ -1009,7 +1009,7 @@ SPS `max_num_ref_frames` 表达的三条 per-operation bound：operation 2 的
 `PicOrderCnt`/`TopFieldOrderCnt`/`BottomFieldOrderCnt`、`FrameNumOffset` 与 wrap state、
 MMCO-5 effect、field pairing 与 output order、signed POC offset domain 与 cycle-sum 校验、
 decoded-picture-buffer validation、operation 顺序/重复语义、权重施加语义、CABAC slice-data
-解码与 slice-group 分支均留待后续。PPS scaling list 与 signed QP-offset domain 校验也留待
+解码与 slice-group 分支均留待后续。PPS scaling list 与依赖 SPS 的 `pic_init_qp_minus26` 和 `slice_qp_delta` domain 校验也留待
 后续。
 type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
 `0.1.28` 发布 coverage depth `picture-order-count-slice-header`；这尚未完成
