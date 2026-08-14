@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Extend non-fatal ranges to signed `se` fields and constrain both slice deblocking offsets to `-6..6` without moving following fields
-Next Action: Apply the static signed `@range` to the PPS QP offsets whose clause 7.4.2.2 domains are literal — `pic_init_qs_minus26` at `-26..25` and both `chroma_qp_index_offset` fields at `-12..12`; `pic_init_qp_minus26` and `slice_qp_delta` stay deferred because their domains depend on the SPS-derived `QpBdOffsetY`, which `@range` cannot express, and POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: Signed `@range` and the two deblocking-offset bounds passed `svtool rule check`, parser 70/70, IR 76/76, executor 127/127, the focused H.264 analyzer suite 124/124, and local dev/ci/sanitize CTest 32/32 with no sanitizer report; hosted run `31782320789` succeeded on Ubuntu 24.04, Windows 2022, and macOS 15
+Last Completed Step: Apply non-fatal signed @range bounds to PPS QP offsets (pic_init_qs_minus26 at -26..25 and both chroma_qp_index_offset fields at -12..12) without moving following fields
+Next Action: Lock in-stream SPS/PPS redefinition and positional generation binding with end-to-end analyzer regressions and bilingual documentation (Phase 3 item 5); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: Signed @range on PPS QP offsets passed svtool rule check, parser 70/70, IR 76/76, executor 127/127, the focused H.264 analyzer suite 125/125, and local dev/ci/sanitize CTest 32/32 with no sanitizer report; hosted run 31791302960 succeeded on Ubuntu 24.04, Windows 2022, and macOS 15
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1098,3 +1098,22 @@ Blockers: None
   成功：Ubuntu 24.04 / Qt 6.11.1 job `94710577209`、Windows 2022 / Qt 6.10.1 job
   `94710577185`、macOS 15 / Qt 6.11.1 job `94710577220` 的 Configure、Build、Test、Install
   与 Upload 全部通过。
+- 2026-08-14：完成 PPS QP offset 的 static signed `@range` 校验。新增双语
+  ADR-0077（`docs/adr/0077-bound-pps-quantization-parameter-offsets.md` 与
+  `docs/zh-CN/adr/0077-bound-pps-quantization-parameter-offsets.md`），补充
+  ADR-0041/0073/0076 后续链接。官方规则为 `pic_init_qs_minus26` 增加
+  `@range(-26, 25)` 与 clause 7.4.2.2 引用，为 `chroma_qp_index_offset` 及
+  `second_chroma_qp_index_offset` 增加 `@range(-12, 12)` 与 clause 7.4.2.2 引用；
+  package 升到 `0.1.29`，coverage depth 保持 `picture-order-count-slice-header`。
+  回归覆盖三个字段各自的合法极值（-26/25、-12/12）与首个非法值（-27/26、-13/13），
+  合法与非法取值均配对使用相同码字宽度以验证兄弟字段、后续
+  deblocking flag/extension/trailing bits 与下一 NAL 位置未移动；越界时只附加
+  warning `invalid-syntax` 诊断，PPS 仍保持 materialized。`svtool rule check`、
+  parser 70/70、IR 76/76、executor 127/127、H.264 analyzer 125/125 通过；本机
+  dev/ci/sanitize 重新配置、完整构建与 CTest 均为 32/32，且无 sanitizer 报告。
+  hosted run `31791302960` 在 Ubuntu 24.04 / Qt 6.11.1（job `94738594523`）、
+  Windows 2022 / Qt 6.10.1（job `94738594486`）、macOS 15 / Qt 6.11.1
+  （job `94738594522`）全部成功。下一步进入 SPS/PPS 同 ID 中途重定义与按位置选择
+  端到端验收（阶段 3 第 5 项）；SPS 依赖的 `pic_init_qp_minus26` 与 `slice_qp_delta`、
+  实际 POC、field order、wrap/MMCO-5、DPB 与 output order 继续延期。
+

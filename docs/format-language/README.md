@@ -1315,7 +1315,7 @@ weight-application semantics, CABAC slice-data decoding, and slice-group
 branches are deferred. PPS scaling lists and SPS-dependent `pic_init_qp_minus26` and `slice_qp_delta` domain validation
 are also deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
-Package `0.1.28` advertises coverage depth `picture-order-count-slice-header`;
+Package `0.1.29` advertises coverage depth `picture-order-count-slice-header`;
 this is not yet the complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in

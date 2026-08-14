@@ -1012,7 +1012,7 @@ decoded-picture-buffer validation、operation 顺序/重复语义、权重施加
 解码与 slice-group 分支均留待后续。PPS scaling list 与依赖 SPS 的 `pic_init_qp_minus26` 和 `slice_qp_delta` domain 校验也留待
 后续。
 type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.28` 发布 coverage depth `picture-order-count-slice-header`；这尚未完成
+`0.1.29` 发布 coverage depth `picture-order-count-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
