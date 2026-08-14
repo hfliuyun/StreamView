@@ -244,10 +244,12 @@ struct PictureParameterSetRbsp {
         @description("Selects the supported weighted biprediction mode.");
     se pic_init_qp_minus26
         @description("Sets the initial luma quantization parameter relative to 26.");
-    se pic_init_qs_minus26
-        @description("Sets the initial SP/SI quantization parameter relative to 26.");
-    se chroma_qp_index_offset
-        @description("Sets the first chroma quantization-parameter index offset.");
+    se pic_init_qs_minus26 @range(-26, 25)
+        @spec("ITU-T H.264", "7.4.2.2")
+        @description("Sets the initial SP/SI quantization parameter relative to 26; conformant values are -26 to 25.");
+    se chroma_qp_index_offset @range(-12, 12)
+        @spec("ITU-T H.264", "7.4.2.2")
+        @description("Sets the first chroma quantization-parameter index offset; conformant values are -12 to 12.");
     bits<1> deblocking_filter_control_present_flag @context_export
         @description("Signals deblocking-filter control syntax in associated slice headers.");
     bits<1> constrained_intra_pred_flag
@@ -265,9 +267,9 @@ struct PictureParameterSetRbsp {
         bits<1> pic_scaling_matrix_present_flag @equals(0)
             @spec("ITU-T H.264", "7.3.2.2")
             @description("Signals scaling-list syntax, which is outside the supported subset.");
-        se second_chroma_qp_index_offset
-            @spec("ITU-T H.264", "7.3.2.2")
-            @description("Sets the second chroma quantization-parameter index offset.");
+        se second_chroma_qp_index_offset @range(-12, 12)
+            @spec("ITU-T H.264", "7.4.2.2")
+            @description("Sets the second chroma quantization-parameter index offset; conformant values are -12 to 12.");
     }
     rbsp_trailing_bits;
 }

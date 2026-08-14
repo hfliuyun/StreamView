@@ -6379,6 +6379,223 @@ private slots:
         QCOMPARE(diagnostic.location->sourceSpans().front().bitLength(), quint64(17));
     }
 
+    void validatesPictureParameterSetQpOffsetsWithoutMovingFollowingFields() {
+        struct Probe final {
+            std::size_t diagnosticCount = 0;
+            QString message;
+            QString fieldPath;
+            quint64 diagnosticStart = 0;
+            quint64 diagnosticLength = 0;
+            quint64 ppsRbspStart = 0;
+            quint64 targetStart = 0;
+            quint64 targetLength = 0;
+            quint64 followingFieldStart = 0;
+            qlonglong targetValue = 0;
+        };
+
+        const auto probe = [](bool highProfile,
+                              const QString& offending,
+                              qint64 picInitQsMinus26,
+                              qint64 chromaQpIndexOffset,
+                              std::optional<qint64> secondChromaQpIndexOffset,
+                              Probe& out) {
+            const auto spsNal = sequenceParameterSetForProfile(highProfile ? 100 : 66);
+            std::vector<bool> bits;
+            appendUnsignedExpGolomb(bits, 0);
+            appendUnsignedExpGolomb(bits, 0);
+            appendFixedBits(bits, 0, 1);
+            appendFixedBits(bits, 0, 1);
+            appendUnsignedExpGolomb(bits, 0);
+            appendUnsignedExpGolomb(bits, 0);
+            appendUnsignedExpGolomb(bits, 0);
+            appendFixedBits(bits, 0, 1);
+            appendFixedBits(bits, 0, 2);
+            appendSignedExpGolomb(bits, 0);
+            appendSignedExpGolomb(bits, picInitQsMinus26);
+            appendSignedExpGolomb(bits, chromaQpIndexOffset);
+            appendFixedBits(bits, 0, 1);
+            appendFixedBits(bits, 0, 1);
+            appendFixedBits(bits, 0, 1);
+            if (secondChromaQpIndexOffset.has_value()) {
+                appendFixedBits(bits, 1, 1);
+                appendFixedBits(bits, 0, 1);
+                appendSignedExpGolomb(bits, *secondChromaQpIndexOffset);
+            }
+            const auto ppsNal = packAnnexBNal(0x68, std::move(bits));
+            std::vector<std::byte> stream;
+            appendNal(stream, spsNal);
+            appendNal(stream, ppsNal);
+            appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x50}));
+            MemorySource source(std::move(stream));
+            QString errorMessage;
+            auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+            QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+            const auto batch = analyzer->analyzeBatch();
+
+            QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+            QCOMPARE(batch.nalUnitNodes.size(), std::size_t(3));
+            const auto nal = analyzer->tree().node(batch.nalUnitNodes.at(1));
+            QVERIFY(nal.has_value());
+            QCOMPARE(nal->state(), MaterializationState::Materialized);
+            const auto rbsp = analyzer->tree().node(nal->children().at(2));
+            QVERIFY(rbsp.has_value());
+            const auto pps = analyzer->tree().node(rbsp->children().front());
+            QVERIFY(pps.has_value());
+            QCOMPARE(pps->state(), MaterializationState::Materialized);
+
+            const auto fieldNamed = [&](const QString& name) {
+                const auto found = std::find_if(
+                    pps->children().begin(), pps->children().end(), [&](const auto id) {
+                        const auto node = analyzer->tree().node(id);
+                        return node && node->name() == name;
+                    });
+                return found == pps->children().end() ? std::nullopt
+                                                      : analyzer->tree().node(*found);
+            };
+
+            const auto target = fieldNamed(offending);
+            QVERIFY(target.has_value());
+            QCOMPARE(target->metadata().specification->clause,
+                     QStringLiteral("7.4.2.2"));
+
+            const QString followingName =
+                offending == QStringLiteral("second_chroma_qp_index_offset")
+                    ? QStringLiteral("rbsp_stop_one_bit")
+                    : QStringLiteral("deblocking_filter_control_present_flag");
+            const auto following = fieldNamed(followingName);
+            QVERIFY(following.has_value());
+
+            out.ppsRbspStart = quint64(spsNal.size() + 4) * 8;
+            out.targetValue = target->value().toLongLong();
+            out.targetStart =
+                target->location()->sourceSpans().front().start().absoluteBitOffset();
+            out.targetLength =
+                target->location()->sourceSpans().front().bitLength();
+            out.followingFieldStart =
+                following->location()->sourceSpans().front().start().absoluteBitOffset();
+
+            if (offending == QStringLiteral("pic_init_qs_minus26")) {
+                const auto sibling = fieldNamed(QStringLiteral("chroma_qp_index_offset"));
+                QVERIFY(sibling.has_value());
+                QVERIFY(sibling->diagnostics().empty());
+            } else if (offending == QStringLiteral("chroma_qp_index_offset")) {
+                const auto sibling = fieldNamed(QStringLiteral("pic_init_qs_minus26"));
+                QVERIFY(sibling.has_value());
+                QVERIFY(sibling->diagnostics().empty());
+            }
+
+            out.diagnosticCount = target->diagnostics().size();
+            if (out.diagnosticCount == 1) {
+                const auto& diagnostic = target->diagnostics().front();
+                QCOMPARE(diagnostic.code,
+                         streamview::core::DiagnosticCode::InvalidSyntax);
+                QCOMPARE(diagnostic.severity,
+                         streamview::core::DiagnosticSeverity::Warning);
+                out.message = diagnostic.message;
+                out.fieldPath = diagnostic.fieldPath;
+                QVERIFY(diagnostic.location.has_value());
+                out.diagnosticStart = diagnostic.location->sourceSpans()
+                                          .front()
+                                          .start()
+                                          .absoluteBitOffset();
+                out.diagnosticLength =
+                    diagnostic.location->sourceSpans().front().bitLength();
+            }
+
+            const auto followingNal = analyzer->tree().node(batch.nalUnitNodes.back());
+            QVERIFY(followingNal.has_value());
+            QCOMPARE(followingNal->state(), MaterializationState::Materialized);
+        };
+
+        struct Case final {
+            bool highProfile;
+            const char* offending;
+            qint64 legalQs;
+            qint64 legalChroma;
+            std::optional<qint64> legalSecond;
+            qint64 illegalQs;
+            qint64 illegalChroma;
+            std::optional<qint64> illegalSecond;
+            const char* message;
+            quint64 expectedBitLength;
+        };
+
+        const Case cases[] = {
+            {false, "pic_init_qs_minus26", 25, 0, std::nullopt, 26, 0, std::nullopt,
+             "Field value is above its @range maximum", 11},
+            {false, "pic_init_qs_minus26", -26, 0, std::nullopt, -27, 0, std::nullopt,
+             "Field value is below its @range minimum", 11},
+            {false, "chroma_qp_index_offset", 0, 12, std::nullopt, 0, 13, std::nullopt,
+             "Field value is above its @range maximum", 9},
+            {false, "chroma_qp_index_offset", 0, -12, std::nullopt, 0, -13, std::nullopt,
+             "Field value is below its @range minimum", 9},
+            {true, "second_chroma_qp_index_offset", 0, 0, 12, 0, 0, 13,
+             "Field value is above its @range maximum", 9},
+            {true, "second_chroma_qp_index_offset", 0, 0, -12, 0, 0, -13,
+             "Field value is below its @range minimum", 9},
+        };
+
+        for (const auto& testCase : cases) {
+            const QString offending = QString::fromLatin1(testCase.offending);
+            Probe legal;
+            probe(testCase.highProfile,
+                  offending,
+                  testCase.legalQs,
+                  testCase.legalChroma,
+                  testCase.legalSecond,
+                  legal);
+            if (QTest::currentTestFailed()) {
+                return;
+            }
+            Probe illegal;
+            probe(testCase.highProfile,
+                  offending,
+                  testCase.illegalQs,
+                  testCase.illegalChroma,
+                  testCase.illegalSecond,
+                  illegal);
+            if (QTest::currentTestFailed()) {
+                return;
+            }
+
+            const qint64 expectedLegalValue =
+                offending == QStringLiteral("pic_init_qs_minus26")
+                    ? testCase.legalQs
+                    : (offending == QStringLiteral("chroma_qp_index_offset")
+                           ? testCase.legalChroma
+                           : *testCase.legalSecond);
+            const qint64 expectedIllegalValue =
+                offending == QStringLiteral("pic_init_qs_minus26")
+                    ? testCase.illegalQs
+                    : (offending == QStringLiteral("chroma_qp_index_offset")
+                           ? testCase.illegalChroma
+                           : *testCase.illegalSecond);
+
+            QCOMPARE(legal.diagnosticCount, std::size_t(0));
+            QCOMPARE(legal.targetValue, qlonglong(expectedLegalValue));
+            QCOMPARE(illegal.diagnosticCount, std::size_t(1));
+            QCOMPARE(illegal.targetValue, qlonglong(expectedIllegalValue));
+            QCOMPARE(illegal.message, QString::fromLatin1(testCase.message));
+            QCOMPARE(illegal.fieldPath,
+                     QStringLiteral("PictureParameterSetRbsp.") + offending);
+
+            QCOMPARE(illegal.diagnosticStart, illegal.targetStart);
+            QCOMPARE(illegal.diagnosticLength, testCase.expectedBitLength);
+
+            QCOMPARE(illegal.ppsRbspStart, legal.ppsRbspStart);
+            QCOMPARE(illegal.targetStart, legal.targetStart);
+            QCOMPARE(illegal.targetLength, legal.targetLength);
+            QCOMPARE(illegal.followingFieldStart, legal.followingFieldStart);
+
+            const quint64 baseOffsetBits =
+                offending == QStringLiteral("pic_init_qs_minus26")
+                    ? 11
+                    : (offending == QStringLiteral("chroma_qp_index_offset") ? 12 : 18);
+            QCOMPARE(illegal.targetStart, illegal.ppsRbspStart + baseOffsetBits);
+        }
+    }
+
     void rejectsPictureParameterSetWithoutPriorSequenceParameterSetAndContinues() {
         MemorySource source(bytes({0x00, 0x00, 0x01, 0x68, 0xce, 0x3c, 0x80,
                                    0x00, 0x00, 0x01, 0x09, 0x50}));
