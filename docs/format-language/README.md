@@ -1318,6 +1318,14 @@ Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
 Package `0.1.29` advertises coverage depth `picture-order-count-slice-header`;
 this is not yet the complete Baseline/Main/High slice-header milestone.
 
+When sequence parameter sets or picture parameter sets with identical
+identifiers are redefined later in the stream, subsequent slices bind to the
+most recent prior valid generation published at their position (ADR-0028,
+ADR-0078). Context expressions such as dynamic `frame_num` width evaluate
+against the newly active generation, while earlier slices preceding the
+redefinition remain bound to the prior generation. A failed parameter set
+redefinition does not publish or invalidate existing generations.
+
 Annex B analysis batches have an independent positive mapped-byte budget in
 addition to their record-count and inspected-position budgets. The default is
 64 KiB of EBSP source bytes per call. Exhausting that budget reports

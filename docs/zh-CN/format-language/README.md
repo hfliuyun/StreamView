@@ -1015,6 +1015,11 @@ type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。
 `0.1.29` 发布 coverage depth `picture-order-count-slice-header`；这尚未完成
 Baseline/Main/High slice-header 里程碑。
 
+当码流中途重定义具有相同标识符的序列参数集或图像参数集时，后续 slice
+按位置绑定到最近的先前有效代（ADR-0028、ADR-0078）。诸如动态 `frame_num`
+宽度等上下文表达式根据新激活的代进行求值，而重定义之前的早期 slice 保持
+绑定到先前的代。失败的参数集重定义不会发布新代，亦不会污染既有代。
+
 Annex B analysis batch 除 record count 和 inspected-position budget 外，还使用独立且必须为正
 的 mapped-byte budget；默认每次最多处理 64 KiB EBSP source byte。预算耗尽时返回
 `in-progress`，并保留 mapper 已提交的前缀，后续 batch 可从同一个 NAL 继续。
