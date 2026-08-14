@@ -1021,10 +1021,14 @@ MMCO-5 effect、field pairing 与 output order、signed POC offset domain 与 cy
 decoded-picture-buffer validation、operation 顺序/重复语义、权重施加语义、CABAC slice-data
 解码与 slice-group 分支均留待后续。PPS scaling list 与依赖 SPS 的 `pic_init_qp_minus26` 和 `slice_qp_delta` domain 校验也留待
 后续。
-type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package
-`0.1.30` 发布 coverage depth `baseline-main-high-slice-header`，完成了
+type 1 已由规则拥有，因此未派发 opaque fixture 改用 NAL type 12。package `0.1.30` 发布 coverage depth `baseline-main-high-slice-header`，完成了
 Baseline/Main/High 8-bit 4:2:0 单 slice group 的 slice header 里程碑，并将
 slice data 整体作为不透明压缩载荷。
+package `0.1.31` 新增针对 NAL unit type 6（`nal_unit_type == 6`）派发的增强补充信息
+（SEI）容器结构 `SeiRbsp`。结构使用 `repeat (64) while (more_rbsp_data())` 循环解析每个
+SEI 消息头部，包含 `ff_coded<8> payload_type`、`ff_coded<64> payload_size` 以及
+`@lazy(payload_size) bytes payload_data`，末尾紧随 `rbsp_trailing_bits;`。各具体的 SEI
+消息载荷在深入派发前保持为不透明惰性字节区域。
 
 当码流中途重定义具有相同标识符的序列参数集或图像参数集时，后续 slice
 按位置绑定到最近的先前有效代（ADR-0028、ADR-0078）。诸如动态 `frame_num`

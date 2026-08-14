@@ -1331,6 +1331,13 @@ Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
 Package `0.1.30` advertises coverage depth `baseline-main-high-slice-header`,
 completing the Baseline/Main/High 8-bit 4:2:0 single-slice-group slice-header
 milestone with slice data treated as opaque compressed payload.
+Package `0.1.31` adds Supplemental Enhancement Information (SEI) container
+structure `SeiRbsp` dispatched for NAL unit type 6 (`nal_unit_type == 6`). It
+iterates over RBSP bytes using `repeat (64) while (more_rbsp_data())` to parse
+each SEI message header with `ff_coded<8> payload_type`, `ff_coded<64>
+payload_size`, and `@lazy(payload_size) bytes payload_data`, followed by
+`rbsp_trailing_bits;`. Individual SEI payload messages remain opaque lazy byte
+regions until specific payload types are dispatched.
 
 When sequence parameter sets or picture parameter sets with identical
 identifiers are redefined later in the stream, subsequent slices bind to the
