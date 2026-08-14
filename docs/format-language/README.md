@@ -305,8 +305,9 @@ The static rules for this subset are:
   first. Because their width is not statically known, a later little-endian
   field is rejected unless a future language feature can prove its alignment.
   An unsigned `ue` field may use one `@equals(integer)` constraint. Unsigned
-  fixed- or dynamic-width `bits` fields and `ue` fields may use one
-  `@range(minimum, maximum)` constraint; a signed `se` field cannot use either.
+  fixed- or dynamic-width `bits` fields, `ue` fields, and signed `se` fields may
+  use one `@range(minimum, maximum)` constraint; a signed `se` field cannot use
+  `@equals`.
 - A scalar field may have one fixed array suffix `[count]`. `count` is an
   unsigned integer literal greater than zero; expressions, additional array
   dimensions, structure arrays, and runtime-sized arrays are not accepted.
@@ -589,14 +590,19 @@ The static rules for this subset are:
   unsigned bit width; a `ue` accepts `0..2^64 - 2`, its complete supported
   unsigned range.
 - A `@range(minimum, maximum)` field annotation is a checked semantic
-  constraint and may appear at most once on an unsigned `bits` or `ue` field.
-  Both arguments are unsigned integer literals with `minimum <= maximum`.
+  constraint and may appear at most once on an unsigned `bits`, `ue`, or signed
+  `se` field. On an unsigned field both arguments are unsigned integer literals
+  with `minimum <= maximum`; a leading `-` is rejected.
   A fixed `bits<N>` maximum must fit in `N` bits, a dynamic `bits` field accepts
   the complete `0..2^64 - 1` annotation domain, and a `ue` maximum is
-  `2^64 - 2`. A field may carry both `@equals` and `@range`. Unlike every other
+  `2^64 - 2`. On an `se` field either argument may carry a leading `-`, the pair
+  is ordered as signed values, and both must lie in the encoding's symmetric
+  `-(2^63 - 1)..2^63 - 1` domain; `-0` denotes zero. A field may carry both
+  `@equals` and `@range`. Unlike every other
   checked constraint, a `@range` violation is not fatal: see the runtime
-  semantics below and
-  [ADR-0075](../adr/0075-extend-non-fatal-ranges-to-unsigned-bit-fields.md).
+  semantics below,
+  [ADR-0075](../adr/0075-extend-non-fatal-ranges-to-unsigned-bit-fields.md), and
+  [ADR-0076](../adr/0076-extend-non-fatal-ranges-to-signed-fields.md).
   An `@enum(Type)` annotation may appear at most once on a `bits` or `ue` field
   and requires a declared enum type. Every declared member value must fit a
   `bits` field's bit width; a `ue` enum member must be in `0..2^64 - 2`. Enum
@@ -604,7 +610,8 @@ The static rules for this subset are:
   fatal validation for the decoded value. A fixed `bits` or `ue` field may
   combine `@enum`, `@equals`, and `@range`: membership and equality are checked
   fatally before the non-fatal range bounds. A dynamic `bits` field accepts only
-  `@range` among those three annotations. `se` rejects all three annotations.
+  `@range` among those three annotations. `se` accepts only `@range` and rejects
+  `@equals` and `@enum`.
   `@description("text")` supplies project-authored presentation text, and
   `@spec("standard", "clause")` supplies a specification reference. Fields
   inherit their structure's specification unless they provide their own. An
@@ -770,9 +777,12 @@ field materialized: it retains the decoded value and attaches a warning
 `invalid-syntax` diagnostic to that field node, reporting whether the value fell
 below the minimum or above the maximum. Before source access, the VM validates
 every range descriptor's two adjacent bytecode instructions, operands,
-immediates, and ordering. Decoding continues because the complete fixed,
-dynamic, or Exp-Golomb field range was consumed successfully, so no subsequent
-field position depends on the violation. A value equal to either
+immediates, and ordering, including that the descriptor's signedness matches the
+field's encoding: an unsigned field carries only unsigned bounds and an `se`
+field only signed ones. A signed bound travels as a two's-complement immediate
+and is compared as a signed value. Decoding continues because the complete
+fixed, dynamic, or Exp-Golomb field range was consumed successfully, so no
+subsequent field position depends on the violation. A value equal to either
 bound conforms and reports nothing. When a field carries both constraints, the
 `@equals` check runs first, so a mismatch marks the structure invalid before any
 range warning is attached. Each expanded array element becomes a separate syntax-field node
@@ -1267,8 +1277,8 @@ meanings:
 | `long_term_reference_flag` | Marks the IDR picture as a long-term reference when set. |
 | `slice_qp_delta` | Adjusts the initial luma quantization parameter; its signed bound is deferred. |
 | `disable_deblocking_filter_idc` | Selects enabled, disabled, or within-slice deblocking when the bound PPS enables control syntax; reserved values are fatal. |
-| `slice_alpha_c0_offset_div2` | Carries the signed alpha/c0 deblocking offset when filtering is not disabled; its signed bound is deferred. |
-| `slice_beta_offset_div2` | Carries the signed beta deblocking offset when filtering is not disabled; its signed bound is deferred. |
+| `slice_alpha_c0_offset_div2` | Carries the signed alpha/c0 deblocking offset when filtering is not disabled; clause 7.4.3 bounds it to `-6..6`, and an out-of-range value warns without moving later boundaries. |
+| `slice_beta_offset_div2` | Carries the signed beta deblocking offset when filtering is not disabled; clause 7.4.3 bounds it to `-6..6`, and an out-of-range value warns without moving later boundaries. |
 | `slice_data` | Materialized opaque suffix covering every remaining RBSP bit, including any slice trailing bits; CAVLC/CABAC is not decoded. |
 
 Imported SPS guards select mutually exclusive type-0, type-1, and type-2 POC
@@ -1305,7 +1315,7 @@ weight-application semantics, CABAC slice-data decoding, and slice-group
 branches are deferred. PPS scaling lists and signed QP-offset domain validation
 are also deferred.
 Undispatched opaque fixtures use NAL type 12 now that type 1 is rule-owned.
-Package `0.1.27` advertises coverage depth `picture-order-count-slice-header`;
+Package `0.1.28` advertises coverage depth `picture-order-count-slice-header`;
 this is not yet the complete Baseline/Main/High slice-header milestone.
 
 Annex B analysis batches have an independent positive mapped-byte budget in
@@ -1633,8 +1643,11 @@ entry Sps;
 
 Invalid minimum examples include `bits<0> flag;`, `bits<65> flag;`,
 `bits<12, little> value;`, a little-endian field after an unaligned field,
-`se value @equals(0);`, `se value @enum(Type);`, `se value @range(0, 12);`,
+`se value @equals(0);`, `se value @equals(-1);`, `se value @enum(Type);`,
 `bits<4> value @range(0, 16);`, `ue value @range(12, 0);`,
+`ue value @range(-1, 12);`, `bits<4> value @range(-1, 4);`,
+`se value @range(6, -6);`, `se value @range(0, 9223372036854775808);`,
+`se value @range(-9223372036854775808, 0);`,
 `ue value @range(12);`, `ue value @range(0, 1, 2);`,
 `ue value @range(0, "twelve");`, a repeated `@range`, a little-endian field
 after a

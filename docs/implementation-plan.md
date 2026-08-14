@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Extend non-fatal ranges to unsigned bit fields and require zero IDR frame numbers without moving following fields
-Next Action: Extend the static non-fatal `@range` contract to signed `se`, then constrain `slice_alpha_c0_offset_div2` and `slice_beta_offset_div2` to `-6..6`; the SPS/PPS-dependent `slice_qp_delta` domain, POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: Unsigned fixed/dynamic `bits @range` and the IDR frame-number bound passed `svtool rule check`, parser 67/67, IR 74/74, executor 124/124, the focused H.264 analyzer suite 123/123, and local dev/ci/sanitize CTest 32/32 with no sanitizer report; hosted matrix verification awaits push
+Last Completed Step: Extend non-fatal ranges to signed `se` fields and constrain both slice deblocking offsets to `-6..6` without moving following fields
+Next Action: Apply the static signed `@range` to the PPS QP offsets whose clause 7.4.2.2 domains are literal — `pic_init_qs_minus26` at `-26..25` and both `chroma_qp_index_offset` fields at `-12..12`; `pic_init_qp_minus26` and `slice_qp_delta` stay deferred because their domains depend on the SPS-derived `QpBdOffsetY`, which `@range` cannot express, and POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: Signed `@range` and the two deblocking-offset bounds passed `svtool rule check`, parser 70/70, IR 76/76, executor 127/127, the focused H.264 analyzer suite 124/124, and local dev/ci/sanitize CTest 32/32 with no sanitizer report; hosted matrix verification awaits push
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1066,3 +1066,27 @@ Blockers: None
   signed `se`，并约束 `slice_alpha_c0_offset_div2` 与 `slice_beta_offset_div2` 为 `-6..6`；
   SPS/PPS-dependent `slice_qp_delta`、实际 POC、field order、wrap/MMCO-5、DPB 与 output
   order 继续延期。
+- 2026-08-14：完成 signed `se` 的非致命 `@range` 与两个 slice deblocking offset 的
+  `-6..6` 值域校验。ADR-0076 把既有 range contract 扩展到 `se`：annotation 参数允许前导
+  `-`，AST 保留无符号 magnitude 加 negative 标志，因此 unsigned `@range` 仍可覆盖到
+  `2^64 - 2`；signed 静态值域取 `readExpGolomb` 的 `magnitude = (codeNumber + 1) / 2`
+  推导出的对称区间 `-(2^63 - 1)..2^63 - 1`，`-0` 归一化为零。typed IR 新增独立的
+  `signedRangeConstraint` descriptor，但不新增 opcode：仍复用 `assert-range-minimum` 与
+  `assert-range-maximum`，bound 以补码存入 immediate；VM 按字段编码选择有符号或无符号
+  比较，并在预检阶段拒绝 descriptor 与 encoding 不匹配的配对（无符号字段带 signed
+  bound、`se` 字段带 unsigned bound、两种 constraint 同时存在或缺失）。`se` 仍拒绝
+  `@equals` 与 `@enum`。官方 H.264 规则给 IDR 与非 IDR slice header 的
+  `slice_alpha_c0_offset_div2` 与 `slice_beta_offset_div2` 各加 clause 7.4.3 的
+  `@range(-6, 6)` 与 7.3.3/7.4.3 引用，package 升到 `0.1.28`，coverage depth 保持
+  `picture-order-count-slice-header`。回归覆盖负数 annotation 字面量、合法极值 `-6`/`6`、
+  首个非法值 `-7`/`7`、两个 offset 各自的违规、每种被拒 descriptor 配对的 malformed
+  typed IR，并精确验证兄弟 offset、opaque payload 与下一 NAL 未移动：合法与非法取值都用
+  7-bit 码字配对，因此“后续字段未移动”是合同保证而非编码宽度巧合。设计提交为 `81fd0ee`，
+  实现提交为 `799b4a5`。
+  `svtool rule check`、parser 70/70、IR 76/76、executor 127/127、H.264 analyzer 124/124
+  通过；本机 dev/ci/sanitize 重新配置、完整构建与 CTest 均为 32/32，且无 sanitizer 报告。
+  hosted matrix 验证待 push 后记录。下一步把静态 signed `@range` 应用到 clause 7.4.2.2
+  给出字面量值域的 PPS QP offset：`pic_init_qs_minus26` 取 `-26..25`，两个
+  `chroma_qp_index_offset` 取 `-12..12`。`pic_init_qp_minus26` 与 `slice_qp_delta` 继续
+  延期，因为它们的值域依赖 SPS 派生的 `QpBdOffsetY`，而 `@range` 只接受整数字面量，无法
+  表达关系型 bound；实际 POC、field order、wrap/MMCO-5、DPB 与 output order 也继续延期。
