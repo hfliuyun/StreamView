@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Add true same-ID failed redefinition regression at slice level, rename fresh-ID isolation test, and clarify bilingual ADR-0078 (Remediation R1)
-Next Action: Align coverage depth manifest in rule.toml to baseline-main-high-slice-header and bump version to 0.1.30 (Remediation R2); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: Same-ID failed redefinition regression passed svtool rule check, parser 70/70, IR 76/76, executor 127/127, H.264 analyzer suite 128/128, and local dev/ci/sanitize CTest 32/32 with no sanitizer report; hosted run 31797084545 succeeded on Ubuntu 24.04, Windows 2022, and macOS 15
+Last Completed Step: Align entrypoint coverage depth manifest in rule.toml to baseline-main-high-slice-header and bump package version to 0.1.30 (Remediation R2)
+Next Action: Probe DSL capabilities and specify SEI payload length/type accumulation decoding (Phase 3 item 3 & T4); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: Package 0.1.30 manifest depth update passed svtool rule check, parser 70/70, IR 76/76, executor 127/127, H.264 analyzer suite 128/128, and local dev/ci/sanitize CTest 32/32 with no sanitizer report; hosted run 31797754251 succeeded on Ubuntu 24.04, Windows 2022, and macOS 15
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1131,7 +1131,16 @@ Blockers: None
   1. 在 `tests/rules/h264_annex_b_analyzer_test.cpp` 中新增真正的同 ID SPS 失败重定义回归用例 `failedSpsRedefinitionPreservesPriorGenerationForSubsequentSlices`：验证 SPS 0（`log2_max_frame_num_minus4=0`）经 PPS 0 激活 Slice A（4-bit `frame_num`），随后的 malformed SPS 0（保留 profile 99，试图将 `log2` 改为 2）进入 `Invalid` 且不发布新代、不污染 generation 0，重发的 PPS 0 与随后的 Slice B 仍绑定至 generation 0 并以 4-bit `frame_num` 正常物化且零诊断，AUD 正常；
   2. 将原全新非法 ID 1 依赖缺失测试重命名为如实的 `invalidParameterSetDefinitionDoesNotPublishOrFallBack`；
   3. 修订双语 ADR-0078（`docs/adr/0078-*.md` 与 `docs/zh-CN/adr/0078-*.md`）决策第 3 条与 Consequences，如实区分同 ID 失败重定义与全新非法 ID 依赖缺失两条负向流，并引用既有 PPS 扩展门控用例 `failedSpsRedefinitionDoesNotHideHighProfileForPpsExtension`。
-  H.264 analyzer 测试套件增至 128/128；`svtool rule check` 通过；本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告。hosted run `31797084545` 在 macOS 15 / Qt 6.11.1（job `94756424229`）、Windows 2022 / Qt 6.10.1（job `94756424256`）、Ubuntu 24.04 / Qt 6.11.1（job `94756424261`）全部成功。下一步进入 R2：对齐 rule.toml 清单元数据（depth 与 package 0.1.30）。
+  H.264 analyzer 测试套件增至 128/128；`svtool rule check` 通过；本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告。hosted run `31797084545` 在 macOS 15 / Qt 6.11.1（job `94756424229`）、Windows 2022 / Qt 6.10.1（job `94756424256`）、Ubuntu 24.04 / Qt 6.11.1（job `94756424261`）全部成功。
+- 2026-08-14：完成 coverage depth 清单与文档对齐及版本升级（任务 R2）。
+  在 `src/rules/official/org.streamview.h264/rule.toml` 中将 `depth` 正式升级为
+  `"baseline-main-high-slice-header"`，并将包版本升级为 `0.1.30`；在双语格式语言参考中
+  同步更新 package `0.1.30` 版本声明。`svtool rule check` 通过；parser 70/70、IR 76/76、
+  executor 127/127、H.264 analyzer 128/128 通过；本机 dev/ci/sanitize 均为 32/32 且无 sanitizer
+  报告。hosted run `31797754251` 在 Ubuntu 24.04 / Qt 6.11.1（job `94758488325`）、
+  macOS 15 / Qt 6.11.1（job `94758488439`）、Windows 2022 / Qt 6.10.1（job `94758488442`）全部成功。
+  Next Action 恢复指向 T4：SEI 载荷长度编码的 DSL 能力探测与 ADR 设计（阶段 3 第 3 项）。
+
 
 
 
