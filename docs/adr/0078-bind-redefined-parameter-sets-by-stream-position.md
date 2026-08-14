@@ -35,25 +35,41 @@ redefinition and positional generation binding in the bundled H.264 analyzer:
 2. **Prior generation stability**: Slices analyzed before the redefinition
    remain bound to their original generation, preserving their materialized
    structure, exact field bit lengths, and diagnostic-free state.
-3. **Invalid redefinition isolation**: An invalid or malformed parameter set NAL
-   (e.g., an SPS with a reserved profile IDC) fails with an `invalid` state and
-   does not publish or corrupt the active generation table. Parameter sets and
-   slices referencing that invalid definition fail with `dependency-unavailable`
-   diagnostics, while prior valid slices remain fully materialized and intact.
+3. **Failed redefinition and invalid definition isolation**:
+   - When an in-stream parameter set redefinition attempt fails (e.g., a
+     malformed SPS with reserved profile IDC 99 sharing existing
+     `seq_parameter_set_id = 0`), it enters an `invalid` state and does not
+     publish a new generation or overwrite/corrupt the active generation 0.
+     Subsequent parameter sets and slices referencing ID 0 continue to resolve
+     to the prior valid generation 0 (with unchanged 4-bit `frame_num` width)
+     and materialize cleanly.
+   - When an invalid parameter set with an unestablished fresh ID (e.g. ID 1) is
+     encountered, it publishes no generation; downstream parameter sets and
+     slices referencing that missing ID fail with `dependency-unavailable`
+     diagnostics, while preceding slices referencing ID 0 remain completely
+     valid and unaffected.
 
 ## Consequences
 
 End-to-end regression tests verify:
 
-- Positive stream: `SPS(id 0, log2_max_frame_num_minus4=0)` → `PPS(id 0)` →
-  `Slice A (frame_num=4 bits)` → `SPS(id 0, log2_max_frame_num_minus4=2)` →
+- **Positive dynamic width switching**: `SPS(id 0, log2_max_frame_num_minus4=0)` →
+  `PPS(id 0)` → `Slice A (frame_num=4 bits)` → `SPS(id 0, log2_max_frame_num_minus4=2)` →
   `PPS(id 0)` → `Slice B (frame_num=6 bits)` → following `AUD`, confirming both
   slices decode with exact distinct dynamic widths and complete ordered child
-  structures;
-- Negative stream: `SPS(id 0, valid)` → `PPS(id 0)` → `Slice A` →
-  `SPS(id 1, invalid profile)` → `PPS(id 1)` → `Slice B` → following `AUD`,
-  confirming that Slice A remains completely valid and materialized while
-  Slice B reports `dependency-unavailable`.
+  structures (`selectsContextGenerationsByStreamPositionAcrossSpsPpsRedefinitions`);
+- **Same-ID failed redefinition isolation**: `SPS(id 0, log2=0)` → `PPS(id 0)` →
+  `Slice A (frame_num=4 bits)` → `malformed SPS(id 0, reserved profile 99)` →
+  `PPS(id 0)` → `Slice B (frame_num=4 bits)` → following `AUD`, confirming that
+  generation 0 survives and Slice B materializes cleanly with 4-bit `frame_num`
+  (`failedSpsRedefinitionPreservesPriorGenerationForSubsequentSlices`), complementing
+  the existing PPS-extension gate regression
+  (`failedSpsRedefinitionDoesNotHideHighProfileForPpsExtension`);
+- **Fresh invalid ID dependency isolation**: `SPS(id 0, valid)` → `PPS(id 0)` →
+  `Slice A` → `malformed SPS(id 1, invalid profile 99)` → `PPS(id 1)` → `Slice B` →
+  following `AUD`, confirming that Slice A remains completely valid and
+  materialized while PPS 1 and Slice B report `dependency-unavailable`
+  (`invalidParameterSetDefinitionDoesNotPublishOrFallBack`).
 
 Phase 3 item 5 ("支持同 ID SPS/PPS 中途重定义和按位置选择") is satisfied.
 

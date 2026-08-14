@@ -28,22 +28,34 @@ DSL 运行期中集成了声明式 `@context_export` 与 `@context_import` 生�
    6 bit），不产生语法错误或位偏移漂移。
 2. **先前 generation 稳定性**：在重定义之前完成分析的 slice 保持绑定到最初的
    generation，保留其已物化的结构、精确的字段 bit 长度与零诊断状态。
-3. **非法重定义隔离**：非法或格式错误的参数集 NAL（例如带有保留 profile IDC 的 SPS）
-   进入 `invalid` 状态，不会发布新 generation 亦不会污染活跃 generation 表。引用该
-   非法定义的参数集与 slice 产生 `dependency-unavailable` 诊断，而先前的有效 slice
-   完全不受影响，保持完整物化。
+3. **失败重定义与非法定义隔离**：
+   - 当码流中途参数集重定义失败时（例如带有保留 profile IDC 99 且共享既有
+     `seq_parameter_set_id = 0` 的格式错误 SPS），其进入 `invalid` 状态，不会发布新
+     generation，亦不会覆盖或污染活跃的 generation 0。后续引用 ID 0 的参数集与 slice
+     继续解析至先前的有效 generation 0（`frame_num` 仍保持 4 bit 宽度）并正常物化；
+   - 当遇到带有未建立全新 ID（例如 ID 1）的非法参数集时，其不发布任何 generation；后续引用
+     该缺失 ID 的参数集与 slice 产生 `dependency-unavailable` 诊断，而先前的有效 slice 完全
+     不受影响，保持完整物化。
 
 ## 影响
 
 端到端回归测试验证：
 
-- 正向用例：`SPS(id 0, log2_max_frame_num_minus4=0)` → `PPS(id 0)` →
+- **正向动态宽度切换**：`SPS(id 0, log2_max_frame_num_minus4=0)` → `PPS(id 0)` →
   `Slice A (frame_num=4 bits)` → `SPS(id 0, log2_max_frame_num_minus4=2)` →
   `PPS(id 0)` → `Slice B (frame_num=6 bits)` → 后续 `AUD`，断言两个 slice 均以精确且
-  不同的动态宽度解码，并具有完整的有序子节点列表；
-- 负向用例：`SPS(id 0, valid)` → `PPS(id 0)` → `Slice A` →
-  `SPS(id 1, invalid profile)` → `PPS(id 1)` → `Slice B` → 后续 `AUD`，断言 Slice A
-  保持完全有效且物化，而 Slice B 产生 `dependency-unavailable` 诊断。
+  不同的动态宽度解码，并具有完整的有序子节点列表
+  （`selectsContextGenerationsByStreamPositionAcrossSpsPpsRedefinitions`）；
+- **同 ID 失败重定义隔离**：`SPS(id 0, log2=0)` → `PPS(id 0)` →
+  `Slice A (frame_num=4 bits)` → `malformed SPS(id 0, reserved profile 99)` →
+  `PPS(id 0)` → `Slice B (frame_num=4 bits)` → 后续 `AUD`，断言 generation 0 完好存活，
+  Slice B 保持以 4-bit `frame_num` 正常物化
+  （`failedSpsRedefinitionPreservesPriorGenerationForSubsequentSlices`），与既有 PPS
+  扩展门控回归（`failedSpsRedefinitionDoesNotHideHighProfileForPpsExtension`）互为补充；
+- **全新非法 ID 依赖缺失隔离**：`SPS(id 0, valid)` → `PPS(id 0)` → `Slice A` →
+  `SPS(id 1, invalid profile 99)` → `PPS(id 1)` → `Slice B` → 后续 `AUD`，断言 Slice A
+  保持完全有效且物化，而 PPS 1 与 Slice B 产生 `dependency-unavailable` 诊断
+  （`invalidParameterSetDefinitionDoesNotPublishOrFallBack`）。
 
 阶段 3 第 5 项（「支持同 ID SPS/PPS 中途重定义和按位置选择」）得到满足。
 
