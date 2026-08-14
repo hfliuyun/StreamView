@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 3
 Last Completed Step: Extend non-fatal ranges to signed `se` fields and constrain both slice deblocking offsets to `-6..6` without moving following fields
 Next Action: Apply the static signed `@range` to the PPS QP offsets whose clause 7.4.2.2 domains are literal — `pic_init_qs_minus26` at `-26..25` and both `chroma_qp_index_offset` fields at `-12..12`; `pic_init_qp_minus26` and `slice_qp_delta` stay deferred because their domains depend on the SPS-derived `QpBdOffsetY`, which `@range` cannot express, and POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: Signed `@range` and the two deblocking-offset bounds passed `svtool rule check`, parser 70/70, IR 76/76, executor 127/127, the focused H.264 analyzer suite 124/124, and local dev/ci/sanitize CTest 32/32 with no sanitizer report; hosted matrix verification awaits push
+Last Verification: Signed `@range` and the two deblocking-offset bounds passed `svtool rule check`, parser 70/70, IR 76/76, executor 127/127, the focused H.264 analyzer suite 124/124, and local dev/ci/sanitize CTest 32/32 with no sanitizer report; hosted run `31782320789` succeeded on Ubuntu 24.04, Windows 2022, and macOS 15
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1090,3 +1090,11 @@ Blockers: None
   `chroma_qp_index_offset` 取 `-12..12`。`pic_init_qp_minus26` 与 `slice_qp_delta` 继续
   延期，因为它们的值域依赖 SPS 派生的 `QpBdOffsetY`，而 `@range` 只接受整数字面量，无法
   表达关系型 bound；实际 POC、field order、wrap/MMCO-5、DPB 与 output order 也继续延期。
+- 2026-08-14：确认 unsigned bit range 与 IDR frame number 增量的 hosted run `31502042652`
+  成功：Ubuntu 24.04 / Qt 6.11.1 job `93814256105`、Windows 2022 / Qt 6.10.1 job
+  `93814255936`、macOS 15 / Qt 6.11.1 job `93814255922` 的 Configure、Build、Test、Install
+  与 Upload 全部通过。
+- 2026-08-14：确认 signed range 与 deblocking offset 增量的 hosted run `31782320789`
+  成功：Ubuntu 24.04 / Qt 6.11.1 job `94710577209`、Windows 2022 / Qt 6.10.1 job
+  `94710577185`、macOS 15 / Qt 6.11.1 job `94710577220` 的 Configure、Build、Test、Install
+  与 Upload 全部通过。
