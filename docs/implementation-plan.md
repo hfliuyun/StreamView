@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Align entrypoint coverage depth manifest in rule.toml to baseline-main-high-slice-header and bump package version to 0.1.30 (Remediation R2)
-Next Action: Probe DSL capabilities and specify SEI payload length/type accumulation decoding (Phase 3 item 3 & T4); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: Package 0.1.30 manifest depth update passed svtool rule check, parser 70/70, IR 76/76, executor 127/127, H.264 analyzer suite 128/128, and local dev/ci/sanitize CTest 32/32 with no sanitizer report; hosted run 31797754251 succeeded on Ubuntu 24.04, Windows 2022, and macOS 15
+Last Completed Step: Probe DSL capabilities and specify SEI payload length/type accumulation decoding and more_rbsp_data bounded loop (T4 / ADR-0079 & ADR-0080)
+Next Action: Implement ff_coded<max_bytes> scalar field encoding in DSL compiler and VM runtime (Phase 3 item 3 & T5a); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: SEI DSL capability probing confirmed scratch compiler errors with svtool rule check; bilingual ADR-0079 (ff_coded<max_bytes>) and ADR-0080 (repeat while more_rbsp_data()) committed and pushed; documentation symmetry verified
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1139,7 +1139,16 @@ Blockers: None
   executor 127/127、H.264 analyzer 128/128 通过；本机 dev/ci/sanitize 均为 32/32 且无 sanitizer
   报告。hosted run `31797754251` 在 Ubuntu 24.04 / Qt 6.11.1（job `94758488325`）、
   macOS 15 / Qt 6.11.1（job `94758488439`）、Windows 2022 / Qt 6.10.1（job `94758488442`）全部成功。
-  Next Action 恢复指向 T4：SEI 载荷长度编码的 DSL 能力探测与 ADR 设计（阶段 3 第 3 项）。
+- 2026-08-14：完成 SEI 载荷与循环 DSL 能力探测与双语 ADR 规范设计（任务 T4 / 阶段 3 第 3 项）。
+  1. 实测探测证据：
+     - 探测 1（`payloadType`/`payloadSize` 0xFF 累加）：尝试 `until (ff_byte != 255)` 触发 `Expected '==' after sentinel field name`；尝试 `computed<u64> total = sum(ff_byte)` 触发 `Computed field dependency must be declared earlier` 与 `Pure function is not declared before this call`。确认现有语法不支持非等值哨兵或跨投影数组规约。
+     - 探测 2（`sei_rbsp` 外层循环）：尝试 `until (more_rbsp_data() == false)` 或 `until (computed_done == true)` 触发 `Sentinel field must be declared directly in the repeat body`。确认现有哨兵仅支持结构体内 source-backed 标量字段。
+  2. 制定并提交双语 ADR-0079 与 ADR-0080：
+     - ADR-0079（`docs/adr/0079-*.md` / `docs/zh-CN/adr/0079-*.md`）：引入 `ff_coded<max_bytes>` 变长字节累加标量编码（产出单个 `u64` AST 标量节点，mapped source span，`max_bytes` 上限越界报错）；
+     - ADR-0080（`docs/adr/0080-*.md` / `docs/zh-CN/adr/0080-*.md`）：引入 `repeat (max_iterations) while (more_rbsp_data()) { ... }` 由码流剩余数据状态驱动的有界重复循环；
+     - 在双语格式语言参考中同步更新对应语法说明。
+  Next Action 指向 T5a：实现 `ff_coded<max_bytes>` 语言能力（DSL parser/IR/VM 及定向测试）。
+
 
 
 
