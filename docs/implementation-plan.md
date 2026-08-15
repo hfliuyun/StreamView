@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Implement locally scoped context import keys capability slice (Task T10b / ADR-0084 / commit c765eda)
-Next Action: Specify and implement buffering period SEI message decoding rule consumption slice (Task T10c / package 0.1.35 / ADR-0084); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31864791158 (Ubuntu job 94964008874, macOS job 94964008882, Windows job 94964008931) passed 100%
+Last Completed Step: Decode buffering period SEI message slice (Task T10c / package 0.1.35 / ADR-0085 / commit ad4a074)
+Next Action: Probe and specify pic_timing SEI message active SPS context resolution (Task T11 / ADR-0086); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31871279202 (Ubuntu job 94980189462, macOS job 94980189372, Windows job 94980189380) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1274,3 +1274,25 @@ Blockers: None
      - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
      - hosted run `31864791158` 在 Ubuntu 24.04 / Qt 6.11.1（job `94964008874`）、macOS 15 / Qt 6.11.1（job `94964008882`）、Windows 2022 / Qt 6.10.1（job `94964008931`）全部成功。
   Next Action 指向 Task T10c（buffering_period SEI message decoding rule consumption slice, package 0.1.35）。
+- 2026-08-15：完成缓冲周期 SEI 消息（Buffering Period SEI, payload_type == 0）结构化解码与 SPS HRD 上下文导出（任务 T10c / ADR-0085 / 包版本 0.1.35）。
+  1. 官方规则包（`src/rules/official/org.streamview.h264/src/h264_annex_b.svfmt`）：
+     - 在 `SequenceParameterSetRbsp` 中导出有效 HRD 参数：`effective_nal_hrd_parameters_present_flag`、`effective_nal_hrd_cpb_count`、`effective_nal_hrd_initial_cpb_removal_delay_length_minus1` 以及对应的 VCL HRD 导出项，通过 `optional_value` 提供健壮默认值；
+     - 在 `SeiRbsp` 的 `switch (payload_type)` 中实现 `case 0` 分支，利用 ADR-0084 块内局部导入键机制声明 `ue seq_parameter_set_id @range(0, 31)` 并动态导入 `h264-sps` 上下文；
+     - 条件解码 NAL HRD 初始到达延迟循环与 VCL HRD 初始到达延迟循环，使用动态位宽 `bits<nal_delay_length>` / `bits<vcl_delay_length>` 读取 `initial_cpb_removal_delay` 和 `initial_cpb_removal_delay_offset`；
+     - 末尾使用条件 `rbsp_trailing_bits;` 对齐字节边界；
+     - `rule.toml` 包版本升级至 `0.1.35`。
+  2. 自动化测试套件（`tests/rules/h264_annex_b_analyzer_test.cpp`）：
+     - 新增 7 个针对性测试用例：
+       - `decodesBufferingPeriodSeiMessageWithNalHrdParameters`（SPS 包含 NAL HRD 2 CPBs / 24-bit 延迟，断言完整有序子节点列表 26 项、逐字段值与 source span）；
+       - `decodesBufferingPeriodSeiMessageWithVclHrdParameters`（SPS 包含 VCL HRD 1 CPB / 11-bit 延迟，断言完整有序子节点列表 18 项与逐字段值）；
+       - `decodesBufferingPeriodSeiMessageWithBothNalAndVclHrdParameters`（SPS 同时包含 NAL 与 VCL HRD 参数，断言完整有序子节点列表 30 项与逐字段值）；
+       - `decodesBufferingPeriodSeiMessageWithNoHrdParametersInSps`（Baseline SPS 无 HRD，仅解析 seq_parameter_set_id 与对齐位，断言完整有序子节点列表 20 项）；
+       - `decodesMultipleSeiMessagesContainingBufferingPeriodAndRecoveryPoint`（同一 NAL 内 buffering_period + recovery_point 混合多 SEI 消息按顺序完整解析与有序子节点列表断言 35 项）；
+       - `handlesBufferingPeriodWithUnavailableSpsGracefullyAndContinues`（缺失 SPS 依赖时安全降级为 Invalid，不崩溃且保持隔离）；
+       - `reportsTruncatedBufferingPeriodSeiPayloadAndContinues`（截断 buffering_period 载荷码流安全回滚并继续后续 AUD NAL）。
+  3. 测试与验证：
+     - `svtool rule check` 通过；
+     - H.264 analyzer 套件增至 154 测试方法（156/156 包含 fixture setup）；DSL parser 77/77、DSL IR 78/78、RuleExecutionSession 38/38、executor 135/135 全部通过；
+     - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
+     - hosted run `31871279202` 在 Ubuntu 24.04 / Qt 6.11.1（job `94980189462`）、macOS 15 / Qt 6.11.1（job `94980189372`）、Windows 2022 / Qt 6.10.1（job `94980189380`）全部成功。
+  Next Action 指向 Task T11（pic_timing SEI message decoding probe & specification）。
