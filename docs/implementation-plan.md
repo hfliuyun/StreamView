@@ -2,8 +2,8 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Decode buffering period SEI message slice (Task T10c / package 0.1.35 / ADR-0085 / commit ad4a074)
-Next Action: Probe and specify pic_timing SEI message active SPS context resolution (Task T11 / ADR-0086); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
+Last Completed Step: Specify ambient context imports and active parameter set resolution (Task T11a / ADR-0086 / commit 7aa9aa9)
+Next Action: Implement frame packing arrangement SEI message decoding rule slice (Task T12a / package 0.1.36 / ITU-T H.264 D.1.25, D.2.25); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
 Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31871279202 (Ubuntu job 94980189462, macOS job 94980189372, Windows job 94980189380) passed 100%
 Blockers: None
 
@@ -1296,3 +1296,16 @@ Blockers: None
      - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
      - hosted run `31871279202` 在 Ubuntu 24.04 / Qt 6.11.1（job `94980189462`）、macOS 15 / Qt 6.11.1（job `94980189372`）、Windows 2022 / Qt 6.10.1（job `94980189380`）全部成功。
   Next Action 指向 Task T11（pic_timing SEI message decoding probe & specification）。
+- 2026-08-15：完成环境上下文导入能力规范与图像定时 SEI 活跃参数集解析设计（任务 T11a / ADR-0086 / commit `7aa9aa9` / 纯规范切片）。
+  1. 双语 ADR-0086 归档（`docs/adr/0086-ambient-context-imports.md` + `docs/zh-CN/adr/0086-ambient-context-imports.md`）：
+     - 归档 4 项探测证据与已排除死路：
+       - 闸门 1：注解参数数量检查（`src/rules/dsl_ir.cpp:1125`）；
+       - 闸门 2：解析器表达式三元 arity 检查（`src/rules/dsl.cpp:1892`）与 IR 降低 3 操作数检查（`src/rules/dsl_ir.cpp:1508`）；
+       - 死路 A：块内常量键（`assumed_sps_id = 0`，多 SPS 场景静默错解）；
+       - 死路 B：跨分支 `optional_value(seq_parameter_set_id, 0)`（槽位未物化恒走回退值 0）；
+     - 固化基于位置的 $O(K \cdot \log M)$ 环境上下文检索语义（与 ADR-0078 同构，无键等值过滤）；
+     - 固化同结构体有键与环境导入共存规则（三参绑定有键、二参绑定环境、同 kind 重复环境报错）；
+     - 固化单消息级失败隔离（`NotFound` / `DependencyUnavailable` 映射为 `Invalid` / `WaitingDependency`，按 `payload_size` 续扫）；
+     - 明确 D.2.2 有界线性流扫描近似的已知局限性，AU 状态机与块内重发布显式 out of scope。
+  2. Markdown-only 提交按 ADR-0019 跳过 hosted CI。
+  Next Action 指向 Task T12a（frame_packing_arrangement SEI message decoding, package 0.1.36）。
