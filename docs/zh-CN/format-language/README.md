@@ -461,8 +461,9 @@ primary       := integer | "true" | "false" | identifier
   个 work step；即使 callee
   没有使用某个参数，该参数仍计入上限。pure call 在编译期展开，不引入 runtime call、递归、
   source/host 访问、时间、随机数或可变状态。
-- 唯一接受的渐进 sequence 形式是
-  `@index(progressive) sequence<Element> name = scan(h264_start_code);`。
+- 接受的渐进 sequence 形式包括
+  `@index(progressive) sequence<Element> name = scan(h264_start_code);`
+  与 `@index(progressive) sequence<Element> name = scan(adts_frame);`。
   `Element` 必须是已声明结构。
 - 一个程序至多声明一个 payload 派发。其 view kind 必须是 `rbsp`，且必须命名一个已声明、
   并且存在对应 `entry` 的渐进 sequence。controller 必须命名该 sequence 的 element structure

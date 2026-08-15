@@ -2,7 +2,7 @@
 
 ## 状态
 
-提议中 (Proposed)
+已接受 (Accepted)
 
 ## 背景
 

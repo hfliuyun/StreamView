@@ -607,8 +607,9 @@ The static rules for this subset are:
   substitutions, including arguments for parameters the callee does not use.
   Pure calls are expanded statically and introduce no runtime call, recursion,
   source access, host access, time, randomness, or mutable state.
-- The only accepted progressive sequence form is
-  `@index(progressive) sequence<Element> name = scan(h264_start_code);`.
+- The accepted progressive sequence forms are
+  `@index(progressive) sequence<Element> name = scan(h264_start_code);`
+  and `@index(progressive) sequence<Element> name = scan(adts_frame);`.
   `Element` must name a declared structure.
 - A program declares at most one payload dispatch. Its view kind must be
   `rbsp`, and it must name a declared progressive sequence for which an `entry`
