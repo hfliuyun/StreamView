@@ -7414,6 +7414,56 @@ private slots:
         QVERIFY(result.errorMessage.contains(QStringLiteral("While repeat did not terminate")));
     }
 
+    void executesAllFieldsInIterationWhenIterationStartedEvenIfTrailingBitsReachedBeforeIterationEnds() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Container {
+                repeat (4) while (more_rbsp_data()) {
+                    bits<8> message_type;
+                    bits<8> message_size;
+                    @lazy(message_size)
+                    bytes message_data;
+                }
+                rbsp_trailing_bits;
+            }
+            entry Container;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        // Message 0: type 5, size 0 (0 bytes data). Immediately followed by trailing bits 0x80.
+        // At the moment message_data[0] is decoded, the reader is pointing at 0x80 (trailing bits).
+        // The per-iteration state ensures message_data[0] is executed within the active iteration,
+        // and then iteration 1 correctly observes more_rbsp_data() == false and terminates.
+        MemorySource source(bytes({0x05, 0x00, 0x80}));
+        const auto mapping = mappingForBytes(3);
+        const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 24);
+        auto tree = AnalysisTree::create(QStringLiteral("test-multi-field-while-repeat"));
+        QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+        BitReader reader(source, *range);
+
+        const auto result = DslExecutor::decodeStruct(
+            *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(24));
+        const auto structNode = tree->node(*result.structureNode);
+        QVERIFY(structNode.has_value());
+
+        // 3 fields in iteration 0 (type, size, data) + 8 trailing bits fields = 11 children
+        QCOMPARE(structNode->children().size(), std::size_t(11));
+        QCOMPARE(tree->node(structNode->children().at(0))->name(), QStringLiteral("message_type[0]"));
+        QCOMPARE(tree->node(structNode->children().at(0))->value().toULongLong(), quint64(5));
+
+        QCOMPARE(tree->node(structNode->children().at(1))->name(), QStringLiteral("message_size[0]"));
+        QCOMPARE(tree->node(structNode->children().at(1))->value().toULongLong(), quint64(0));
+
+        QCOMPARE(tree->node(structNode->children().at(2))->name(), QStringLiteral("message_data[0]"));
+        QCOMPARE(tree->node(structNode->children().at(2))->location()->logicalRange().bitLength(), quint64(0));
+
+        QCOMPARE(tree->node(structNode->children().at(3))->name(), QStringLiteral("rbsp_stop_one_bit"));
+        QCOMPARE(tree->node(structNode->children().at(4))->name(), QStringLiteral("rbsp_alignment_zero_bit[0]"));
+    }
+
     void executesRbspTrailingBitsInsideConditionalBranchWhenSelectedAndSkipsWhenAbsent() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             struct S {
