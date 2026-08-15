@@ -2,7 +2,7 @@ manifest-version = 1
 
 [package]
 id = "org.streamview.h264"
-version = "0.1.32"
+version = "0.1.33"
 authors = ["StreamView contributors"]
 license = "MIT"
 dependencies = []

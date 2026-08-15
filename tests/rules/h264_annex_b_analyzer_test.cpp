@@ -335,6 +335,16 @@ struct SeiMessagePayload {
     return payloadBytes;
 }
 
+[[nodiscard]] std::vector<quint8> packUserDataUnregisteredPayload(
+    const std::array<quint8, 16>& uuid,
+    const std::vector<quint8>& payloadBytes) {
+    std::vector<quint8> result;
+    result.reserve(16 + payloadBytes.size());
+    result.insert(result.end(), uuid.begin(), uuid.end());
+    result.insert(result.end(), payloadBytes.begin(), payloadBytes.end());
+    return result;
+}
+
 [[nodiscard]] std::vector<std::byte> replaceCodewordBeforeNextNal(
     std::vector<std::byte> data,
     std::size_t sourceBitOffset,
@@ -8274,7 +8284,7 @@ private slots:
     }
 
     void decodesTheSupportedSeiPayloadWithSingleMessage() {
-        const auto stream = packSeiNal({{5, {0x11, 0x22, 0x33, 0x44}}});
+        const auto stream = packSeiNal({{7, {0x11, 0x22, 0x33, 0x44}}});
         MemorySource source(stream);
         QString errorMessage;
         auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
@@ -8333,7 +8343,7 @@ private slots:
 
         const auto payloadType = fieldNamed(*sei, QStringLiteral("payload_type[0]"));
         QVERIFY(payloadType.has_value());
-        QCOMPARE(payloadType->value().toULongLong(), quint64(5));
+        QCOMPARE(payloadType->value().toULongLong(), quint64(7));
         QCOMPARE(payloadType->location()->logicalRange().bitLength(), quint64(8));
         QCOMPARE(payloadType->metadata().specification->clause, QStringLiteral("7.3.2.3.1"));
 
@@ -8365,7 +8375,7 @@ private slots:
 
     void decodesMultipleSeiMessagesInSingleNalUnit() {
         const auto stream = packSeiNal({
-            {5, {0xaa, 0xbb}},
+            {8, {0xaa, 0xbb}},
             {7, {0x01, 0x02, 0x03}}
         });
         MemorySource source(stream);
@@ -8422,7 +8432,7 @@ private slots:
 
         const auto type0 = fieldNamed(*sei, QStringLiteral("payload_type[0]"));
         QVERIFY(type0.has_value());
-        QCOMPARE(type0->value().toULongLong(), quint64(5));
+        QCOMPARE(type0->value().toULongLong(), quint64(8));
 
         const auto size0 = fieldNamed(*sei, QStringLiteral("payload_size[0]"));
         QVERIFY(size0.has_value());
@@ -8806,11 +8816,11 @@ private slots:
                  streamview::core::DiagnosticSeverity::Warning);
     }
 
-    void decodesMultipleSeiMessagesContainingRecoveryPointAndUserData() {
+    void decodesMultipleSeiMessagesContainingRecoveryPointAndOpaquePayload() {
         const auto recoveryBytes = packRecoveryPointPayload(0, true, false, 0);
         const auto stream = packSeiNal({
             {6, recoveryBytes},
-            {5, {0xaa, 0xbb, 0xcc, 0xdd}}
+            {7, {0xaa, 0xbb, 0xcc, 0xdd}}
         });
         MemorySource source(stream);
         QString errorMessage;
@@ -8882,7 +8892,7 @@ private slots:
 
         const auto type1 = fieldNamed(*sei, QStringLiteral("payload_type[1]"));
         QVERIFY(type1.has_value());
-        QCOMPARE(type1->value().toULongLong(), quint64(5));
+        QCOMPARE(type1->value().toULongLong(), quint64(7));
 
         const auto size1 = fieldNamed(*sei, QStringLiteral("payload_size[1]"));
         QVERIFY(size1.has_value());
@@ -8891,6 +8901,278 @@ private slots:
         const auto data1 = fieldNamed(*sei, QStringLiteral("payload_data[1]"));
         QVERIFY(data1.has_value());
         QCOMPARE(data1->location()->logicalRange().bitLength(), quint64(32));
+    }
+
+    void decodesUserDataUnregisteredSeiMessageWithUuidAndPayload() {
+        const std::array<quint8, 16> uuid = {
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+        };
+        const std::vector<quint8> payloadData = {0x54, 0x45, 0x53, 0x54}; // "TEST"
+        const auto payloadBytes = packUserDataUnregisteredPayload(uuid, payloadData);
+        QCOMPARE(payloadBytes.size(), std::size_t(20));
+
+        std::vector<bool> bits;
+        appendFfCoded(bits, 5); // payload_type == 5
+        appendFfCoded(bits, payloadBytes.size());
+        for (const quint8 byte : payloadBytes) {
+            appendFixedBits(bits, byte, 8);
+        }
+        appendFixedBits(bits, 0x80, 8); // rbsp_trailing_bits
+
+        MemorySource source(packAnnexBNal(0x06, std::move(bits), false));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        QStringList expectedChildren = {
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+        };
+        for (int i = 0; i < 16; ++i) {
+            expectedChildren.append(QStringLiteral("uuid_iso_iec_11578[0][%1]").arg(i));
+        }
+        expectedChildren.append(QStringLiteral("user_data_payload_byte[0]"));
+        expectedChildren.append(QStringLiteral("rbsp_stop_one_bit"));
+        for (int i = 0; i < 7; ++i) {
+            expectedChildren.append(QStringLiteral("rbsp_alignment_zero_bit[%1]").arg(i));
+        }
+        QCOMPARE(childNamesOf(*sei), expectedChildren);
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        const auto type = fieldNamed(*sei, QStringLiteral("payload_type[0]"));
+        QVERIFY(type.has_value());
+        QCOMPARE(type->value().toULongLong(), quint64(5));
+
+        const auto size = fieldNamed(*sei, QStringLiteral("payload_size[0]"));
+        QVERIFY(size.has_value());
+        QCOMPARE(size->value().toULongLong(), quint64(20));
+
+        for (std::size_t i = 0; i < 16; ++i) {
+            const auto uuidByte = fieldNamed(*sei, QStringLiteral("uuid_iso_iec_11578[0][%1]").arg(i));
+            QVERIFY(uuidByte.has_value());
+            QCOMPARE(uuidByte->value().toULongLong(), quint64(uuid.at(i)));
+            QCOMPARE(uuidByte->location()->logicalRange().bitLength(), quint64(8));
+        }
+
+        const auto userData = fieldNamed(*sei, QStringLiteral("user_data_payload_byte[0]"));
+        QVERIFY(userData.has_value());
+        QCOMPARE(userData->location()->logicalRange().bitLength(), quint64(32));
+    }
+
+    void decodesUserDataUnregisteredSeiMessageWithZeroLengthPayload() {
+        const std::array<quint8, 16> uuid = {
+            0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
+            0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf
+        };
+        const auto payloadBytes = packUserDataUnregisteredPayload(uuid, {});
+        QCOMPARE(payloadBytes.size(), std::size_t(16));
+
+        std::vector<bool> bits;
+        appendFfCoded(bits, 5); // payload_type == 5
+        appendFfCoded(bits, payloadBytes.size());
+        for (const quint8 byte : payloadBytes) {
+            appendFixedBits(bits, byte, 8);
+        }
+        appendFixedBits(bits, 0x80, 8); // rbsp_trailing_bits
+
+        MemorySource source(packAnnexBNal(0x06, std::move(bits), false));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        const auto userData = fieldNamed(*sei, QStringLiteral("user_data_payload_byte[0]"));
+        QVERIFY(userData.has_value());
+        QCOMPARE(userData->location()->logicalRange().bitLength(), quint64(0));
+    }
+
+    void decodesMultipleSeiMessagesContainingUserDataUnregisteredAndRecoveryPoint() {
+        const std::array<quint8, 16> uuid = {
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+            0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+        };
+        const auto userBytes = packUserDataUnregisteredPayload(uuid, {0x11, 0x22});
+        const auto recoveryBytes = packRecoveryPointPayload(0, true, false, 0);
+
+        std::vector<bool> bits;
+        // Message 0: user_data_unregistered (type 5, size 18)
+        appendFfCoded(bits, 5);
+        appendFfCoded(bits, userBytes.size());
+        for (const quint8 byte : userBytes) {
+            appendFixedBits(bits, byte, 8);
+        }
+        // Message 1: recovery_point (type 6, size 1)
+        appendFfCoded(bits, 6);
+        appendFfCoded(bits, recoveryBytes.size());
+        for (const quint8 byte : recoveryBytes) {
+            appendFixedBits(bits, byte, 8);
+        }
+        appendFixedBits(bits, 0x80, 8); // rbsp_trailing_bits
+
+        MemorySource source(packAnnexBNal(0x06, std::move(bits), false));
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        QStringList expectedChildren = {
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+        };
+        for (int i = 0; i < 16; ++i) {
+            expectedChildren.append(QStringLiteral("uuid_iso_iec_11578[0][%1]").arg(i));
+        }
+        expectedChildren.append(QStringLiteral("user_data_payload_byte[0]"));
+        expectedChildren.append(QStringLiteral("payload_type[1]"));
+        expectedChildren.append(QStringLiteral("payload_size[1]"));
+        expectedChildren.append(QStringLiteral("recovery_frame_cnt[1]"));
+        expectedChildren.append(QStringLiteral("exact_match_flag[1]"));
+        expectedChildren.append(QStringLiteral("broken_link_flag[1]"));
+        expectedChildren.append(QStringLiteral("changing_slice_group_idc[1]"));
+        expectedChildren.append(QStringLiteral("rbsp_stop_one_bit[1]"));
+        expectedChildren.append(QStringLiteral("rbsp_alignment_zero_bit[0][1]"));
+        expectedChildren.append(QStringLiteral("rbsp_alignment_zero_bit[1][1]"));
+        expectedChildren.append(QStringLiteral("rbsp_stop_one_bit"));
+        for (int i = 0; i < 7; ++i) {
+            expectedChildren.append(QStringLiteral("rbsp_alignment_zero_bit[%1]").arg(i));
+        }
+        QCOMPARE(childNamesOf(*sei), expectedChildren);
+    }
+
+    void reportsInvalidSyntaxForUserDataUnregisteredWithPayloadSizeLessThanSixteen() {
+        std::vector<bool> bits;
+        appendFfCoded(bits, 5); // payload_type == 5
+        appendFfCoded(bits, 10); // payload_size < 16 (underflow for user_data_payload_byte)
+        for (int i = 0; i < 10; ++i) {
+            appendFixedBits(bits, 0x00, 8);
+        }
+        auto stream = packAnnexBNal(0x06, std::move(bits), false);
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x50})); // AUD
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+
+        const auto seiNal = analyzer->tree().node(batch.nalUnitNodes.at(0));
+        QVERIFY(seiNal.has_value());
+        QCOMPARE(seiNal->state(), MaterializationState::Invalid);
+
+        const auto audNal = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(audNal.has_value());
+        QCOMPARE(audNal->state(), MaterializationState::Materialized);
+    }
+
+    void reportsTruncatedUserDataUnregisteredSeiPayloadAndContinues() {
+        std::vector<bool> truncatedBits;
+        appendFfCoded(truncatedBits, 5);
+        appendFfCoded(truncatedBits, 20); // declared size 20 bytes, but only 8 bytes provided
+        for (int i = 0; i < 8; ++i) {
+            appendFixedBits(truncatedBits, 0x00, 8);
+        }
+        auto stream = packAnnexBNal(0x06, std::move(truncatedBits), false);
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x50}));
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+
+        const auto seiNal = analyzer->tree().node(batch.nalUnitNodes.at(0));
+        QVERIFY(seiNal.has_value());
+        QCOMPARE(seiNal->state(), MaterializationState::Invalid);
+
+        const auto audNal = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(audNal.has_value());
+        QCOMPARE(audNal->state(), MaterializationState::Materialized);
     }
 
     void reportsTruncatedRecoveryPointSeiPayloadAndContinues() {
