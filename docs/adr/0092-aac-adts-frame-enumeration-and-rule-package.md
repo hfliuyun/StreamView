@@ -95,26 +95,36 @@ ADTS stream parsing employs a hybrid length-chain stepping and resynchronization
    ```
 2. **Normative References**:
    All fields and enumerations are referenced to ISO/IEC 14496-3:2019 (Edition 5):
-   - Table 1.11 — `AacProfile` (MPEG-4 Audio Object Types minus 1: `0` Main, `1` LC, `2` SSR)
+   - Table 1.11 — `AacProfile` (MPEG-4 Audio Object Types minus 1: `0` Main, `1` LC, `2` SSR, `3` LTP / reserved in MPEG-2 AAC)
    - Table 1.16 — `AacSamplingFrequencyIndex` (`0` 96000 Hz .. `12` 7350 Hz, `15` explicit)
    - Table 1.17 — `AacChannelConfiguration` (`0` Custom/PCE, `1` Mono, `2` Stereo, `3` 3-channel, `4` 4-channel, `5` 5-channel, `6` 5.1, `7` 7.1)
    - Subclause 1.6.2.1 — `adts_fixed_header`, `adts_variable_header`
    - Subclause 1.6.2.2 — `adts_error_check` (`crc_check`)
 
-### 5. Boundary Contracts for First Increments
+### 5. Boundary Contracts & Value Domain Classification
 
 1. **Single Raw Data Block**: `number_of_raw_data_blocks_in_frame == 0` (1 raw data block per frame). Multiple raw data blocks with inter-block 16-bit CRC headers (`raw_data_block_position`) are explicitly postponed.
-2. **Value Domain Classification**:
-   - `sampling_frequency_index == 15`: Escape value forbidden in ADTS per ISO/IEC 14496-3 subclause 1.6.2.1; classified as non-fatal warning/error.
-   - `channel_configuration == 0`: Indicates program configuration element (PCE) in raw data block; parsed in Task T17.
-   - `adts_buffer_fullness == 0x7FF`: Valid special value denoting variable bit rate (VBR) stream.
-3. **Source-Anchored Assertion**:
-   Enforce `assert(aac_frame_length >= (protection_absent == 1 ? 7 : 9))` to guard against corrupted frame length fields smaller than header size.
+2. **Value Domain Classification & Diagnostic Strategy**:
+   Following the ADR-0040 dichotomy (non-layout-affecting fields emit non-fatal warnings rather than breaking decoding, while avoiding fatal `@enum` rejection per ADR-0059):
+   - `sampling_frequency_index`: Declared with `@range(0, 12)`. Non-standard values 13, 14, and escape value 15 (forbidden in ADTS per ISO/IEC 14496-3 subclause 1.6.2.1) emit non-fatal out-of-range diagnostics without terminating frame decoding.
+   - `profile`: Declared with 4-value enumeration `enum AacProfile { main = 0; lc = 1; ssr = 2; ltp = 3; }`, noting that profile `3` (LTP) is reserved in MPEG-2 AAC (`id == 1`).
+   - `channel_configuration`: Full 8-value enumeration `enum AacChannelConfiguration` (`0` Custom/PCE .. `7` 7.1) retained. `channel_configuration == 0` indicates a Program Config Element (PCE) in the raw data block (supported in Task T18).
+   - `adts_buffer_fullness`: `0x7FF` is a valid normative special value indicating a variable bit rate (VBR) stream.
+3. **Source-Anchored Assertion for Minimum Frame Length**:
+   To guard against bitstream corruption where `aac_frame_length` is smaller than the header byte size, rules express the minimum frame length check using ADR-0090 boolean arithmetic and source-anchored assertion:
+   ```svfmt
+   computed<u64> minimum_frame_length =
+       (protection_absent == 1) * 7 +
+       (protection_absent == 0) * 9;
+   assert(aac_frame_length >= minimum_frame_length) at aac_frame_length;
+   ```
+   This form has been verified via `svtool rule check` on `scratch/probe_adts.svfmt` producing `Rule OK`.
 
 ## Phased Implementation Sequence
 
 - **Task T14 (Current)**: Architectural probe report and bilingual ADR-0092 specification (Markdown-only).
-- **Task T15**: ADTS enumeration capability slice (`DslScannerKind::AacAdtsFrame`, `AacAdtsScanner`, `dsl.cpp`, `dsl_ir.cpp`, targeted unit tests, capability-only).
+- **Task T15a**: ADTS frame enumeration capability slice (`DslScannerKind::AacAdtsFrame`, `AacAdtsScanner`, `dsl.cpp`, `dsl_ir.cpp`, capability unit tests, capability-only).
+- **Task T15b**: ADTS analyzer runner and application integration slice (`AacAdtsAnalyzer`, `detectAacAdtsCandidate`, `AnalysisSession` polymorphic format selection, tests covering H.264 zero regression / AAC source correct selection / unknown source behavior unchanged / `resolvedRule` dual paths).
 - **Task T16**: Rule package creation (`org.streamview.aac` v0.1.0) and ADTS header structured decoding (ADR-0093).
 - **Task T17**: AudioSpecificConfig (ASC) and GASpecificConfig structured decoding (v0.1.1, ADR-0094).
 - **Task T18**: Program Config Element (PCE) and unsupported profile diagnostics (v0.1.2, ADR-0095).
@@ -126,3 +136,6 @@ ADTS stream parsing employs a hybrid length-chain stepping and resynchronization
 - ADR-0016: TOML Manifest And ZIP Rule Packages
 - ADR-0027: Resume Cancelled Progressive H.264 Indexes In Place
 - ADR-0030: Canonical Rule Package Identity and Catalog
+- ADR-0040: Report Unsigned Exp-Golomb Range Violations Without Stopping Decoding
+- ADR-0059: Add Bounded P-Slice Reference Picture List Modification Loop
+- ADR-0090: Boolean Operands In Arithmetic Expressions

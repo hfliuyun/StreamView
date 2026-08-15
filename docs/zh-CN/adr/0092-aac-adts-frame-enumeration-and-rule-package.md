@@ -95,26 +95,36 @@ ADTS 码流解析采用“长度链快速推进 + 状态机重同步”的混合
    ```
 2. **规范引用基线**：
    所有字段与枚举严格对照 ISO/IEC 14496-3:2019（第 5 版）：
-   - 表 1.11 — `AacProfile`（MPEG-4 音频对象类型减 1：`0` Main, `1` LC, `2` SSR）
+   - 表 1.11 — `AacProfile`（MPEG-4 音频对象类型减 1：`0` Main, `1` LC, `2` SSR, `3` LTP / 在 MPEG-2 AAC 中保留）
    - 表 1.16 — `AacSamplingFrequencyIndex`（`0` 96000 Hz .. `12` 7350 Hz, `15` 显式）
    - 表 1.17 — `AacChannelConfiguration`（`0` 自定义/PCE, `1` 单声道, `2` 立体声, `3` 3声道, `4` 4声道, `5` 5声道, `6` 5.1, `7` 7.1）
    - 子条款 1.6.2.1 — `adts_fixed_header`, `adts_variable_header`
    - 子条款 1.6.2.2 — `adts_error_check` (`crc_check`)
 
-### 5. 首批增量边界约定
+### 5. 边界约定与值域定级
 
-1. **单原始数据块限定**：首版限定 `number_of_raw_data_blocks_in_frame == 0`（每帧 1 个 raw data block）；多块结构及其块间 16 位 CRC 头部（`raw_data_block_position`）显式延期。
-2. **值域定级**：
-   - `sampling_frequency_index == 15`：在 ADTS 中依据子条款 1.6.2.1 属非法保留值，定级为非致命诊断警告/错误；
-   - `channel_configuration == 0`：指示载荷内包含程序配置元素（PCE），在任务 T18 实现；
-   - `adts_buffer_fullness == 0x7FF`：合法特殊值，表示可变码率（VBR）码流。
-3. **源定位断言防护**：
-   规则内显式施加 `assert(aac_frame_length >= (protection_absent == 1 ? 7 : 9))`，防止因码流损坏导致帧长小于头部长度。
+1. **单原始数据块限定**：首版限定 `number_of_raw_data_blocks_in_frame == 0`（每帧 1 块）；多块结构及其块间 16 位 CRC 头部（`raw_data_block_position`）显式延期。
+2. **值域定级与诊断策略**：
+   遵循 ADR-0040 二分法（不影响头部布局的字段发出非致命警告而非中断解码，同时依据 ADR-0059 先例避免使用致命拦截的闭集 `@enum`）：
+   - `sampling_frequency_index`：声明为 `@range(0, 12)`。非标值 13、14 及转义值 15（在 ADTS 中依据 ISO/IEC 14496-3 子条款 1.6.2.1 属非法值）统一发出非致命超范围诊断，不中断帧解码；
+   - `profile`：声明为完整 4 值枚举 `enum AacProfile { main = 0; lc = 1; ssr = 2; ltp = 3; }`，注明当 `id == 1`（MPEG-2 AAC）时 `3` 为保留值；
+   - `channel_configuration`：保留完整 8 值枚举 `enum AacChannelConfiguration`（`0` 自定义/PCE .. `7` 7.1）。`channel_configuration == 0` 指示载荷内包含程序配置元素（PCE），在任务 T18 实现；
+   - `adts_buffer_fullness`：`0x7FF` 为合法规范特殊值，表示可变码率（VBR）码流。
+3. **最小帧长源定位断言**：
+   为防止码流损坏导致 `aac_frame_length` 小于头部字节数，规则通过 ADR-0090 布尔算术与源定位断言表达最小帧长检查：
+   ```svfmt
+   computed<u64> minimum_frame_length =
+       (protection_absent == 1) * 7 +
+       (protection_absent == 0) * 9;
+   assert(aac_frame_length >= minimum_frame_length) at aac_frame_length;
+   ```
+   该语法已在 `scratch/probe_adts.svfmt` 经 `svtool rule check` 实测通过（`Rule OK`）。
 
 ## 分阶段实施序列
 
 - **任务 T14（当前）**：架构探测报告与双语 ADR-0092 规范起草（Markdown-only）。
-- **任务 T15**：ADTS 枚举能力切片（`DslScannerKind::AacAdtsFrame`、`AacAdtsScanner`、`dsl.cpp`、`dsl_ir.cpp`、能力单元测试，纯能力层）。
+- **任务 T15a**：ADTS 帧枚举能力切片（`DslScannerKind::AacAdtsFrame`、`AacAdtsScanner`、`dsl.cpp`、`dsl_ir.cpp`、能力单元测试，纯能力层）。
+- **任务 T15b**：ADTS 分析执行器与应用集成切片（`AacAdtsAnalyzer`、`detectAacAdtsCandidate`、`AnalysisSession` 多态选择，测试覆盖 H.264 零回归 / AAC 源正确选择 / 未知源行为不变 / `resolvedRule` 双路径）。
 - **任务 T16**：规则包创建（`org.streamview.aac` v0.1.0）与 ADTS 头部结构化解码（ADR-0093）。
 - **任务 T17**：AudioSpecificConfig (ASC) 与 GASpecificConfig 结构化解码（v0.1.1, ADR-0094）。
 - **任务 T18**：Program Config Element (PCE) 与非 LC Profile 诊断（v0.1.2, ADR-0095）。
@@ -126,3 +136,6 @@ ADTS 码流解析采用“长度链快速推进 + 状态机重同步”的混合
 - ADR-0016: TOML Manifest And ZIP Rule Packages
 - ADR-0027: Resume Cancelled Progressive H.264 Indexes In Place
 - ADR-0030: Canonical Rule Package Identity and Catalog
+- ADR-0040: Report Unsigned Exp-Golomb Range Violations Without Stopping Decoding
+- ADR-0059: Add Bounded P-Slice Reference Picture List Modification Loop
+- ADR-0090: Boolean Operands In Arithmetic Expressions
