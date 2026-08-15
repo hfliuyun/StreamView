@@ -291,6 +291,9 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
             result.errorMessage = QStringLiteral("Context import runtime kind is invalid");
             return result;
         }
+        if (!executionImport.key.location) {
+            continue;
+        }
         const ImportMaterialization materialized =
             materializeImport(static_cast<quint32>(importIndex),
                               executionImport.key.value);

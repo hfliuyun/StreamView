@@ -1237,6 +1237,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         std::vector<quint32> contextExportFieldIndices;
         std::vector<quint64> repeatIndices;
         std::size_t assertionCount = 0;
+        const std::vector<DslTypedFieldCondition>* currentConditions = nullptr;
         const auto sameCondition = [](const DslTypedFieldCondition& left,
                                       const DslTypedFieldCondition& right) {
             const auto sameExpression = [](const auto& self,
@@ -1527,11 +1528,41 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             const auto key = std::find_if(
                 declaredFields.rbegin(), declaredFields.rend(),
                 [&keyName](const DeclaredField& declared) { return declared.name == keyName; });
-            if (key == declaredFields.rend() || !key->typedIndex ||
-                *key->typedIndex >= typedStruct.fields.size() ||
-                !typedStruct.fields.at(*key->typedIndex).contextEligible) {
+            if (key == declaredFields.rend()) {
                 addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidContext,
-                              QStringLiteral("context_value import key must be an earlier context-eligible field"),
+                              QStringLiteral("context_value import key must be an earlier unsigned scalar field"),
+                              expression.operands.at(0).range);
+                return std::nullopt;
+            }
+            static const std::vector<DslTypedFieldCondition> emptyConditions;
+            const std::vector<DslTypedFieldCondition>& currentConds =
+                currentConditions != nullptr ? *currentConditions : emptyConditions;
+            const bool keyAvailable = std::all_of(
+                key->conditions.begin(),
+                key->conditions.end(),
+                [&currentConds, &sameCondition](const DslTypedFieldCondition& required) {
+                    return std::any_of(
+                        currentConds.begin(),
+                        currentConds.end(),
+                        [&required, &sameCondition](const DslTypedFieldCondition& candidate) {
+                            return sameCondition(required, candidate);
+                        });
+                });
+            if (!keyAvailable) {
+                addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidCondition,
+                              QStringLiteral("context_value import key is not guaranteed on the current branch"),
+                              expression.operands.at(0).range);
+                return std::nullopt;
+            }
+            const bool unsignedScalar =
+                key->scalarType == DslScalarType::U64 &&
+                (key->computed != nullptr ||
+                 (key->source != nullptr && !key->source->arrayLength &&
+                  key->source->encoding != DslFieldEncoding::SignedExpGolomb));
+            if (!key->typedIndex || *key->typedIndex >= typedStruct.fields.size() ||
+                !unsignedScalar) {
+                addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidType,
+                              QStringLiteral("context_value import key must be an earlier unsigned scalar field"),
                               expression.operands.at(0).range);
                 return std::nullopt;
             }
@@ -1635,10 +1666,31 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                               expression.operands.at(2).range);
                 return std::nullopt;
             }
+            const quint32 keyFieldIndex = *key->typedIndex;
+            quint32 contextImportIndex = 0;
+            const auto existingImport = std::find_if(
+                typedStruct.contextImports.begin(),
+                typedStruct.contextImports.end(),
+                [&import, keyFieldIndex](const DslTypedContextImport& candidate) {
+                    return candidate.kind == import->kind && candidate.keyFieldIndex == keyFieldIndex;
+                });
+            if (existingImport != typedStruct.contextImports.end()) {
+                contextImportIndex = static_cast<quint32>(
+                    std::distance(typedStruct.contextImports.begin(), existingImport));
+            } else {
+                if (typedStruct.contextImports.size() >= DslTypedContextImport::maximumImports()) {
+                    addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidContext,
+                                  QStringLiteral("A structure declares too many context imports"),
+                                  expression.range);
+                    return std::nullopt;
+                }
+                contextImportIndex = static_cast<quint32>(typedStruct.contextImports.size());
+                typedStruct.contextImports.push_back({import->kind, keyFieldIndex});
+            }
             DslTypedExpression imported;
             imported.kind = DslTypedExpressionKind::ImportedContextReference;
             imported.type = DslScalarType::U64;
-            imported.contextImportIndex = static_cast<quint32>(std::distance(importAnnotations.begin(), import));
+            imported.contextImportIndex = contextImportIndex;
             imported.contextDefinitionKind = *targetKind;
             imported.contextStructureIndex = publishers.front();
             imported.contextExportIndex = *exportIndex;
@@ -1878,6 +1930,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             typedField.contextEligible = !isDynamicBits && !field.arrayLength &&
                                          conditions.empty() && repeatIndices.empty() &&
                                          !isSignedExpGolomb;
+            typedField.importEligible = !isDynamicBits && !field.arrayLength &&
+                                        !isSignedExpGolomb;
             typedField.conditions = conditions;
             typedField.metadata =
                 metadataForAnnotations(field.annotations, typedStruct.metadata.specification);
@@ -1900,6 +1954,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 };
                 contextValueResolver = importedContextResolver;
                 headerValueResolver = sequenceElementResolver;
+                currentConditions = &conditions;
                 optionalValueResolver =
                     [&](const QString& name,
                         const DslSourceRange& range) -> std::optional<DslTypedExpression> {
@@ -1922,6 +1977,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 contextValueResolver = {};
                 headerValueResolver = {};
                 optionalValueResolver = {};
+                currentConditions = nullptr;
                 if (typedField.bitWidthExpression &&
                     typedField.bitWidthExpression->type != DslScalarType::U64) {
                     addDiagnostic(result.diagnostics,
@@ -2209,6 +2265,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             };
             contextValueResolver = importedContextResolver;
             headerValueResolver = sequenceElementResolver;
+            currentConditions = &conditions;
             optionalValueResolver =
                 [&](const QString& name,
                     const DslSourceRange& range) -> std::optional<DslTypedExpression> {
@@ -2226,6 +2283,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             contextValueResolver = {};
             headerValueResolver = {};
             optionalValueResolver = {};
+            currentConditions = nullptr;
             if (expression && expression->type != field.type) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidType,
@@ -2244,6 +2302,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                        : DslValueTypeKind::ComputedUnsigned;
             typedField.contextEligible = field.type == DslScalarType::U64 &&
                                          conditions.empty() && repeatIndices.empty();
+            typedField.importEligible = field.type == DslScalarType::U64;
             typedField.computedExpression = expression;
             typedField.conditions = conditions;
             typedField.metadata = metadataForAnnotations(
@@ -2301,6 +2360,9 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     name, range, conditions, QStringLiteral("Lazy byte-count expression"),
                     QStringLiteral("Lazy byte counts require scalar unsigned fields"));
             };
+            contextValueResolver = importedContextResolver;
+            headerValueResolver = sequenceElementResolver;
+            currentConditions = &conditions;
             optionalValueResolver =
                 [&](const QString& name,
                     const DslSourceRange& range) -> std::optional<DslTypedExpression> {
@@ -2315,7 +2377,10 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                                       program.pureFunctions.size(),
                                                       1,
                                                       state);
+            contextValueResolver = {};
+            headerValueResolver = {};
             optionalValueResolver = {};
+            currentConditions = nullptr;
             if (expression && expression->type != DslScalarType::U64) {
                 addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidType,
                               QStringLiteral("Lazy byte-count expression must be u64"),
@@ -2476,6 +2541,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             };
             contextValueResolver = importedContextResolver;
             headerValueResolver = sequenceElementResolver;
+            currentConditions = &conditions;
             optionalValueResolver =
                 [&](const QString& name,
                     const DslSourceRange& range) -> std::optional<DslTypedExpression> {
@@ -2497,6 +2563,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             contextValueResolver = {};
             headerValueResolver = {};
             optionalValueResolver = {};
+            currentConditions = nullptr;
             if (expression && expression->type != DslScalarType::Bool) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidType,
@@ -3077,7 +3144,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                           QStringLiteral("A context definition may declare at most 16 dependencies"),
                           structure.range);
         }
-        if (importAnnotations.size() > DslTypedContextImport::maximumImports()) {
+        if (importAnnotations.size() > DslTypedContextImport::maximumDeclaredImports()) {
             addDiagnostic(result.diagnostics,
                           DslDiagnosticCode::InvalidContext,
                           QStringLiteral("A structure may declare at most 16 context imports"),
@@ -3170,29 +3237,76 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 typedStruct.contextDefinition = std::move(definition);
             }
         }
-        for (const ContextAnnotation& import : importAnnotations) {
-            const auto keyFieldIndex =
-                resolveContextField(import, QStringLiteral("Context import key"));
-            if (!keyFieldIndex ||
-                typedStruct.contextImports.size() >=
-                    DslTypedContextImport::maximumImports()) {
-                continue;
-            }
+        for (auto it = importAnnotations.begin(); it != importAnnotations.end(); ++it) {
+            const ContextAnnotation& import = *it;
             const auto duplicate = std::find_if(
-                typedStruct.contextImports.begin(),
-                typedStruct.contextImports.end(),
-                [&import, keyFieldIndex](const DslTypedContextImport& existing) {
-                    return existing.kind == import.kind &&
-                           existing.keyFieldIndex == *keyFieldIndex;
+                importAnnotations.begin(), it,
+                [&import](const ContextAnnotation& candidate) {
+                    return candidate.kind == import.kind &&
+                           candidate.keyFieldName == import.keyFieldName;
                 });
-            if (duplicate != typedStruct.contextImports.end()) {
+            if (duplicate != it) {
                 addDiagnostic(result.diagnostics,
                               DslDiagnosticCode::InvalidContext,
                               QStringLiteral("Duplicate context import"),
                               import.range);
                 continue;
             }
-            typedStruct.contextImports.push_back({import.kind, *keyFieldIndex});
+            const auto foundDecl = std::find_if(
+                fieldDeclarations.begin(), fieldDeclarations.end(),
+                [&import](const DslStructItem* item) {
+                    if (item->kind == DslStructItemKind::Field) {
+                        return item->field.name == import.keyFieldName;
+                    }
+                    if (item->kind == DslStructItemKind::Computed) {
+                        return item->computed.name == import.keyFieldName;
+                    }
+                    return false;
+                });
+            if (foundDecl == fieldDeclarations.end()) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidContext,
+                              QStringLiteral("Context import key field is not declared in the structure"),
+                              import.range);
+                continue;
+            }
+            const DslStructItem* item = *foundDecl;
+            bool unsignedScalar = false;
+            if (item->kind == DslStructItemKind::Field) {
+                unsignedScalar = !item->field.arrayLength &&
+                                 item->field.encoding != DslFieldEncoding::SignedExpGolomb;
+            } else if (item->kind == DslStructItemKind::Computed) {
+                unsignedScalar = item->computed.type == DslScalarType::U64;
+            }
+            if (!unsignedScalar) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidContext,
+                              QStringLiteral("Context import key field must be an unsigned scalar"),
+                              import.range);
+                continue;
+            }
+            const auto topLevel = std::find_if(
+                typedStruct.fields.begin(), typedStruct.fields.end(),
+                [&import](const DslTypedField& field) {
+                    return field.name == import.keyFieldName &&
+                           field.kind == DslTypedFieldKind::Declared &&
+                           field.contextEligible &&
+                           field.conditions.empty();
+                });
+            if (topLevel != typedStruct.fields.end()) {
+                const quint32 keyFieldIndex = static_cast<quint32>(
+                    std::distance(typedStruct.fields.begin(), topLevel));
+                const auto alreadyRegistered = std::find_if(
+                    typedStruct.contextImports.begin(), typedStruct.contextImports.end(),
+                    [&import, keyFieldIndex](const DslTypedContextImport& candidate) {
+                        return candidate.kind == import.kind && candidate.keyFieldIndex == keyFieldIndex;
+                    });
+                if (alreadyRegistered == typedStruct.contextImports.end()) {
+                    if (typedStruct.contextImports.size() < DslTypedContextImport::maximumImports()) {
+                        typedStruct.contextImports.push_back({import.kind, keyFieldIndex});
+                    }
+                }
+            }
         }
         std::stable_sort(
             typedStruct.sentinelRepeats.begin(),

@@ -178,6 +178,22 @@ constexpr quint64 maximumUnsignedExpGolombValue = std::numeric_limits<quint64>::
            field.conditions.empty() && unsignedScalar;
 }
 
+[[nodiscard]] bool validImportContextField(const DslTypedStruct& structure,
+                                           quint32 fieldIndex) noexcept {
+    if (fieldIndex >= structure.fields.size()) {
+        return false;
+    }
+    const DslTypedField& field = structure.fields.at(fieldIndex);
+    const bool unsignedScalar =
+        field.type.kind == DslValueTypeKind::UnsignedBits ||
+        field.type.kind == DslValueTypeKind::Enum ||
+        field.type.kind == DslValueTypeKind::UnsignedExpGolomb ||
+        field.type.kind == DslValueTypeKind::FfCoded ||
+        field.type.kind == DslValueTypeKind::ComputedUnsigned;
+    return field.kind == DslTypedFieldKind::Declared && field.importEligible &&
+           !field.bitWidthExpression && unsignedScalar;
+}
+
 [[nodiscard]] bool validContextDefinitionHeader(
     const DslTypedStruct& structure) noexcept {
     if (!structure.contextDefinition) {
@@ -396,6 +412,21 @@ struct TypedExpressionValidationState final {
             import.keyFieldIndex >= structure.fields.size() ||
             expression.contextStructureIndex >= program.structs.size()) {
             return fail(QStringLiteral("Typed imported context reference is out of range"));
+        }
+        const DslTypedField& keyField = structure.fields.at(import.keyFieldIndex);
+        const bool keyGuaranteed = std::all_of(
+            keyField.conditions.begin(),
+            keyField.conditions.end(),
+            [&subjectConditions](const DslTypedFieldCondition& required) {
+                return std::any_of(
+                    subjectConditions.begin(),
+                    subjectConditions.end(),
+                    [&required](const DslTypedFieldCondition& candidate) {
+                        return sameCondition(required, candidate);
+                    });
+            });
+        if (!keyGuaranteed) {
+            return fail(QStringLiteral("Typed imported context key is not guaranteed"));
         }
         const DslTypedStruct& publisher =
             program.structs.at(expression.contextStructureIndex);
@@ -1500,7 +1531,7 @@ DslExecutionResult DslVirtualMachine::execute(
     for (const DslTypedContextImport& import : structure.contextImports) {
         const auto identity = std::pair{import.kind, import.keyFieldIndex};
         if (!validContextKind(import.kind) ||
-            !validContextField(structure, import.keyFieldIndex) ||
+            !validImportContextField(structure, import.keyFieldIndex) ||
             std::find(checkedImports.begin(), checkedImports.end(), identity) !=
                 checkedImports.end()) {
             markFailure(DslExecutionStatus::InvalidDefinition,
@@ -3709,10 +3740,15 @@ DslExecutionResult DslVirtualMachine::execute(
                 for (const DslTypedContextImport& import : structure.contextImports) {
                     const auto key = materializedContextValue(import.keyFieldIndex);
                     if (!key) {
-                        markFailure(DslExecutionStatus::InvalidDefinition,
-                                    QStringLiteral("Typed IR context import key is unavailable"),
-                                    nullptr);
-                        return result;
+                        const DslTypedField& keyField = structure.fields.at(import.keyFieldIndex);
+                        if (keyField.conditions.empty()) {
+                            markFailure(DslExecutionStatus::InvalidDefinition,
+                                        QStringLiteral("Typed IR context import key is unavailable"),
+                                        nullptr);
+                            return result;
+                        }
+                        stagedContextImports.push_back({import.kind, DslExecutionContextValue{}});
+                        continue;
                     }
                     stagedContextImports.push_back({import.kind, *key});
                 }

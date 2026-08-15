@@ -2991,18 +2991,10 @@ private slots:
                 "struct C { bits<1> id; } entry C;"),
             QStringLiteral(
                 "@context_import(\"h264-sps\", value) "
-                "struct C { bits<1> flag; if (flag == 1) { bits<1> value; } } "
-                "entry C;"),
-            QStringLiteral(
-                "@context_import(\"h264-sps\", value) "
                 "struct C { bits<1> value[2]; } entry C;"),
             QStringLiteral(
                 "@context_import(\"h264-sps\", value) "
                 "struct C { se value; } entry C;"),
-            QStringLiteral(
-                "@context_import(\"h264-sps\", value) "
-                "struct C { bits<1> count; repeat (count, 1) { bits<1> value; } } "
-                "entry C;"),
             QStringLiteral(
                 "@context_import(\"h264-sps\", value) "
                 "struct C { bits<8> count; @lazy(count) bytes value; } entry C;"),
@@ -3229,6 +3221,105 @@ private slots:
             }
         }
         QVERIFY(hasTrailingBitsOpcode);
+    }
+
+    void lowersLocallyScopedContextImportKeysToTypedIr() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", seq_parameter_set_id)
+            struct SequenceParameterSetRbsp {
+                ue seq_parameter_set_id;
+                bits<1> nal_hrd_parameters_present_flag @context_export;
+            }
+
+            @context_import("h264-sps", seq_parameter_set_id)
+            struct SeiRbsp {
+                repeat (2) while (more_rbsp_data()) {
+                    ff_coded<8> payload_type;
+                    ff_coded<64> payload_size;
+                    switch (payload_type) {
+                        case 0: {
+                            ue seq_parameter_set_id;
+                            computed<u64> imported_nal_hrd_present =
+                                context_value(seq_parameter_set_id, h264_sps, nal_hrd_parameters_present_flag);
+                        }
+                        default: {
+                            @lazy(payload_size) bytes payload_data;
+                        }
+                    }
+                }
+            }
+            entry SeiRbsp;
+        )"));
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+
+        const auto& sei = compiled.program->structs.at(1);
+        QVERIFY(!sei.contextImports.empty());
+        for (const auto& import : sei.contextImports) {
+            QCOMPARE(import.kind, streamview::core::ContextDefinitionKind::H264SequenceParameterSet);
+            QVERIFY(sei.fields.at(import.keyFieldIndex).name.startsWith(QStringLiteral("seq_parameter_set_id")));
+        }
+
+        const auto disjointParsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps { bits<8> id; bits<8> width @context_export; }
+
+            @context_import("h264-sps", id)
+            struct Consumer {
+                bits<8> branch;
+                if (branch == 1) {
+                    bits<8> id;
+                }
+                if (branch == 2) {
+                    computed<u64> w = context_value(id, h264_sps, width);
+                }
+            }
+            entry Consumer;
+        )"));
+        QVERIFY(disjointParsed.succeeded());
+        const auto disjointCompiled = DslCompiler::compile(disjointParsed.program);
+        QVERIFY(!disjointCompiled.succeeded());
+        QVERIFY(hasDiagnostic(disjointCompiled, DslDiagnosticCode::InvalidCondition));
+
+        const auto seParsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps { bits<8> id; bits<8> width @context_export; }
+
+            @context_import("h264-sps", id)
+            struct Consumer {
+                se id;
+                computed<u64> w = context_value(id, h264_sps, width);
+            }
+            entry Consumer;
+        )"));
+        QVERIFY(seParsed.succeeded());
+        const auto seCompiled = DslCompiler::compile(seParsed.program);
+        QVERIFY(!seCompiled.succeeded());
+        QVERIFY(hasDiagnostic(seCompiled, DslDiagnosticCode::InvalidType) ||
+                hasDiagnostic(seCompiled, DslDiagnosticCode::InvalidContext));
+
+        const auto lateParsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps { bits<8> id; bits<8> width @context_export; }
+
+            @context_import("h264-sps", id)
+            struct Consumer {
+                computed<u64> w = context_value(id, h264_sps, width);
+                bits<8> id;
+            }
+            entry Consumer;
+        )"));
+        QVERIFY(lateParsed.succeeded());
+        const auto lateCompiled = DslCompiler::compile(lateParsed.program);
+        QVERIFY(!lateCompiled.succeeded());
+        QVERIFY(hasDiagnostic(lateCompiled, DslDiagnosticCode::InvalidContext));
     }
 };
 

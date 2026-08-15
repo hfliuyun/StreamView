@@ -109,6 +109,7 @@ struct DslTypedField final {
     QString name;
     DslValueType type;
     bool contextEligible = false;
+    bool importEligible = false;
     std::optional<DslTypedExpression> bitWidthExpression;
     std::optional<quint64> equalsConstraint;
     std::optional<DslTypedUnsignedRange> rangeConstraint;
@@ -179,7 +180,8 @@ struct DslTypedContextDefinition final {
 };
 
 struct DslTypedContextImport final {
-    [[nodiscard]] static constexpr std::size_t maximumImports() noexcept { return 16; }
+    [[nodiscard]] static constexpr std::size_t maximumDeclaredImports() noexcept { return 16; }
+    [[nodiscard]] static constexpr std::size_t maximumImports() noexcept { return 1024; }
 
     core::ContextDefinitionKind kind =
         core::ContextDefinitionKind::H264SequenceParameterSet;

@@ -1838,6 +1838,147 @@ private slots:
                      QStringLiteral("Consumer.id"));
         }
     }
+
+    void executesLocallyScopedContextImportKeysInsideRepeatAndSwitch() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps {
+                bits<8> id;
+                bits<8> delay_minus1 @context_export;
+            }
+
+            @context_import("h264-sps", seq_parameter_set_id)
+            struct SeiRbsp {
+                repeat (2) while (more_rbsp_data()) {
+                    ff_coded<8> payload_type;
+                    ff_coded<64> payload_size;
+                    switch (payload_type) {
+                        case 0: {
+                            bits<8> seq_parameter_set_id;
+                            bits<(context_value(seq_parameter_set_id, h264_sps, delay_minus1) + 1)> cpb_delay;
+                        }
+                        default: {
+                            @lazy(payload_size) bytes payload_data;
+                        }
+                    }
+                }
+                rbsp_trailing_bits;
+            }
+            entry SeiRbsp;
+        )"));
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty()
+                     ? ""
+                     : qPrintable(parsed.diagnostics.front().message));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty()
+                     ? ""
+                     : qPrintable(compiled.diagnostics.front().message));
+
+        const auto spsIndex = *compiled.program->structureIndex(QStringLiteral("Sps"));
+        const auto seiIndex = *compiled.program->structureIndex(QStringLiteral("SeiRbsp"));
+
+        // SPS 0: id = 0, delay_minus1 = 7 (width = 8)
+        // SPS 1: id = 1, delay_minus1 = 15 (width = 16)
+        // SEI: iter0 (type 0, size 2, sps 0, delay 0x55) + iter1 (type 0, size 3, sps 1, delay 0x1234) + 0x80 (trailing)
+        MemorySource source(bytes({
+            0x00, 0x07,                         // SPS 0 (16 bits)
+            0x01, 0x0f,                         // SPS 1 (16 bits)
+            0x00, 0x02, 0x00, 0x55,             // SEI iter0: type 0, size 2, sps 0, delay 8 bits (0x55)
+            0x00, 0x03, 0x01, 0x12, 0x34,       // SEI iter1: type 0, size 3, sps 1, delay 16 bits (0x1234)
+            0x80                                // rbsp_trailing_bits (8 bits)
+        }));
+
+        const auto sps0View = makeView(1, 0, 16);
+        const auto sps1View = makeView(2, 16, 16);
+        const auto seiView = makeView(3, 32, 80);
+        QVERIFY(sps0View.has_value() && sps1View.has_value() && seiView.has_value());
+
+        auto tree = AnalysisTree::create(QStringLiteral("locally-scoped-import-tree"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        const auto sps0 = session.run(makeRequest(source, spsIndex, *sps0View, *tree));
+        QVERIFY(sps0.materialized());
+        const auto sps1 = session.run(makeRequest(source, spsIndex, *sps1View, *tree));
+        QVERIFY(sps1.materialized());
+
+        const auto sei = session.run(makeRequest(source, seiIndex, *seiView, *tree));
+        QVERIFY2(sei.materialized(), qPrintable(sei.errorMessage));
+        QCOMPARE(sei.importedContexts.size(), std::size_t(2));
+        QCOMPARE(sei.importedContexts.at(0).definitionId, *sps0.publishedDefinition);
+        QCOMPARE(sei.importedContexts.at(1).definitionId, *sps1.publishedDefinition);
+
+        const auto seiNode = tree->node(*sei.execution.structureNode);
+        QVERIFY(seiNode.has_value());
+        const std::vector<QString> expectedChildren{
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+            QStringLiteral("seq_parameter_set_id[0]"),
+            QStringLiteral("cpb_delay[0]"),
+            QStringLiteral("payload_type[1]"),
+            QStringLiteral("payload_size[1]"),
+            QStringLiteral("seq_parameter_set_id[1]"),
+            QStringLiteral("cpb_delay[1]"),
+            QStringLiteral("rbsp_stop_one_bit"),
+            QStringLiteral("rbsp_alignment_zero_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5]"),
+            QStringLiteral("rbsp_alignment_zero_bit[6]"),
+        };
+        std::vector<QString> actualChildren;
+        for (const auto& childId : seiNode->children()) {
+            actualChildren.push_back(tree->node(childId)->name());
+        }
+        QCOMPARE(actualChildren, expectedChildren);
+        QCOMPARE(tree->node(seiNode->children().at(2))->value().toULongLong(), quint64(0));
+        QCOMPARE(tree->node(seiNode->children().at(3))->value().toULongLong(), quint64(0x55));
+        QCOMPARE(tree->node(seiNode->children().at(6))->value().toULongLong(), quint64(1));
+        QCOMPARE(tree->node(seiNode->children().at(7))->value().toULongLong(), quint64(0x1234));
+    }
+
+    void handlesLocallyScopedContextImportFailureGracefully() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps {
+                bits<8> id;
+                bits<8> delay_minus1 @context_export;
+            }
+
+            @context_import("h264-sps", seq_parameter_set_id)
+            struct SeiRbsp {
+                ff_coded<8> payload_type;
+                switch (payload_type) {
+                    case 0: {
+                        bits<8> seq_parameter_set_id;
+                        bits<(context_value(seq_parameter_set_id, h264_sps, delay_minus1) + 1)> cpb_delay;
+                    }
+                    default: {
+                        bits<8> dummy;
+                    }
+                }
+            }
+            entry SeiRbsp;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const auto seiIndex = *compiled.program->structureIndex(QStringLiteral("SeiRbsp"));
+        // payload_type = 0, seq_parameter_set_id = 99 (unknown SPS)
+        MemorySource source(bytes({0x00, 99, 0x00}));
+        const auto seiView = makeView(1, 0, 24);
+        QVERIFY(seiView.has_value());
+        auto tree = AnalysisTree::create(QStringLiteral("failure-tree"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        const auto sei = session.run(makeRequest(source, seiIndex, *seiView, *tree));
+        QCOMPARE(sei.status, RuleExecutionStatus::DependencyUnavailable);
+    }
 };
 
 QTEST_APPLESS_MAIN(RuleExecutionSessionTest)
