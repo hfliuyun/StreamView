@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: byte_aligned() predicate expression capability slice in parser, IR, and VM (Task T11c-1 / package 0.1.37 / ADR-0089 / commit 21da8c2)
-Next Action: Implement boolean operands in arithmetic expressions + and * capability slice (Task T11c-2 / ADR-0090); followed by Picture Timing SEI message decoding (Task T11c-3 / payload_type == 1 / package 0.1.38 / ADR-0091)
-Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31879207018 (Ubuntu job 94999305896, macOS job 94999305954, Windows job 94999306008) passed 100%
+Last Completed Step: Boolean operands in + and * arithmetic expressions capability slice (Task T11c-2 / package 0.1.37 / ADR-0090 / commit 3281940)
+Next Action: Specify and decode Picture Timing SEI message (Task T11c-3 / payload_type == 1 / package 0.1.38 / ADR-0091)
+Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31880469742 (Ubuntu job 95002213063, macOS job 95002213081, Windows job 95002213124) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1386,3 +1386,19 @@ Blockers: None
      - DSL 与规则引擎全量回归：`svtool rule check` Rule OK，H.264 analyzer 166/166 零回归，本地 dev/ci/sanitize 均为 32/32；
      - hosted run `31879207018` 在 Ubuntu 24.04 / Qt 6.11.1（job `94999305896`）、macOS 15 / Qt 6.11.1（job `94999305954`）、Windows 2022 / Qt 6.10.1（job `94999306008`）全部成功。
   Next Action 指向 Task T11c-2（boolean operands in arithmetic expressions `+` and `*` capability slice, ADR-0090）。
+- 2026-08-15：完成加法与乘法算术表达式接受布尔操作数能力切片（任务 T11c-2 / ADR-0090 / 包版本保持 0.1.37 / commit `3281940`）。
+  1. 规范与语法文档（`docs/format-language/README.md`、`docs/zh-CN/format-language/README.md` 与 ADR-0090）：
+     - 明确 `+`（`Add`）与 `*`（`Multiply`）运算符独立接受 `bool` 或 `u64` 操作数，求值时布尔值自动强转为 `1ULL`（`true`）或 `0ULL`（`false`），表达式结果类型恒为 `u64`；
+     - 明确 `-`（`Subtract`）、`/`（`Divide`）与 `%`（`Remainder`）继续严格要求 `u64` 操作数，以防止无符号整数下溢和除零风险；
+     - 支持指示函数加权求和语法表达（如 H.264 表格 D-1）。
+  2. DSL 解析器、类型 IR 与虚拟机运行时（`src/rules/`）：
+     - 解析器（`dsl.cpp`）：在二元表达式类型检查中放宽 `Add` 与 `Multiply` 操作数校验（允许 `Bool` 或 `U64`），若操作数类型非法发出 `Add and multiply operators require u64 or bool operands`，保留 `-`、`/`、`%` 的 `Arithmetic operators require u64 operands`；
+     - 类型 IR 降级（`dsl_ir.cpp`）：在 `compileExpression` 中放宽 `Add` 与 `Multiply` 的操作数类型校验，产出类型固定为 `DslScalarType::U64`；
+     - 虚拟机与执行器（`dsl_vm.cpp`）：在 `validateTypedExpression` 中放宽 `Add` 与 `Multiply` 操作数类型检查；在 `evaluateTypedExpression` 中对布尔操作数进行数值强转（`true \to 1ULL`、`false \to 0ULL`）。
+  3. 三层测试矩阵：
+     - 解析层（`tests/rules/dsl_test.cpp`）：新增 `parsesBooleanOperandsInAddAndMultiply`（测试 Table D-1 pure 函数、bool+bool、bool+u64、u64+bool、bool*bool、bool*u64、u64*bool）与 `rejectsInvalidBooleanOperandsInSubtractionDivisionAndRemainder`（7 项针对 `-`、`/`、`%` 使用布尔操作数的精准拒绝测试）；
+     - IR 编译层（`tests/rules/dsl_ir_test.cpp`）：新增 `lowersBooleanOperandsInAddAndMultiplyExpressions` 校验内联与独立 computed 表达式 typed IR 的类型与算子；
+     - 虚拟机执行层（`tests/rules/dsl_executor_test.cpp`）：新增 `evaluatesBooleanOperandsInAddAndMultiplyAndTableD1Mapping`，遍历测试 Table D-1 全部 16 个 `pic_struct` 值（0..15）的 `NumClockTS` 映射（0..2 为 1、3/4/7 为 2、5/6/8 为 3、9..15 为 0）以及全部布尔组合算术强转值（`true+true==2`, `true+false==1`, `false+false==0`, `true*true==1`, `true*false==0`, `false*false==0`）；
+     - DSL 与规则引擎全量回归：`svtool rule check` Rule OK，H.264 analyzer 166/166 零回归，本地 dev/ci/sanitize 均为 32/32；
+     - hosted run `31880469742` 在 Ubuntu 24.04 / Qt 6.11.1（job `95002213063`）、macOS 15 / Qt 6.11.1（job `95002213081`）、Windows 2022 / Qt 6.10.1（job `95002213124`）全部成功。
+  Next Action 指向 Task T11c-3（Picture Timing SEI message decoding, payload_type == 1, package 0.1.38, ADR-0091）。
