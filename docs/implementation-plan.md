@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 4
-Last Completed Step: ADTS frame enumeration capability slice (Task T15a / commit a565d41)
-Next Action: ADTS analyzer runner, candidate detection and polymorphic session selection (Task T15b)
-Last Verification: Local dev/ci/sanitize 33/33 passing with zero sanitizer warnings; hosted CI run 31891829190 (Ubuntu job 95029138143, macOS job 95029138162, Windows job 95029138117) passed 100%
+Last Completed Step: ADTS application integration slice (Task T15b / commit eb4e52c)
+Next Action: AAC official rule package, ADTS header decoding and bilingual ADR-0093 (Task T16)
+Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31893001154 (Ubuntu job 95031971031, macOS job 95031971045, Windows job 95031971075) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1486,3 +1486,21 @@ Blockers: None
      - 规则引擎与解析全量验证：`svtool rule check` 保持 `Rule OK`，H.264 analyzer 174/174 零回归，全量测试套件扩充至 33/33 且在 dev/ci/sanitize 三套构建下 100% 通过（零 ASan/UBSan 告警）；
      - hosted run `31891829190` 在 Ubuntu 24.04 / Qt 6.11.1（job `95029138143`）、macOS 15 / Qt 6.11.1（job `95029138162`）、Windows 2022 / Qt 6.10.1（job `95029138117`）全部成功。
   Next Action 指向 Task T15b（ADTS 分析执行器、候选格式探测与多态会话选择）。
+- 2026-08-15：完成 ADTS 应用集成切片（任务 T15b / commit `eb4e52c`）。
+  1. 候选格式探测器（`src/rules/include/streamview/rules/aac_adts_detector.h` 与 `src/rules/aac_adts_detector.cpp`）：
+     - 实现 `detectAacAdtsCandidate`，对前 64 KiB 页面执行 ADTS 同步字链前瞻追踪；
+     - 依据同步链长度定级探测置信度（$\ge 3$ 帧为 `Strong`，2 帧为 `Probable`，1 帧为 `Weak`），有效避免孤立 `0xFFF` 假同步字误判为高置信度候选；
+     - 单元测试（`tests/rules/aac_adts_detector_test.cpp`）覆盖干净连续流、短流、单帧、垃圾前缀、无长度链伪源与非 ADTS 数据。
+  2. ADTS 分析执行器（`src/rules/include/streamview/rules/aac_adts_analyzer.h` 与 `src/rules/aac_adts_analyzer.cpp`）：
+     - 实现 `AacAdtsAnalyzer` runner，封装 `AacAdtsScanner` 与 `AnalysisTree`；
+     - 明确并在注释中记录工作预算计数语义（快速路径按帧头部字节推进，重同步路径按逐字节步进）；
+     - 生成挂载 `header` 与 `raw_data_block` 的结构化分析树，支持取消中断与断点就地恢复；
+     - 单元测试（`tests/rules/aac_adts_analyzer_test.cpp`）覆盖批量分析、批次限制、取消恢复与非法参数。
+  3. 应用会话多态解耦（`src/app/analysis_session.h` 与 `src/app/analysis_session.cpp`）：
+     - 解耦 `AnalysisSession`，通过 `std::variant<H264AnnexBAnalyzer, AacAdtsAnalyzer>` 支持基于候选探测置信度（或显式 `resolvedRule`）的多态格式分发；
+     - 严格保持既有不变量：H.264 Annex B 全路径零回归（analyzer 174/174），探测/分析器创建失败绝不替换当前有效会话，未匹配未知源行为保持不变；
+     - `tests/app/analysis_session_test.cpp` 新增 `opensAndAnalyzesAacAdtsStreamPolymorphically` 端到端集成用例。
+  4. 全套三预设与云端 CI 验证：
+     - 本地 dev / ci / sanitize 三套构建全量 35/35 测试 100% 通过（零 ASan/UBSan 告警）；
+     - hosted run `31893001154` 在 Ubuntu 24.04 / Qt 6.11.1（job `95031971031`）、macOS 15 / Qt 6.11.1（job `95031971045`）、Windows 2022 / Qt 6.10.1（job `95031971075`）全部成功。
+  Next Action 指向 Task T16（创建 AAC 规则包、ADTS 头结构化解码与双语 ADR-0093）。
