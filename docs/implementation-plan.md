@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Specify and implement recovery point SEI message decoding (Task T7 / package 0.1.32 / ADR-0081)
-Next Action: Specify and implement Task T8 (user_data_unregistered SEI payload parsing / payload_type == 5); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31859117579 (Ubuntu job 94949154063, macOS job 94949153997, Windows job 94949154008) passed 100%
+Last Completed Step: Specify and implement user data unregistered SEI message decoding (Task T8 / package 0.1.33 / ADR-0082)
+Next Action: Specify and implement user data registered ITU-T T.35 SEI message decoding (Task T9 / package 0.1.34 / ADR-0083); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31861503655 (Ubuntu job 94955623663, macOS job 94955623587, Windows job 94955623627) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1219,3 +1219,18 @@ Blockers: None
      - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
      - hosted run `31859117579` 在 Ubuntu 24.04 / Qt 6.11.1（job `94949154063`）、macOS 15 / Qt 6.11.1（job `94949153997`）、Windows 2022 / Qt 6.10.1（job `94949154008`）全部成功。
   Next Action 指向 Task T8（user_data_unregistered SEI payload parsing）。
+- 2026-08-15：完成未注册用户数据 SEI 消息（User Data Unregistered SEI, payload_type == 5）结构化解码与基于 switch 的 SEI 载荷派发重构（任务 T8 / ADR-0082 / 包版本 0.1.33）。
+  1. 官方规则包（`src/rules/official/org.streamview.h264/src/h264_annex_b.svfmt`）：
+     - 将 `SeiRbsp` 的载荷派发由 `if/else` 链重构为可扩展的 `switch (payload_type)` 结构；
+     - 新增 `case 5` 分支解码未注册用户数据：16 字节 UUID 数组 `bits<8> uuid_iso_iec_11578[16]`，以及动态长度延迟载荷字节 `@lazy(payload_size - 16) bytes user_data_payload_byte`；
+     - 当 `payload_size < 16` 时触发算术减法下溢保护生成语法错误并安全回滚事务；
+     - `rule.toml` 包版本升级至 `0.1.33`。
+  2. 自动化测试套件（`tests/rules/h264_annex_b_analyzer_test.cpp`）：
+     - 新增 5 个针对性测试用例：单消息未注册用户数据 16 字节 UUID + 4 字节载荷解码及完整有序子节点列表断言、`payload_size == 16` 时 0 长度载荷区域边界物化、同一 NAL 内 `user_data_unregistered` + `recovery_point` 混合多 SEI 消息按顺序完整解析、`payload_size < 16` 下溢保护报错与安全回滚、截断 payload 码流安全回滚并继续后续 NAL；
+     - 适配既有单/多 SEI 消息测试使用 `payload_type` 7/8 验证 default 分支的不透明 lazy payload 保留。
+  3. 测试与验证：
+     - `svtool rule check` 通过；
+     - H.264 analyzer 套件增至 141 测试方法（143/143 包含 fixture setup）；DSL parser 77/77、DSL IR 77/77、executor 135/135 全部通过；
+     - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
+     - hosted run `31861503655` 在 Ubuntu 24.04 / Qt 6.11.1（job `94955623663`）、macOS 15 / Qt 6.11.1（job `94955623587`）、Windows 2022 / Qt 6.10.1（job `94955623627`）全部成功。
+  Next Action 指向 Task T9（user_data_registered_itu_t_t35 SEI payload parsing）。
