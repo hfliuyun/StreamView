@@ -1338,6 +1338,12 @@ each SEI message header with `ff_coded<8> payload_type`, `ff_coded<64>
 payload_size`, and `@lazy(payload_size) bytes payload_data`, followed by
 `rbsp_trailing_bits;`. Individual SEI payload messages remain opaque lazy byte
 regions until specific payload types are dispatched.
+Package `0.1.32` adds recovery point SEI message decoding (`payload_type == 6`
+in `SeiRbsp`), parsing `ue recovery_frame_cnt`, `bits<1> exact_match_flag`,
+`bits<1> broken_link_flag`, and `bits<2> changing_slice_group_idc @range(0, 2)`
+followed by `rbsp_trailing_bits;` to consume payload alignment bits and restore
+byte alignment for subsequent chained SEI messages. Other SEI payload types
+remain opaque lazy byte regions.
 
 When sequence parameter sets or picture parameter sets with identical
 identifiers are redefined later in the stream, subsequent slices bind to the

@@ -1029,6 +1029,10 @@ package `0.1.31` 新增针对 NAL unit type 6（`nal_unit_type == 6`）派发的
 SEI 消息头部，包含 `ff_coded<8> payload_type`、`ff_coded<64> payload_size` 以及
 `@lazy(payload_size) bytes payload_data`，末尾紧随 `rbsp_trailing_bits;`。各具体的 SEI
 消息载荷在深入派发前保持为不透明惰性字节区域。
+package `0.1.32` 新增恢复点（recovery point）SEI 消息解码（`SeiRbsp` 中 `payload_type == 6`），
+解析 `ue recovery_frame_cnt`、`bits<1> exact_match_flag`、`bits<1> broken_link_flag` 以及
+`bits<2> changing_slice_group_idc @range(0, 2)`，末尾紧随 `rbsp_trailing_bits;` 以消费
+载荷对齐位并为后续串联 SEI 消息恢复字节对齐。其余 SEI 载荷类型保持为不透明惰性字节区域。
 
 当码流中途重定义具有相同标识符的序列参数集或图像参数集时，后续 slice
 按位置绑定到最近的先前有效代（ADR-0028、ADR-0078）。诸如动态 `frame_num`
