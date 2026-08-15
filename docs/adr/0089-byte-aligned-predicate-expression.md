@@ -41,9 +41,11 @@ We introduce a built-in nullary boolean expression `byte_aligned()` to the DSL e
 4. **Format-Agnostic Design**:
    - The expression is completely format-neutral and carries zero format-specific or SEI-specific semantics in the core or DSL runtime.
 5. **Rule Consumption**:
-   - Format rules express conditional SEI payload alignment via:
+   - Format rules express conditional SEI payload alignment via intermediate boolean computed fields (`src/rules/official/org.streamview.h264/src/h264_annex_b.svfmt:894-898`):
      ```svfmt
-     if (!byte_aligned()) {
+     computed<bool> is_aligned = byte_aligned();
+     computed<bool> needs_trailing_bits = !is_aligned;
+     if (needs_trailing_bits) {
          rbsp_trailing_bits;
      }
      ```
@@ -51,7 +53,7 @@ We introduce a built-in nullary boolean expression `byte_aligned()` to the DSL e
 ## Consequences
 
 ### Positive
-- Fully and faithfully models ITU-T H.264 clause 7.3.2.3.1 (`if (!byte_aligned())`).
+- Fully and faithfully models ITU-T H.264 clause 7.3.2.3.1 alignment semantics via boolean computed variables (`computed<bool> is_aligned = byte_aligned(); computed<bool> needs_trailing_bits = !is_aligned; if (needs_trailing_bits) { rbsp_trailing_bits; }`).
 - Enables `pic_timing` and any future format messages to safely support both byte-aligned and unaligned payloads without bitstream desynchronization.
 - Reuses existing VM `ReadRbspTrailingBits` logic without altering opcode semantics.
 
@@ -63,4 +65,5 @@ We introduce a built-in nullary boolean expression `byte_aligned()` to the DSL e
 - `byte_aligned()` evaluates to false at bit offsets 1..7, 9..15, etc.
 - Evaluates correctly inside `repeat`, `switch`, and `if` conditional scopes.
 - Evaluates correctly immediately following `@lazy` byte regions.
-- Verified both as direct condition (`if (!byte_aligned())`) and through computed variables (`computed<bool> aligned = byte_aligned(); if (!aligned)`).
+- Verified that direct condition syntax `if (!byte_aligned())` is blocked by the condition parser grammar gate (`src/rules/dsl.cpp:1180`, emitting `Conditions require a field or context_value equality`), while the canonical landed pattern via boolean computed fields (`computed<bool> is_aligned = byte_aligned(); computed<bool> needs_trailing_bits = !is_aligned; if (needs_trailing_bits) { rbsp_trailing_bits; }`) compiles and executes with full alignment precision.
+

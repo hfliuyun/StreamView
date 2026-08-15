@@ -42,9 +42,9 @@ pure u64 num_clock_ts_for_pic_struct(u64 pic_struct) {
    - `bool + u64` / `u64 + bool` $\to$ `u64`；
    - `bool * u64` / `u64 * bool` $\to$ `u64`。
 3. **双闸门实现要点**：
-   - **解析器层**（`src/rules/dsl.cpp:2059-2067`）：
-     - 对 `Add` 与 `Multiply`，校验 `leftType` 与 `rightType` 均在 `{U64, Bool}` 集合中；
-     - 对 `Subtract`、`Divide`、`Remainder`，保留对 `U64` 的严格要求并输出相应诊断；
+   - **解析器层**（`src/rules/dsl.cpp:2080-2093`）：
+     - 对 `Add` 与 `Multiply`，校验 `leftType` 与 `rightType` 均在 `{U64, Bool}` 集合中，类型非法时发出 `Add and multiply operators require u64 or bool operands`；
+     - 对 `Subtract`、`Divide`、`Remainder`，保留对 `U64` 的严格要求并输出既有的共享诊断 `Arithmetic operators require u64 operands`（保持与既有算术诊断文本一致，无需引入冗余的新错误文本）；
    - **类型 IR 层**（`src/rules/dsl_ir.cpp:891-900`）：
      - 对 `Add` 与 `Multiply`，当 `left` 与 `right` 的类型为 `U64` 或 `Bool` 时置 `typesValid = true`，`resultType = DslScalarType::U64`；
      - 对 `Subtract`、`Divide`、`Remainder`，保留 `typesValid = left->type == U64 && right->type == U64`；

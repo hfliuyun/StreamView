@@ -41,9 +41,11 @@ if( !byte_aligned( ) ) {
 4. **格式无关性**：
    - 表达式属于通用语言层能力，核心与 DSL 运行时严禁内嵌任何 H.264 或 SEI 专属语义。
 5. **规则层消费形态**：
-   - 格式规则统一通过以下形态实现条件对齐：
+   - 格式规则统一通过布尔计算字段中间变量（出处 `src/rules/official/org.streamview.h264/src/h264_annex_b.svfmt:894-898`）实现条件对齐：
      ```svfmt
-     if (!byte_aligned()) {
+     computed<bool> is_aligned = byte_aligned();
+     computed<bool> needs_trailing_bits = !is_aligned;
+     if (needs_trailing_bits) {
          rbsp_trailing_bits;
      }
      ```
@@ -51,7 +53,7 @@ if( !byte_aligned( ) ) {
 ## 影响
 
 ### 正向收益
-- 忠实映射 ITU-T H.264 条款 7.3.2.3.1 的 `if (!byte_aligned())` 语义。
+- 忠实映射 ITU-T H.264 条款 7.3.2.3.1 的对齐语义（通过 `computed<bool> is_aligned = byte_aligned(); computed<bool> needs_trailing_bits = !is_aligned; if (needs_trailing_bits) { rbsp_trailing_bits; }` 落地）。
 - 使 `pic_timing` 及未来格式消息能够安全应对对齐与非对齐两种位宽形态，彻底避免码流吞字节与错位。
 - 复用既有 VM `ReadRbspTrailingBits` 执行逻辑，无需更改指令集架构。
 
@@ -63,4 +65,5 @@ if( !byte_aligned( ) ) {
 - 在 bit 偏移 1..7, 9..15 等位置求值为 false。
 - 在 `repeat`、`switch`、`if` 条件块内部正确求值。
 - 在紧随 `@lazy` 字节区域之后的位置正确求值。
-- 分别验证直接条件（`if (!byte_aligned())`）与通过中间计算变量（`computed<bool> aligned = byte_aligned(); if (!aligned)`）两种形态。
+- 验证直接条件形态 `if (!byte_aligned())` 会被条件文法解析闸门拦截（`src/rules/dsl.cpp:1180`，报错原文 `Conditions require a field or context_value equality`），而通过中间布尔计算变量的规范形态（`computed<bool> is_aligned = byte_aligned(); computed<bool> needs_trailing_bits = !is_aligned; if (needs_trailing_bits) { rbsp_trailing_bits; }`）可无缝编译并精准执行。
+

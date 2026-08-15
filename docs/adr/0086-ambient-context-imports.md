@@ -96,6 +96,10 @@ Following the failure isolation principles of ADR-0084 and aligning with core `C
 - In either failure case, the failure is strictly isolated to the specific SEI message being parsed. The message node is marked with state `MaterializationState::Invalid` / `MaterializationState::WaitingDependency`, and parsing continues at the next SEI message in the same `SeiRbsp` based on `payload_size`.
 - Ambient lookup failure never aborts or invalidates the enclosing `SeiRbsp` container.
 
+#### 5.1 On-Demand Dependency Registration Revision (Commit `6fbf585` / Task T11c)
+In `RuleExecutionSession` (`src/rules/rule_execution_session.cpp:338-343`), ambient dependency registration is refined from static unconditional registration to on-demand registration based on runtime access (`importCache.at(importIndex).has_value()`).
+This is a mandatory prerequisite for §5 per-message failure isolation: a container structure (such as `SeiRbsp`) declaring `@context_import("h264-sps")` may execute branches (e.g. `case 5:` user data, `case 47:` display orientation) that never evaluate `context_value`. Unconditionally registering ambient dependencies on every structure execution would incorrectly force `WaitingDependency` / `NotFound` on standalone, context-independent messages when no preceding parameter set exists in the stream. By registering ambient dependencies strictly when `context_value` is evaluated during execution, context-independent messages remain completely isolated and materialize successfully without parameter set dependencies.
+
 ### 6. Format-Agnostic Core Layer and Complexity
 
 1. **Core Directory Interface**:

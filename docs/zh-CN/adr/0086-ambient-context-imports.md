@@ -96,6 +96,10 @@
 - 无论上述何种失败，失败均被严格隔离在当前正在解析的单个 SEI 消息节点内（状态标记为 `MaterializationState::Invalid` 或 `MaterializationState::WaitingDependency`），分析器根据 `payload_size` 安全跳过并继续解析后续 SEI 消息；
 - 环境上下文缺失绝不污染或中止整个 `SeiRbsp` 容器。
 
+#### 5.1 环境导入依赖按需登记修订记录（Commit `6fbf585` / 任务 T11c）
+在 `RuleExecutionSession`（`src/rules/rule_execution_session.cpp:338-343`）中，环境上下文导入依赖登记时机由静态无条件登记修正为**执行期实际访问触发**（基于 `importCache.at(importIndex).has_value()`）。
+这是实现第 5 节「单消息粒度失败隔离」的必要前提：声明了 `@context_import("h264-sps")` 的容器结构体（如 `SeiRbsp`）可能执行完全不求值 `context_value` 的分支（例如 `case 5:` 用户数据、`case 47:` 显示方向）。若对每次结构体执行均无条件登记环境依赖，将在码流尚无前置 SPS 时错误地将这些独立的非依赖消息判定为 `WaitingDependency` / `NotFound`。改为按需登记后，非依赖消息保持完全隔离，在无参数集上下文时仍可成功物化。
+
 ### 6. 格式无关的核心层接口与复杂度
 
 1. **核心目录接口**：
