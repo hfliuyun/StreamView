@@ -329,6 +329,10 @@ primary       := integer | "true" | "false" | identifier
   body 中被拒绝。它在不推进 reader 的情况下评估当前逻辑坐标是否精确为 8 的倍数
   （`(logicalStart + reader.position()) % 8 == 0`）。与 `if (!byte_aligned()) { rbsp_trailing_bits; }`
   配合可实现条件性 SEI 载荷对齐。
+- 加法 `+`（`Add`）与乘法 `*`（`Multiply`）算术运算符的操作数独立接受 `bool` 或 `u64`
+  类型（ADR-0090）。布尔操作数在求值时自动强转为数值（`true \to 1ULL`、`false \to 0ULL`），
+  表达式结果类型恒为 `u64`。该机制用于表达指示函数加权求和的分段表格映射（如 ITU-T H.264 表格 D-1）。
+  减法（`-`）、除法（`/`）与取模（`%`）继续严格要求双操作数均为 `u64`，以防止无符号整型下溢和除零风险。
 - 固定宽度数组按 `width * count` bit 参与静态对齐。小端数组的每个元素宽度必须是 8 的
   倍数，并且首元素必须从结构内的字节边界开始。`ue` 或 `se` 数组的总宽度未知，因此其
   后续小端字段与单个 Exp-Golomb 字段之后的小端字段一样会被拒绝。

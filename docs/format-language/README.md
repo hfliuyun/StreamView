@@ -408,6 +408,14 @@ The static rules for this subset are:
   reader (`(logicalStart + reader.position()) % 8 == 0`). When paired with
   `if (!byte_aligned()) { rbsp_trailing_bits; }`, it enables conditional SEI
   payload alignment.
+- Additive `+` (`Add`) and multiplicative `*` (`Multiply`) arithmetic operators
+  accept operands where each operand is independently of type `bool` or `u64`
+  (ADR-0090). A boolean operand automatically coerces to `1ULL` for `true` and
+  `0ULL` for `false`, and the result is always `u64`. This enables indicator-weighted
+  arithmetic sums for piecewise tabular mappings (such as ITU-T H.264 Table D-1).
+  Subtraction (`-`), division (`/`), and remainder (`%`) continue to strictly
+  require both operands to be `u64` to prevent unsigned integer underflow and
+  division by zero.
 - Fixed-width arrays contribute `width * count` bits to static alignment.
   Every element of a little-endian array must therefore have a byte-multiple
   width and the first element must begin at a structure-relative byte boundary.
