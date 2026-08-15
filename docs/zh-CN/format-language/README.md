@@ -1033,6 +1033,10 @@ package `0.1.32` 新增恢复点（recovery point）SEI 消息解码（`SeiRbsp`
 解析 `ue recovery_frame_cnt`、`bits<1> exact_match_flag`、`bits<1> broken_link_flag` 以及
 `bits<2> changing_slice_group_idc @range(0, 2)`，末尾紧随 `rbsp_trailing_bits;` 以消费
 载荷对齐位并为后续串联 SEI 消息恢复字节对齐。其余 SEI 载荷类型保持为不透明惰性字节区域。
+package `0.1.33` 将 `SeiRbsp` 载荷派发重构为 `switch (payload_type)` 结构，并新增未注册用户数据
+（user data unregistered）SEI 消息解码（`payload_type == 5`），解析 16 字节 UUID 数组
+`bits<8> uuid_iso_iec_11578[16]` 与动态延迟载荷字节 `@lazy(payload_size - 16) bytes user_data_payload_byte`。
+其余未深入解析的 SEI 载荷类型继续通过 `default` 分支解析为不透明惰性字节区域。
 
 当码流中途重定义具有相同标识符的序列参数集或图像参数集时，后续 slice
 按位置绑定到最近的先前有效代（ADR-0028、ADR-0078）。诸如动态 `frame_num`

@@ -1344,6 +1344,12 @@ in `SeiRbsp`), parsing `ue recovery_frame_cnt`, `bits<1> exact_match_flag`,
 followed by `rbsp_trailing_bits;` to consume payload alignment bits and restore
 byte alignment for subsequent chained SEI messages. Other SEI payload types
 remain opaque lazy byte regions.
+Package `0.1.33` refactors `SeiRbsp` payload dispatch to a `switch (payload_type)`
+statement and adds user data unregistered SEI message decoding (`payload_type == 5`),
+parsing a 16-byte UUID array `bits<8> uuid_iso_iec_11578[16]` followed by dynamic
+`@lazy(payload_size - 16) bytes user_data_payload_byte` to carry the unregistered
+payload bytes. Other uninterpreted SEI payload types continue to decode as opaque
+lazy byte regions via the `default` switch arm.
 
 When sequence parameter sets or picture parameter sets with identical
 identifiers are redefined later in the stream, subsequent slices bind to the
