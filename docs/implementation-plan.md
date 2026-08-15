@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 4
-Last Completed Step: ADTS application integration slice (Task T15b / commit eb4e52c)
+Last Completed Step: ADTS application integration rework (Task T15b rework / commit 8edede4)
 Next Action: AAC official rule package, ADTS header decoding and bilingual ADR-0093 (Task T16)
-Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31893001154 (Ubuntu job 95031971031, macOS job 95031971045, Windows job 95031971075) passed 100%
+Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31895579352 (Ubuntu job 95038286039, macOS job 95038285962, Windows job 95038285995) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1504,3 +1504,17 @@ Blockers: None
      - 本地 dev / ci / sanitize 三套构建全量 35/35 测试 100% 通过（零 ASan/UBSan 告警）；
      - hosted run `31893001154` 在 Ubuntu 24.04 / Qt 6.11.1（job `95031971031`）、macOS 15 / Qt 6.11.1（job `95031971045`）、Windows 2022 / Qt 6.10.1（job `95031971075`）全部成功。
   Next Action 指向 Task T16（创建 AAC 规则包、ADTS 头结构化解码与双语 ADR-0093）。
+- 2026-08-15：完成 ADTS 应用集成重构与 DSL 规则驱动架构改造（任务 T15b 重构 / commit `8edede4`）。
+  1. 架构阻塞整改（B1、B2、B3 与非阻塞项）：
+     - **B1 彻底消除 C++ 语法硬编码**：重写 `AacAdtsAnalyzer`（`src/rules/aac_adts_analyzer.cpp`），全面通过 `DslParser::parse` -> `DslCompiler::compile` -> `RuleExecutionSession` -> `DslExecutor::decodeStruct` 驱动 ADTS 头部结构的语法字段与计算字段物化，结构节点与语法字段严格由 DSL AST 生成，与 `h264_annex_b_analyzer.cpp` 保持同构；
+     - **B2 消除规则身份伪造**：在没有内置 AAC 规则包时，`AacAdtsAnalyzer::create(source, errorMessage)` 干净失败返回 `std::nullopt` 并回填 `"No AAC ADTS rule package is bundled"`；在 `resolvedRule.succeeded()` 为假时返回 `std::nullopt` 并回填 `"Failed to resolve AAC ADTS entry rule"`；彻底删除零调用方死桩 `aacAdtsRuleSource()` 与 `loadAacAdtsRulePackage()`；
+     - **B3 探测置信度严格收紧与会话选择修复**：`detectAacAdtsCandidate`（`src/rules/aac_adts_detector.cpp`）删除 `sourceFullyInspected` 降档绕过子句，置信度严格锁定为 >=3 帧连续长度链为 `Strong`、2 帧为 `Probable`、1 帧为 `Weak`；`AnalysisSession::createPrepared` 仅当 AAC 置信度为 `Strong` 且 H.264 置信度非 `Strong` 时才进入 AAC 分支，且在创建 AAC 分析器失败（如当前阶段尚无打包规则）时平滑回退至 H.264 既有路径；
+     - **跨格式批次类型解耦**：在 `streamview::app` 命名空间引入格式中立的 `AnalysisBatchStatus` 枚举与 `AnalysisBatchResult` 结构体，消除借用 H.264 专属状态的 `static_cast` 转换以及 `AnalysisTree::nalUnitNodes` 的跨格式借用。
+  2. 边界测试矩阵扩展（`tests/`）：
+     - `tests/rules/aac_adts_analyzer_test.cpp`：使用内存 `RulePackage` + `RulePackageCatalog` 驱动测试解析 ADTS 规则包，验证 `syncword`、`id`、`layer`、`protection_absent` 等 DSL 字段在 `AdtsHeader` 子树中完整物化；验证未安装包时 `create` 失败并报告错误信息；
+     - `tests/rules/aac_adts_detector_test.cpp`：消除弱化断言，精确锁定各测试用例置信度分级（`Strong`、`Probable`、`Weak`）；新增 2 KiB 随机二进制中仅含单处偶然 `FF F1` 判定为 `Weak`，以及带有合法 start code 但 NAL 头非法、payload 内含单处偶然同步字的畸形 H.264 判定为 `Weak`；
+     - `tests/app/analysis_session_test.cpp`：验证含偶然 `FF F1` 的未知二进制默认走 H.264（无候选命中）、畸形 H.264 默认走 H.264、显式指定 AAC 规则包与内存 catalog 下的多态会话打开。
+  3. 全套构建与云端验证：
+     - 本地 dev / ci / sanitize 三套构建全量 35/35 测试 100% 通过（ASan/UBSan 零告警，H.264 analyzer 174/174 零回归）；
+     - hosted run `31895579352` 在 Ubuntu 24.04 / Qt 6.11.1（job `95038286039`）、macOS 15 / Qt 6.11.1（job `95038285962`）、Windows 2022 / Qt 6.10.1（job `95038285995`）全部成功通过。
+  Next Action 指向 Task T16（创建 AAC 官方规则包、ADTS 头结构化解码与双语 ADR-0093）。
