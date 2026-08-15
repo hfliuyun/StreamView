@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Ambient context import capability slice in core and DSL runtime (Task T11b / package 0.1.37 / ADR-0086 / commit cae9c73)
-Next Action: Specify Picture Timing SEI message decoding rule (Task T11c / payload_type == 1 / package 0.1.38 / ADR-0086); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31876726681 (Ubuntu job 94993463832, macOS job 94993463779, Windows job 94993463806) passed 100%
+Last Completed Step: byte_aligned() predicate expression capability slice in parser, IR, and VM (Task T11c-1 / package 0.1.37 / ADR-0089 / commit 21da8c2)
+Next Action: Implement boolean operands in arithmetic expressions + and * capability slice (Task T11c-2 / ADR-0090); followed by Picture Timing SEI message decoding (Task T11c-3 / payload_type == 1 / package 0.1.38 / ADR-0091)
+Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31879207018 (Ubuntu job 94999305896, macOS job 94999305954, Windows job 94999306008) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1368,3 +1368,21 @@ Blockers: None
      - DSL 与规则引擎全量回归：`svtool rule check` Rule OK，H.264 analyzer 166/166 零回归，本地 dev/ci/sanitize 均为 32/32；
      - hosted run `31876726681` 在 Ubuntu 24.04 / Qt 6.11.1（job `94993463832`）、macOS 15 / Qt 6.11.1（job `94993463779`）、Windows 2022 / Qt 6.10.1（job `94993463806`）全部成功。
   Next Action 指向 Task T11c（Picture Timing SEI message rule consumption, payload_type == 1, package 0.1.38）。
+- 2026-08-15：完成 `byte_aligned()` 字节对齐谓词表达式能力切片（任务 T11c-1 / ADR-0089 / 包版本保持 0.1.37 / commit `21da8c2`）。
+  1. 规范与语法文档（`docs/format-language/README.md`、`docs/zh-CN/format-language/README.md` 与 ADR-0089）：
+     - 明确 `byte_aligned()` 为零参保留表达式，类型为 `bool`，在不推进 reader 的情况下评估当前逻辑坐标是否精确为 8 的倍数；
+     - 明确坐标系为 reader 逻辑 bit 坐标 `(reader.position() % 8 == 0)`，纯函数内禁用；
+     - 与 `if (!byte_aligned()) { rbsp_trailing_bits; }` 配合用于条件性对齐。
+  2. DSL 解析器、类型 IR 与虚拟机运行时（`src/rules/`）：
+     - 解析器（`dsl.cpp`）：支持 `byte_aligned` 零参布尔调用表达式，拦截纯函数内调用（`UnknownReference`）与带参数调用（`InvalidExpression`），并将 `byte_aligned` 纳入顶层保留表达式名称查重（`DuplicateName`）；
+     - 类型 IR 编译（`dsl_ir.h`、`dsl_ir.cpp`）：新增 `DslTypedExpressionKind::ByteAligned`（类型 `DslScalarType::Bool`），支持静态检查与节点预算计算；
+     - 虚拟机与执行器（`dsl_vm.cpp`）：在 `evaluateTypedExpression` 中按 `reader.position() % 8U == 0U` 评估，并在 `validateTypedStruct` 中放宽条件表达式类型校验。
+  3. 三层测试矩阵：
+     - 解析层（`tests/rules/dsl_test.cpp`）：新增 `parsesByteAlignedCall` 与 `rejectsInvalidByteAlignedCalls`（带参、赋给 u64、纯函数内调用、同名纯函数冲突拦截）；
+     - IR 编译层（`tests/rules/dsl_ir_test.cpp`）：新增 `lowersByteAlignedAsAValidatedSourceStateExpression` 校验 typed IR 结构与属性；
+     - 虚拟机执行层（`tests/rules/dsl_executor_test.cpp`）：
+       - `evaluatesByteAlignedPredicateAcrossAlignedAndUnalignedBitPositions`：断言 24 位对齐载荷（7 项完整有序子节点，`aligned_at_3 == false`, `aligned_at_8 == true`, `aligned_at_24 == true`, `needs_trailing_bits == false` 且跳过 trailing bits）与 19 位非对齐载荷（8 项完整有序子节点，`aligned_at_19 == false`, `needs_trailing_bits == true` 且成功消费 5 位 trailing bits 至 24 位）；
+       - `evaluatesByteAlignedInsideRepeatSwitchAndAfterLazyRegions`：断言 `@lazy(2)` 紧随位置、switch 内部带 padding 分支、repeat 循环各迭代内求值正确，并断言 13 项完整有序子节点列表；
+     - DSL 与规则引擎全量回归：`svtool rule check` Rule OK，H.264 analyzer 166/166 零回归，本地 dev/ci/sanitize 均为 32/32；
+     - hosted run `31879207018` 在 Ubuntu 24.04 / Qt 6.11.1（job `94999305896`）、macOS 15 / Qt 6.11.1（job `94999305954`）、Windows 2022 / Qt 6.10.1（job `94999306008`）全部成功。
+  Next Action 指向 Task T11c-2（boolean operands in arithmetic expressions `+` and `*` capability slice, ADR-0090）。
