@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Specify and implement user data registered ITU-T T.35 SEI message decoding (Task T9 / package 0.1.34 / ADR-0083)
-Next Action: Specify and implement buffering period SEI message decoding (Task T10 / package 0.1.35 / ADR-0084); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31862532299 (Ubuntu job 94958276145, macOS job 94958276179, Windows job 94958276153) passed 100%
+Last Completed Step: Implement locally scoped context import keys capability slice (Task T10b / ADR-0084 / commit c765eda)
+Next Action: Specify and implement buffering period SEI message decoding rule consumption slice (Task T10c / package 0.1.35 / ADR-0084); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31864791158 (Ubuntu job 94964008874, macOS job 94964008882, Windows job 94964008931) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1256,3 +1256,21 @@ Blockers: None
      - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
      - hosted run `31862532299` 在 Ubuntu 24.04 / Qt 6.11.1（job `94958276145`）、macOS 15 / Qt 6.11.1（job `94958276179`）、Windows 2022 / Qt 6.10.1（job `94958276153`）全部成功。
   Next Action 指向 Task T10（buffering_period SEI payload parsing）。
+- 2026-08-15：完成块内局部上下文导入键语言能力规范与引擎实现（任务 T10a/T10b / ADR-0084 / 纯能力切片，包版本保持 0.1.34）。
+  1. 规范与文档（`5d416bd`）：
+     - 归档双语 ADR-0084（`docs/adr/0084-locally-scoped-context-import-keys.md` + `docs/zh-CN/adr/0084-locally-scoped-context-import-keys.md`），明确放宽 `@context_import` 键的位置约束至块内有支配保证的局部声明；
+     - 更新中英文格式语言参考（`docs/format-language/README.md`、`docs/zh-CN/format-language/README.md`）。
+  2. 引擎能力实现（`c765eda`）：
+     - `src/rules/dsl_ir.cpp`：`resolveContextValue` 支持在嵌套条件与 repeat 展开块内向上查找最近支配的无符号标量键字段，执行 branch-guarantee 分支保证验证，并按用法动态向 `typedStruct.contextImports` 登记导入槽位；
+     - `src/rules/include/streamview/rules/dsl_ir.h`：`DslTypedContextImport::maximumImports()` 扩至 1024 以容纳展开导入槽位，新增 `maximumDeclaredImports() == 16`；`DslTypedField` 新增 `importEligible` 标识以精准区隔标量与数组元素；
+     - `src/rules/dsl_vm.cpp`：新增 `validImportContextField`，在表达式校验中加入导入键分支支配验证，并在 `Opcode::End` 中优雅处理未物化的条件导入键；
+     - `src/rules/rule_execution_session.cpp`：在后处理物化循环中安全跳过未物化的条件导入。
+  3. 自动化测试套件：
+     - `tests/rules/dsl_ir_test.cpp`：新增 `lowersLocallyScopedContextImportKeysToTypedIr`，覆盖 repeat + switch 局部导入键编译、异分支非支配键拒绝、`se` 键拒绝以及后置声明键拒绝；IR 测试方法增至 78；
+     - `tests/rules/rule_execution_session_test.cpp`：新增 `executesLocallyScopedContextImportKeysInsideRepeatAndSwitch`（验证 repeat + switch 块内动态位宽 `bits<(context_value(...) + 1)>`、多迭代逐次重绑定及完整有序子节点列表）与 `handlesLocallyScopedContextImportFailureGracefully`（未知 SPS 键安全回退 DependencyUnavailable）；测试方法增至 38。
+  4. 测试与验证：
+     - `svtool rule check` 通过；
+     - 套件测试：IR 78/78、RuleExecutionSession 38/38、DSL executor 135/135、H.264 analyzer 147/147（149/149 包含 fixture）；
+     - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
+     - hosted run `31864791158` 在 Ubuntu 24.04 / Qt 6.11.1（job `94964008874`）、macOS 15 / Qt 6.11.1（job `94964008882`）、Windows 2022 / Qt 6.10.1（job `94964008931`）全部成功。
+  Next Action 指向 Task T10c（buffering_period SEI message decoding rule consumption slice, package 0.1.35）。
