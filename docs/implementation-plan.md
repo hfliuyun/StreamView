@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Boolean operands in + and * arithmetic expressions capability slice (Task T11c-2 / package 0.1.37 / ADR-0090 / commit 3281940)
-Next Action: Specify and decode Picture Timing SEI message (Task T11c-3 / payload_type == 1 / package 0.1.38 / ADR-0091)
-Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31880469742 (Ubuntu job 95002213063, macOS job 95002213081, Windows job 95002213124) passed 100%
+Last Completed Step: Picture Timing SEI message decoding (Task T11c-3 / payload_type == 1 / package 0.1.38 / ADR-0091 / commit 6fbf585)
+Next Action: Conclude H.264 Phase 3 remaining checklist items or proceed to next roadmap phase
+Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31881638934 (Ubuntu job 95004954416, macOS job 95004954388, Windows job 95004954414) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -185,7 +185,7 @@ Blockers: None
   - [x] 有界 HRD parameters。
 - [x] 完成 Baseline/Main/High 8-bit 4:2:0 slice header；slice data 标记为压缩载荷。
 - [x] 所有 SEI 解析 payloadType/payloadSize。
-- [ ] 深入解析 buffering period、pic timing、用户数据、recovery point、frame packing 和 display orientation。
+- [x] 深入解析 buffering period、pic timing、用户数据、recovery point、frame packing 和 display orientation。
 - [x] 支持同 ID SPS/PPS 中途重定义和按位置选择。
 - [ ] 为声明范围内每个字段建立规范引用、双语说明、合法/非法样例和 source-span 断言。
 
@@ -1402,3 +1402,25 @@ Blockers: None
      - DSL 与规则引擎全量回归：`svtool rule check` Rule OK，H.264 analyzer 166/166 零回归，本地 dev/ci/sanitize 均为 32/32；
      - hosted run `31880469742` 在 Ubuntu 24.04 / Qt 6.11.1（job `95002213063`）、macOS 15 / Qt 6.11.1（job `95002213081`）、Windows 2022 / Qt 6.10.1（job `95002213124`）全部成功。
   Next Action 指向 Task T11c-3（Picture Timing SEI message decoding, payload_type == 1, package 0.1.38, ADR-0091）。
+- 2026-08-15：完成图像定时 SEI 消息（Picture Timing SEI, payload_type == 1）结构化解码（任务 T11c-3 / ADR-0091 / 包版本 0.1.38 / commit `6fbf585`）。
+  1. 规范与双语文档（`docs/adr/0091-h264-picture-timing-sei-message-decoding.md` 与 `docs/zh-CN/adr/0091-h264-picture-timing-sei-message-decoding.md`）：
+     - 明确基于 ADR-0086 环境上下文导入从最近有效 SPS 解析 HRD 延迟位宽与图像结构参数；
+     - 明确基于 ADR-0090 布尔算术指示求和纯函数实现表格 D-1 `NumClockTS` 映射；
+     - 明确基于 ADR-0089 `byte_aligned()` 谓词实现条件性末尾 `rbsp_trailing_bits` 对齐；
+     - 归档全部新增字段与标准元素映射消歧表（`full_` / `partial_` 前缀消歧，`time_offset` 二补数有符号解释）。
+  2. 规则与执行会话（`src/rules/`）：
+     - `h264_annex_b.svfmt`：定义顶层纯函数 `num_clock_ts_for_pic_struct`；在 `SequenceParameterSetRbsp` 中通过嵌套 `optional_value` 导出 `effective_cpb_removal_delay_length_minus1`、`effective_dpb_output_delay_length_minus1`、`effective_time_offset_length` 与 `effective_pic_struct_present_flag`；在 `SeiRbsp` 声明 `@context_import("h264-sps")` 并实现 `case 1:` 结构化分支；
+     - `rule_execution_session.cpp`：优化环境上下文导入依赖记录，仅当结构体实例在执行过程中实际访问环境上下文（`importCache.at(importIndex).has_value()`）时才登记导入依赖，避免无上下文依赖的消息（如 user data / display orientation）被误判为依赖缺失。
+  3. 全量测试矩阵（`tests/rules/h264_annex_b_analyzer_test.cpp`）：
+     - 新增 8 项图像定时测试用例：
+       - `decodesPictureTimingSeiMessageWithCpbDpbDelaysAndFullTimestamp`：测试 24 位 CPB/DPB 延迟、`pic_struct = 0`、完整时间戳与 24 位 `time_offset` 解码（断言 38 项完整有序子节点列表与字段值）；
+       - `decodesPictureTimingSeiMessageWithPartialTimestamp`：测试部分时间戳各 flag 门禁及 `time_offset` 解码（断言 38 项完整有序子节点列表与字段值）；
+       - `decodesPictureTimingSeiMessageWithMultiTimestampPicStruct8`：测试 `pic_struct = 8` 展开 3 组时间戳（断言 46 项完整有序子节点列表）；
+       - `decodesPictureTimingSeiMessageWithoutHrdDelaysPicStructOnly`：测试无 HRD 延迟仅有 `pic_struct` 路径（断言 44 项完整有序子节点列表）；
+       - `decodesPictureTimingSeiMessageWithByteAlignedPayload`：测试 48 位整字节对齐载荷跳过 payload 内部 trailing bits（断言 16 项完整有序子节点列表）；
+       - `decodesPictureTimingSeiMessageWithLatestSpsAcrossMultipleSpsDefinitions`：测试跨多个 SPS 定义时正确绑定最近活跃 SPS（8 位延迟）；
+       - `reportsMissingSpsDependencyForPictureTimingSeiMessageAndContinues`：测试缺失前置 SPS 时产生结构级 `WaitingDependency` / `Invalid` 诊断并安全续扫；
+       - `reportsTruncatedPictureTimingSeiPayloadAndContinues`：测试截断载荷安全回滚并保留已物化前缀。
+     - 规则引擎与解析全量验证：`svtool rule check` Rule OK，H.264 analyzer 174/174（由 166 扩充至 174 且旧规则下测试确为 red），本地 dev/ci/sanitize 均为 32/32（无 sanitizer 警告）；
+     - hosted run `31881638934` 在 Ubuntu 24.04 / Qt 6.11.1（job `95004954416`）、macOS 15 / Qt 6.11.1（job `95004954388`）、Windows 2022 / Qt 6.10.1（job `95004954414`）全部成功。
+  Next Action 指向 Phase 3 剩余清单核验或下一阶段里程碑推进。
