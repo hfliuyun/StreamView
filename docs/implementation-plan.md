@@ -1450,3 +1450,16 @@ Blockers: None
      - 本地 Debug/Release/Sanitize 三套构建全量 32/32 测试通过且零 ASan/UBSan 告警；
      - 阶段 3 清单全部项与 M6 里程碑中 H.264 项全部勾选验收。
   Next Action 指向阶段 4（AAC-LC 正式结构支持）：编写 ADTS 与 AudioSpecificConfig 格式规范与双语 ADR。
+- 2026-08-15：阶段 3（H.264 正式结构支持）审计记录结构体名称更正（任务 T13 补正）。
+  - 更正说明：上一条审计记录列出了概念性子结构名（`HrdParameters`、`VuiParameters`、`PredWeightTable`、`EndOfSequenceRbsp`、`EndOfStreamRbsp`），而在落地规则源码 `src/rules/official/org.streamview.h264/src/h264_annex_b.svfmt` 中，实际声明的结构体定义及行号严格为：
+    1. `struct NalUnitHeader`（第 9 行）
+    2. `struct AccessUnitDelimiterRbsp`（第 21 行）
+    3. `struct SequenceParameterSetRbsp`（第 43 行，VUI 与 HRD 语法在其内部条件块中扁平展开）
+    4. `struct PictureParameterSetRbsp`（第 252 行，含高规格扩展语法）
+    5. `struct IdrSliceLayerWithoutPartitioningRbsp`（第 347 行，含切片头语法）
+    6. `struct NonIdrSliceLayerWithoutPartitioningRbsp`（第 443 行，加权预测表语法在其内部条件块中扁平展开）
+    7. `struct SeiRbsp`（第 756 行，7 种重点 SEI 消息在其内部 switch-case 分支中扁平展开）
+    8. `sequence<NalUnitHeader> nal_units = scan(h264_start_code);`（第 1042 行）
+    9. `payload<rbsp> nal_units switch (nal_unit_type)`（第 1046–1055 行，其中 NAL type 10 与 11 派发为 `empty` 载荷）
+  - 全部 7 个结构体与 1 个序列的所有声明字段均具有标准引用 `@spec` 与双语 `@description` 注解。
+  Next Action 指向阶段 4（AAC-LC 正式结构支持，任务 T14–T18）：ADTS 帧枚举机制探测与 ADR-0092 架构起草。
