@@ -205,6 +205,19 @@ struct SequenceParameterSetRbsp {
             ue max_dec_frame_buffering @spec("ITU-T H.264", "E.1.1");
         }
     }
+    computed<u64> effective_nal_hrd_parameters_present_flag =
+        optional_value(nal_hrd_parameters_present_flag, 0) @context_export;
+    computed<u64> effective_nal_hrd_cpb_count =
+        optional_value(nal_hrd_cpb_cnt_minus1, 0) + 1 @context_export;
+    computed<u64> effective_nal_hrd_initial_cpb_removal_delay_length_minus1 =
+        optional_value(nal_hrd_initial_cpb_removal_delay_length_minus1, 23) @context_export;
+
+    computed<u64> effective_vcl_hrd_parameters_present_flag =
+        optional_value(vcl_hrd_parameters_present_flag, 0) @context_export;
+    computed<u64> effective_vcl_hrd_cpb_count =
+        optional_value(vcl_hrd_cpb_cnt_minus1, 0) + 1 @context_export;
+    computed<u64> effective_vcl_hrd_initial_cpb_removal_delay_length_minus1 =
+        optional_value(vcl_hrd_initial_cpb_removal_delay_length_minus1, 23) @context_export;
     rbsp_trailing_bits;
 }
 
@@ -721,6 +734,7 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
 
 @spec("ITU-T H.264", "7.3.2.3")
 @description("Supplemental enhancement information (SEI) raw byte sequence payload.")
+@context_import("h264-sps", seq_parameter_set_id)
 struct SeiRbsp {
     repeat (64) while (more_rbsp_data()) {
         ff_coded<8> payload_type
@@ -730,6 +744,44 @@ struct SeiRbsp {
             @spec("ITU-T H.264", "7.3.2.3.1")
             @description("Specifies the SEI message payload byte size.");
         switch (payload_type) {
+            case 0: {
+                ue seq_parameter_set_id @range(0, 31)
+                    @spec("ITU-T H.264", "D.1.1, D.2.1")
+                    @description("Identifies the sequence parameter set containing the HRD parameters.");
+                computed<u64> nal_hrd_bp_present =
+                    context_value(seq_parameter_set_id, h264_sps, effective_nal_hrd_parameters_present_flag);
+                if (nal_hrd_bp_present == 1) {
+                    computed<u64> nal_cpb_count =
+                        context_value(seq_parameter_set_id, h264_sps, effective_nal_hrd_cpb_count);
+                    computed<u64> nal_delay_length =
+                        context_value(seq_parameter_set_id, h264_sps, effective_nal_hrd_initial_cpb_removal_delay_length_minus1) + 1;
+                    repeat (nal_cpb_count, 32) {
+                        bits<nal_delay_length> nal_initial_cpb_removal_delay
+                            @spec("ITU-T H.264", "D.1.1, D.2.1")
+                            @description("Specifies the default initial arrival delay for the NAL HRD CPB.");
+                        bits<nal_delay_length> nal_initial_cpb_removal_delay_offset
+                            @spec("ITU-T H.264", "D.1.1, D.2.1")
+                            @description("Specifies the initial arrival delay offset for the NAL HRD CPB.");
+                    }
+                }
+                computed<u64> vcl_hrd_bp_present =
+                    context_value(seq_parameter_set_id, h264_sps, effective_vcl_hrd_parameters_present_flag);
+                if (vcl_hrd_bp_present == 1) {
+                    computed<u64> vcl_cpb_count =
+                        context_value(seq_parameter_set_id, h264_sps, effective_vcl_hrd_cpb_count);
+                    computed<u64> vcl_delay_length =
+                        context_value(seq_parameter_set_id, h264_sps, effective_vcl_hrd_initial_cpb_removal_delay_length_minus1) + 1;
+                    repeat (vcl_cpb_count, 32) {
+                        bits<vcl_delay_length> vcl_initial_cpb_removal_delay
+                            @spec("ITU-T H.264", "D.1.1, D.2.1")
+                            @description("Specifies the default initial arrival delay for the VCL HRD CPB.");
+                        bits<vcl_delay_length> vcl_initial_cpb_removal_delay_offset
+                            @spec("ITU-T H.264", "D.1.1, D.2.1")
+                            @description("Specifies the initial arrival delay offset for the VCL HRD CPB.");
+                    }
+                }
+                rbsp_trailing_bits;
+            }
             case 4: {
                 bits<8> itu_t_t35_country_code
                     @spec("ITU-T H.264", "D.1.5, D.2.5")
