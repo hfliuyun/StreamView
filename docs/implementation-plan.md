@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Decode display orientation SEI message slice (Task T12b / package 0.1.37 / ADR-0088 / commit ab85444)
-Next Action: Implement ambient context import capability slice in core and DSL runtime (Task T11b / ADR-0086 / capability slice, package version unchanged); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31874725106 (Ubuntu job 94988637131, macOS job 94988637064, Windows job 94988636999) passed 100%
+Last Completed Step: Ambient context import capability slice in core and DSL runtime (Task T11b / package 0.1.37 / ADR-0086 / commit cae9c73)
+Next Action: Specify Picture Timing SEI message decoding rule (Task T11c / payload_type == 1 / package 0.1.38 / ADR-0086); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31876726681 (Ubuntu job 94993463832, macOS job 94993463779, Windows job 94993463806) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1351,3 +1351,20 @@ Blockers: None
      - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
      - hosted run `31874725106` 在 Ubuntu 24.04 / Qt 6.11.1（job `94988637131`）、macOS 15 / Qt 6.11.1（job `94988637064`）、Windows 2022 / Qt 6.10.1（job `94988636999`）全部成功。
   Next Action 指向 Task T11b（ambient context import capability slice in core and DSL runtime, ADR-0086）。
+- 2026-08-15：完成环境上下文导入与最近参数集解析能力切片（任务 T11b / ADR-0086 / 包版本保持 0.1.37 / commit `cae9c73`）。
+  1. 核心模型（`src/core/include/streamview/core/context_directory.h` 与 `src/core/context_directory.cpp`）：
+     - 实现 `ContextLookupResult resolveLatestBefore(ContextDefinitionKind kind, quint64 scopeId, SourceBitAddress sourcePosition) const`；
+     - 基于 `definitionsByKey_` 有序字典二分确定 `(kind, scopeId)` 连续键区间，在各键历史 generation 向量中以二分查找 `sourcePosition` 前已结束的最大有效定义；
+     - 递归检验所选定义的依赖闭包完整性与代际有效性，依赖失效返回 `DependencyUnavailable`；
+     - 新增 5 个目录层单测（空目录 NotFound、跨多 key 按位置选最近、同 key 重定义后取最近 generation、依赖不可用返回 DependencyUnavailable、相邻 kind/scope 隔离不串扰）。
+  2. DSL 编译器与虚拟机制（`src/rules/`）：
+     - 解析器（`dsl.cpp`）：放宽 `context_value` 语法至 2 参（环境导入）或 3 参（有键导入）标识符；
+     - 类型 IR 降级（`dsl_ir.cpp`）：放宽 `@context_import("kind")` 为单参；2 参 `context_value(kind, field)` 降低为 `ImportedContextReference`（`keyFieldIndex = std::nullopt`）；同结构体内同一 kind 重复环境导入报错；同结构体有键与环境导入共存消歧，并严格保留有键导入的 `dsl_ir.cpp:1553` 分支支配保证；
+     - 虚拟机与执行会话（`dsl_vm.cpp`、`rule_execution_session.cpp`）：支持无键 `context_value` 运行时求值；执行器后置处理正确接入 `resolveLatestBefore` 并在 `NotFound` / `DependencyUnavailable` 时向结构节点挂载诊断并保持单消息级隔离。
+  3. 三层测试矩阵：
+     - 目录层（`tests/core/context_directory_test.cpp`）：5 个针对性测试全部通过；
+     - IR 层（`tests/rules/dsl_ir_test.cpp`）：单参注解/双参表达式降低、有键/环境共存消歧、重复环境导入拒绝、无导入双参表达式拒绝及 malformed typed IR 预检拒绝；
+     - 执行层（`tests/rules/rule_execution_session_test.cpp`）：环境上下文解析成功取值、同结构体有键+环境共存运行时正确性、NotFound/DependencyUnavailable 隔离续扫；
+     - DSL 与规则引擎全量回归：`svtool rule check` Rule OK，H.264 analyzer 166/166 零回归，本地 dev/ci/sanitize 均为 32/32；
+     - hosted run `31876726681` 在 Ubuntu 24.04 / Qt 6.11.1（job `94993463832`）、macOS 15 / Qt 6.11.1（job `94993463779`）、Windows 2022 / Qt 6.10.1（job `94993463806`）全部成功。
+  Next Action 指向 Task T11c（Picture Timing SEI message rule consumption, payload_type == 1, package 0.1.38）。
