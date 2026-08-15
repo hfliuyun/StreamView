@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 4
-Last Completed Step: ADTS application integration fallback and session selection fix (Task T15b fix / commit 229aea5)
-Next Action: AAC official rule package, ADTS header decoding and bilingual ADR-0093 (Task T16)
-Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31896991272 (Ubuntu job 95041713226, macOS job 95041713240, Windows job 95041713206) passed 100%
+Last Completed Step: AAC official rule package and ADTS header structured decoding (Task T16 / commit f0df4e8)
+Next Action: AAC raw data block & AudioSpecificConfig exploration (Task T17)
+Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31900233536 (Ubuntu job 95049723785, macOS job 95049723689, Windows job 95049723728) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -191,7 +191,7 @@ Blockers: None
 
 ## 阶段 4：AAC-LC 正式结构支持
 
-- [ ] 解析 ADTS fixed/variable header、frame length、buffer fullness、raw block count 和 CRC。
+- [x] 解析 ADTS fixed/variable header、frame length、buffer fullness、raw block count 和 CRC。
 - [ ] 解析 AudioSpecificConfig、GASpecificConfig 和 Program Config Element。
 - [ ] 将 `raw_data_block` 整体标记为压缩载荷，不隐藏实现 Huffman 解码。
 - [ ] 对 HE-AAC、ELD 和其他 profile 明确报告部分识别或不支持。
@@ -1533,3 +1533,23 @@ Blockers: None
        - 本地 dev / ci / sanitize 三套构建全量 35/35 测试 100% 通过（ASan/UBSan 零告警，H.264 analyzer 174/174 零回归）；
        - hosted run `31896991272` 在 Ubuntu 24.04 / Qt 6.11.1（job `95041713226`）、macOS 15 / Qt 6.11.1（job `95041713240`）、Windows 2022 / Qt 6.10.1（job `95041713206`）全部成功通过。
   Next Action 指向 Task T16（创建 AAC 官方规则包、ADTS 头结构化解码与双语 ADR-0093）。
+
+- 2026-08-16：完成 AAC 官方规则包落地、ADTS 固定/可变头结构化解码与双语 ADR-0093（任务 T16 / commit `530187f`、`cd13322`、`7116913` 与 `f0df4e8`）。
+  1. 架构规范与双语 ADR-0093（`docs/adr/0093-adts-header-structured-decoding-and-official-rule-package.md` 与 `docs/zh-CN/adr/0093-adts-header-structured-decoding-and-official-rule-package.md`）：
+     - 依据 ISO/IEC 13818-7:2006 §8.2 与 ISO/IEC 14496-3:2009 §1.A.1 规范完整定义 `AdtsHeader` 语法结构体，覆盖固定头（`syncword`、`id`、`layer`、`protection_absent`）与可变头（`profile`、`sampling_frequency_index`、`private_bit`、`channel_configuration`、`original_copy`、`home`、`copyright_identification_bit`、`copyright_identification_start`、`aac_frame_length`、`adts_buffer_fullness`、`number_of_raw_data_blocks_in_frame`、`crc_check` 与 `minimum_frame_length`）；
+     - 明确多块限制（`number_of_raw_data_blocks_in_frame @equals(0)`）与逐帧错误隔离语义（语法内容错误仅将当前帧节点标记为 `Invalid` 并返回 `true` 继续分析后续帧，基础设施错误返回 `false` 中断流）；
+     - 明确头部截断（Error，`TruncatedSource`）与载荷截断（Warning，`TruncatedSource` + 头部结构正常物化）双重截断诊断契约。
+  2. 官方规则包与资源注册（`src/rules/official/org.streamview.aac/`）：
+     - `rule.toml`：发布 `org.streamview.aac` 官方包（版本 `0.1.0`），入口点 `adts`，深度 `structural`；
+     - `src/aac_adts.svfmt`：实现 ADTS 头规则源码，`svtool rule check` 实测 `Rule OK`；
+     - `src/rules/CMakeLists.txt`：通过 `qt_add_resources` 将 AAC 规则包资产编译入 `streamview_official_rules_aac` 二进制资源。
+  3. 分析执行器与工具集成（`src/rules/` 与 `tools/svtool/`）：
+     - `AacAdtsAnalyzer::create(source, &error)` 默认重载连接 `bundledAacAdtsRule()` 自动加载内置包；
+     - `publishRecord` 实现逐帧隔离（`InvalidSyntax` / `TruncatedSource` 标记 `Invalid` 后继续步进后续帧）与 EOF 载荷截断标记；
+     - `tools/svtool/main.cpp` 引入 AAC ADTS 多态探测与分析支持。
+  4. 全量测试矩阵（`tests/`）：
+     - `tests/rules/aac_adts_analyzer_test.cpp`：覆盖内置包加载、完整字段名列表有序物化、多块违规逐帧隔离并继续分析、CRC 存在时头部截断（8 字节）、EOF 载荷截断（头部物化 + 帧 Warning 诊断）、短于头部垃圾跳过、破损跨度重同步、批次限制与取消恢复；
+     - `tests/app/analysis_session_test.cpp`：覆盖内置包存在时真实 ADTS 自动激活多态会话（`org.streamview.aac` / `adts`），以及 AAC Strong 与 H.264 Strong 争用时默认选 H.264 路径；
+     - H.264 规则套件 174/174 零回归，全量测试套件 35/35 在 dev/ci/sanitize 三套构建下 100% 通过（零 ASan/UBSan 告警）；
+     - hosted run `31900233536` 在 Ubuntu 24.04 / Qt 6.11.1（job `95049723785`）、macOS 15 / Qt 6.11.1（job `95049723689`）、Windows 2022 / Qt 6.10.1（job `95049723728`）全部成功通过。
+  Next Action 指向 Task T17（AAC raw data block 与 AudioSpecificConfig 架构探索与双语 ADR-0094）。
