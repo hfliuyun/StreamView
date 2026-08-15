@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Specify ambient context imports and active parameter set resolution (Task T11a / ADR-0086 / commit 7aa9aa9)
-Next Action: Implement frame packing arrangement SEI message decoding rule slice (Task T12a / package 0.1.36 / ITU-T H.264 D.1.25, D.2.25); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31871279202 (Ubuntu job 94980189462, macOS job 94980189372, Windows job 94980189380) passed 100%
+Last Completed Step: Decode frame packing arrangement SEI message slice (Task T12a / package 0.1.36 / ADR-0087 / commit 594fa83)
+Next Action: Specify display orientation SEI message decoding rule slice (Task T12b / package 0.1.37 / ITU-T H.264 D.1.27, D.2.27 / ADR-0088); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31873738599 (Ubuntu job 94986199649, macOS job 94986199632, Windows job 94986199663) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1309,3 +1309,26 @@ Blockers: None
      - 明确 D.2.2 有界线性流扫描近似的已知局限性，AU 状态机与块内重发布显式 out of scope。
   2. Markdown-only 提交按 ADR-0019 跳过 hosted CI。
   Next Action 指向 Task T12a（frame_packing_arrangement SEI message decoding, package 0.1.36）。
+- 2026-08-15：完成帧封装排列 SEI 消息（Frame Packing Arrangement SEI, payload_type == 45）结构化解码（任务 T12a / ADR-0087 / 包版本 0.1.36 / commit `594fa83`）。
+  1. 官方规则包（`src/rules/official/org.streamview.h264/src/h264_annex_b.svfmt`）：
+     - 在 `SeiRbsp` 的 `switch (payload_type)` 中实现 `case 45` 分支，按 ITU-T H.264 D.1.25 / D.2.25 解码完整字段；
+     - 解码 `ue frame_packing_arrangement_id` 与 `u1 frame_packing_arrangement_cancel_flag`；
+     - 在 `cancel_flag == 0` 分支内解码立体排布参数：`u7 frame_packing_arrangement_type`、`u1 quincunx_sampling_flag`、`u6 content_interpretation_type`、`u1 spatial_flipping_flag`、`u1 frame0_flipped_flag`、`u1 field_views_flag`、`u1 current_frame_is_frame0_flag`、`u1 frame0_self_contained_flag`、`u1 frame1_self_contained_flag`；
+     - 使用计算字段 `computed<bool> has_grid_position = quincunx_sampling_flag == 0 && frame_packing_arrangement_type != 5;` 严格遵循规范条件解码 `u4 frame0_grid_position_x`、`u4 frame0_grid_position_y`、`u4 frame1_grid_position_x`、`u4 frame1_grid_position_y`；
+     - 解码 `u8 frame_packing_arrangement_reserved_byte @range(0, 0)` 与 `ue frame_packing_arrangement_repetition_period @range(0, 16384)`；
+     - 解码 `u1 frame_packing_arrangement_extension_flag @range(0, 0)` 及末尾条件 `rbsp_trailing_bits;`；
+     - `rule.toml` 包版本升级至 `0.1.36`。
+  2. 自动化测试套件（`tests/rules/h264_annex_b_analyzer_test.cpp`）：
+     - 新增 6 个针对性测试用例：
+       - `decodesFramePackingArrangementSeiMessageWithGridPositions`（Side-by-Side arrangement_type == 3 + quincunx == 0 带 grid_position 坐标，断言完整有序子节点列表 33 项、逐字段值与 source span）；
+       - `decodesFramePackingArrangementSeiMessageWithQuincunxSamplingWithoutGridPositions`（Top-and-Bottom arrangement_type == 4 + quincunx == 1 无 grid_position 坐标，断言完整有序子节点列表 33 项与逐字段值）；
+       - `decodesFramePackingArrangementSeiMessageWithFrameSequentialWithoutGridPositions`（Frame Sequential arrangement_type == 5 + quincunx == 0 遵循 != 5 条件无 grid_position 坐标，断言逐字段值）；
+       - `decodesFramePackingArrangementSeiMessageWithCancelFlagTrue`（cancel_flag == 1 取消排布仅解码 id/cancel/extension 字段，断言完整有序子节点列表 16 项与逐字段值）；
+       - `decodesMultipleSeiMessagesContainingFramePackingAndRecoveryPoint`（同一 NAL 内 frame_packing + recovery_point 混合多 SEI 消息按顺序完整解析与有序子节点列表断言 33 项）；
+       - `reportsTruncatedFramePackingArrangementSeiPayloadAndContinues`（截断 frame_packing 载荷码流安全回滚并继续后续 AUD NAL）。
+  3. 测试与验证：
+     - `svtool rule check` 通过；
+     - H.264 analyzer 套件增至 160 测试方法（162/162 包含 fixture setup）；
+     - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
+     - hosted run `31873738599` 在 Ubuntu 24.04 / Qt 6.11.1（job `94986199649`）、macOS 15 / Qt 6.11.1（job `94986199632`）、Windows 2022 / Qt 6.10.1（job `94986199663`）全部成功。
+  Next Action 指向 Task T12b（display_orientation SEI message decoding specification & implementation, package 0.1.37）。
