@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 4
-Last Completed Step: Phase 3 H.264 formal structure support audit and sign-off (Task T13)
-Next Action: Specify and implement AAC-LC ADTS fixed and variable header parsing (Phase 4)
-Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31882632928 (Ubuntu job 95007234862, macOS job 95007234841, Windows job 95007234953) passed 100%
+Last Completed Step: ADTS frame enumeration capability slice (Task T15a / commit a565d41)
+Next Action: ADTS analyzer runner, candidate detection and polymorphic session selection (Task T15b)
+Last Verification: Local dev/ci/sanitize 33/33 passing with zero sanitizer warnings; hosted CI run 31891829190 (Ubuntu job 95029138143, macOS job 95029138162, Windows job 95029138117) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1463,3 +1463,26 @@ Blockers: None
     9. `payload<rbsp> nal_units switch (nal_unit_type)`（第 1046–1055 行，其中 NAL type 10 与 11 派发为 `empty` 载荷）
   - 全部 7 个结构体与 1 个序列的所有声明字段均具有标准引用 `@spec` 与双语 `@description` 注解。
   Next Action 指向阶段 4（AAC-LC 正式结构支持，任务 T14–T18）：ADTS 帧枚举机制探测与 ADR-0092 架构起草。
+- 2026-08-15：完成 ADTS 帧枚举机制架构探测与双语 ADR-0092 规范制定（任务 T14 / commit `fb69487`、`365049d` 与 `2b9be97`）。
+  1. 架构探测与证据闸门：
+     - 查明 DSL 解析器（`src/rules/dsl.cpp:3453-3457`）与 IR 降级（`src/rules/dsl_ir.cpp:3568-3574`）中扫描器名称闭集拦截（`Only h264_start_code is supported`）；
+     - 明确 ADTS 分帧与 H.264 Annex B 的范式差异（ADTS 头部显式携带 13 位 `aac_frame_length`，支持 $O(1)$ 快速长度链步进）；
+     - 设计包含 2 帧前瞻确认的重同步状态机，有效过滤音频载荷内的 `0xFFF` 假同步字。
+  2. 规范与双语文档（`docs/adr/0092-aac-adts-frame-enumeration-and-rule-package.md` 与 `docs/zh-CN/adr/0092-aac-adts-frame-enumeration-and-rule-package.md`）：
+     - 明确基于 ADR-0090 布尔算术计算字段与带 `at` 锚点的源定位断言表达最小帧长检查（`scratch/probe_adts.svfmt` 实测 `Rule OK`）；
+     - 明确依据 ADR-0040 二分法将非布局字段 `sampling_frequency_index` 定级为 `@range(0, 12)` 非致命警告，并保留 `profile` 4 值枚举与 `channel_configuration` 8 值枚举；
+     - 更新中英文格式语言参考（`docs/format-language/README.md` 与 `docs/zh-CN/format-language/README.md`）接纳 `scan(adts_frame)`。
+- 2026-08-15：完成 ADTS 帧枚举能力切片（任务 T15a / commit `a565d41`）。
+  1. DSL 与 IR 编译器层扩展（`src/rules/`）：
+     - `dsl.cpp`：放宽 `scan(...)` 检查闸门，接纳 `h264_start_code` 与 `adts_frame`；
+     - `dsl_ir.h` / `dsl_ir.cpp`：扩展 `DslScannerKind::AacAdtsFrame`，将 `scan(adts_frame)` 正确降级为类型化 IR 扫描记录；
+     - `tests/rules/dsl_test.cpp` / `tests/rules/dsl_ir_test.cpp`：新增 `parsesAdtsFrameScanSequence` 与 `lowersAdtsFrameScanSequenceToTypedIr`，锁定正向解析/降级与未知扫描器负向拦截。
+  2. 核心扫描器实现（`src/rules/include/streamview/rules/aac_adts_scanner.h` 与 `src/rules/aac_adts_scanner.cpp`）：
+     - 实现 `AacAdtsScanner`，输出携带 `frameSpan`、`headerSpan`、`payloadSpan`、`crcPresent`、`aacFrameLength` 与 `truncated` 的 `AacAdtsRecord` 批次记录；
+     - 实现基于 `inSync_` 的快速长度链步进与 2 帧前瞻重同步机制；
+     - 严格对齐 ADR-0027 渐进索引合同，支持工作预算限制、取消检查与断点就地恢复。
+  3. 全量测试矩阵（`tests/rules/aac_adts_scanner_test.cpp`）：
+     - 新增 10 项端到端单元测试用例：`scansValidConsecutiveAdtsFrames`、`scansValidAdtsFramesWithCrc`、`resynchronizesAcrossLeadingGarbageBytes`、`handlesTruncatedFrameAtEof`、`resynchronizesAfterCorruptedFrameInLengthChain`、`rejectsFalseSyncwordsInsidePayload`、`respectsBatchLimitsAndWorkBudget`、`respectsCancellationAndResumesInPlace`、`handlesEmptyAndSmallSources`、`handlesInvalidBatchArguments`；
+     - 规则引擎与解析全量验证：`svtool rule check` 保持 `Rule OK`，H.264 analyzer 174/174 零回归，全量测试套件扩充至 33/33 且在 dev/ci/sanitize 三套构建下 100% 通过（零 ASan/UBSan 告警）；
+     - hosted run `31891829190` 在 Ubuntu 24.04 / Qt 6.11.1（job `95029138143`）、macOS 15 / Qt 6.11.1（job `95029138162`）、Windows 2022 / Qt 6.10.1（job `95029138117`）全部成功。
+  Next Action 指向 Task T15b（ADTS 分析执行器、候选格式探测与多态会话选择）。
