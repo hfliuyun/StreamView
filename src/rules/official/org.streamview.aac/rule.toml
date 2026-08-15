@@ -1,0 +1,20 @@
+manifest-version = 1
+
+[package]
+id = "org.streamview.aac"
+version = "0.1.0"
+authors = ["StreamView contributors"]
+license = "MIT"
+dependencies = []
+
+[compatibility]
+language = "0.1"
+engine = ">=0.1.0 <0.2.0"
+
+[[entrypoints]]
+id = "adts"
+format = "audio.aac.adts"
+source = "src/aac_adts.svfmt"
+profiles = ["lc"]
+depth = "adts-frame"
+detector = "aac-adts"

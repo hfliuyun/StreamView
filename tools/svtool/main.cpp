@@ -4,6 +4,9 @@
 #include <streamview/rules/dsl.h>
 #include <streamview/rules/dsl_ir.h>
 #include <streamview/rules/h264_annex_b_analyzer.h>
+#include <streamview/rules/aac_adts_analyzer.h>
+#include <streamview/rules/aac_adts_detector.h>
+#include <streamview/rules/h264_annex_b_detector.h>
 #include <streamview/rules/language_version.h>
 
 #include <QCoreApplication>
@@ -122,6 +125,45 @@ int analyzeSource(const QString& path) {
     if (!source) {
         QTextStream(stderr) << path << ": " << errorMessage << '\n';
         return 2;
+    }
+
+    std::array<std::byte, 64 * 1024> prefixBuffer{};
+    const auto readResult = source->readAt(0, prefixBuffer);
+    const std::span<const std::byte> prefix(prefixBuffer.data(), readResult.bytesRead);
+
+    const auto h264Detection =
+        streamview::rules::detectH264AnnexBCandidate(prefix, source->sizeBytes());
+    const auto aacDetection =
+        streamview::rules::detectAacAdtsCandidate(prefix, source->sizeBytes());
+
+    const auto aacConf =
+        aacDetection.candidate ? std::optional(aacDetection.candidate->confidence) : std::nullopt;
+    const auto h264Conf =
+        h264Detection.candidate ? std::optional(h264Detection.candidate->confidence) : std::nullopt;
+
+    if (aacConf == streamview::rules::AacAdtsDetectionConfidence::Strong &&
+        h264Conf != streamview::rules::H264AnnexBDetectionConfidence::Strong) {
+        auto analyzer = streamview::rules::AacAdtsAnalyzer::create(*source, &errorMessage);
+        if (!analyzer) {
+            QTextStream(stderr) << path << ": " << errorMessage << '\n';
+            return 2;
+        }
+
+        streamview::rules::AacAdtsAnalysisStatus finalStatus =
+            streamview::rules::AacAdtsAnalysisStatus::InProgress;
+        while (!analyzer->finished()) {
+            const auto batch = analyzer->analyzeBatch();
+            finalStatus = batch.status;
+        }
+
+        QTextStream output(stdout);
+        QTextStream errors(stderr);
+        printNode(analyzer->tree(), analyzer->tree().rootId(), 0, output, errors);
+        if (finalStatus != streamview::rules::AacAdtsAnalysisStatus::Complete ||
+            analyzer->tree().hasPartialResults()) {
+            return 1;
+        }
+        return 0;
     }
 
     auto analyzer = streamview::rules::H264AnnexBAnalyzer::create(*source, &errorMessage);

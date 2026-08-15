@@ -2,12 +2,22 @@
 
 #include <streamview/core/bit_reader.h>
 #include <streamview/core/coordinates.h>
+#include <streamview/core/version.h>
 #include <streamview/rules/dsl.h>
 #include <streamview/rules/dsl_executor.h>
 #include <streamview/rules/dsl_ir.h>
+#include <streamview/rules/language_version.h>
+#include <streamview/rules/rule_package.h>
+
+#include <QFile>
+#include <QIODevice>
 
 #include <limits>
 #include <utility>
+
+static void initializeStreamViewOfficialAacRules() {
+    Q_INIT_RESOURCE(streamview_official_rules_aac);
+}
 
 namespace streamview::rules {
 
@@ -46,16 +56,93 @@ namespace {
     return AacAdtsAnalysisStatus::InvalidRule;
 }
 
+[[nodiscard]] std::optional<QByteArray> readBundledPackageFile(const QString& path,
+                                                               QString* errorMessage) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Unable to open bundled rule file %1: %2")
+                                .arg(path, file.errorString());
+        }
+        return std::nullopt;
+    }
+    QByteArray contents = file.readAll();
+    if (file.error() != QFileDevice::NoError) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Unable to read bundled rule file %1: %2")
+                                .arg(path, file.errorString());
+        }
+        return std::nullopt;
+    }
+    return contents;
+}
+
+RulePackageLoadResult loadAacAdtsRulePackage() {
+    initializeStreamViewOfficialAacRules();
+    QString errorMessage;
+    const QString root = QStringLiteral(":/streamview/rules/org.streamview.aac/");
+    auto manifest = readBundledPackageFile(root + QStringLiteral("rule.toml"), &errorMessage);
+    auto source = readBundledPackageFile(root + QStringLiteral("src/aac_adts.svfmt"),
+                                         &errorMessage);
+    if (!manifest || !source) {
+        return {RulePackageLoadStatus::InvalidTree, std::nullopt, std::move(errorMessage)};
+    }
+    RulePackageLoadResult loaded = RulePackage::fromFiles({
+        {QStringLiteral("rule.toml"), std::move(*manifest)},
+        {QStringLiteral("src/aac_adts.svfmt"), std::move(*source)},
+    });
+    if (!loaded.succeeded()) {
+        loaded.errorMessage = QStringLiteral("Bundled AAC package is invalid: %1")
+                                  .arg(loaded.errorMessage);
+    }
+    return loaded;
+}
+
+struct BundledAacRule final {
+    RuleCatalogLookupResult resolved;
+    QString errorMessage;
+};
+
+[[nodiscard]] const BundledAacRule& bundledAacAdtsRule() {
+    static const BundledAacRule bundled = [] {
+        BundledAacRule result;
+        RulePackageLoadResult loaded = loadAacAdtsRulePackage();
+        if (!loaded.succeeded()) {
+            result.errorMessage = std::move(loaded.errorMessage);
+            return result;
+        }
+        const RulePackageIdentity identity = loaded.package->identity();
+        RulePackageCatalog catalog;
+        const RuleCatalogRegistrationResult registered =
+            catalog.registerPackage(std::move(*loaded.package));
+        if (!registered.succeeded()) {
+            result.errorMessage = registered.errorMessage;
+            return result;
+        }
+        result.resolved = catalog.resolve(identity, u"adts", languageVersion(),
+                                          core::version());
+        if (!result.resolved.succeeded()) {
+            result.errorMessage = result.resolved.errorMessage;
+        }
+        return result;
+    }();
+    return bundled;
+}
+
 } // namespace
 
 std::optional<AacAdtsAnalyzer>
-AacAdtsAnalyzer::create(const core::RandomAccessSource& /*source*/,
+AacAdtsAnalyzer::create(const core::RandomAccessSource& source,
                        QString* errorMessage,
-                       std::optional<core::CancellationToken> /*cancellation*/) {
-    if (errorMessage != nullptr) {
-        *errorMessage = QStringLiteral("No AAC ADTS rule package is bundled");
+                       std::optional<core::CancellationToken> cancellation) {
+    const BundledAacRule& bundled = bundledAacAdtsRule();
+    if (!bundled.resolved.succeeded()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = bundled.errorMessage;
+        }
+        return std::nullopt;
     }
-    return std::nullopt;
+    return create(source, bundled.resolved, errorMessage, std::move(cancellation));
 }
 
 std::optional<AacAdtsAnalyzer>
@@ -232,42 +319,36 @@ bool AacAdtsAnalyzer::publishRecord(const AacAdtsRecord& record,
     }
     ++nextFrameIndex_;
 
-    const auto failPublishedFrame = [this,
-                                     &batch,
-                                     &frameLocation,
-                                     frameNode,
-                                     frameIndex,
-                                     failureStatus,
-                                     errorMessage](QString message) {
-        *errorMessage = std::move(message);
-        const auto node = tree_.node(*frameNode);
-        if (node && node->state() == core::MaterializationState::Indexing) {
+    if (record.headerSpan && record.headerSpan->bitLength() > 0) {
+        if (nextViewId_ == 0) {
+            *errorMessage = QStringLiteral("Logical view identifier limit reached");
+            *failureStatus = AacAdtsAnalysisStatus::ResourceLimit;
             core::ParseDiagnostic diagnostic;
-            diagnostic.code = diagnosticCode(*failureStatus);
+            diagnostic.code = core::DiagnosticCode::ResourceLimit;
             diagnostic.severity = core::DiagnosticSeverity::Error;
             diagnostic.message = *errorMessage;
             diagnostic.fieldPath = QStringLiteral("adts_frame[%1]").arg(frameIndex);
             diagnostic.location = *frameLocation;
-            (void)tree_.markPartial(*frameNode,
-                                    *failureStatus == AacAdtsAnalysisStatus::Cancelled
-                                        ? core::MaterializationState::Cancelled
-                                        : core::MaterializationState::Invalid,
-                                    std::move(diagnostic));
-        }
-        batch.frameNodes.push_back(*frameNode);
-        return false;
-    };
-
-    if (record.headerSpan && record.headerSpan->bitLength() > 0) {
-        if (nextViewId_ == 0) {
-            return failPublishedFrame(QStringLiteral("Logical view identifier limit reached"));
+            (void)tree_.markPartial(*frameNode, core::MaterializationState::Invalid, std::move(diagnostic));
+            batch.frameNodes.push_back(*frameNode);
+            return false;
         }
         const core::LogicalViewId headerViewId(nextViewId_);
         nextViewId_ = nextViewId_ == std::numeric_limits<quint64>::max() ? 0 : nextViewId_ + 1;
 
         const auto mapping = core::SourceMapping::create(headerViewId, {*record.headerSpan});
         if (!mapping) {
-            return failPublishedFrame(QStringLiteral("Unable to create ADTS header mapping"));
+            *errorMessage = QStringLiteral("Unable to create ADTS header mapping");
+            *failureStatus = AacAdtsAnalysisStatus::ResourceLimit;
+            core::ParseDiagnostic diagnostic;
+            diagnostic.code = core::DiagnosticCode::ResourceLimit;
+            diagnostic.severity = core::DiagnosticSeverity::Error;
+            diagnostic.message = *errorMessage;
+            diagnostic.fieldPath = QStringLiteral("adts_frame[%1]").arg(frameIndex);
+            diagnostic.location = *frameLocation;
+            (void)tree_.markPartial(*frameNode, core::MaterializationState::Invalid, std::move(diagnostic));
+            batch.frameNodes.push_back(*frameNode);
+            return false;
         }
 
         core::BitReader reader(*source_, *mapping);
@@ -297,18 +378,20 @@ bool AacAdtsAnalyzer::publishRecord(const AacAdtsRecord& record,
             if (diagnostic.message.isEmpty()) {
                 diagnostic.severity = core::DiagnosticSeverity::Error;
                 diagnostic.message = execution.errorMessage.isEmpty()
-                                         ? QStringLiteral("Unable to decode ADTS frame header")
+                                         ? QStringLiteral("ADTS frame header contains invalid syntax")
                                          : execution.errorMessage;
                 diagnostic.fieldPath = QStringLiteral("adts_frame[%1]").arg(frameIndex);
                 switch (execution.status) {
                 case DslExecutionStatus::TruncatedSource:
                     diagnostic.code = core::DiagnosticCode::TruncatedSource;
+                    diagnostic.message = QStringLiteral("ADTS frame header is truncated");
                     break;
                 case DslExecutionStatus::SourceError:
                     diagnostic.code = core::DiagnosticCode::SourceError;
                     break;
                 case DslExecutionStatus::Cancelled:
                     diagnostic.code = core::DiagnosticCode::Cancelled;
+                    diagnostic.message = QStringLiteral("Analysis was cancelled");
                     break;
                 case DslExecutionStatus::ResourceLimit:
                     diagnostic.code = core::DiagnosticCode::ResourceLimit;
@@ -323,22 +406,71 @@ bool AacAdtsAnalyzer::publishRecord(const AacAdtsRecord& record,
                     break;
                 }
             }
+            if (!diagnostic.location || diagnostic.location->sourceSpans().empty()) {
+                diagnostic.location = *frameLocation;
+            }
+            if (diagnostic.fieldPath.isEmpty()) {
+                diagnostic.fieldPath = QStringLiteral("adts_frame[%1]").arg(frameIndex);
+            }
+
+            const auto terminalState = execution.status == DslExecutionStatus::Cancelled
+                                           ? core::MaterializationState::Cancelled
+                                           : core::MaterializationState::Invalid;
+            (void)tree_.markPartial(*frameNode, terminalState, std::move(diagnostic));
+            batch.frameNodes.push_back(*frameNode);
+
+            if (execution.status == DslExecutionStatus::SourceError) {
+                *failureStatus = AacAdtsAnalysisStatus::SourceError;
+                *errorMessage = execution.errorMessage;
+                return false;
+            }
             if (execution.status == DslExecutionStatus::Cancelled) {
                 *failureStatus = AacAdtsAnalysisStatus::Cancelled;
-            } else if (execution.status == DslExecutionStatus::ResourceLimit) {
-                *failureStatus = AacAdtsAnalysisStatus::ResourceLimit;
-            } else if (execution.status == DslExecutionStatus::SourceError) {
-                *failureStatus = AacAdtsAnalysisStatus::SourceError;
-            } else {
-                *failureStatus = AacAdtsAnalysisStatus::InvalidRule;
+                *errorMessage = QStringLiteral("Analysis was cancelled");
+                return false;
             }
-            return failPublishedFrame(diagnostic.message);
+            if (execution.status == DslExecutionStatus::ResourceLimit) {
+                *failureStatus = AacAdtsAnalysisStatus::ResourceLimit;
+                *errorMessage = execution.errorMessage;
+                return false;
+            }
+            if (execution.status == DslExecutionStatus::InvalidDefinition) {
+                *failureStatus = AacAdtsAnalysisStatus::InvalidRule;
+                *errorMessage = execution.errorMessage;
+                return false;
+            }
+
+            // Content failures (InvalidSyntax, TruncatedSource, DependencyUnavailable)
+            // isolate the current frame as Invalid and continue analyzing subsequent frames.
+            return true;
         }
+    }
+
+    if (record.truncated) {
+        // Payload truncation: header was fully decoded, but frame payload reached EOF prematurely.
+        core::ParseDiagnostic diagnostic;
+        diagnostic.code = core::DiagnosticCode::TruncatedSource;
+        diagnostic.severity = core::DiagnosticSeverity::Warning;
+        diagnostic.message = QStringLiteral("ADTS frame payload is truncated at EOF");
+        diagnostic.fieldPath = QStringLiteral("adts_frame[%1]").arg(frameIndex);
+        diagnostic.location = *frameLocation;
+        (void)tree_.markPartial(*frameNode, core::MaterializationState::Invalid, std::move(diagnostic));
+        batch.frameNodes.push_back(*frameNode);
+        return true;
     }
 
     if (!tree_.transition(*frameNode, core::MaterializationState::Materialized)) {
         *errorMessage = QStringLiteral("Unable to materialize decoded ADTS frame node");
-        return failPublishedFrame(*errorMessage);
+        *failureStatus = AacAdtsAnalysisStatus::InvalidRule;
+        core::ParseDiagnostic diagnostic;
+        diagnostic.code = core::DiagnosticCode::InvalidSyntax;
+        diagnostic.severity = core::DiagnosticSeverity::Error;
+        diagnostic.message = *errorMessage;
+        diagnostic.fieldPath = QStringLiteral("adts_frame[%1]").arg(frameIndex);
+        diagnostic.location = *frameLocation;
+        (void)tree_.markPartial(*frameNode, core::MaterializationState::Invalid, std::move(diagnostic));
+        batch.frameNodes.push_back(*frameNode);
+        return false;
     }
 
     batch.frameNodes.push_back(*frameNode);
@@ -413,41 +545,24 @@ AacAdtsAnalysisBatch AacAdtsAnalyzer::analyzeBatch(
         terminalStatus_ = result.status;
         terminalErrorMessage_ = result.errorMessage;
         break;
-    case AacAdtsScanStatus::Cancelled:
-        if (result.errorMessage.isEmpty()) {
-            result.errorMessage = QStringLiteral("AAC ADTS scan was cancelled");
-        }
-        markRootPartial(core::DiagnosticCode::Cancelled,
-                        core::MaterializationState::Cancelled,
-                        result.errorMessage);
-        terminal_ = true;
-        terminalStatus_ = result.status;
-        terminalErrorMessage_ = result.errorMessage;
-        break;
-    case AacAdtsScanStatus::SourceError:
-        markRootPartial(core::DiagnosticCode::SourceError,
-                        core::MaterializationState::Invalid,
-                        result.errorMessage);
-        terminal_ = true;
-        terminalStatus_ = result.status;
-        terminalErrorMessage_ = result.errorMessage;
-        break;
     case AacAdtsScanStatus::InProgress:
         result.status = AacAdtsAnalysisStatus::InProgress;
         result.errorMessage.clear();
         break;
+    case AacAdtsScanStatus::Cancelled:
+        terminalizeFailure(AacAdtsAnalysisStatus::Cancelled,
+                           QStringLiteral("ADTS scan was cancelled"));
+        break;
+    case AacAdtsScanStatus::SourceError:
+        terminalizeFailure(AacAdtsAnalysisStatus::SourceError,
+                           result.errorMessage.isEmpty()
+                               ? QStringLiteral("ADTS scan failed due to a source error")
+                               : result.errorMessage);
+        break;
     case AacAdtsScanStatus::InvalidBatchSize:
-        result.status = AacAdtsAnalysisStatus::InvalidRule;
-        result.errorMessage = QStringLiteral("AAC scanner rejected a validated analysis batch");
-        markRootPartial(core::DiagnosticCode::InvalidSyntax,
-                        core::MaterializationState::Invalid,
-                        result.errorMessage);
-        terminal_ = true;
-        terminalStatus_ = result.status;
-        terminalErrorMessage_ = result.errorMessage;
+        result.status = AacAdtsAnalysisStatus::InvalidBatchSize;
         break;
     }
-
     return result;
 }
 

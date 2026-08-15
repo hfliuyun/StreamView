@@ -1,0 +1,65 @@
+enum AacProfile {
+    main = 0;
+    lc = 1;
+    ssr = 2;
+    ltp = 3;
+}
+
+enum AacChannelConfiguration {
+    custom = 0;
+    mono = 1;
+    stereo = 2;
+    three_channel = 3;
+    four_channel = 4;
+    five_channel = 5;
+    five_one = 6;
+    seven_one = 7;
+}
+
+@spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+@description("Audio Data Transport Stream (ADTS) fixed and variable header.")
+struct AdtsHeader {
+    bits<12> syncword @equals(4095)
+        @description("12-bit syncword, always 0xFFF.");
+    bits<1> id
+        @description("MPEG audio version: 0 for MPEG-4, 1 for MPEG-2.");
+    bits<2> layer @equals(0)
+        @description("MPEG layer, always 0 for AAC.");
+    bits<1> protection_absent
+        @description("0 indicates 16-bit CRC is present; 1 indicates CRC absent.");
+    bits<2> profile @enum(AacProfile)
+        @description("AAC object type profile.");
+    bits<4> sampling_frequency_index @range(0, 12)
+        @description("Sampling frequency index from 0 (96 kHz) to 12 (7.35 kHz).");
+    bits<1> private_bit
+        @description("Private bit for application usage.");
+    bits<3> channel_configuration @enum(AacChannelConfiguration)
+        @description("Channel configuration.");
+    bits<1> original_copy
+        @description("Original/copy bit.");
+    bits<1> home
+        @description("Home/reserved bit.");
+    bits<1> copyright_identification_bit
+        @description("Copyright identification bit.");
+    bits<1> copyright_identification_start
+        @description("Copyright identification start.");
+    bits<13> aac_frame_length
+        @description("Total frame length in bytes including headers, CRC, and payload.");
+    bits<11> adts_buffer_fullness
+        @description("Buffer fullness; 0x7FF indicates variable bit rate (VBR).");
+    bits<2> number_of_raw_data_blocks_in_frame @equals(0)
+        @description("Number of raw data blocks minus 1; 0 denotes single raw data block.");
+    if (protection_absent == 0) {
+        bits<16> crc_check
+            @spec("ISO/IEC 14496-3:2019", "1.6.2.2")
+            @description("16-bit CRC error check word.");
+    }
+    computed<u64> minimum_frame_length =
+        (protection_absent == 1) * 7 +
+        (protection_absent == 0) * 9;
+    assert(aac_frame_length >= minimum_frame_length) at aac_frame_length;
+}
+
+@index(progressive)
+sequence<AdtsHeader> frames = scan(adts_frame);
+entry frames;

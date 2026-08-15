@@ -811,7 +811,7 @@ private slots:
         QVERIFY(restored.session->finished());
     }
 
-    void opensRealAdtsWithoutBundledPackageByFallingBackToH264() {
+    void opensRealAdtsWithBundledPackage() {
         auto makeFrame = [](quint16 frameLength) {
             std::vector<std::byte> frame(frameLength, std::byte{0x55});
             frame[0] = std::byte{0xFF};
@@ -851,14 +851,67 @@ private slots:
         // H.264 candidate is empty
         QVERIFY(!session->formatDetection().candidate.has_value());
 
-        // In the absence of bundled AAC rules, session falls back cleanly to H.264 identity
+        // With bundled AAC rules activated, session binds to org.streamview.aac / adts
+        QCOMPARE(session->ruleIdentity().packageIdentity().packageId(),
+                 QStringLiteral("org.streamview.aac"));
+        QCOMPARE(session->ruleIdentity().entryPointId(), QStringLiteral("adts"));
+
+        // Analysis execution runs on AAC analyzer to completion
+        const auto batch = session->analyzeBatch();
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
+        QCOMPARE(batch.topLevelNodes.size(), std::size_t(3));
+        QVERIFY(session->finished());
+    }
+
+    void opensH264WhenBothAacAndH264CandidatesAreStrong() {
+        // 1. Generate 3 valid ADTS frames (length-chain step)
+        auto makeFrame = [](quint16 frameLength) {
+            std::vector<std::byte> frame(frameLength, std::byte{0x55});
+            frame[0] = std::byte{0xFF};
+            frame[1] = std::byte{0xF1};
+            frame[2] = std::byte{0x50};
+            frame[3] = std::byte{static_cast<quint8>(0x80U | ((frameLength >> 11U) & 0x03U))};
+            frame[4] = std::byte{static_cast<quint8>((frameLength >> 3U) & 0xFFU)};
+            frame[5] = std::byte{static_cast<quint8>(((frameLength & 0x07U) << 5U) | 0x1FU)};
+            frame[6] = std::byte{0xFC};
+            return frame;
+        };
+
+        const auto f1 = makeFrame(150);
+        const auto f2 = makeFrame(200);
+        const auto f3 = makeFrame(180);
+
+        // 2. Generate 3 valid H.264 NAL units (AUD + SPS + PPS)
+        const QByteArray h264Bytes = QByteArray::fromHex("00000109100000016742001eda01402000000168ce3c80");
+
+        // Combine: place H.264 NAL units and ADTS frames within the 64 KiB initial page
+        QByteArray mixedBytes = h264Bytes;
+        mixedBytes.append(reinterpret_cast<const char*>(f1.data()), static_cast<qsizetype>(f1.size()));
+        mixedBytes.append(reinterpret_cast<const char*>(f2.data()), static_cast<qsizetype>(f2.size()));
+        mixedBytes.append(reinterpret_cast<const char*>(f3.data()), static_cast<qsizetype>(f3.size()));
+
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("contention_h264_aac.bin"));
+        QVERIFY(writeFile(mediaPath, mixedBytes));
+
+        QString errorMessage;
+        auto session = AnalysisSession::openFile(mediaPath, &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+
+        // Both candidates are Strong
+        QVERIFY(session->formatDetection().candidate.has_value());
+        QCOMPARE(session->formatDetection().candidate->confidence,
+                 streamview::rules::H264AnnexBDetectionConfidence::Strong);
+        QVERIFY(session->aacFormatDetection().candidate.has_value());
+        QCOMPARE(session->aacFormatDetection().candidate->confidence,
+                 streamview::rules::AacAdtsDetectionConfidence::Strong);
+
+        // Because chooseAac requires (aacConf == Strong && h264Conf != Strong),
+        // contention defaults cleanly to H.264
         QCOMPARE(session->ruleIdentity().packageIdentity().packageId(),
                  QStringLiteral("org.streamview.h264"));
         QCOMPARE(session->ruleIdentity().entryPointId(), QStringLiteral("annex-b"));
-
-        // Analysis execution runs on fallback analyzer without fatal error
-        const auto batch = session->analyzeBatch();
-        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
     }
 
     void opensAdtsWithProbableConfidenceByFallingBackToH264() {

@@ -78,3 +78,14 @@ qt_add_resources(
         official/org.streamview.h264/rule.toml
         official/org.streamview.h264/src/h264_annex_b.svfmt
 )
+
+qt_add_resources(
+    streamview_rules
+    streamview_official_rules_aac
+    PREFIX "/streamview/rules/org.streamview.aac"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/official/org.streamview.aac"
+    FILES
+        official/org.streamview.aac/rule.toml
+        official/org.streamview.aac/src/aac_adts.svfmt
+)
+

@@ -50,6 +50,9 @@ private:
                                                     quint8 profile = 1,
                                                     quint8 samplingFreqIndex = 4,
                                                     quint8 channelConfig = 2,
+                                                    quint16 bufferFullness = 0x7FF,
+                                                    quint8 numRawBlocks = 0,
+                                                    quint16 crcValue = 0x1234,
                                                     std::byte fillByte = std::byte{0xAB}) {
     const std::size_t headerLen = protectionAbsent ? 7U : 9U;
     std::vector<std::byte> frame(frameLength, fillByte);
@@ -67,48 +70,14 @@ private:
         ((frameLength >> 11U) & 0x03U))};
     frame[4] = std::byte{static_cast<quint8>((frameLength >> 3U) & 0xFFU)};
     frame[5] = std::byte{static_cast<quint8>(
-        ((frameLength & 0x07U) << 5U) | 0x1FU)};
-    frame[6] = std::byte{0xFC};
+        ((frameLength & 0x07U) << 5U) | ((bufferFullness >> 6U) & 0x1FU))};
+    frame[6] = std::byte{static_cast<quint8>(
+        ((bufferFullness & 0x3FU) << 2U) | (numRawBlocks & 0x03U))};
     if (!protectionAbsent) {
-        frame[7] = std::byte{0x12};
-        frame[8] = std::byte{0x34};
+        frame[7] = std::byte{static_cast<quint8>((crcValue >> 8U) & 0xFFU)};
+        frame[8] = std::byte{static_cast<quint8>(crcValue & 0xFFU)};
     }
     return frame;
-}
-
-[[nodiscard]] streamview::rules::RulePackageLoadResult makeTestAacPackage() {
-    const QByteArray toml = QByteArrayLiteral(
-        "manifest-version = 1\n\n"
-        "[package]\n"
-        "id = \"org.streamview.aac\"\n"
-        "version = \"0.1.0\"\n"
-        "authors = [\"StreamView Contributors\"]\n"
-        "license = \"Apache-2.0\"\n"
-        "dependencies = []\n\n"
-        "[compatibility]\n"
-        "language = \"0.1\"\n"
-        "engine = \">=0.1.0 <0.2.0\"\n\n"
-        "[[entrypoints]]\n"
-        "id = \"adts\"\n"
-        "format = \"audio.aac.adts\"\n"
-        "source = \"src/adts.svfmt\"\n"
-        "profiles = [\"aac-adts\"]\n"
-        "depth = \"structural\"\n");
-
-    const QByteArray svfmt = QByteArrayLiteral(
-        "struct AdtsHeader {\n"
-        "    bits<12> syncword @equals(4095);\n"
-        "    bits<1> id;\n"
-        "    bits<2> layer;\n"
-        "    bits<1> protection_absent;\n"
-        "}\n\n"
-        "@index(progressive) sequence<AdtsHeader> frames = scan(adts_frame);\n"
-        "entry frames;\n");
-
-    std::vector<streamview::rules::RulePackageFile> files{
-        {QStringLiteral("rule.toml"), toml},
-        {QStringLiteral("src/adts.svfmt"), svfmt}};
-    return streamview::rules::RulePackage::fromFiles(std::move(files));
 }
 
 } // namespace
@@ -117,16 +86,127 @@ class AacAdtsAnalyzerTest : public QObject {
     Q_OBJECT
 
 private slots:
-    void failsToCreateAnalyzerWhenNoBundledPackageExists() {
+    void createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl() {
         std::vector<std::byte> stream;
-        const auto f1 = makeAdtsFrame(150, true);
+        const auto f1 = makeAdtsFrame(120, true, 1, 4, 2, 0x100, 0);
+        const auto f2 = makeAdtsFrame(150, false, 0, 3, 1, 0x7FF, 0, 0x1234);
+        const auto f3 = makeAdtsFrame(100, true, 2, 5, 6, 0x200, 0);
         stream.insert(stream.end(), f1.begin(), f1.end());
-        const MemorySource source(std::move(stream));
+        stream.insert(stream.end(), f2.begin(), f2.end());
+        stream.insert(stream.end(), f3.begin(), f3.end());
 
+        const MemorySource source(std::move(stream));
         QString error;
         auto analyzer = streamview::rules::AacAdtsAnalyzer::create(source, &error);
-        QVERIFY(!analyzer.has_value());
-        QVERIFY(!error.isEmpty());
+        QVERIFY2(analyzer.has_value(), qPrintable(error));
+        QCOMPARE(analyzer->ruleIdentity().packageIdentity().packageId(),
+                 QStringLiteral("org.streamview.aac"));
+        QCOMPARE(analyzer->ruleIdentity().entryPointId(), QStringLiteral("adts"));
+
+        const auto batch = analyzer->analyzeBatch();
+        QVERIFY(batch.complete());
+        QCOMPARE(batch.frameNodes.size(), std::size_t(3));
+        QVERIFY(analyzer->finished());
+
+        const auto root = analyzer->tree().node(analyzer->tree().rootId());
+        QVERIFY(root.has_value());
+        QCOMPARE(root->state(), streamview::core::MaterializationState::Materialized);
+        QCOMPARE(root->children().size(), std::size_t(3));
+
+        // Frame 0: CBR, protection_absent == 1 (7-byte header)
+        const auto node0 = analyzer->tree().node(batch.frameNodes[0]);
+        QVERIFY(node0.has_value());
+        QCOMPARE(node0->name(), QStringLiteral("adts_frame[0]"));
+        QCOMPARE(node0->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(node0->diagnostics().empty());
+        QCOMPARE(node0->children().size(), std::size_t(1));
+
+        const auto header0 = analyzer->tree().node(node0->children()[0]);
+        QVERIFY(header0.has_value());
+        QCOMPARE(header0->name(), QStringLiteral("AdtsHeader"));
+        QCOMPARE(header0->children().size(), std::size_t(16));
+
+        const std::vector<QString> expectedNames0 = {
+            QStringLiteral("syncword"),
+            QStringLiteral("id"),
+            QStringLiteral("layer"),
+            QStringLiteral("protection_absent"),
+            QStringLiteral("profile"),
+            QStringLiteral("sampling_frequency_index"),
+            QStringLiteral("private_bit"),
+            QStringLiteral("channel_configuration"),
+            QStringLiteral("original_copy"),
+            QStringLiteral("home"),
+            QStringLiteral("copyright_identification_bit"),
+            QStringLiteral("copyright_identification_start"),
+            QStringLiteral("aac_frame_length"),
+            QStringLiteral("adts_buffer_fullness"),
+            QStringLiteral("number_of_raw_data_blocks_in_frame"),
+            QStringLiteral("minimum_frame_length")
+        };
+
+        for (std::size_t i = 0; i < expectedNames0.size(); ++i) {
+            const auto child = analyzer->tree().node(header0->children()[i]);
+            QVERIFY(child.has_value());
+            QCOMPARE(child->name(), expectedNames0[i]);
+        }
+
+        // Verify values of frame 0
+        QCOMPARE(analyzer->tree().node(header0->children()[0])->value().toULongLong(), quint64(4095));
+        QCOMPARE(analyzer->tree().node(header0->children()[1])->value().toULongLong(), quint64(0));
+        QCOMPARE(analyzer->tree().node(header0->children()[2])->value().toULongLong(), quint64(0));
+        QCOMPARE(analyzer->tree().node(header0->children()[3])->value().toULongLong(), quint64(1));
+        QCOMPARE(analyzer->tree().node(header0->children()[4])->value().toULongLong(), quint64(1));
+        QCOMPARE(analyzer->tree().node(header0->children()[5])->value().toULongLong(), quint64(4));
+        QCOMPARE(analyzer->tree().node(header0->children()[6])->value().toULongLong(), quint64(0));
+        QCOMPARE(analyzer->tree().node(header0->children()[7])->value().toULongLong(), quint64(2));
+        QCOMPARE(analyzer->tree().node(header0->children()[12])->value().toULongLong(), quint64(120));
+        QCOMPARE(analyzer->tree().node(header0->children()[13])->value().toULongLong(), quint64(256));
+        QCOMPARE(analyzer->tree().node(header0->children()[14])->value().toULongLong(), quint64(0));
+        QCOMPARE(analyzer->tree().node(header0->children()[15])->value().toULongLong(), quint64(7));
+
+        // Frame 1: VBR, protection_absent == 0 (9-byte header with crc_check)
+        const auto node1 = analyzer->tree().node(batch.frameNodes[1]);
+        QVERIFY(node1.has_value());
+        QCOMPARE(node1->name(), QStringLiteral("adts_frame[1]"));
+        QCOMPARE(node1->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(node1->diagnostics().empty());
+
+        const auto header1 = analyzer->tree().node(node1->children()[0]);
+        QVERIFY(header1.has_value());
+        QCOMPARE(header1->children().size(), std::size_t(17));
+
+        const std::vector<QString> expectedNames1 = {
+            QStringLiteral("syncword"),
+            QStringLiteral("id"),
+            QStringLiteral("layer"),
+            QStringLiteral("protection_absent"),
+            QStringLiteral("profile"),
+            QStringLiteral("sampling_frequency_index"),
+            QStringLiteral("private_bit"),
+            QStringLiteral("channel_configuration"),
+            QStringLiteral("original_copy"),
+            QStringLiteral("home"),
+            QStringLiteral("copyright_identification_bit"),
+            QStringLiteral("copyright_identification_start"),
+            QStringLiteral("aac_frame_length"),
+            QStringLiteral("adts_buffer_fullness"),
+            QStringLiteral("number_of_raw_data_blocks_in_frame"),
+            QStringLiteral("crc_check"),
+            QStringLiteral("minimum_frame_length")
+        };
+
+        for (std::size_t i = 0; i < expectedNames1.size(); ++i) {
+            const auto child = analyzer->tree().node(header1->children()[i]);
+            QVERIFY(child.has_value());
+            QCOMPARE(child->name(), expectedNames1[i]);
+        }
+
+        QCOMPARE(analyzer->tree().node(header1->children()[3])->value().toULongLong(), quint64(0));
+        QCOMPARE(analyzer->tree().node(header1->children()[12])->value().toULongLong(), quint64(150));
+        QCOMPARE(analyzer->tree().node(header1->children()[13])->value().toULongLong(), quint64(0x7FF));
+        QCOMPARE(analyzer->tree().node(header1->children()[15])->value().toULongLong(), quint64(0x1234));
+        QCOMPARE(analyzer->tree().node(header1->children()[16])->value().toULongLong(), quint64(9));
     }
 
     void failsToCreateAnalyzerWhenResolvedRuleIsInvalid() {
@@ -141,76 +221,181 @@ private slots:
         QCOMPARE(error, QStringLiteral("Missing rule package content"));
     }
 
-    void createsAnalyzerFromRulePackageAndDecodesFieldsViaDsl() {
+    void isolatesMultipleRawDataBlocksViolationAndContinues() {
         std::vector<std::byte> stream;
-        const auto f1 = makeAdtsFrame(150, true);
-        const auto f2 = makeAdtsFrame(200, true);
-        const auto f3 = makeAdtsFrame(180, true);
+        const auto f1 = makeAdtsFrame(100, true, 1, 4, 2, 0x7FF, 0);
+        const auto f2 = makeAdtsFrame(120, true, 1, 4, 2, 0x7FF, 1); // violation: num_blocks = 1
+        const auto f3 = makeAdtsFrame(100, true, 1, 4, 2, 0x7FF, 0);
         stream.insert(stream.end(), f1.begin(), f1.end());
         stream.insert(stream.end(), f2.begin(), f2.end());
         stream.insert(stream.end(), f3.begin(), f3.end());
 
-        auto loadedPkg = makeTestAacPackage();
-        QVERIFY2(loadedPkg.succeeded(), qPrintable(loadedPkg.errorMessage));
-        const auto identity = loadedPkg.package->identity();
-
-        streamview::rules::RulePackageCatalog catalog;
-        QVERIFY(catalog.registerPackage(std::move(*loadedPkg.package)).succeeded());
-
-        const auto resolved = catalog.resolve(
-            identity, QStringLiteral("adts"),
-            streamview::rules::languageVersion(), streamview::core::version());
-        QVERIFY(resolved.succeeded());
-
         const MemorySource source(std::move(stream));
         QString error;
-        auto analyzer = streamview::rules::AacAdtsAnalyzer::create(source, resolved, &error);
+        auto analyzer = streamview::rules::AacAdtsAnalyzer::create(source, &error);
         QVERIFY2(analyzer.has_value(), qPrintable(error));
-        QCOMPARE(analyzer->ruleIdentity().packageIdentity().packageId(),
-                 QStringLiteral("org.streamview.aac"));
-        QCOMPARE(analyzer->ruleIdentity().entryPointId(), QStringLiteral("adts"));
 
         const auto batch = analyzer->analyzeBatch();
         QVERIFY(batch.complete());
+        QCOMPARE(batch.status, streamview::rules::AacAdtsAnalysisStatus::Complete);
         QCOMPARE(batch.frameNodes.size(), std::size_t(3));
         QVERIFY(analyzer->finished());
 
         const auto root = analyzer->tree().node(analyzer->tree().rootId());
         QVERIFY(root.has_value());
-        QCOMPARE(root->children().size(), std::size_t(3));
+        QCOMPARE(root->state(), streamview::core::MaterializationState::Materialized);
 
-        // Verify frame 0 was materialized and its children decoded by DSL engine
-        const auto node1 = analyzer->tree().node(batch.frameNodes[0]);
+        // Frame 0: Materialized
+        const auto node0 = analyzer->tree().node(batch.frameNodes[0]);
+        QVERIFY(node0.has_value());
+        QCOMPARE(node0->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(node0->diagnostics().empty());
+
+        // Frame 1: Invalid due to number_of_raw_data_blocks_in_frame @equals(0) failure
+        const auto node1 = analyzer->tree().node(batch.frameNodes[1]);
         QVERIFY(node1.has_value());
-        QCOMPARE(node1->name(), QStringLiteral("adts_frame[0]"));
-        QVERIFY(node1->location().has_value());
-        QCOMPARE(node1->location()->logicalRange().bitLength(), quint64(150 * 8));
+        QCOMPARE(node1->state(), streamview::core::MaterializationState::Invalid);
+        QVERIFY(!node1->diagnostics().empty());
+        QCOMPARE(node1->diagnostics().front().code, streamview::core::DiagnosticCode::InvalidSyntax);
+        QCOMPARE(node1->diagnostics().front().severity, streamview::core::DiagnosticSeverity::Error);
+
+        // Frame 2: Materialized (subsequent frame correctly decoded and materialized)
+        const auto node2 = analyzer->tree().node(batch.frameNodes[2]);
+        QVERIFY(node2.has_value());
+        QCOMPARE(node2->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(node2->diagnostics().empty());
+    }
+
+    void handlesHeaderTruncationWithCrcPresent() {
+        std::vector<std::byte> stream;
+        const auto f1 = makeAdtsFrame(100, true);
+        const auto f2 = makeAdtsFrame(100, false); // header length 9 (CRC present)
+        stream.insert(stream.end(), f1.begin(), f1.end());
+        // Truncate frame 2 to only 8 bytes (less than 9 required)
+        stream.insert(stream.end(), f2.begin(), f2.begin() + 8);
+
+        const MemorySource source(std::move(stream));
+        QString error;
+        auto analyzer = streamview::rules::AacAdtsAnalyzer::create(source, &error);
+        QVERIFY2(analyzer.has_value(), qPrintable(error));
+
+        const auto batch = analyzer->analyzeBatch();
+        QVERIFY(batch.complete());
+        QCOMPARE(batch.frameNodes.size(), std::size_t(2));
+        QVERIFY(analyzer->finished());
+
+        const auto root = analyzer->tree().node(analyzer->tree().rootId());
+        QVERIFY(root.has_value());
+        QCOMPARE(root->state(), streamview::core::MaterializationState::Materialized);
+
+        const auto node0 = analyzer->tree().node(batch.frameNodes[0]);
+        QVERIFY(node0.has_value());
+        QCOMPARE(node0->state(), streamview::core::MaterializationState::Materialized);
+
+        const auto node1 = analyzer->tree().node(batch.frameNodes[1]);
+        QVERIFY(node1.has_value());
+        QCOMPARE(node1->state(), streamview::core::MaterializationState::Invalid);
+        QVERIFY(!node1->diagnostics().empty());
+        QCOMPARE(node1->diagnostics().front().code, streamview::core::DiagnosticCode::TruncatedSource);
+        QCOMPARE(node1->diagnostics().front().severity, streamview::core::DiagnosticSeverity::Error);
+        QCOMPARE(node1->diagnostics().front().message, QStringLiteral("Unable to read complete syntax field"));
+    }
+
+    void handlesPayloadTruncationAtEof() {
+        std::vector<std::byte> stream;
+        const auto f1 = makeAdtsFrame(100, true);
+        const auto f2 = makeAdtsFrame(200, true); // declares 200 bytes
+        stream.insert(stream.end(), f1.begin(), f1.end());
+        // Truncate frame 2 payload to only 50 bytes total
+        stream.insert(stream.end(), f2.begin(), f2.begin() + 50);
+
+        const MemorySource source(std::move(stream));
+        QString error;
+        auto analyzer = streamview::rules::AacAdtsAnalyzer::create(source, &error);
+        QVERIFY2(analyzer.has_value(), qPrintable(error));
+
+        const auto batch = analyzer->analyzeBatch();
+        QVERIFY(batch.complete());
+        QCOMPARE(batch.frameNodes.size(), std::size_t(2));
+        QVERIFY(analyzer->finished());
+
+        const auto root = analyzer->tree().node(analyzer->tree().rootId());
+        QVERIFY(root.has_value());
+        QCOMPARE(root->state(), streamview::core::MaterializationState::Materialized);
+
+        const auto node0 = analyzer->tree().node(batch.frameNodes[0]);
+        QVERIFY(node0.has_value());
+        QCOMPARE(node0->state(), streamview::core::MaterializationState::Materialized);
+
+        const auto node1 = analyzer->tree().node(batch.frameNodes[1]);
+        QVERIFY(node1.has_value());
+        QCOMPARE(node1->state(), streamview::core::MaterializationState::Invalid);
+        QVERIFY(!node1->diagnostics().empty());
+        QCOMPARE(node1->diagnostics().front().code, streamview::core::DiagnosticCode::TruncatedSource);
+        QCOMPARE(node1->diagnostics().front().severity, streamview::core::DiagnosticSeverity::Warning);
+        QCOMPARE(node1->diagnostics().front().message, QStringLiteral("ADTS frame payload is truncated at EOF"));
+
+        // Header structure node inside truncated frame is fully materialized
         QCOMPARE(node1->children().size(), std::size_t(1));
+        const auto header1 = analyzer->tree().node(node1->children()[0]);
+        QVERIFY(header1.has_value());
+        QCOMPARE(header1->name(), QStringLiteral("AdtsHeader"));
+        QCOMPARE(header1->state(), streamview::core::MaterializationState::Materialized);
+    }
 
-        const auto headerNode = analyzer->tree().node(node1->children()[0]);
-        QVERIFY(headerNode.has_value());
-        QCOMPARE(headerNode->name(), QStringLiteral("AdtsHeader"));
-        QCOMPARE(headerNode->children().size(), std::size_t(4));
+    void handlesTrailingGarbageSmallerThanHeader() {
+        std::vector<std::byte> stream;
+        const auto f1 = makeAdtsFrame(150, true);
+        stream.insert(stream.end(), f1.begin(), f1.end());
+        // 4 trailing bytes (< 7 bytes header)
+        stream.push_back(std::byte{0xFF});
+        stream.push_back(std::byte{0xF1});
+        stream.push_back(std::byte{0x00});
+        stream.push_back(std::byte{0x00});
 
-        const auto syncword = analyzer->tree().node(headerNode->children()[0]);
-        QVERIFY(syncword.has_value());
-        QCOMPARE(syncword->name(), QStringLiteral("syncword"));
-        QCOMPARE(syncword->value().toULongLong(), quint64(4095));
+        const MemorySource source(std::move(stream));
+        QString error;
+        auto analyzer = streamview::rules::AacAdtsAnalyzer::create(source, &error);
+        QVERIFY2(analyzer.has_value(), qPrintable(error));
 
-        const auto id = analyzer->tree().node(headerNode->children()[1]);
-        QVERIFY(id.has_value());
-        QCOMPARE(id->name(), QStringLiteral("id"));
-        QCOMPARE(id->value().toULongLong(), quint64(0));
+        const auto batch = analyzer->analyzeBatch();
+        QVERIFY(batch.complete());
+        QCOMPARE(batch.frameNodes.size(), std::size_t(1));
+        QVERIFY(analyzer->finished());
 
-        const auto layer = analyzer->tree().node(headerNode->children()[2]);
-        QVERIFY(layer.has_value());
-        QCOMPARE(layer->name(), QStringLiteral("layer"));
-        QCOMPARE(layer->value().toULongLong(), quint64(0));
+        const auto root = analyzer->tree().node(analyzer->tree().rootId());
+        QVERIFY(root.has_value());
+        QCOMPARE(root->state(), streamview::core::MaterializationState::Materialized);
+    }
 
-        const auto protectionAbsent = analyzer->tree().node(headerNode->children()[3]);
-        QVERIFY(protectionAbsent.has_value());
-        QCOMPARE(protectionAbsent->name(), QStringLiteral("protection_absent"));
-        QCOMPARE(protectionAbsent->value().toULongLong(), quint64(1));
+    void resynchronizesAcrossCorruptedByteSpan() {
+        std::vector<std::byte> stream;
+        const auto f1 = makeAdtsFrame(100, true);
+        const auto f2 = makeAdtsFrame(100, true);
+        stream.insert(stream.end(), f1.begin(), f1.end());
+        // Corrupt gap of 20 bytes
+        for (int i = 0; i < 20; ++i) {
+            stream.push_back(std::byte{0xAA});
+        }
+        stream.insert(stream.end(), f2.begin(), f2.end());
+
+        const MemorySource source(std::move(stream));
+        QString error;
+        auto analyzer = streamview::rules::AacAdtsAnalyzer::create(source, &error);
+        QVERIFY2(analyzer.has_value(), qPrintable(error));
+
+        const auto batch = analyzer->analyzeBatch();
+        QVERIFY(batch.complete());
+        QCOMPARE(batch.frameNodes.size(), std::size_t(2));
+        QVERIFY(analyzer->finished());
+
+        const auto node0 = analyzer->tree().node(batch.frameNodes[0]);
+        QVERIFY(node0.has_value());
+        QCOMPARE(node0->state(), streamview::core::MaterializationState::Materialized);
+
+        const auto node1 = analyzer->tree().node(batch.frameNodes[1]);
+        QVERIFY(node1.has_value());
+        QCOMPARE(node1->state(), streamview::core::MaterializationState::Materialized);
     }
 
     void respectsBatchLimits() {
@@ -222,20 +407,9 @@ private slots:
         stream.insert(stream.end(), f2.begin(), f2.end());
         stream.insert(stream.end(), f3.begin(), f3.end());
 
-        auto loadedPkg = makeTestAacPackage();
-        QVERIFY2(loadedPkg.succeeded(), qPrintable(loadedPkg.errorMessage));
-        const auto identity = loadedPkg.package->identity();
-
-        streamview::rules::RulePackageCatalog catalog;
-        QVERIFY(catalog.registerPackage(std::move(*loadedPkg.package)).succeeded());
-        const auto resolved = catalog.resolve(
-            identity, QStringLiteral("adts"),
-            streamview::rules::languageVersion(), streamview::core::version());
-        QVERIFY(resolved.succeeded());
-
         const MemorySource source(std::move(stream));
         QString error;
-        auto analyzer = streamview::rules::AacAdtsAnalyzer::create(source, resolved, &error);
+        auto analyzer = streamview::rules::AacAdtsAnalyzer::create(source, &error);
         QVERIFY2(analyzer.has_value(), qPrintable(error));
 
         const auto b1 = analyzer->analyzeBatch(1);
@@ -259,22 +433,11 @@ private slots:
             stream.insert(stream.end(), f.begin(), f.end());
         }
 
-        auto loadedPkg = makeTestAacPackage();
-        QVERIFY2(loadedPkg.succeeded(), qPrintable(loadedPkg.errorMessage));
-        const auto identity = loadedPkg.package->identity();
-
-        streamview::rules::RulePackageCatalog catalog;
-        QVERIFY(catalog.registerPackage(std::move(*loadedPkg.package)).succeeded());
-        const auto resolved = catalog.resolve(
-            identity, QStringLiteral("adts"),
-            streamview::rules::languageVersion(), streamview::core::version());
-        QVERIFY(resolved.succeeded());
-
         const MemorySource source(std::move(stream));
         streamview::core::CancellationSource cancelSource;
         QString error;
         auto analyzer = streamview::rules::AacAdtsAnalyzer::create(
-            source, resolved, &error, cancelSource.token());
+            source, &error, cancelSource.token());
         QVERIFY2(analyzer.has_value(), qPrintable(error));
 
         (void)cancelSource.requestCancellation();
@@ -289,18 +452,8 @@ private slots:
 
     void handlesInvalidBatchSize() {
         const MemorySource source(std::vector<std::byte>{std::byte{0x00}});
-        auto loadedPkg = makeTestAacPackage();
-        QVERIFY(loadedPkg.succeeded());
-        const auto identity = loadedPkg.package->identity();
-
-        streamview::rules::RulePackageCatalog catalog;
-        QVERIFY(catalog.registerPackage(std::move(*loadedPkg.package)).succeeded());
-        const auto resolved = catalog.resolve(
-            identity, QStringLiteral("adts"),
-            streamview::rules::languageVersion(), streamview::core::version());
-        QVERIFY(resolved.succeeded());
-
-        auto analyzer = streamview::rules::AacAdtsAnalyzer::create(source, resolved);
+        QString error;
+        auto analyzer = streamview::rules::AacAdtsAnalyzer::create(source, &error);
         QVERIFY(analyzer.has_value());
 
         const auto b1 = analyzer->analyzeBatch(0, 100);
