@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Specify and implement user data unregistered SEI message decoding (Task T8 / package 0.1.33 / ADR-0082)
-Next Action: Specify and implement user data registered ITU-T T.35 SEI message decoding (Task T9 / package 0.1.34 / ADR-0083); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31861503655 (Ubuntu job 94955623663, macOS job 94955623587, Windows job 94955623627) passed 100%
+Last Completed Step: Specify and implement user data registered ITU-T T.35 SEI message decoding (Task T9 / package 0.1.34 / ADR-0083)
+Next Action: Specify and implement buffering period SEI message decoding (Task T10 / package 0.1.35 / ADR-0084); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31862532299 (Ubuntu job 94958276145, macOS job 94958276179, Windows job 94958276153) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1234,3 +1234,25 @@ Blockers: None
      - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
      - hosted run `31861503655` 在 Ubuntu 24.04 / Qt 6.11.1（job `94955623663`）、macOS 15 / Qt 6.11.1（job `94955623587`）、Windows 2022 / Qt 6.10.1（job `94955623627`）全部成功。
   Next Action 指向 Task T9（user_data_registered_itu_t_t35 SEI payload parsing）。
+- 2026-08-15：完成 ITU-T T.35 建议书注册用户数据 SEI 消息（User Data Registered by Recommendation ITU-T T.35 SEI, payload_type == 4）结构化解码（任务 T9 / ADR-0083 / 包版本 0.1.34）。
+  1. 官方规则包（`src/rules/official/org.streamview.h264/src/h264_annex_b.svfmt`）：
+     - 在 `SeiRbsp` 的 `switch (payload_type)` 中新增 `case 4` 分支解码 ITU-T T.35 注册用户数据；
+     - 解析 8 比特国家代码 `bits<8> itu_t_t35_country_code`；
+     - 当 `itu_t_t35_country_code == 255` 时，解析扩展国家代码 `bits<8> itu_t_t35_country_code_extension_byte` 与动态延迟载荷字节 `@lazy(payload_size - 2) bytes itu_t_t35_extension_payload_byte`；
+     - 当国家代码不为 255 时，解析动态延迟载荷字节 `@lazy(payload_size - 1) bytes itu_t_t35_payload_byte`；
+     - 当 payload_size 不足（标准分支 < 1 或扩展分支 < 2）时触发算术减法下溢保护生成语法错误并安全回滚事务；
+     - `rule.toml` 包版本升级至 `0.1.34`。
+  2. 自动化测试套件（`tests/rules/h264_annex_b_analyzer_test.cpp`）：
+     - 新增 6 个针对性测试用例：
+       - `decodesUserDataRegisteredItuTT35SeiMessageWithoutExtensionByte`（标准国家代码 0xb5 + 6 字节载荷解析，断言完整有序子节点列表、逐字段值与 source span）；
+       - `decodesUserDataRegisteredItuTT35SeiMessageWithExtensionByte`（扩展国家代码 255 + 扩展字节 0x01 + 4 字节载荷解析，断言完整有序子节点列表与逐字段值）；
+       - `decodesUserDataRegisteredItuTT35SeiMessageWithZeroLengthPayload`（标准 payload_size == 1 与扩展 payload_size == 2 时 0 长度载荷区域边界物化）；
+       - `decodesMultipleSeiMessagesContainingUserDataRegisteredAndRecoveryPoint`（同一 NAL 内 T.35 + recovery_point 混合多 SEI 消息按顺序完整解析与有序子节点列表断言）；
+       - `reportsInvalidSyntaxForUserDataRegisteredWithPayloadSizeUnderflow`（payload_size == 0 与 payload_size == 1 配合 country_code == 255 减法下溢安全回滚与报错）；
+       - `reportsTruncatedUserDataRegisteredSeiPayloadAndContinues`（截断 T.35 载荷码流安全回滚并继续后续 NAL）。
+  3. 测试与验证：
+     - `svtool rule check` 通过；
+     - H.264 analyzer 套件增至 147 测试方法（149/149 包含 fixture setup）；DSL parser 77/77、DSL IR 77/77、executor 135/135 全部通过；
+     - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
+     - hosted run `31862532299` 在 Ubuntu 24.04 / Qt 6.11.1（job `94958276145`）、macOS 15 / Qt 6.11.1（job `94958276179`）、Windows 2022 / Qt 6.10.1（job `94958276153`）全部成功。
+  Next Action 指向 Task T10（buffering_period SEI payload parsing）。
