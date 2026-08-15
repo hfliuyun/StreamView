@@ -78,6 +78,8 @@ probe_sei_recovery_point.svfmt:15:17: error: rbsp_trailing_bits must occur once 
 3. **DSL 条件尾部对齐支持**：
    允许 `rbsp_trailing_bits;` 作为结构体内条件分支的终止语句。编译器将其 lower 为受分支条件与迭代索引保护的 `ReadRbspTrailingBits`，VM 仅在分支激活时执行 stop bit 与对齐零位的读取。
 
+   > *架构说明*：决策 3 属于任务内直接包含的 DSL 语言能力扩展。为保证后续架构清晰性，在后续 SEI 载荷任务（T8–T12）中，任何探测出的新 DSL 语言能力均须遵循先能力（独立探测/ADR 与能力切片实现）后规则消费的两段式开发流程。
+
 4. **规则包版本**：
    将 `org.streamview.h264` 规则包版本从 `0.1.31` 升级至 `0.1.32`。
 

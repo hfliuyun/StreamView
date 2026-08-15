@@ -99,6 +99,11 @@ which consumes exactly `payload_size` bytes and keeps unhandled messages opaque.
    the branch condition and iteration indices, and the VM executes the stop bit
    and zero alignment bit reads only when the branch is active.
 
+   > *Architectural Note*: Decision 3 represents an embedded DSL capability enhancement
+   > bundled within this task. For subsequent tasks (T8–T12), any new DSL capabilities
+   > identified during probing must follow the two-stage capability-first pattern
+   > (independent probe/ADR and capability implementation prior to rule consumption).
+
 4. **Package Version**:
    Upgrade `org.streamview.h264` package version from `0.1.31` to `0.1.32`.
 
