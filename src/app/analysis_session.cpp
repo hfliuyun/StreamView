@@ -71,13 +71,15 @@ AnalysisSession::AnalysisSession(std::unique_ptr<core::RandomAccessSource> sourc
                                  QString sourcePath,
                                  core::SourcePage initialPage,
                                  rules::H264AnnexBDetectionResult formatDetection,
-                                 rules::H264AnnexBAnalyzer analyzer,
+                                 rules::AacAdtsDetectionResult aacFormatDetection,
+                                 std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer> analyzer,
                                  SessionUserState userState,
                                  std::unique_ptr<rules::AnalysisCacheOwner> cacheOwner,
                                  AnalysisSessionCacheStatus cacheStatus,
                                  QString cacheErrorMessage)
     : source_(std::move(source)), sourcePath_(std::move(sourcePath)),
       initialPage_(std::move(initialPage)), formatDetection_(std::move(formatDetection)),
+      aacFormatDetection_(std::move(aacFormatDetection)),
       analyzer_(std::move(analyzer)), userState_(std::move(userState)),
       cacheOwner_(std::move(cacheOwner)), cacheStatus_(cacheStatus),
       cacheErrorMessage_(std::move(cacheErrorMessage)) {}
@@ -134,23 +136,87 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
         return nullptr;
     }
 
-    auto formatDetection =
-        rules::detectH264AnnexBCandidate(initialPage.bytes, source->sizeBytes());
-
+    rules::H264AnnexBDetectionResult formatDetection;
+    rules::AacAdtsDetectionResult aacFormatDetection;
+    std::optional<std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer>> analyzerVariant;
     QString analyzerError;
-    auto analyzer = resolvedRule == nullptr
-                        ? rules::H264AnnexBAnalyzer::create(*source, &analyzerError)
-                        : rules::H264AnnexBAnalyzer::create(*source, *resolvedRule,
-                                                           &analyzerError);
-    if (!analyzer) {
-        if (errorMessage != nullptr) {
-            *errorMessage = analyzerError;
+
+    if (resolvedRule != nullptr) {
+        if (resolvedRule->package->manifest().packageId == QStringLiteral("org.streamview.aac") ||
+            (resolvedRule->entryPoint &&
+             resolvedRule->entryPoint->format == QStringLiteral("audio.aac.adts"))) {
+            aacFormatDetection =
+                rules::detectAacAdtsCandidate(initialPage.bytes, source->sizeBytes());
+            auto aacAnalyzer =
+                rules::AacAdtsAnalyzer::create(*source, *resolvedRule, &analyzerError);
+            if (!aacAnalyzer) {
+                if (errorMessage != nullptr) {
+                    *errorMessage = analyzerError;
+                }
+                return nullptr;
+            }
+            analyzerVariant.emplace(std::move(*aacAnalyzer));
+        } else {
+            formatDetection =
+                rules::detectH264AnnexBCandidate(initialPage.bytes, source->sizeBytes());
+            auto h264Analyzer =
+                rules::H264AnnexBAnalyzer::create(*source, *resolvedRule, &analyzerError);
+            if (!h264Analyzer) {
+                if (errorMessage != nullptr) {
+                    *errorMessage = analyzerError;
+                }
+                return nullptr;
+            }
+            analyzerVariant.emplace(std::move(*h264Analyzer));
         }
-        return nullptr;
+    } else {
+        formatDetection =
+            rules::detectH264AnnexBCandidate(initialPage.bytes, source->sizeBytes());
+        aacFormatDetection =
+            rules::detectAacAdtsCandidate(initialPage.bytes, source->sizeBytes());
+
+        const auto aacConf = aacFormatDetection.candidate
+                                 ? std::optional(aacFormatDetection.candidate->confidence)
+                                 : std::nullopt;
+        const auto h264Conf = formatDetection.candidate
+                                  ? std::optional(formatDetection.candidate->confidence)
+                                  : std::nullopt;
+
+        bool chooseAac = false;
+        if (aacConf == rules::AacAdtsDetectionConfidence::Strong) {
+            chooseAac = true;
+        } else if (aacConf == rules::AacAdtsDetectionConfidence::Probable &&
+                   h264Conf != rules::H264AnnexBDetectionConfidence::Strong &&
+                   h264Conf != rules::H264AnnexBDetectionConfidence::Probable) {
+            chooseAac = true;
+        }
+
+        if (chooseAac) {
+            auto aacAnalyzer = rules::AacAdtsAnalyzer::create(*source, &analyzerError);
+            if (!aacAnalyzer) {
+                if (errorMessage != nullptr) {
+                    *errorMessage = analyzerError;
+                }
+                return nullptr;
+            }
+            analyzerVariant.emplace(std::move(*aacAnalyzer));
+        } else {
+            auto h264Analyzer = rules::H264AnnexBAnalyzer::create(*source, &analyzerError);
+            if (!h264Analyzer) {
+                if (errorMessage != nullptr) {
+                    *errorMessage = analyzerError;
+                }
+                return nullptr;
+            }
+            analyzerVariant.emplace(std::move(*h264Analyzer));
+        }
     }
 
+    const auto& ruleIdent = std::visit(
+        [](const auto& a) -> const rules::RuleEntryPointIdentity& { return a.ruleIdentity(); },
+        *analyzerVariant);
     SessionCacheSetup cacheSetup =
-        setupSessionCache(*source, analyzer->ruleIdentity(), std::move(cacheOptions),
+        setupSessionCache(*source, ruleIdent, std::move(cacheOptions),
                           std::move(verifiedFingerprint));
 
     if (errorMessage != nullptr) {
@@ -158,9 +224,10 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
     }
     return std::unique_ptr<AnalysisSession>(
         new AnalysisSession(std::move(source), std::move(sourcePath), std::move(initialPage),
-                            std::move(formatDetection), std::move(*analyzer),
-                            std::move(userState), std::move(cacheSetup.owner),
-                            cacheSetup.status, std::move(cacheSetup.errorMessage)));
+                            std::move(formatDetection), std::move(aacFormatDetection),
+                            std::move(*analyzerVariant), std::move(userState),
+                            std::move(cacheSetup.owner), cacheSetup.status,
+                            std::move(cacheSetup.errorMessage)));
 }
 
 AnalysisSessionRestoreResult
@@ -269,10 +336,22 @@ rules::H264AnnexBAnalysisBatch AnalysisSession::analyzeBatch(
     std::size_t maximumRecords, quint64 maximumInspectedPositions) {
     analysisStarted_ = true;
     pollCacheWrites();
-    rules::H264AnnexBAnalysisBatch batch =
-        analyzer_.analyzeBatch(maximumRecords, maximumInspectedPositions);
-    publishCachePages(batch);
-    return batch;
+    if (std::holds_alternative<rules::H264AnnexBAnalyzer>(analyzer_)) {
+        auto& h264 = std::get<rules::H264AnnexBAnalyzer>(analyzer_);
+        rules::H264AnnexBAnalysisBatch batch =
+            h264.analyzeBatch(maximumRecords, maximumInspectedPositions);
+        publishCachePages(batch);
+        return batch;
+    } else {
+        auto& aac = std::get<rules::AacAdtsAnalyzer>(analyzer_);
+        auto aacBatch = aac.analyzeBatch(maximumRecords, maximumInspectedPositions);
+        rules::H264AnnexBAnalysisBatch batch;
+        batch.status = static_cast<rules::H264AnnexBAnalysisStatus>(aacBatch.status);
+        batch.nalUnitNodes = aacBatch.frameNodes;
+        batch.errorMessage = aacBatch.errorMessage;
+        publishCachePages(batch);
+        return batch;
+    }
 }
 
 void AnalysisSession::pollCacheWrites() {
@@ -325,14 +404,14 @@ void AnalysisSession::publishCachePages(const rules::H264AnnexBAnalysisBatch& ba
         }
         acceptCacheWrite(std::move(submitted));
     }
-    if (cacheStatus_ != AnalysisSessionCacheStatus::Active || !analyzer_.finished() ||
+    if (cacheStatus_ != AnalysisSessionCacheStatus::Active || !finished() ||
         materializedCacheSubmitted_) {
         return;
     }
 
     materializedCacheSubmitted_ = true;
     rules::MaterializedResultCacheExportResult exported =
-        rules::exportMaterializedResultCachePages(analyzer_.tree(), 0);
+        rules::exportMaterializedResultCachePages(tree(), 0);
     if (!exported.succeeded()) {
         disableCache(exported.errorMessage);
         return;

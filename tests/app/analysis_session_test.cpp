@@ -648,6 +648,45 @@ private slots:
         QVERIFY(session->cacheErrorMessage().contains(QStringLiteral("after analysis")));
         QVERIFY(!session->cacheWritesPending());
     }
+
+    void opensAndAnalyzesAacAdtsStreamPolymorphically() {
+        auto makeFrame = [](quint16 frameLength) {
+            std::vector<std::byte> frame(frameLength, std::byte{0x55});
+            frame[0] = std::byte{0xFF};
+            frame[1] = std::byte{0xF1};
+            frame[2] = std::byte{0x50};
+            frame[3] = std::byte{static_cast<quint8>(0x80U | ((frameLength >> 11U) & 0x03U))};
+            frame[4] = std::byte{static_cast<quint8>((frameLength >> 3U) & 0xFFU)};
+            frame[5] = std::byte{static_cast<quint8>(((frameLength & 0x07U) << 5U) | 0x1FU)};
+            frame[6] = std::byte{0xFC};
+            return frame;
+        };
+
+        std::vector<std::byte> aacBytes;
+        const auto f1 = makeFrame(150);
+        const auto f2 = makeFrame(200);
+        const auto f3 = makeFrame(180);
+        aacBytes.insert(aacBytes.end(), f1.begin(), f1.end());
+        aacBytes.insert(aacBytes.end(), f2.begin(), f2.end());
+        aacBytes.insert(aacBytes.end(), f3.begin(), f3.end());
+
+        QString errorMessage;
+        auto session = AnalysisSession::create(
+            std::make_unique<MemorySource>(std::move(aacBytes)),
+            &errorMessage);
+
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+        QVERIFY(session->aacFormatDetection().candidate.has_value());
+        QCOMPARE(session->aacFormatDetection().candidate->confidence,
+                 streamview::rules::AacAdtsDetectionConfidence::Strong);
+        QCOMPARE(session->ruleIdentity().packageIdentity().packageId(), QStringLiteral("org.streamview.aac"));
+        QCOMPARE(session->ruleIdentity().entryPointId(), QStringLiteral("adts-stream"));
+
+        const auto batch = session->analyzeBatch();
+        QCOMPARE(batch.status, streamview::rules::H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(3));
+        QVERIFY(session->finished());
+    }
 };
 
 QTEST_GUILESS_MAIN(AnalysisSessionTest)

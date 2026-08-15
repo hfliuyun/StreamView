@@ -5,6 +5,8 @@
 #include <streamview/core/analysis_model.h>
 #include <streamview/core/source.h>
 #include <streamview/core/source_pager.h>
+#include <streamview/rules/aac_adts_analyzer.h>
+#include <streamview/rules/aac_adts_detector.h>
 #include <streamview/rules/analysis_cache_owner.h>
 #include <streamview/rules/h264_annex_b_analyzer.h>
 #include <streamview/rules/h264_annex_b_detector.h>
@@ -17,6 +19,7 @@
 #include <future>
 #include <memory>
 #include <optional>
+#include <variant>
 #include <vector>
 
 namespace streamview::app {
@@ -68,15 +71,27 @@ public:
     [[nodiscard]] const rules::H264AnnexBDetectionResult& formatDetection() const noexcept {
         return formatDetection_;
     }
+    [[nodiscard]] const rules::AacAdtsDetectionResult& aacFormatDetection() const noexcept {
+        return aacFormatDetection_;
+    }
 
     [[nodiscard]] rules::H264AnnexBAnalysisBatch analyzeBatch(
         std::size_t maximumRecords = 256,
         quint64 maximumInspectedPositions = rules::H264StartCodeScanner::defaultWorkBudget());
-    [[nodiscard]] const core::AnalysisTree& tree() const noexcept { return analyzer_.tree(); }
-    [[nodiscard]] bool finished() const noexcept { return analyzer_.finished(); }
-    [[nodiscard]] quint64 scanCursor() const noexcept { return analyzer_.scanCursor(); }
+    [[nodiscard]] const core::AnalysisTree& tree() const noexcept {
+        return std::visit([](const auto& a) -> const core::AnalysisTree& { return a.tree(); },
+                          analyzer_);
+    }
+    [[nodiscard]] bool finished() const noexcept {
+        return std::visit([](const auto& a) -> bool { return a.finished(); }, analyzer_);
+    }
+    [[nodiscard]] quint64 scanCursor() const noexcept {
+        return std::visit([](const auto& a) -> quint64 { return a.scanCursor(); }, analyzer_);
+    }
     [[nodiscard]] const rules::RuleEntryPointIdentity& ruleIdentity() const noexcept {
-        return analyzer_.ruleIdentity();
+        return std::visit(
+            [](const auto& a) -> const rules::RuleEntryPointIdentity& { return a.ruleIdentity(); },
+            analyzer_);
     }
     [[nodiscard]] const SessionUserState& userState() const noexcept { return userState_; }
     [[nodiscard]] AnalysisSessionCacheStatus cacheStatus() const noexcept {
@@ -99,7 +114,8 @@ private:
                     QString sourcePath,
                     core::SourcePage initialPage,
                     rules::H264AnnexBDetectionResult formatDetection,
-                    rules::H264AnnexBAnalyzer analyzer,
+                    rules::AacAdtsDetectionResult aacFormatDetection,
+                    std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer> analyzer,
                     SessionUserState userState,
                     std::unique_ptr<rules::AnalysisCacheOwner> cacheOwner,
                     AnalysisSessionCacheStatus cacheStatus,
@@ -120,7 +136,8 @@ private:
     QString sourcePath_;
     core::SourcePage initialPage_;
     rules::H264AnnexBDetectionResult formatDetection_;
-    rules::H264AnnexBAnalyzer analyzer_;
+    rules::AacAdtsDetectionResult aacFormatDetection_;
+    std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer> analyzer_;
     SessionUserState userState_;
     std::unique_ptr<rules::AnalysisCacheOwner> cacheOwner_;
     std::vector<std::future<rules::AnalysisCacheOwnerWriteResult>> pendingCacheWrites_;

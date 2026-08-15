@@ -1,4 +1,6 @@
 add_library(streamview_rules STATIC
+    aac_adts_analyzer.cpp
+    aac_adts_detector.cpp
     aac_adts_scanner.cpp
     analysis_cache.cpp
     analysis_cache_owner.cpp
@@ -18,6 +20,8 @@ add_library(streamview_rules STATIC
     rule_package_store.cpp
     rule_package.cpp
     rule_execution_session.cpp
+    include/streamview/rules/aac_adts_analyzer.h
+    include/streamview/rules/aac_adts_detector.h
     include/streamview/rules/aac_adts_scanner.h
     include/streamview/rules/analysis_cache.h
     include/streamview/rules/analysis_cache_owner.h

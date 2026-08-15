@@ -85,6 +85,14 @@ streamview_add_rules_test(
     rules/aac_adts_scanner_test.cpp
 )
 streamview_add_rules_test(
+    streamview_aac_adts_detector_tests
+    rules/aac_adts_detector_test.cpp
+)
+streamview_add_rules_test(
+    streamview_aac_adts_analyzer_tests
+    rules/aac_adts_analyzer_test.cpp
+)
+streamview_add_rules_test(
     streamview_h264_annex_b_detector_tests
     rules/h264_annex_b_detector_test.cpp
 )
