@@ -200,6 +200,7 @@ context_value := "context_value" "(" [ identifier "," ] identifier ","
 header_value  := "header_value" "(" identifier ")"
 optional_value := "optional_value" "(" identifier "," expression ")"
 more_rbsp_data := "more_rbsp_data" "(" ")"
+byte_aligned  := "byte_aligned" "(" ")"
 switch        := "switch" "(" identifier ")" "{"
                  switch_case { switch_case } [ switch_default ] "}"
 switch_case   := "case" integer ":" "{" { struct_item } "}"
@@ -323,6 +324,11 @@ primary       := integer | "true" | "false" | identifier
   返回 false，多于八 bit 时返回 true；剩余一至八 bit 时，只有完整 remainder 恰好为 `1`
   后全零才返回 false。探测失败会沿用现有 truncated-source 或 source-error 状态传播，且
   cursor 不移动。
+- `byte_aligned()` 是不接受参数、类型为 `bool` 的保留码流位置谓词（ADR-0089）。它可用于
+  结构体执行期表达式（如 computed 字段、条件 guard、repeat 界限），但在 pure-function
+  body 中被拒绝。它在不推进 reader 的情况下评估当前逻辑坐标是否精确为 8 的倍数
+  （`(logicalStart + reader.position()) % 8 == 0`）。与 `if (!byte_aligned()) { rbsp_trailing_bits; }`
+  配合可实现条件性 SEI 载荷对齐。
 - 固定宽度数组按 `width * count` bit 参与静态对齐。小端数组的每个元素宽度必须是 8 的
   倍数，并且首元素必须从结构内的字节边界开始。`ue` 或 `se` 数组的总宽度未知，因此其
   后续小端字段与单个 Exp-Golomb 字段之后的小端字段一样会被拒绝。

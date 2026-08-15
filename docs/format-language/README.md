@@ -240,6 +240,7 @@ context_value := "context_value" "(" [ identifier "," ] identifier ","
 header_value  := "header_value" "(" identifier ")"
 optional_value := "optional_value" "(" identifier "," expression ")"
 more_rbsp_data := "more_rbsp_data" "(" ")"
+byte_aligned  := "byte_aligned" "(" ")"
 switch        := "switch" "(" identifier ")" "{"
                  switch_case { switch_case } [ switch_default ] "}"
 switch_case   := "case" integer ":" "{" { struct_item } "}"
@@ -399,6 +400,14 @@ The static rules for this subset are:
   complete remainder is `1` followed only by zero bits. A probe failure
   propagates the existing truncated-source or source-error status without
   moving the cursor.
+- `byte_aligned()` is a reserved source-position predicate with no arguments
+  and type `bool` (ADR-0089). It is accepted in structure execution expressions
+  (such as computed fields, conditional guards, and repeat bounds) but rejected
+  in pure-function bodies. It evaluates whether the current bit position in the
+  logical coordinate space is an exact multiple of 8 without advancing the
+  reader (`(logicalStart + reader.position()) % 8 == 0`). When paired with
+  `if (!byte_aligned()) { rbsp_trailing_bits; }`, it enables conditional SEI
+  payload alignment.
 - Fixed-width arrays contribute `width * count` bits to static alignment.
   Every element of a little-endian array must therefore have a byte-multiple
   width and the first element must begin at a structure-relative byte boundary.
