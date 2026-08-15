@@ -1196,7 +1196,7 @@ Blockers: None
      - 验证所有节点均具有完整有序子节点列表与准确 source spans。
   4. 测试与验证：
      - `svtool rule check` 通过；
-     - H.264 analyzer 套件增至 133/133；DSL parser 77/77、DSL IR 77/77、executor 127/127 全部通过；
+     - H.264 analyzer 套件为 131 测试用例（132/132 包含 fixture setup）；DSL parser 77/77、DSL IR 77/77、executor 134/134 全部通过；
      - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
      - hosted run `31824494864` 在 Ubuntu 24.04 / Qt 6.11.1（job `94845285948`）、macOS 15 / Qt 6.11.1（job `94845285989`）、Windows 2022 / Qt 6.10.1（job `94845286130`）全部成功。
   勾选阶段 3 第 3 项（所有 SEI 解析 payloadType/payloadSize）。Next Action 指向 Task T7。
@@ -1211,11 +1211,11 @@ Blockers: None
   3. 自动化测试套件：
      - `tests/rules/dsl_test.cpp`：覆盖条件分支内 `rbsp_trailing_bits` 的合法解析及非末尾位置报错；
      - `tests/rules/dsl_ir_test.cpp`：覆盖条件分支内 trailing bits 的条件与操作码编译；
-     - `tests/rules/dsl_executor_test.cpp`：覆盖条件命中与跳过两种执行路径及字段物化；
+     - `tests/rules/dsl_executor_test.cpp`：覆盖条件命中与跳过两种执行路径及字段物化；补充多字段 while-repeat 循环体内在后续字段处抵达 trailing bits 时的每迭代统一执行回归测试；
      - `tests/rules/h264_annex_b_analyzer_test.cpp`：新增 5 个针对性测试用例（单恢复点 SEI 完整有序子节点列表断言、多 bit Exp-Golomb recovery_frame_cnt、changing_slice_group_idc 越界非致命告警、recovery_point + user_data 混合多 SEI NAL、截断 recovery_point 码流安全回滚与后续 NAL 正常解析）。
   4. 测试与验证：
      - `svtool rule check` 通过；
-     - H.264 analyzer 套件增至 138/138；DSL parser 79/79、DSL IR 78/78、executor 135/135 全部通过；
+     - H.264 analyzer 套件增至 136 测试用例（137/137 包含 fixture setup）；DSL parser 77/77、DSL IR 77/77、executor 135/135 全部通过；
      - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
      - hosted run `31859117579` 在 Ubuntu 24.04 / Qt 6.11.1（job `94949154063`）、macOS 15 / Qt 6.11.1（job `94949153997`）、Windows 2022 / Qt 6.10.1（job `94949154008`）全部成功。
   Next Action 指向 Task T8（user_data_unregistered SEI payload parsing）。

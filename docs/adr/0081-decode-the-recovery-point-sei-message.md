@@ -38,9 +38,25 @@ $2k + 5$, which is never a multiple of 8. Therefore, a recovery point SEI messag
 payload always contains trailing alignment bits (`bit_equal_to_one` followed by
 0..6 `bit_equal_to_zero` bits) to reach the next byte boundary.
 
-To allow chained SEI messages within the same NAL unit to parse starting at clean
-byte boundaries and to accurately reflect the decoded recovery point semantics, the
-rule must decode the recovery point fields and consume the payload trailing bits.
+### Probe Results and DSL Capability Analysis
+
+Probing the recovery point structure in scratch with `svtool rule check` revealed that
+the DSL compiler previously rejected `rbsp_trailing_bits;` inside conditional branches:
+```text
+probe_sei_recovery_point.svfmt:15:17: error: rbsp_trailing_bits must occur once as the final top-level item
+```
+To express ITU-T H.264 clause 7.3.2.3.1 cleanly, `rbsp_trailing_bits;` must be permitted
+as the terminal item of a conditional branch or switch case, while remaining forbidden
+directly at repeat loop body top level.
+
+### Relationship with `payload_size`
+
+In standard H.264 streams, `payload_size` declared in `sei_message()` represents the byte
+size of the payload up to the byte boundary produced by payload trailing bits. When
+`payload_type == 6`, the structured fields and `rbsp_trailing_bits;` decode the message and
+align the bit reader with the byte boundary at the end of the message. Other SEI payload
+types that are not yet decoded structurally continue to use `@lazy(payload_size) bytes payload_data`,
+which consumes exactly `payload_size` bytes and keeps unhandled messages opaque.
 
 ## Decision
 
@@ -80,8 +96,8 @@ rule must decode the recovery point fields and consume the payload trailing bits
 3. **Conditional Trailing Bits Support in DSL**:
    Admit `rbsp_trailing_bits;` as the terminal statement of conditional branches
    inside structures. The compiler lowers it to `ReadRbspTrailingBits` guarded by
-   the branch condition, and the VM executes the stop bit and zero alignment bit
-   reads only when the branch is active.
+   the branch condition and iteration indices, and the VM executes the stop bit
+   and zero alignment bit reads only when the branch is active.
 
 4. **Package Version**:
    Upgrade `org.streamview.h264` package version from `0.1.31` to `0.1.32`.
@@ -93,11 +109,12 @@ rule must decode the recovery point fields and consume the payload trailing bits
 - SEI messages following a recovery point message in the same NAL unit begin at
   the correct byte boundary without bit drift.
 - Reserved values of `changing_slice_group_idc` (value 3) produce non-fatal
-  `invalid-syntax` diagnostics per ADR-0040 while keeping the payload materialized.
+  `invalid-syntax` warning diagnostics per ADR-0036 and ADR-0076 while keeping the payload materialized.
 - Unhandled SEI payload types remain safely opaque lazy byte regions.
 
 ## Follow-up
 
-- ADR-0040: Report ue Range Violations Without Stopping Decoding
-- ADR-0079: Encode Accumulated Byte Values With ff_coded
-- ADR-0080: Iterate Bounded Repeats Over RBSP Data
+- ADR-0036: Enforce Range and Equals Domain Contracts on Fields
+- ADR-0076: Signed Dynamic Range and Equals Domain Contracts
+- ADR-0079: Accumulate Multi-Byte Numerical Values Using ff_coded
+- ADR-0080: Bounded Iteration over RBSP Data with While-Repeat
