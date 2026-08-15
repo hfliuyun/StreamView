@@ -2551,17 +2551,6 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 }
                 if (item.kind == DslStructItemKind::RbspTrailingBits) {
                     constexpr quint64 reservedFieldCount = 8;
-                    if (!conditions.empty() || !repeatIndices.empty()) {
-                        addDiagnostic(
-                            result.diagnostics,
-                            DslDiagnosticCode::InvalidRbspTrailingBits,
-                            QStringLiteral(
-                                "rbsp_trailing_bits must be an unconditional top-level item"),
-                            item.range);
-                        tracker.exactBitOffset = std::nullopt;
-                        tracker.byteAligned = false;
-                        continue;
-                    }
                     const bool reservesADeclaredName =
                         std::any_of(declaredFieldNames.begin(),
                                     declaredFieldNames.end(),
@@ -2603,10 +2592,14 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                               : QStringLiteral(
                                                     "rbsp_alignment_zero_bit[%1]")
                                                     .arg(index - 1);
+                        for (const quint64 repeatIndex : repeatIndices) {
+                            typedField.name += QStringLiteral("[%1]").arg(repeatIndex);
+                        }
                         typedField.type = {DslValueTypeKind::UnsignedBits,
                                            quint8(1),
                                            DslEndian::Big,
                                            std::nullopt};
+                        typedField.conditions = conditions;
                         typedField.equalsConstraint = index == 0 ? quint64(1) : quint64(0);
                         typedField.metadata.typeName = QStringLiteral("bits");
                         typedField.metadata.specification = core::AnalysisSpecification{

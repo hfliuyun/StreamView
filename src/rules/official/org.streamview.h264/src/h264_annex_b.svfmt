@@ -729,10 +729,26 @@ struct SeiRbsp {
         ff_coded<64> payload_size
             @spec("ITU-T H.264", "7.3.2.3.1")
             @description("Specifies the SEI message payload byte size.");
-        @lazy(payload_size)
-        bytes payload_data
-            @spec("ITU-T H.264", "7.3.2.3.1")
-            @description("Carries the raw SEI message payload bytes.");
+        if (payload_type == 6) {
+            ue recovery_frame_cnt
+                @spec("ITU-T H.264", "D.1.7, D.2.7")
+                @description("Specifies the recovery frame count.");
+            bits<1> exact_match_flag
+                @spec("ITU-T H.264", "D.1.7, D.2.7")
+                @description("Indicates whether decoding provides an exact match.");
+            bits<1> broken_link_flag
+                @spec("ITU-T H.264", "D.1.7, D.2.7")
+                @description("Indicates whether the previous reference pictures may be missing.");
+            bits<2> changing_slice_group_idc @range(0, 2)
+                @spec("ITU-T H.264", "D.1.7, D.2.7")
+                @description("Indicates whether changing slice groups are present.");
+            rbsp_trailing_bits;
+        } else {
+            @lazy(payload_size)
+            bytes payload_data
+                @spec("ITU-T H.264", "7.3.2.3.1")
+                @description("Carries the raw SEI message payload bytes.");
+        }
     }
     rbsp_trailing_bits;
 }

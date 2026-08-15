@@ -7413,6 +7413,68 @@ private slots:
         QCOMPARE(result.status, DslExecutionStatus::InvalidSyntax);
         QVERIFY(result.errorMessage.contains(QStringLiteral("While repeat did not terminate")));
     }
+
+    void executesRbspTrailingBitsInsideConditionalBranchWhenSelectedAndSkipsWhenAbsent() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct S {
+                bits<8> type;
+                if (type == 6) {
+                    bits<4> recovery;
+                    rbsp_trailing_bits;
+                } else {
+                    bits<8> other;
+                }
+            }
+            entry S;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        // Case 1: type == 6. Payload is: type (0x06), recovery (4 bits = 0x0A high nibble), stop bit (1) + 3 zero bits (0x08 low nibble -> byte is 0xA8).
+        {
+            MemorySource source(bytes({0x06, 0xa8}));
+            const auto mapping = mappingForBytes(2);
+            const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 16);
+            auto tree = AnalysisTree::create(QStringLiteral("test-taken"));
+            QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+            BitReader reader(source, *range);
+
+            const auto result = DslExecutor::decodeStruct(
+                *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::Materialized);
+            const auto structNode = tree->node(*result.structureNode);
+            QVERIFY(structNode.has_value());
+            // type + recovery + stop bit + 3 alignment zero bits = 6 children
+            QCOMPARE(structNode->children().size(), std::size_t(6));
+            QCOMPARE(tree->node(structNode->children().at(0))->name(), QStringLiteral("type"));
+            QCOMPARE(tree->node(structNode->children().at(1))->name(), QStringLiteral("recovery"));
+            QCOMPARE(tree->node(structNode->children().at(2))->name(), QStringLiteral("rbsp_stop_one_bit"));
+            QCOMPARE(tree->node(structNode->children().at(3))->name(), QStringLiteral("rbsp_alignment_zero_bit[0]"));
+            QCOMPARE(tree->node(structNode->children().at(4))->name(), QStringLiteral("rbsp_alignment_zero_bit[1]"));
+            QCOMPARE(tree->node(structNode->children().at(5))->name(), QStringLiteral("rbsp_alignment_zero_bit[2]"));
+        }
+
+        // Case 2: type != 6 (type == 5). Payload is: type (0x05), other (0x42).
+        {
+            MemorySource source(bytes({0x05, 0x42}));
+            const auto mapping = mappingForBytes(2);
+            const auto range = SourceSpan::create(streamview::core::SourceBitAddress(0), 16);
+            auto tree = AnalysisTree::create(QStringLiteral("test-skipped"));
+            QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+            BitReader reader(source, *range);
+
+            const auto result = DslExecutor::decodeStruct(
+                *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::Materialized);
+            const auto structNode = tree->node(*result.structureNode);
+            QVERIFY(structNode.has_value());
+            // type + other = 2 children
+            QCOMPARE(structNode->children().size(), std::size_t(2));
+            QCOMPARE(tree->node(structNode->children().at(0))->name(), QStringLiteral("type"));
+            QCOMPARE(tree->node(structNode->children().at(1))->name(), QStringLiteral("other"));
+            QCOMPARE(tree->node(structNode->children().at(1))->value().toULongLong(), quint64(0x42));
+        }
+    }
 };
 
 QTEST_GUILESS_MAIN(DslExecutorTest)

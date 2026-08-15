@@ -2742,27 +2742,50 @@ DslExecutionResult DslVirtualMachine::execute(
         case DslOpcode::ReadRbspTrailingBits: {
             constexpr quint32 reservedFieldCount = 8;
             if (!result.structureNode || instruction.operand != nextFieldIndex ||
-                instruction.immediate != 0 || structure.fields.size() < reservedFieldCount ||
-                instruction.operand != structure.fields.size() - reservedFieldCount) {
+                instruction.immediate != 0 ||
+                instruction.operand + reservedFieldCount > structure.fields.size()) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Typed IR rbsp trailing-bits instruction is invalid"),
                             nullptr);
                 return result;
             }
 
+            const DslTypedField& firstField = structure.fields.at(instruction.operand);
+            if (firstField.conditions.empty() &&
+                instruction.operand != structure.fields.size() - reservedFieldCount) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed IR top-level rbsp trailing-bits instruction must be terminal"),
+                            nullptr);
+                return result;
+            }
+
+            const std::optional<bool> present =
+                conditionsPresent(firstField.conditions, &firstField, QStringLiteral("rbsp trailing bits"));
+            if (!present) {
+                return result;
+            }
+            if (!*present) {
+                nextFieldIndex += reservedFieldCount;
+                break;
+            }
+
             const auto validGeneratedField = [&](const DslTypedField& field,
                                                  DslTypedFieldKind expectedKind,
                                                  quint32 index) {
-                const QString expectedName =
+                const QString expectedBaseName =
                     index == 0 ? QStringLiteral("rbsp_stop_one_bit")
                                : QStringLiteral("rbsp_alignment_zero_bit[%1]").arg(index - 1);
-                return field.kind == expectedKind && field.name == expectedName &&
+                const bool nameMatches =
+                    field.name == expectedBaseName ||
+                    field.name.startsWith(expectedBaseName + QLatin1Char('['));
+                return field.kind == expectedKind && nameMatches &&
                        field.type.kind == DslValueTypeKind::UnsignedBits &&
                        field.type.bitWidth == 1 && field.type.endian == DslEndian::Big &&
                        !field.type.enumIndex &&
                        field.equalsConstraint == std::optional<quint64>(index == 0 ? 1 : 0) &&
                        !field.computedExpression && !field.lazyByteCountExpression &&
-                       field.conditions.empty() && field.metadata.typeName == QStringLiteral("bits") &&
+                       field.conditions.size() == firstField.conditions.size() &&
+                       field.metadata.typeName == QStringLiteral("bits") &&
                        field.metadata.specification &&
                        field.metadata.specification->standard == QStringLiteral("ITU-T H.264") &&
                        field.metadata.specification->clause == QStringLiteral("7.3.2.11");

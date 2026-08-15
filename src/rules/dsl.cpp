@@ -1522,16 +1522,17 @@ private:
         const auto validateTerminals = [&](const auto& self,
                                            const std::vector<DslStructItem>& items,
                                            bool topLevel,
+                                           bool inBranch,
                                            bool repeatLocal) -> void {
             for (std::size_t itemIndex = 0; itemIndex < items.size(); ++itemIndex) {
                 const DslStructItem& item = items.at(itemIndex);
                 if (item.kind == DslStructItemKind::RbspTrailingBits) {
                     ++trailingBitsCount;
-                    if (!topLevel || itemIndex + 1 != items.size() || trailingBitsCount > 1) {
+                    if ((!topLevel && !inBranch) || itemIndex + 1 != items.size()) {
                         result_.diagnostics.push_back(
                             {DslDiagnosticCode::InvalidRbspTrailingBits,
                              QStringLiteral(
-                                 "rbsp_trailing_bits must occur once as the final top-level item"),
+                                 "rbsp_trailing_bits must occur as the final item of a branch or structure"),
                              item.range});
                     }
                     continue;
@@ -1559,20 +1560,20 @@ private:
                     continue;
                 }
                 if (item.kind == DslStructItemKind::Conditional) {
-                    self(self, item.thenItems, false, repeatLocal);
-                    self(self, item.elseItems, false, repeatLocal);
+                    self(self, item.thenItems, false, true, repeatLocal);
+                    self(self, item.elseItems, false, true, repeatLocal);
                 } else if (item.kind == DslStructItemKind::Switch) {
                     for (const DslStructItem::SwitchArm& arm : item.switchArms) {
-                        self(self, arm.items, false, repeatLocal);
+                        self(self, arm.items, false, true, repeatLocal);
                     }
                 } else if (item.kind == DslStructItemKind::Repeat ||
                            item.kind == DslStructItemKind::SentinelRepeat ||
                            item.kind == DslStructItemKind::WhileRepeat) {
-                    self(self, item.repeatItems, false, true);
+                    self(self, item.repeatItems, false, false, true);
                 }
             }
         };
-        validateTerminals(validateTerminals, structure.items, true, false);
+        validateTerminals(validateTerminals, structure.items, true, false, false);
         if (trailingBitsCount != 0 && compressedPayloadCount != 0) {
             result_.diagnostics.push_back(
                 {DslDiagnosticCode::InvalidCompressedPayload,

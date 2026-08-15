@@ -312,6 +312,29 @@ struct SeiMessagePayload {
     return packAnnexBNal(0x06, std::move(bits), appendTrailingBits);
 }
 
+[[nodiscard]] std::vector<quint8> packRecoveryPointPayload(
+    quint64 recoveryFrameCnt,
+    bool exactMatchFlag,
+    bool brokenLinkFlag,
+    quint8 changingSliceGroupIdc) {
+    std::vector<bool> bits;
+    appendUnsignedExpGolomb(bits, recoveryFrameCnt);
+    bits.push_back(exactMatchFlag);
+    bits.push_back(brokenLinkFlag);
+    appendFixedBits(bits, changingSliceGroupIdc, 2);
+    bits.push_back(true);
+    while (bits.size() % 8 != 0) {
+        bits.push_back(false);
+    }
+    std::vector<quint8> payloadBytes(bits.size() / 8, 0);
+    for (std::size_t i = 0; i < bits.size(); ++i) {
+        if (bits.at(i)) {
+            payloadBytes[i / 8] |= static_cast<quint8>(1U << (7 - (i % 8)));
+        }
+    }
+    return payloadBytes;
+}
+
 [[nodiscard]] std::vector<std::byte> replaceCodewordBeforeNextNal(
     std::vector<std::byte> data,
     std::size_t sourceBitOffset,
@@ -8343,7 +8366,7 @@ private slots:
     void decodesMultipleSeiMessagesInSingleNalUnit() {
         const auto stream = packSeiNal({
             {5, {0xaa, 0xbb}},
-            {6, {0x01, 0x02, 0x03}}
+            {7, {0x01, 0x02, 0x03}}
         });
         MemorySource source(stream);
         QString errorMessage;
@@ -8411,7 +8434,7 @@ private slots:
 
         const auto type1 = fieldNamed(*sei, QStringLiteral("payload_type[1]"));
         QVERIFY(type1.has_value());
-        QCOMPARE(type1->value().toULongLong(), quint64(6));
+        QCOMPARE(type1->value().toULongLong(), quint64(7));
 
         const auto size1 = fieldNamed(*sei, QStringLiteral("payload_size[1]"));
         QVERIFY(size1.has_value());
@@ -8537,6 +8560,344 @@ private slots:
         appendFfCoded(truncatedBits, 20);
         appendFixedBits(truncatedBits, 0x11, 8);
         appendFixedBits(truncatedBits, 0x22, 8);
+        auto stream = packAnnexBNal(0x06, std::move(truncatedBits), false);
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x50}));
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+
+        const auto seiNal = analyzer->tree().node(batch.nalUnitNodes.at(0));
+        QVERIFY(seiNal.has_value());
+        QCOMPARE(seiNal->state(), MaterializationState::Invalid);
+
+        const auto audNal = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(audNal.has_value());
+        QCOMPARE(audNal->state(), MaterializationState::Materialized);
+    }
+
+    void decodesRecoveryPointSeiMessageWithExactMatch() {
+        const auto payloadBytes = packRecoveryPointPayload(0, true, false, 0);
+        const auto stream = packSeiNal({{6, payloadBytes}});
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->name(), QStringLiteral("SeiRbsp"));
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        const QStringList expectedChildren = {
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+            QStringLiteral("recovery_frame_cnt[0]"),
+            QStringLiteral("exact_match_flag[0]"),
+            QStringLiteral("broken_link_flag[0]"),
+            QStringLiteral("changing_slice_group_idc[0]"),
+            QStringLiteral("rbsp_stop_one_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[0][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1][0]"),
+            QStringLiteral("rbsp_stop_one_bit"),
+            QStringLiteral("rbsp_alignment_zero_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5]"),
+            QStringLiteral("rbsp_alignment_zero_bit[6]"),
+        };
+        QCOMPARE(childNamesOf(*sei), expectedChildren);
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        const auto recoveryFrameCnt = fieldNamed(*sei, QStringLiteral("recovery_frame_cnt[0]"));
+        QVERIFY(recoveryFrameCnt.has_value());
+        QCOMPARE(recoveryFrameCnt->value().toULongLong(), quint64(0));
+        QCOMPARE(recoveryFrameCnt->location()->logicalRange().bitLength(), quint64(1));
+        QCOMPARE(recoveryFrameCnt->metadata().specification->clause, QStringLiteral("D.1.7, D.2.7"));
+
+        const auto exactMatch = fieldNamed(*sei, QStringLiteral("exact_match_flag[0]"));
+        QVERIFY(exactMatch.has_value());
+        QCOMPARE(exactMatch->value().toULongLong(), quint64(1));
+        QCOMPARE(exactMatch->location()->logicalRange().bitLength(), quint64(1));
+        QCOMPARE(exactMatch->metadata().specification->clause, QStringLiteral("D.1.7, D.2.7"));
+
+        const auto brokenLink = fieldNamed(*sei, QStringLiteral("broken_link_flag[0]"));
+        QVERIFY(brokenLink.has_value());
+        QCOMPARE(brokenLink->value().toULongLong(), quint64(0));
+        QCOMPARE(brokenLink->location()->logicalRange().bitLength(), quint64(1));
+        QCOMPARE(brokenLink->metadata().specification->clause, QStringLiteral("D.1.7, D.2.7"));
+
+        const auto changingSliceGroup = fieldNamed(*sei, QStringLiteral("changing_slice_group_idc[0]"));
+        QVERIFY(changingSliceGroup.has_value());
+        QCOMPARE(changingSliceGroup->value().toULongLong(), quint64(0));
+        QCOMPARE(changingSliceGroup->location()->logicalRange().bitLength(), quint64(2));
+        QCOMPARE(changingSliceGroup->metadata().specification->clause, QStringLiteral("D.1.7, D.2.7"));
+
+        const auto payloadStopBit = fieldNamed(*sei, QStringLiteral("rbsp_stop_one_bit[0]"));
+        QVERIFY(payloadStopBit.has_value());
+        QCOMPARE(payloadStopBit->value().toULongLong(), quint64(1));
+        QCOMPARE(payloadStopBit->location()->logicalRange().bitLength(), quint64(1));
+
+        const auto payloadAlignBit0 = fieldNamed(*sei, QStringLiteral("rbsp_alignment_zero_bit[0][0]"));
+        QVERIFY(payloadAlignBit0.has_value());
+        QCOMPARE(payloadAlignBit0->value().toULongLong(), quint64(0));
+
+        const auto payloadAlignBit1 = fieldNamed(*sei, QStringLiteral("rbsp_alignment_zero_bit[1][0]"));
+        QVERIFY(payloadAlignBit1.has_value());
+        QCOMPARE(payloadAlignBit1->value().toULongLong(), quint64(0));
+    }
+
+    void decodesRecoveryPointSeiMessageWithMultiBitFrameCount() {
+        const auto payloadBytes = packRecoveryPointPayload(5, false, true, 2);
+        const auto stream = packSeiNal({{6, payloadBytes}});
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        const QStringList expectedChildren = {
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+            QStringLiteral("recovery_frame_cnt[0]"),
+            QStringLiteral("exact_match_flag[0]"),
+            QStringLiteral("broken_link_flag[0]"),
+            QStringLiteral("changing_slice_group_idc[0]"),
+            QStringLiteral("rbsp_stop_one_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[0][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5][0]"),
+            QStringLiteral("rbsp_stop_one_bit"),
+            QStringLiteral("rbsp_alignment_zero_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5]"),
+            QStringLiteral("rbsp_alignment_zero_bit[6]"),
+        };
+        QCOMPARE(childNamesOf(*sei), expectedChildren);
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        const auto payloadSize = fieldNamed(*sei, QStringLiteral("payload_size[0]"));
+        QVERIFY(payloadSize.has_value());
+        QCOMPARE(payloadSize->value().toULongLong(), quint64(2));
+
+        const auto recoveryFrameCnt = fieldNamed(*sei, QStringLiteral("recovery_frame_cnt[0]"));
+        QVERIFY(recoveryFrameCnt.has_value());
+        QCOMPARE(recoveryFrameCnt->value().toULongLong(), quint64(5));
+        QCOMPARE(recoveryFrameCnt->location()->logicalRange().bitLength(), quint64(5));
+
+        const auto exactMatch = fieldNamed(*sei, QStringLiteral("exact_match_flag[0]"));
+        QVERIFY(exactMatch.has_value());
+        QCOMPARE(exactMatch->value().toULongLong(), quint64(0));
+
+        const auto brokenLink = fieldNamed(*sei, QStringLiteral("broken_link_flag[0]"));
+        QVERIFY(brokenLink.has_value());
+        QCOMPARE(brokenLink->value().toULongLong(), quint64(1));
+
+        const auto changingSliceGroup = fieldNamed(*sei, QStringLiteral("changing_slice_group_idc[0]"));
+        QVERIFY(changingSliceGroup.has_value());
+        QCOMPARE(changingSliceGroup->value().toULongLong(), quint64(2));
+    }
+
+    void warnsOnOutOfRangeChangingSliceGroupIdentifierWithoutMovingPayloadBoundary() {
+        const auto payloadBytes = packRecoveryPointPayload(0, true, false, 3);
+        const auto stream = packSeiNal({{6, payloadBytes}});
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        const auto changingSliceGroup = fieldNamed(*sei, QStringLiteral("changing_slice_group_idc[0]"));
+        QVERIFY(changingSliceGroup.has_value());
+        QCOMPARE(changingSliceGroup->value().toULongLong(), quint64(3));
+        QVERIFY(changingSliceGroup->diagnostics().size() >= 1);
+        QCOMPARE(changingSliceGroup->diagnostics().front().code,
+                 streamview::core::DiagnosticCode::InvalidSyntax);
+        QCOMPARE(changingSliceGroup->diagnostics().front().severity,
+                 streamview::core::DiagnosticSeverity::Warning);
+    }
+
+    void decodesMultipleSeiMessagesContainingRecoveryPointAndUserData() {
+        const auto recoveryBytes = packRecoveryPointPayload(0, true, false, 0);
+        const auto stream = packSeiNal({
+            {6, recoveryBytes},
+            {5, {0xaa, 0xbb, 0xcc, 0xdd}}
+        });
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        const QStringList expectedChildren = {
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+            QStringLiteral("recovery_frame_cnt[0]"),
+            QStringLiteral("exact_match_flag[0]"),
+            QStringLiteral("broken_link_flag[0]"),
+            QStringLiteral("changing_slice_group_idc[0]"),
+            QStringLiteral("rbsp_stop_one_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[0][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1][0]"),
+            QStringLiteral("payload_type[1]"),
+            QStringLiteral("payload_size[1]"),
+            QStringLiteral("payload_data[1]"),
+            QStringLiteral("rbsp_stop_one_bit"),
+            QStringLiteral("rbsp_alignment_zero_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5]"),
+            QStringLiteral("rbsp_alignment_zero_bit[6]"),
+        };
+        QCOMPARE(childNamesOf(*sei), expectedChildren);
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        const auto type0 = fieldNamed(*sei, QStringLiteral("payload_type[0]"));
+        QVERIFY(type0.has_value());
+        QCOMPARE(type0->value().toULongLong(), quint64(6));
+
+        const auto recoveryFrameCnt = fieldNamed(*sei, QStringLiteral("recovery_frame_cnt[0]"));
+        QVERIFY(recoveryFrameCnt.has_value());
+        QCOMPARE(recoveryFrameCnt->value().toULongLong(), quint64(0));
+
+        const auto type1 = fieldNamed(*sei, QStringLiteral("payload_type[1]"));
+        QVERIFY(type1.has_value());
+        QCOMPARE(type1->value().toULongLong(), quint64(5));
+
+        const auto size1 = fieldNamed(*sei, QStringLiteral("payload_size[1]"));
+        QVERIFY(size1.has_value());
+        QCOMPARE(size1->value().toULongLong(), quint64(4));
+
+        const auto data1 = fieldNamed(*sei, QStringLiteral("payload_data[1]"));
+        QVERIFY(data1.has_value());
+        QCOMPARE(data1->location()->logicalRange().bitLength(), quint64(32));
+    }
+
+    void reportsTruncatedRecoveryPointSeiPayloadAndContinues() {
+        std::vector<bool> truncatedBits;
+        appendFfCoded(truncatedBits, 6);
+        appendFfCoded(truncatedBits, 2); // declared size 2 bytes, but only 1 byte provided
+        appendFixedBits(truncatedBits, 0x00, 8);
         auto stream = packAnnexBNal(0x06, std::move(truncatedBits), false);
         appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x50}));
 

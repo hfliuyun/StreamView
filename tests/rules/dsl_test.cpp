@@ -893,11 +893,8 @@ private slots:
             QStringLiteral(
                 "struct Payload { rbsp_trailing_bits; rbsp_trailing_bits; } entry Payload;"),
             QStringLiteral(
-                "struct Payload { bits<1> flag; if (flag) { rbsp_trailing_bits; } } "
+                "struct Payload { bits<1> flag; if (flag) { rbsp_trailing_bits; bits<1> extra; } } "
                 "entry Payload;"),
-            QStringLiteral(
-                "struct Payload { bits<1> flag; switch (flag) { "
-                "case 0: { rbsp_trailing_bits; } } } entry Payload;"),
             QStringLiteral(
                 "struct Payload { bits<1> count; repeat (count, 1) { "
                 "rbsp_trailing_bits; } } entry Payload;"),
@@ -2045,6 +2042,31 @@ private slots:
             "struct S { repeat (64) while (more_rbsp_data()) { } } entry S;"));
         QVERIFY(!emptyBody.succeeded());
         QVERIFY(hasDiagnostic(emptyBody, DslDiagnosticCode::InvalidCondition));
+    }
+
+    void parsesRbspTrailingBitsInsideConditionalBranch() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct S { "
+            "    bits<8> type; "
+            "    if (type == 6) { "
+            "        bits<4> payload; "
+            "        rbsp_trailing_bits; "
+            "    } "
+            "} entry S;"));
+        QVERIFY(result.succeeded());
+    }
+
+    void rejectsNonTerminalRbspTrailingBitsInsideConditionalBranch() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct S { "
+            "    bits<8> type; "
+            "    if (type == 6) { "
+            "        rbsp_trailing_bits; "
+            "        bits<4> extra; "
+            "    } "
+            "} entry S;"));
+        QVERIFY(!result.succeeded());
+        QVERIFY(hasDiagnostic(result, DslDiagnosticCode::InvalidRbspTrailingBits));
     }
 };
 

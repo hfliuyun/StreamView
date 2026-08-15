@@ -3199,6 +3199,37 @@ private slots:
         }
         QVERIFY(hasWhileRepeatAssertion);
     }
+
+    void compilesRbspTrailingBitsInsideConditionalBranch() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct S { "
+            "    bits<8> type; "
+            "    if (type == 6) { "
+            "        bits<4> recovery; "
+            "        rbsp_trailing_bits; "
+            "    } "
+            "} entry S;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const auto& s = compiled.program->structs.front();
+        // type (field 0) + recovery (field 1) + 8 trailing bits fields (fields 2..9) = 10 fields
+        QCOMPARE(s.fields.size(), std::size_t(10));
+        QCOMPARE(s.fields.at(2).name, QStringLiteral("rbsp_stop_one_bit"));
+        QCOMPARE(s.fields.at(2).conditions.size(), std::size_t(1));
+        QCOMPARE(s.fields.at(2).conditions.front().fieldIndex, quint32(0));
+        QCOMPARE(s.fields.at(2).conditions.front().expectedValue, quint64(6));
+
+        bool hasTrailingBitsOpcode = false;
+        for (const auto& instruction : compiled.program->bytecode) {
+            if (instruction.opcode == streamview::rules::DslOpcode::ReadRbspTrailingBits) {
+                hasTrailingBitsOpcode = true;
+                QCOMPARE(instruction.operand, quint32(2));
+            }
+        }
+        QVERIFY(hasTrailingBitsOpcode);
+    }
 };
 
 QTEST_GUILESS_MAIN(DslIrTest)
