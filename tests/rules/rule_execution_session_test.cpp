@@ -2187,6 +2187,115 @@ private slots:
             QCOMPARE(res.errorMessage, QStringLiteral("Imported context generation is unavailable"));
         }
     }
+
+    void materializesStructureWithUnaccessedAmbientImportWithoutContextAndIsolatesFailures() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps {
+                bits<8> id;
+                bits<8> val @context_export;
+            }
+
+            @context_import("h264-sps")
+            struct MultiBranchMessageContainer {
+                bits<8> msg_type;
+                switch (msg_type) {
+                    case 0: {
+                        bits<16> unaccessed_payload;
+                    }
+                    case 1: {
+                        bits<(context_value(h264_sps, val) + 1)> dependent_payload;
+                    }
+                    default: {
+                        bits<8> fallback_payload;
+                    }
+                }
+            }
+            entry MultiBranchMessageContainer;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const auto spsIndex = *compiled.program->structureIndex(QStringLiteral("Sps"));
+        const auto containerIndex =
+            *compiled.program->structureIndex(QStringLiteral("MultiBranchMessageContainer"));
+
+        auto tree = AnalysisTree::create(QStringLiteral("ambient-isolation-tree"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        // Stream layout:
+        // [0, 24): Message 0 (msg_type = 0, unaccessed_payload = 0x1234) -> 24 bits (3 bytes)
+        // [24, 40): Message 1 (msg_type = 1, dummy 8 bits) -> 16 bits (2 bytes)
+        // [40, 56): SPS 0 (id = 0, val = 7 -> 8-bit payload) -> 16 bits (2 bytes)
+        // [56, 72): Message 2 (msg_type = 1, dependent_payload = 0xAB) -> 16 bits (2 bytes)
+        // [72, 96): Message 3 (msg_type = 0, unaccessed_payload = 0x5678) -> 24 bits (3 bytes)
+        MemorySource source(bytes({
+            0x00, 0x12, 0x34, // [0, 24): msg_type=0, unaccessed_payload=0x1234
+            0x01, 0x00,       // [24, 40): msg_type=1, missing SPS
+            0x00, 0x07,       // [40, 56): SPS id=0, val=7
+            0x01, 0xAB,       // [56, 72): msg_type=1, dependent_payload=0xAB
+            0x00, 0x56, 0x78  // [72, 96): msg_type=0, unaccessed_payload=0x5678
+        }));
+
+        const auto msg0View = makeView(1, 0, 24);
+        const auto msg1View = makeView(2, 24, 16);
+        const auto spsView = makeView(3, 40, 16);
+        const auto msg2View = makeView(4, 56, 16);
+        const auto msg3View = makeView(5, 72, 24);
+        QVERIFY(msg0View.has_value() && msg1View.has_value() && spsView.has_value() &&
+                msg2View.has_value() && msg3View.has_value());
+
+        // (a) Message 0: branch does not evaluate context_value, materializes without preceding SPS
+        const auto msg0 = session.run(makeRequest(source, containerIndex, *msg0View, *tree));
+        QVERIFY2(msg0.materialized(), qPrintable(msg0.errorMessage));
+        QVERIFY(msg0.importedContexts.empty());
+        const auto msg0Node = tree->node(*msg0.execution.structureNode);
+        QVERIFY(msg0Node.has_value());
+        QCOMPARE(msg0Node->children().size(), std::size_t(2));
+        const auto unacc0Node = tree->node(msg0Node->children().at(1));
+        QVERIFY(unacc0Node.has_value());
+        QCOMPARE(unacc0Node->name(), QStringLiteral("unaccessed_payload"));
+        QCOMPARE(unacc0Node->value().toULongLong(), quint64(0x1234));
+
+        // (b) Message 1: branch evaluates context_value with no SPS, fails with DependencyUnavailable isolated to this message
+        const auto msg1 = session.run(makeRequest(source, containerIndex, *msg1View, *tree));
+        QCOMPARE(msg1.status, RuleExecutionStatus::DependencyUnavailable);
+        QCOMPARE(msg1.errorMessage,
+                 QStringLiteral("Imported context was not defined before this structure"));
+
+        // Register SPS 0
+        const auto sps = session.run(makeRequest(source, spsIndex, *spsView, *tree));
+        QVERIFY(sps.materialized());
+        QVERIFY(sps.publishedDefinition.has_value());
+
+        // (c) Message 2: branch evaluates context_value with SPS present, materializes and binds SPS
+        const auto msg2 = session.run(makeRequest(source, containerIndex, *msg2View, *tree));
+        QVERIFY2(msg2.materialized(), qPrintable(msg2.errorMessage));
+        QCOMPARE(msg2.importedContexts.size(), std::size_t(1));
+        QCOMPARE(msg2.importedContexts.front().definitionId, *sps.publishedDefinition);
+        const auto msg2Node = tree->node(*msg2.execution.structureNode);
+        QVERIFY(msg2Node.has_value());
+        QCOMPARE(msg2Node->children().size(), std::size_t(2));
+        const auto dep2Node = tree->node(msg2Node->children().at(1));
+        QVERIFY(dep2Node.has_value());
+        QCOMPARE(dep2Node->name(), QStringLiteral("dependent_payload"));
+        QCOMPARE(dep2Node->value().toULongLong(), quint64(0xAB));
+        QCOMPARE(dep2Node->location()->sourceSpans().front().bitLength(), quint64(8));
+
+        // (d) Message 3: followup unaccessed branch after SPS, materializes without attaching unused import
+        const auto msg3 = session.run(makeRequest(source, containerIndex, *msg3View, *tree));
+        QVERIFY2(msg3.materialized(), qPrintable(msg3.errorMessage));
+        QVERIFY(msg3.importedContexts.empty());
+        const auto msg3Node = tree->node(*msg3.execution.structureNode);
+        QVERIFY(msg3Node.has_value());
+        QCOMPARE(msg3Node->children().size(), std::size_t(2));
+        const auto unacc3Node = tree->node(msg3Node->children().at(1));
+        QVERIFY(unacc3Node.has_value());
+        QCOMPARE(unacc3Node->name(), QStringLiteral("unaccessed_payload"));
+        QCOMPARE(unacc3Node->value().toULongLong(), quint64(0x5678));
+    }
 };
 
 QTEST_APPLESS_MAIN(RuleExecutionSessionTest)
