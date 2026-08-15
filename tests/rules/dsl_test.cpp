@@ -263,6 +263,48 @@ private slots:
         }
     }
 
+    void parsesByteAlignedCall() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct Header { computed<bool> aligned = byte_aligned(); "
+            "computed<bool> needs_align = !byte_aligned(); "
+            "if (needs_align) { rbsp_trailing_bits; } } entry Header;"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        const auto& computed = result.program.structs.front().items.front().computed;
+        QCOMPARE(computed.expression.kind, DslExpressionKind::Call);
+        QCOMPARE(computed.expression.name, QStringLiteral("byte_aligned"));
+        QVERIFY(computed.expression.operands.empty());
+    }
+
+    void rejectsInvalidByteAlignedCalls() {
+        const std::vector<std::pair<QString, DslDiagnosticCode>> sources{
+            {QStringLiteral(
+                 "struct Header { computed<bool> value = byte_aligned(1); } "
+                 "entry Header;"),
+             DslDiagnosticCode::InvalidExpression},
+            {QStringLiteral(
+                 "struct Header { computed<u64> value = byte_aligned(); } "
+                 "entry Header;"),
+             DslDiagnosticCode::InvalidType},
+            {QStringLiteral(
+                 "pure bool inspect() { return byte_aligned(); } "
+                 "struct Header { bits<1> value; } entry Header;"),
+             DslDiagnosticCode::UnknownReference},
+            {QStringLiteral(
+                 "pure bool byte_aligned() { return true; } "
+                 "struct Header { bits<1> value; } entry Header;"),
+             DslDiagnosticCode::DuplicateName},
+        };
+        for (const auto& [source, expectedCode] : sources) {
+            const auto result = DslParser::parse(source);
+            QVERIFY(!result.succeeded());
+            QVERIFY(hasDiagnostic(result, expectedCode));
+        }
+    }
+
     void parsesSequenceElementHeaderValueLeaf() {
         const auto result = DslParser::parse(QStringLiteral(R"(
             struct NalUnitHeader {

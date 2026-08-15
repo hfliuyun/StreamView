@@ -813,6 +813,202 @@ private slots:
         }
     }
 
+    void evaluatesByteAlignedPredicateAcrossAlignedAndUnalignedBitPositions() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Payload {
+                bits<3> prefix;
+                computed<bool> aligned_at_3 = byte_aligned();
+                bits<5> fill_to_byte;
+                computed<bool> aligned_at_8 = byte_aligned();
+                bits<16> two_bytes;
+                computed<bool> aligned_at_24 = byte_aligned();
+                computed<bool> needs_trailing_bits = !byte_aligned();
+                if (needs_trailing_bits) {
+                    rbsp_trailing_bits;
+                }
+            }
+            entry Payload;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(parsed.succeeded());
+        QVERIFY(compiled.succeeded());
+
+        // Aligned case: 24 bits data (3 bytes)
+        MemorySource source(bytes({0xaa, 0xbb, 0xcc}));
+        const auto mapping = mappingForBytes(3);
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *mapping);
+        auto tree = AnalysisTree::create(QStringLiteral("byte-aligned-aligned"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                      quint32(0),
+                                                      reader,
+                                                      *mapping,
+                                                      0,
+                                                      *tree,
+                                                      tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(24));
+        QCOMPARE(reader.position(), quint64(24));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(7));
+
+        const auto alignedAt3 = tree->node(structure->children().at(1));
+        QVERIFY(alignedAt3.has_value());
+        QCOMPARE(alignedAt3->name(), QStringLiteral("aligned_at_3"));
+        QCOMPARE(alignedAt3->value().toBool(), false);
+
+        const auto alignedAt8 = tree->node(structure->children().at(3));
+        QVERIFY(alignedAt8.has_value());
+        QCOMPARE(alignedAt8->name(), QStringLiteral("aligned_at_8"));
+        QCOMPARE(alignedAt8->value().toBool(), true);
+
+        const auto alignedAt24 = tree->node(structure->children().at(5));
+        QVERIFY(alignedAt24.has_value());
+        QCOMPARE(alignedAt24->name(), QStringLiteral("aligned_at_24"));
+        QCOMPARE(alignedAt24->value().toBool(), true);
+
+        const auto needsTrailing = tree->node(structure->children().at(6));
+        QVERIFY(needsTrailing.has_value());
+        QCOMPARE(needsTrailing->name(), QStringLiteral("needs_trailing_bits"));
+        QCOMPARE(needsTrailing->value().toBool(), false);
+
+        // Unaligned case: 19 bits data + stop bit (1) + 4 alignment zero bits (0000) = 24 bits
+        const auto unalignedParsed = DslParser::parse(QStringLiteral(R"(
+            struct UnalignedPayload {
+                bits<19> data;
+                computed<bool> aligned_at_19 = byte_aligned();
+                computed<bool> needs_trailing_bits = !byte_aligned();
+                if (needs_trailing_bits) {
+                    rbsp_trailing_bits;
+                }
+            }
+            entry UnalignedPayload;
+        )"));
+        const auto unalignedCompiled = DslCompiler::compile(unalignedParsed.program);
+        QVERIFY(unalignedParsed.succeeded());
+        QVERIFY(unalignedCompiled.succeeded());
+
+        // 19 bits = 0x12, 0x34, 0b111 (3 bits) + stop bit (1) + 4 zeros (0000) -> byte 3 is 0b11110000 = 0xf0
+        MemorySource unalignedSource(bytes({0x12, 0x34, 0xf0}));
+        const auto unalignedMapping = mappingForBytes(3);
+        QVERIFY(unalignedMapping.has_value());
+        BitReader unalignedReader(unalignedSource, *unalignedMapping);
+        auto unalignedTree = AnalysisTree::create(QStringLiteral("byte-aligned-unaligned"));
+        QVERIFY(unalignedTree.has_value());
+
+        const auto unalignedResult = DslExecutor::decodeStruct(*unalignedCompiled.program,
+                                                              quint32(0),
+                                                              unalignedReader,
+                                                              *unalignedMapping,
+                                                              0,
+                                                              *unalignedTree,
+                                                              unalignedTree->rootId());
+        QCOMPARE(unalignedResult.status, DslExecutionStatus::Materialized);
+        QCOMPARE(unalignedResult.bitsConsumed, quint64(24));
+        QCOMPARE(unalignedReader.position(), quint64(24));
+        const auto unalignedStructure = unalignedTree->node(*unalignedResult.structureNode);
+        QVERIFY(unalignedStructure.has_value());
+        // Ordered children: data, aligned_at_19, needs_trailing_bits, rbsp_stop_one_bit, rbsp_alignment_zero_bit[0..3] (8 children total)
+        QCOMPARE(unalignedStructure->children().size(), std::size_t(8));
+        const auto alignedAt19 = unalignedTree->node(unalignedStructure->children().at(1));
+        QVERIFY(alignedAt19.has_value());
+        QCOMPARE(alignedAt19->name(), QStringLiteral("aligned_at_19"));
+        QCOMPARE(alignedAt19->value().toBool(), false);
+
+        const auto unalignedNeedsTrailing = unalignedTree->node(unalignedStructure->children().at(2));
+        QVERIFY(unalignedNeedsTrailing.has_value());
+        QCOMPARE(unalignedNeedsTrailing->name(), QStringLiteral("needs_trailing_bits"));
+        QCOMPARE(unalignedNeedsTrailing->value().toBool(), true);
+
+        const auto stopBit = unalignedTree->node(unalignedStructure->children().at(3));
+        QVERIFY(stopBit.has_value());
+        QCOMPARE(stopBit->name(), QStringLiteral("rbsp_stop_one_bit"));
+        QCOMPARE(stopBit->value().toULongLong(), quint64(1));
+    }
+
+    void evaluatesByteAlignedInsideRepeatSwitchAndAfterLazyRegions() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct ComplexAlignment {
+                bits<8> header;
+                @lazy(2) bytes payload;
+                computed<bool> aligned_after_lazy = byte_aligned();
+                switch (header) {
+                    case 0x42: {
+                        bits<4> tag;
+                        computed<bool> switch_aligned = byte_aligned();
+                        computed<bool> needs_padding = !switch_aligned;
+                        if (needs_padding) {
+                            bits<4> padding;
+                        }
+                    }
+                    default: {
+                        bits<8> fallback;
+                    }
+                }
+                computed<bool> aligned_after_switch = byte_aligned();
+                bits<8> count;
+                repeat (count, 2) {
+                    bits<8> byte_item;
+                    computed<bool> repeat_aligned = byte_aligned();
+                }
+            }
+            entry ComplexAlignment;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty() ? "" : qPrintable(parsed.diagnostics.front().message));
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty() ? "" : qPrintable(compiled.diagnostics.front().message));
+
+        // 1 byte header (0x42) + 2 bytes lazy payload + 1 byte switch + 1 byte count (2) + 2 bytes repeat items = 7 bytes
+        MemorySource source(bytes({0x42, 0x01, 0x02, 0xab, 0x02, 0x11, 0x22}));
+        const auto mapping = mappingForBytes(7);
+        QVERIFY(mapping.has_value());
+        BitReader reader(source, *mapping);
+        auto tree = AnalysisTree::create(QStringLiteral("complex-alignment"));
+        QVERIFY(tree.has_value());
+
+        const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                      quint32(0),
+                                                      reader,
+                                                      *mapping,
+                                                      0,
+                                                      *tree,
+                                                      tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.bitsConsumed, quint64(56));
+        QCOMPARE(reader.position(), quint64(56));
+
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+
+        std::vector<QString> childNames;
+        for (const auto& childId : structure->children()) {
+            const auto child = tree->node(childId);
+            QVERIFY(child.has_value());
+            childNames.push_back(child->name());
+        }
+        const std::vector<QString> expectedNames{
+            QStringLiteral("header"),
+            QStringLiteral("payload"),
+            QStringLiteral("aligned_after_lazy"),
+            QStringLiteral("tag"),
+            QStringLiteral("switch_aligned"),
+            QStringLiteral("needs_padding"),
+            QStringLiteral("padding"),
+            QStringLiteral("aligned_after_switch"),
+            QStringLiteral("count"),
+            QStringLiteral("byte_item[0]"),
+            QStringLiteral("repeat_aligned[0]"),
+            QStringLiteral("byte_item[1]"),
+            QStringLiteral("repeat_aligned[1]"),
+        };
+        QCOMPARE(childNames, expectedNames);
+    }
+
     void rejectsMalformedRepeatLocalAssertionConditionsBeforeReadingSource() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             struct Header {

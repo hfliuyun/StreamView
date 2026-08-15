@@ -495,6 +495,10 @@ struct TypedExpressionValidationState final {
         return expression.type == DslScalarType::Bool && expression.operands.empty()
                    ? true
                    : fail(QStringLiteral("Typed more_rbsp_data expression is invalid"));
+    case DslTypedExpressionKind::ByteAligned:
+        return expression.type == DslScalarType::Bool && expression.operands.empty()
+                   ? true
+                   : fail(QStringLiteral("Typed byte_aligned expression is invalid"));
     case DslTypedExpressionKind::OptionalFieldReference: {
         // Deliberately omits the branch-guarantee check that a plain field
         // reference applies: naming a field the path may not materialize is the
@@ -767,6 +771,10 @@ struct ComputedEvaluationResult final {
         }
         const quint64 trailingPattern = quint64{1} << (remaining - 1U);
         return booleanResult(remainder.value != trailingPattern);
+    }
+    case DslTypedExpressionKind::ByteAligned: {
+        const bool aligned = reader.position() % 8U == 0U;
+        return booleanResult(aligned);
     }
     case DslTypedExpressionKind::OptionalFieldReference: {
         // A slot holding no value means the executed path never materialized the
@@ -1201,7 +1209,9 @@ DslExecutionResult DslVirtualMachine::execute(
                     condition.expression->kind ==
                         DslTypedExpressionKind::SequenceElementReference ||
                     condition.expression->kind ==
-                        DslTypedExpressionKind::MoreRbspData;
+                        DslTypedExpressionKind::MoreRbspData ||
+                    condition.expression->kind ==
+                        DslTypedExpressionKind::ByteAligned;
                 const bool validType =
                     condition.expression->type == DslScalarType::U64 ||
                     condition.expression->type == DslScalarType::Bool;

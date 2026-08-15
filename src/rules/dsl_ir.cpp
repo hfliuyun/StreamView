@@ -605,6 +605,32 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 moreData.type = DslScalarType::Bool;
                 return moreData;
             }
+            if (expression.name == QStringLiteral("byte_aligned")) {
+                if (!claimExpressionNode(state, depth, expression.range)) {
+                    return std::nullopt;
+                }
+                if (!state.allowSourceStateExpressions) {
+                    addDiagnostic(
+                        result.diagnostics,
+                        DslDiagnosticCode::UnknownReference,
+                        QStringLiteral(
+                            "byte_aligned is unavailable in pure functions"),
+                        expression.range);
+                    return std::nullopt;
+                }
+                if (!expression.operands.empty()) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidExpression,
+                                  QStringLiteral(
+                                      "byte_aligned requires no arguments"),
+                                  expression.range);
+                    return std::nullopt;
+                }
+                DslTypedExpression byteAlignedExpr;
+                byteAlignedExpr.kind = DslTypedExpressionKind::ByteAligned;
+                byteAlignedExpr.type = DslScalarType::Bool;
+                return byteAlignedExpr;
+            }
             if (expression.name == QStringLiteral("power_of_two")) {
                 if (!claimExpressionNode(state, depth, expression.range)) {
                     return std::nullopt;
@@ -977,7 +1003,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                         });
         const bool conflictsWithReservedExpression =
             function.name == QStringLiteral("power_of_two") ||
-            function.name == QStringLiteral("more_rbsp_data");
+            function.name == QStringLiteral("more_rbsp_data") ||
+            function.name == QStringLiteral("byte_aligned");
         if (duplicateName || conflictsWithTopLevel || conflictsWithReservedExpression) {
             addDiagnostic(result.diagnostics,
                           DslDiagnosticCode::DuplicateName,

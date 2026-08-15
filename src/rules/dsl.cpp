@@ -1877,6 +1877,24 @@ private:
                     }
                     return DslScalarType::Bool;
                 }
+                if (expression.name == QStringLiteral("byte_aligned")) {
+                    if (!allowSourceStateReference) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::UnknownReference,
+                             QStringLiteral(
+                                 "byte_aligned is unavailable in pure functions"),
+                             expression.range});
+                        return std::nullopt;
+                    }
+                    if (!expression.operands.empty()) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidExpression,
+                             QStringLiteral("byte_aligned requires no arguments"),
+                             expression.range});
+                        return std::nullopt;
+                    }
+                    return DslScalarType::Bool;
+                }
                 if (allowImportedContextReference &&
                     expression.name == QStringLiteral("context_value")) {
                     if ((expression.operands.size() != 2 && expression.operands.size() != 3) ||
@@ -2116,7 +2134,8 @@ private:
                             });
             const bool conflictsWithReservedExpression =
                 function.name == QStringLiteral("power_of_two") ||
-                function.name == QStringLiteral("more_rbsp_data");
+                function.name == QStringLiteral("more_rbsp_data") ||
+                function.name == QStringLiteral("byte_aligned");
             if (duplicateFunction || conflictsWithDeclaration ||
                 conflictsWithReservedExpression) {
                 result_.diagnostics.push_back(

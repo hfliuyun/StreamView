@@ -56,6 +56,7 @@ enum class DslTypedExpressionKind : quint8 {
     SequenceElementReference,
     PowerOfTwo,
     MoreRbspData,
+    ByteAligned,
     // Yields the named field when the executed path materialized it and
     // evaluates operands[0] as the fallback otherwise. See ADR-0066.
     OptionalFieldReference,
