@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Decode frame packing arrangement SEI message slice (Task T12a / package 0.1.36 / ADR-0087 / commit 594fa83)
-Next Action: Specify display orientation SEI message decoding rule slice (Task T12b / package 0.1.37 / ITU-T H.264 D.1.27, D.2.27 / ADR-0088); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31873738599 (Ubuntu job 94986199649, macOS job 94986199632, Windows job 94986199663) passed 100%
+Last Completed Step: Decode display orientation SEI message slice (Task T12b / package 0.1.37 / ADR-0088 / commit ab85444)
+Next Action: Implement ambient context import capability slice in core and DSL runtime (Task T11b / ADR-0086 / capability slice, package version unchanged); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31874725106 (Ubuntu job 94988637131, macOS job 94988637064, Windows job 94988636999) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1332,3 +1332,22 @@ Blockers: None
      - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
      - hosted run `31873738599` 在 Ubuntu 24.04 / Qt 6.11.1（job `94986199649`）、macOS 15 / Qt 6.11.1（job `94986199632`）、Windows 2022 / Qt 6.10.1（job `94986199663`）全部成功。
   Next Action 指向 Task T12b（display_orientation SEI message decoding specification & implementation, package 0.1.37）。
+- 2026-08-15：完成显示方向 SEI 消息（Display Orientation SEI, payload_type == 47）结构化解码（任务 T12b / ADR-0088 / 包版本 0.1.37 / commit `ab85444`）。
+  1. 官方规则包（`src/rules/official/org.streamview.h264/src/h264_annex_b.svfmt`）：
+     - 在 `SeiRbsp` 的 `switch (payload_type)` 中实现 `case 47` 分支，按 ITU-T H.264 D.1.27 / D.2.27 解码完整字段；
+     - 解码 `u1 display_orientation_cancel_flag`；
+     - 在 `cancel_flag == 0` 分支内解码显示变换参数：`u1 hor_flip`、`u1 ver_flip`、`u16 anticlockwise_rotation`、`ue display_orientation_repetition_period @range(0, 16384)` 与 `u1 display_orientation_extension_flag @range(0, 0)`；
+     - 末尾使用条件 `rbsp_trailing_bits;` 对齐字节边界；
+     - `rule.toml` 包版本升级至 `0.1.37`。
+  2. 自动化测试套件（`tests/rules/h264_annex_b_analyzer_test.cpp`）：
+     - 新增 4 个针对性测试用例：
+       - `decodesDisplayOrientationSeiMessageWithRotationAndFlips`（cancel_flag == 0 + hor_flip == 1 + 90度逆时针旋转 16384，断言完整有序子节点列表 17 项、逐字段值与 source span 51..67 / 16-bit）；
+       - `decodesDisplayOrientationSeiMessageWithCancelFlagTrue`（cancel_flag == 1 取消显示方向仅解码 cancel 标志与对齐位，断言完整有序子节点列表 17 项与逐字段值）；
+       - `decodesMultipleSeiMessagesContainingDisplayOrientationAndRecoveryPoint`（同一 NAL 内 display_orientation + recovery_point 混合多 SEI 消息按顺序完整解析与有序子节点列表断言 31 项）；
+       - `reportsTruncatedDisplayOrientationSeiPayloadAndContinues`（截断 display_orientation 载荷码流安全回滚并继续后续 AUD NAL）。
+  3. 测试与验证：
+     - `svtool rule check` 通过；
+     - H.264 analyzer 套件增至 164 测试方法（166/166 包含 fixture setup）；
+     - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
+     - hosted run `31874725106` 在 Ubuntu 24.04 / Qt 6.11.1（job `94988637131`）、macOS 15 / Qt 6.11.1（job `94988637064`）、Windows 2022 / Qt 6.10.1（job `94988636999`）全部成功。
+  Next Action 指向 Task T11b（ambient context import capability slice in core and DSL runtime, ADR-0086）。
