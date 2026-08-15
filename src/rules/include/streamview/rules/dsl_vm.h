@@ -71,14 +71,14 @@ struct DslExecutionContextValues final {
 struct DslExecutionContextImport final {
     core::ContextDefinitionKind kind =
         core::ContextDefinitionKind::H264SequenceParameterSet;
-    DslExecutionContextValue key;
+    std::optional<DslExecutionContextValue> key;
 };
 
 struct DslContextValueRequest final {
     quint32 contextImportIndex = 0;
     core::ContextDefinitionKind importKind =
         core::ContextDefinitionKind::H264SequenceParameterSet;
-    quint64 importKey = 0;
+    std::optional<quint64> importKey;
     core::ContextDefinitionKind definitionKind =
         core::ContextDefinitionKind::H264SequenceParameterSet;
     quint32 structureIndex = 0;

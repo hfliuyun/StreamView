@@ -306,6 +306,140 @@ private slots:
         QCOMPARE(resolved.status, ContextLookupStatus::DependencyUnavailable);
         QVERIFY(resolved.unavailableDependency.has_value());
     }
+
+    void resolvesAmbientContextReturnsNotFoundOnEmptyDirectory() {
+        ContextDirectory directory;
+        const auto resolved = directory.resolveLatestBefore(
+            ContextDefinitionKind::H264SequenceParameterSet, 0, SourceBitAddress(100));
+        QCOMPARE(resolved.status, ContextLookupStatus::NotFound);
+        QVERIFY(!resolved.definition.has_value());
+        QVERIFY(!resolved.unavailableDependency.has_value());
+    }
+
+    void resolvesAmbientContextSelectingLatestAcrossMultipleKeys() {
+        ContextDirectory directory;
+        const ContextKey sps0{ContextDefinitionKind::H264SequenceParameterSet, 0, 0};
+        const ContextKey sps1{ContextDefinitionKind::H264SequenceParameterSet, 0, 1};
+        const ContextKey sps2{ContextDefinitionKind::H264SequenceParameterSet, 0, 2};
+
+        const auto def0 = directory.registerDefinition(definition(sps0, 0, 8, 50));
+        const auto def1 = directory.registerDefinition(definition(sps1, 16, 8, 51));
+        const auto def2 = directory.registerDefinition(definition(sps2, 32, 8, 52));
+        QVERIFY(def0.succeeded() && def1.succeeded() && def2.succeeded());
+
+        // Before any definition finishes
+        QCOMPARE(directory.resolveLatestBefore(ContextDefinitionKind::H264SequenceParameterSet, 0, SourceBitAddress(7)).status,
+                 ContextLookupStatus::NotFound);
+
+        // At pos 8..15, only SPS 0 is complete
+        const auto at8 = directory.resolveLatestBefore(ContextDefinitionKind::H264SequenceParameterSet, 0, SourceBitAddress(8));
+        QCOMPARE(at8.status, ContextLookupStatus::Found);
+        QVERIFY(at8.definition.has_value());
+        QCOMPARE(at8.definition->id, *def0.definitionId);
+        QCOMPARE(at8.definition->analysisNodeId, AnalysisNodeId(50));
+
+        // At pos 24..31, SPS 1 is the latest complete definition
+        const auto at24 = directory.resolveLatestBefore(ContextDefinitionKind::H264SequenceParameterSet, 0, SourceBitAddress(24));
+        QCOMPARE(at24.status, ContextLookupStatus::Found);
+        QVERIFY(at24.definition.has_value());
+        QCOMPARE(at24.definition->id, *def1.definitionId);
+        QCOMPARE(at24.definition->analysisNodeId, AnalysisNodeId(51));
+
+        // At pos 40, SPS 2 is the latest complete definition
+        const auto at40 = directory.resolveLatestBefore(ContextDefinitionKind::H264SequenceParameterSet, 0, SourceBitAddress(40));
+        QCOMPARE(at40.status, ContextLookupStatus::Found);
+        QVERIFY(at40.definition.has_value());
+        QCOMPARE(at40.definition->id, *def2.definitionId);
+        QCOMPARE(at40.definition->analysisNodeId, AnalysisNodeId(52));
+    }
+
+    void resolvesAmbientContextSelectingLatestGenerationAfterSameKeyRedefinition() {
+        ContextDirectory directory;
+        const ContextKey sps0{ContextDefinitionKind::H264SequenceParameterSet, 0, 0};
+        const ContextKey sps1{ContextDefinitionKind::H264SequenceParameterSet, 0, 1};
+
+        const auto def0Gen1 = directory.registerDefinition(definition(sps0, 0, 8, 60));
+        const auto def1Gen1 = directory.registerDefinition(definition(sps1, 16, 8, 61));
+        const auto def0Gen2 = directory.registerDefinition(definition(sps0, 32, 8, 62));
+        QVERIFY(def0Gen1.succeeded() && def1Gen1.succeeded() && def0Gen2.succeeded());
+
+        // At pos 24, SPS 1 gen 1 (at [16, 24)) is latest
+        const auto at24 = directory.resolveLatestBefore(ContextDefinitionKind::H264SequenceParameterSet, 0, SourceBitAddress(24));
+        QCOMPARE(at24.status, ContextLookupStatus::Found);
+        QVERIFY(at24.definition.has_value());
+        QCOMPARE(at24.definition->id, *def1Gen1.definitionId);
+        QCOMPARE(at24.definition->analysisNodeId, AnalysisNodeId(61));
+
+        // At pos 40, SPS 0 gen 2 (at [32, 40)) is latest
+        const auto at40 = directory.resolveLatestBefore(ContextDefinitionKind::H264SequenceParameterSet, 0, SourceBitAddress(40));
+        QCOMPARE(at40.status, ContextLookupStatus::Found);
+        QVERIFY(at40.definition.has_value());
+        QCOMPARE(at40.definition->id, *def0Gen2.definitionId);
+        QCOMPARE(at40.definition->analysisNodeId, AnalysisNodeId(62));
+    }
+
+    void reportsDependencyUnavailableWhenAmbientTargetDependencyFails() {
+        ContextDirectory directory;
+        const ContextKey spsKey{ContextDefinitionKind::H264SequenceParameterSet, 0, 0};
+        const ContextKey ppsKey{ContextDefinitionKind::H264PictureParameterSet, 0, 0};
+
+        const auto firstSps = directory.registerDefinition(definition(spsKey, 0, 8, 70));
+        QVERIFY(firstSps.succeeded());
+        const auto firstPps = directory.registerDefinition(
+            definition(ppsKey, 16, 8, 71, {*firstSps.definitionId}));
+        QVERIFY(firstPps.succeeded());
+
+        // Redefine SPS 0 at [32, 40)
+        const auto secondSps = directory.registerDefinition(definition(spsKey, 32, 8, 72));
+        QVERIFY(secondSps.succeeded());
+
+        // At pos 40, resolve latest PPS. PPS 0 is selected, but its dependency (SPS 0 gen 1) was invalidated
+        const auto ambientPps = directory.resolveLatestBefore(
+            ContextDefinitionKind::H264PictureParameterSet, 0, SourceBitAddress(40));
+        QCOMPARE(ambientPps.status, ContextLookupStatus::DependencyUnavailable);
+        QCOMPARE(ambientPps.unavailableDependency, firstSps.definitionId);
+    }
+
+    void separatesAmbientResolutionsAcrossDistinctKindsAndScopes() {
+        ContextDirectory directory;
+        const ContextKey spsScope0{ContextDefinitionKind::H264SequenceParameterSet, 0, 0};
+        const ContextKey spsScope1{ContextDefinitionKind::H264SequenceParameterSet, 1, 0};
+        const ContextKey ppsScope0{ContextDefinitionKind::H264PictureParameterSet, 0, 0};
+
+        const auto defSps0 = directory.registerDefinition(definition(spsScope0, 0, 8, 80));
+        const auto defSps1 = directory.registerDefinition(definition(spsScope1, 16, 8, 81));
+        const auto defPps0 = directory.registerDefinition(definition(ppsScope0, 32, 8, 82));
+        QVERIFY(defSps0.succeeded() && defSps1.succeeded() && defPps0.succeeded());
+
+        // Query (SPS, scope 0) at pos 40 -> finds defSps0 at [0, 8), does not crosstalk with scope 1 or PPS
+        const auto resolvedSpsScope0 = directory.resolveLatestBefore(
+            ContextDefinitionKind::H264SequenceParameterSet, 0, SourceBitAddress(40));
+        QCOMPARE(resolvedSpsScope0.status, ContextLookupStatus::Found);
+        QVERIFY(resolvedSpsScope0.definition.has_value());
+        QCOMPARE(resolvedSpsScope0.definition->id, *defSps0.definitionId);
+        QCOMPARE(resolvedSpsScope0.definition->analysisNodeId, AnalysisNodeId(80));
+
+        // Query (SPS, scope 1) at pos 40 -> finds defSps1 at [16, 24)
+        const auto resolvedSpsScope1 = directory.resolveLatestBefore(
+            ContextDefinitionKind::H264SequenceParameterSet, 1, SourceBitAddress(40));
+        QCOMPARE(resolvedSpsScope1.status, ContextLookupStatus::Found);
+        QVERIFY(resolvedSpsScope1.definition.has_value());
+        QCOMPARE(resolvedSpsScope1.definition->id, *defSps1.definitionId);
+        QCOMPARE(resolvedSpsScope1.definition->analysisNodeId, AnalysisNodeId(81));
+
+        // Query (PPS, scope 0) at pos 40 -> finds defPps0 at [32, 40)
+        const auto resolvedPpsScope0 = directory.resolveLatestBefore(
+            ContextDefinitionKind::H264PictureParameterSet, 0, SourceBitAddress(40));
+        QCOMPARE(resolvedPpsScope0.status, ContextLookupStatus::Found);
+        QVERIFY(resolvedPpsScope0.definition.has_value());
+        QCOMPARE(resolvedPpsScope0.definition->id, *defPps0.definitionId);
+        QCOMPARE(resolvedPpsScope0.definition->analysisNodeId, AnalysisNodeId(82));
+
+        // Query (AAC, scope 0) at pos 40 -> NotFound
+        const auto resolvedAac = directory.resolveLatestBefore(
+            ContextDefinitionKind::AacAudioSpecificConfig, 0, SourceBitAddress(40));
+        QCOMPARE(resolvedAac.status, ContextLookupStatus::NotFound);
+    }
 };
 
 QTEST_GUILESS_MAIN(ContextDirectoryTest)

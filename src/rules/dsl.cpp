@@ -1879,7 +1879,7 @@ private:
                 }
                 if (allowImportedContextReference &&
                     expression.name == QStringLiteral("context_value")) {
-                    if (expression.operands.size() != 3 ||
+                    if ((expression.operands.size() != 2 && expression.operands.size() != 3) ||
                         std::any_of(expression.operands.begin(),
                                     expression.operands.end(),
                                     [](const DslExpression& operand) {
@@ -1889,7 +1889,7 @@ private:
                         result_.diagnostics.push_back(
                             {DslDiagnosticCode::InvalidContext,
                              QStringLiteral(
-                                 "context_value requires three identifier arguments"),
+                                 "context_value requires two or three identifier arguments"),
                              expression.range});
                         return std::nullopt;
                     }

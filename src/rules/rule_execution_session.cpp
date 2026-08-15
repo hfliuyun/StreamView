@@ -116,7 +116,7 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
     std::vector<std::optional<RuleImportedContext>> importCache(
         structure.contextImports.size());
     const auto materializeImport =
-        [&](quint32 importIndex, quint64 importKey) -> ImportMaterialization {
+        [&](quint32 importIndex, std::optional<quint64> importKey) -> ImportMaterialization {
         if (importIndex >= structure.contextImports.size()) {
             return {DslExecutionStatus::InvalidDefinition,
                     nullptr,
@@ -124,21 +124,31 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
         }
         if (importCache.at(importIndex)) {
             RuleImportedContext& cached = *importCache.at(importIndex);
-            return cached.key.value == importKey
-                       ? ImportMaterialization{
-                             DslExecutionStatus::Materialized, &cached, {}}
-                       : ImportMaterialization{
-                             DslExecutionStatus::InvalidDefinition,
-                             nullptr,
-                             QStringLiteral(
-                                 "Context import key changed during one execution")};
+            if (importKey.has_value()) {
+                return cached.key.value == *importKey
+                           ? ImportMaterialization{
+                                 DslExecutionStatus::Materialized, &cached, {}}
+                           : ImportMaterialization{
+                                 DslExecutionStatus::InvalidDefinition,
+                                 nullptr,
+                                 QStringLiteral(
+                                     "Context import key changed during one execution")};
+            }
+            return ImportMaterialization{
+                DslExecutionStatus::Materialized, &cached, {}};
         }
 
         const DslTypedContextImport& import =
             structure.contextImports.at(importIndex);
-        const core::ContextKey key{import.kind, contextScopeId_, importKey};
-        const core::ContextLookupResult lookup = contextDirectory_.resolveBefore(
-            key, request.enclosingSourceSpan->start());
+        core::ContextLookupResult lookup;
+        if (importKey.has_value()) {
+            const core::ContextKey key{import.kind, contextScopeId_, *importKey};
+            lookup = contextDirectory_.resolveBefore(
+                key, request.enclosingSourceSpan->start());
+        } else {
+            lookup = contextDirectory_.resolveLatestBefore(
+                import.kind, contextScopeId_, request.enclosingSourceSpan->start());
+        }
         if (!lookup.found()) {
             return {
                 DslExecutionStatus::DependencyUnavailable,
@@ -151,7 +161,11 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
         }
 
         RuleImportedContext imported;
-        imported.key.value = importKey;
+        if (importKey.has_value()) {
+            imported.key.value = *importKey;
+        } else if (lookup.definition) {
+            imported.key.value = lookup.definition->key.value;
+        }
         imported.definitionId = lookup.definition->id;
         std::vector<core::ContextDefinitionId> included;
         included.reserve(RuleImportedContext::maximumDefinitions());
@@ -291,35 +305,60 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
             result.errorMessage = QStringLiteral("Context import runtime kind is invalid");
             return result;
         }
-        if (!executionImport.key.location) {
-            continue;
-        }
-        const ImportMaterialization materialized =
-            materializeImport(static_cast<quint32>(importIndex),
-                              executionImport.key.value);
-        if (!materialized.materialized()) {
-            result.status = ruleStatus(materialized.status);
-            result.errorMessage = materialized.errorMessage;
-            core::ParseDiagnostic diagnostic;
-            diagnostic.code = result.status == RuleExecutionStatus::ResourceLimit
-                                  ? core::DiagnosticCode::ResourceLimit
-                              : result.status ==
-                                        RuleExecutionStatus::DependencyUnavailable
-                                  ? core::DiagnosticCode::DependencyUnavailable
-                                  : core::DiagnosticCode::InvalidSyntax;
-            diagnostic.severity = core::DiagnosticSeverity::Error;
-            diagnostic.message = result.errorMessage;
-            diagnostic.fieldPath = structure.name + QLatin1Char('.') +
-                                   structure.fields.at(import.keyFieldIndex).name;
-            diagnostic.location = executionImport.key.location;
-            if (result.execution.structureNode) {
-                (void)request.tree->addDiagnostic(*result.execution.structureNode,
-                                                  std::move(diagnostic));
+        if (import.keyFieldIndex.has_value()) {
+            if (!executionImport.key.has_value() || !executionImport.key->location) {
+                continue;
             }
-            return result;
+            const ImportMaterialization materialized =
+                materializeImport(static_cast<quint32>(importIndex),
+                                  executionImport.key->value);
+            if (!materialized.materialized()) {
+                result.status = ruleStatus(materialized.status);
+                result.errorMessage = materialized.errorMessage;
+                core::ParseDiagnostic diagnostic;
+                diagnostic.code = result.status == RuleExecutionStatus::ResourceLimit
+                                      ? core::DiagnosticCode::ResourceLimit
+                                  : result.status ==
+                                            RuleExecutionStatus::DependencyUnavailable
+                                      ? core::DiagnosticCode::DependencyUnavailable
+                                      : core::DiagnosticCode::InvalidSyntax;
+                diagnostic.severity = core::DiagnosticSeverity::Error;
+                diagnostic.message = result.errorMessage;
+                diagnostic.fieldPath = structure.name + QLatin1Char('.') +
+                                       structure.fields.at(*import.keyFieldIndex).name;
+                diagnostic.location = executionImport.key->location;
+                if (result.execution.structureNode) {
+                    (void)request.tree->addDiagnostic(*result.execution.structureNode,
+                                                      std::move(diagnostic));
+                }
+                return result;
+            }
+            materialized.imported->key = *executionImport.key;
+            importedContexts.push_back(std::move(*importCache.at(importIndex)));
+        } else {
+            const ImportMaterialization materialized =
+                materializeImport(static_cast<quint32>(importIndex), std::nullopt);
+            if (!materialized.materialized()) {
+                result.status = ruleStatus(materialized.status);
+                result.errorMessage = materialized.errorMessage;
+                core::ParseDiagnostic diagnostic;
+                diagnostic.code = result.status == RuleExecutionStatus::ResourceLimit
+                                      ? core::DiagnosticCode::ResourceLimit
+                                  : result.status ==
+                                            RuleExecutionStatus::DependencyUnavailable
+                                      ? core::DiagnosticCode::DependencyUnavailable
+                                      : core::DiagnosticCode::InvalidSyntax;
+                diagnostic.severity = core::DiagnosticSeverity::Error;
+                diagnostic.message = result.errorMessage;
+                diagnostic.fieldPath = structure.name;
+                if (result.execution.structureNode) {
+                    (void)request.tree->addDiagnostic(*result.execution.structureNode,
+                                                      std::move(diagnostic));
+                }
+                return result;
+            }
+            importedContexts.push_back(std::move(*importCache.at(importIndex)));
         }
-        materialized.imported->key = executionImport.key;
-        importedContexts.push_back(std::move(*importCache.at(importIndex)));
     }
 
     if (!structure.contextDefinition) {

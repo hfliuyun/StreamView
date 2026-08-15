@@ -98,12 +98,20 @@ public:
     [[nodiscard]] ContextRegistrationResult registerDefinition(ContextDefinitionSpec spec);
     [[nodiscard]] ContextLookupResult resolveBefore(const ContextKey& key,
                                                     SourceBitAddress sourcePosition) const;
+    [[nodiscard]] ContextLookupResult resolveLatestBefore(ContextDefinitionKind kind,
+                                                          quint64 scopeId,
+                                                          SourceBitAddress sourcePosition) const;
 
 private:
     [[nodiscard]] ContextLookupResult
     resolveBefore(const ContextKey& key,
                   SourceBitAddress sourcePosition,
                   std::vector<ContextDefinitionId>& resolutionStack) const;
+    [[nodiscard]] ContextLookupResult
+    resolveLatestBefore(ContextDefinitionKind kind,
+                        quint64 scopeId,
+                        SourceBitAddress sourcePosition,
+                        std::vector<ContextDefinitionId>& resolutionStack) const;
 
     std::vector<ContextDefinition> definitions_;
     std::map<ContextKey, std::vector<ContextDefinitionId>> definitionsByKey_;

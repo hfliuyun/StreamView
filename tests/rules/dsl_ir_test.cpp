@@ -3264,7 +3264,8 @@ private slots:
         QVERIFY(!sei.contextImports.empty());
         for (const auto& import : sei.contextImports) {
             QCOMPARE(import.kind, streamview::core::ContextDefinitionKind::H264SequenceParameterSet);
-            QVERIFY(sei.fields.at(import.keyFieldIndex).name.startsWith(QStringLiteral("seq_parameter_set_id")));
+            QVERIFY(import.keyFieldIndex.has_value());
+            QVERIFY(sei.fields.at(*import.keyFieldIndex).name.startsWith(QStringLiteral("seq_parameter_set_id")));
         }
 
         const auto disjointParsed = DslParser::parse(QStringLiteral(R"(
@@ -3320,6 +3321,153 @@ private slots:
         const auto lateCompiled = DslCompiler::compile(lateParsed.program);
         QVERIFY(!lateCompiled.succeeded());
         QVERIFY(hasDiagnostic(lateCompiled, DslDiagnosticCode::InvalidContext));
+    }
+
+    void lowersAmbientContextImportsAndTwoArgumentContextValueExpressions() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps {
+                bits<8> id;
+                bits<8> width @context_export;
+            }
+
+            @context_import("h264-sps")
+            struct AmbientConsumer {
+                bits<8> header;
+                computed<u64> sps_width = context_value(h264_sps, width);
+            }
+            entry AmbientConsumer;
+        )"));
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty() ? "" : qPrintable(parsed.diagnostics.front().message));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty() ? "" : qPrintable(compiled.diagnostics.front().message));
+
+        const auto& consumer = compiled.program->structs.at(1);
+        QCOMPARE(consumer.contextImports.size(), std::size_t(1));
+        const auto& import = consumer.contextImports.front();
+        QCOMPARE(import.kind, streamview::core::ContextDefinitionKind::H264SequenceParameterSet);
+        QVERIFY(!import.keyFieldIndex.has_value());
+
+        const auto& computedField = consumer.fields.at(1);
+        QCOMPARE(computedField.name, QStringLiteral("sps_width"));
+        QVERIFY(computedField.computedExpression.has_value());
+        QCOMPARE(computedField.computedExpression->kind,
+                 streamview::rules::DslTypedExpressionKind::ImportedContextReference);
+        QCOMPARE(computedField.computedExpression->contextImportIndex, quint32(0));
+        QCOMPARE(computedField.computedExpression->contextDefinitionKind,
+                 streamview::core::ContextDefinitionKind::H264SequenceParameterSet);
+        QCOMPARE(computedField.computedExpression->contextStructureIndex, quint32(0));
+        QCOMPARE(computedField.computedExpression->contextExportIndex, quint32(0));
+    }
+
+    void supportsCoexistenceOfKeyedAndAmbientImportsWithDisambiguation() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps {
+                bits<8> id;
+                bits<8> width @context_export;
+            }
+
+            @context_import("h264-sps", sps_id)
+            @context_import("h264-sps")
+            struct DualConsumer {
+                bits<8> sps_id;
+                computed<u64> w_keyed = context_value(sps_id, h264_sps, width);
+                computed<u64> w_ambient = context_value(h264_sps, width);
+            }
+            entry DualConsumer;
+        )"));
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty() ? "" : qPrintable(parsed.diagnostics.front().message));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty() ? "" : qPrintable(compiled.diagnostics.front().message));
+
+        const auto& consumer = compiled.program->structs.at(1);
+        QCOMPARE(consumer.contextImports.size(), std::size_t(2));
+        // First import is keyed
+        QCOMPARE(consumer.contextImports.at(0).kind,
+                 streamview::core::ContextDefinitionKind::H264SequenceParameterSet);
+        QVERIFY(consumer.contextImports.at(0).keyFieldIndex.has_value());
+        QCOMPARE(*consumer.contextImports.at(0).keyFieldIndex, quint32(0));
+        // Second import is ambient
+        QCOMPARE(consumer.contextImports.at(1).kind,
+                 streamview::core::ContextDefinitionKind::H264SequenceParameterSet);
+        QVERIFY(!consumer.contextImports.at(1).keyFieldIndex.has_value());
+
+        // w_keyed binds to import 0
+        const auto& keyedField = consumer.fields.at(1);
+        QCOMPARE(keyedField.name, QStringLiteral("w_keyed"));
+        QVERIFY(keyedField.computedExpression.has_value());
+        QCOMPARE(keyedField.computedExpression->contextImportIndex, quint32(0));
+
+        // w_ambient binds to import 1
+        const auto& ambientField = consumer.fields.at(2);
+        QCOMPARE(ambientField.name, QStringLiteral("w_ambient"));
+        QVERIFY(ambientField.computedExpression.has_value());
+        QCOMPARE(ambientField.computedExpression->contextImportIndex, quint32(1));
+    }
+
+    void rejectsDuplicateAmbientContextImportOnSameStructure() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps {
+                bits<8> id;
+                bits<8> width @context_export;
+            }
+
+            @context_import("h264-sps")
+            @context_import("h264-sps")
+            struct DuplicateConsumer {
+                bits<8> header;
+                computed<u64> w = context_value(h264_sps, width);
+            }
+            entry DuplicateConsumer;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(!compiled.succeeded());
+        QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidContext));
+    }
+
+    void rejectsTwoArgumentContextValueWithoutMatchingAmbientImport() {
+        // Only keyed import declared, 2-arg context_value used
+        const auto keyedOnlyParsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps {
+                bits<8> id;
+                bits<8> width @context_export;
+            }
+
+            @context_import("h264-sps", sps_id)
+            struct KeyedOnlyConsumer {
+                bits<8> sps_id;
+                computed<u64> w = context_value(h264_sps, width);
+            }
+            entry KeyedOnlyConsumer;
+        )"));
+        QVERIFY(keyedOnlyParsed.succeeded());
+        const auto keyedOnlyCompiled = DslCompiler::compile(keyedOnlyParsed.program);
+        QVERIFY(!keyedOnlyCompiled.succeeded());
+        QVERIFY(hasDiagnostic(keyedOnlyCompiled, DslDiagnosticCode::InvalidContext));
+
+        // No imports declared, 2-arg context_value used
+        const auto noImportParsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps {
+                bits<8> id;
+                bits<8> width @context_export;
+            }
+
+            struct NoImportConsumer {
+                bits<8> header;
+                computed<u64> w = context_value(h264_sps, width);
+            }
+            entry NoImportConsumer;
+        )"));
+        QVERIFY(!noImportParsed.succeeded() || !DslCompiler::compile(noImportParsed.program).succeeded());
     }
 };
 

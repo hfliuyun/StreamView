@@ -515,7 +515,7 @@ private slots:
 
         const auto missingContextArgument = DslParser::parse(QStringLiteral(
             "struct Header { bits<1> value; "
-            "assert(context_value(value, h264_pps) == 0) at value; } "
+            "assert(context_value(value) == 0) at value; } "
             "entry Header;"));
         QVERIFY(hasDiagnostic(missingContextArgument,
                               DslDiagnosticCode::InvalidContext));

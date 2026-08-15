@@ -227,8 +227,9 @@ private slots:
         QVERIFY(pps.materialized());
         QVERIFY(slice.materialized());
         QCOMPARE(slice.execution.contextImports.size(), std::size_t(1));
-        QCOMPARE(slice.execution.contextImports.front().key.value, quint64(5));
-        QCOMPARE(slice.execution.contextImports.front().key.location->sourceSpans().front()
+        QVERIFY(slice.execution.contextImports.front().key.has_value());
+        QCOMPARE(slice.execution.contextImports.front().key->value, quint64(5));
+        QCOMPARE(slice.execution.contextImports.front().key->location->sourceSpans().front()
                      .start().absoluteBitOffset(),
                  quint64(48));
         QCOMPARE(slice.importedContexts.size(), std::size_t(1));
@@ -1635,6 +1636,7 @@ private slots:
         QTest::newRow("duplicate-import") << 2;
         QTest::newRow("seventeen-imports") << 3;
         QTest::newRow("fixed-array-element-key") << 4;
+        QTest::newRow("duplicate-ambient-import") << 5;
     }
 
     void rejectsMalformedContextImportIrBeforeReadingSource() {
@@ -1666,6 +1668,10 @@ private slots:
             break;
         case 4:
             imports.front().keyFieldIndex = 1;
+            break;
+        case 5:
+            imports.push_back({ContextDefinitionKind::H264SequenceParameterSet, std::nullopt});
+            imports.push_back({ContextDefinitionKind::H264SequenceParameterSet, std::nullopt});
             break;
         default:
             QFAIL("Unknown malformed context-import mutation");
@@ -1978,6 +1984,208 @@ private slots:
 
         const auto sei = session.run(makeRequest(source, seiIndex, *seiView, *tree));
         QCOMPARE(sei.status, RuleExecutionStatus::DependencyUnavailable);
+    }
+
+    void resolvesAmbientContextSuccessfullyAndExtractsExportedField() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps {
+                bits<8> id;
+                bits<8> delay_minus1 @context_export;
+            }
+
+            @context_import("h264-sps")
+            struct SeiRbsp {
+                bits<8> payload_type;
+                bits<(context_value(h264_sps, delay_minus1) + 1)> cpb_delay;
+            }
+            entry SeiRbsp;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const auto spsIndex = *compiled.program->structureIndex(QStringLiteral("Sps"));
+        const auto seiIndex = *compiled.program->structureIndex(QStringLiteral("SeiRbsp"));
+
+        // SPS at [0, 16): id = 0, delay_minus1 = 7 (7+1 = 8 bits)
+        // SEI at [16, 32): payload_type = 1 (8 bits), cpb_delay = 0xAB (8 bits)
+        MemorySource source(bytes({0x00, 0x07, 0x01, 0xAB}));
+        const auto spsView = makeView(1, 0, 16);
+        const auto seiView = makeView(2, 16, 16);
+        QVERIFY(spsView.has_value() && seiView.has_value());
+        auto tree = AnalysisTree::create(QStringLiteral("ambient-exec-tree"));
+        QVERIFY(tree.has_value());
+
+        RuleExecutionSession session(*compiled.program);
+        const auto sps = session.run(makeRequest(source, spsIndex, *spsView, *tree));
+        QVERIFY(sps.materialized());
+        QVERIFY(sps.publishedDefinition.has_value());
+
+        const auto sei = session.run(makeRequest(source, seiIndex, *seiView, *tree));
+        QVERIFY2(sei.materialized(), qPrintable(sei.errorMessage));
+        QCOMPARE(sei.execution.contextImports.size(), std::size_t(1));
+        QVERIFY(!sei.execution.contextImports.front().key.has_value());
+        QCOMPARE(sei.importedContexts.size(), std::size_t(1));
+        QCOMPARE(sei.importedContexts.front().definitionId, *sps.publishedDefinition);
+
+        const auto seiNode = tree->node(*sei.execution.structureNode);
+        QVERIFY(seiNode.has_value());
+        QCOMPARE(seiNode->children().size(), std::size_t(2));
+        const auto delayNode = tree->node(seiNode->children().at(1));
+        QVERIFY(delayNode.has_value());
+        QCOMPARE(delayNode->name(), QStringLiteral("cpb_delay"));
+        QCOMPARE(delayNode->value().toULongLong(), quint64(0xAB));
+        QCOMPARE(delayNode->location()->sourceSpans().front().bitLength(), quint64(8));
+    }
+
+    void supportsCoexistenceOfKeyedAndAmbientImportsInSameExecution() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps {
+                bits<8> id;
+                bits<8> val0 @context_export;
+                bits<8> val1 @context_export;
+            }
+
+            @context_import("h264-sps", keyed_sps_id)
+            @context_import("h264-sps")
+            struct DualConsumer {
+                bits<8> keyed_sps_id;
+                bits<(context_value(keyed_sps_id, h264_sps, val0) + 1)> keyed_data;
+                bits<(context_value(h264_sps, val1) + 1)> ambient_data;
+            }
+            entry DualConsumer;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const auto spsIndex = *compiled.program->structureIndex(QStringLiteral("Sps"));
+        const auto dualIndex = *compiled.program->structureIndex(QStringLiteral("DualConsumer"));
+
+        auto tree = AnalysisTree::create(QStringLiteral("dual-exec-tree"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        // SPS 0 at [0, 24): id = 0, val0 = 3 (4 bits), val1 = 5 (6 bits)
+        // SPS 1 at [24, 48): id = 1, val0 = 15 (16 bits), val1 = 7 (8 bits)
+        // DualConsumer at [48, 68):
+        // keyed_sps_id = 0 (8 bits) -> val0 of SPS 0 is 3 -> keyed_data is (3+1)=4 bits (value 0xA)
+        // ambient SPS is SPS 1 (latest) -> val1 of SPS 1 is 7 -> ambient_data is (7+1)=8 bits (value 0x55)
+        // Total bits = 8 + 4 + 8 = 20 bits
+        // bytes: 0x00 (8 bits), 0xA5 (4 bits 0xA + 4 bits 0x5), 0x50 (4 bits 0x5 + 4 bits 0x0)
+        MemorySource source(bytes({0x00, 0x03, 0x05, 0x01, 0x0F, 0x07, 0x00, 0xA5, 0x50}));
+        const auto sps0View = makeView(1, 0, 24);
+        const auto sps1View = makeView(2, 24, 24);
+        const auto dualView = makeView(3, 48, 20);
+        QVERIFY(sps0View.has_value() && sps1View.has_value() && dualView.has_value());
+
+        const auto sps0 = session.run(makeRequest(source, spsIndex, *sps0View, *tree));
+        QVERIFY(sps0.materialized());
+
+        const auto sps1 = session.run(makeRequest(source, spsIndex, *sps1View, *tree));
+        QVERIFY(sps1.materialized());
+
+        const auto dual = session.run(makeRequest(source, dualIndex, *dualView, *tree));
+        QVERIFY2(dual.materialized(), qPrintable(dual.errorMessage));
+        QCOMPARE(dual.importedContexts.size(), std::size_t(2));
+        QCOMPARE(dual.importedContexts.at(0).definitionId, *sps0.publishedDefinition);
+        QCOMPARE(dual.importedContexts.at(1).definitionId, *sps1.publishedDefinition);
+
+        const auto dualNode = tree->node(*dual.execution.structureNode);
+        QVERIFY(dualNode.has_value());
+        QCOMPARE(dualNode->children().size(), std::size_t(3));
+        const auto keyedNode = tree->node(dualNode->children().at(1));
+        QVERIFY(keyedNode.has_value());
+        QCOMPARE(keyedNode->name(), QStringLiteral("keyed_data"));
+        QCOMPARE(keyedNode->location()->sourceSpans().front().bitLength(), quint64(4));
+        QCOMPARE(keyedNode->value().toULongLong(), quint64(0xA));
+
+        const auto ambientNode = tree->node(dualNode->children().at(2));
+        QVERIFY(ambientNode.has_value());
+        QCOMPARE(ambientNode->name(), QStringLiteral("ambient_data"));
+        QCOMPARE(ambientNode->location()->sourceSpans().front().bitLength(), quint64(8));
+        QCOMPARE(ambientNode->value().toULongLong(), quint64(0x55));
+    }
+
+    void handlesAmbientContextNotFoundAndDependencyUnavailableIsolation() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Sps {
+                bits<8> id;
+                bits<8> val @context_export;
+            }
+
+            @context("h264-pps", id)
+            @context_dependency("h264-sps", sps_id)
+            struct Pps {
+                bits<8> id;
+                bits<8> sps_id;
+                bits<8> pps_val @context_export;
+            }
+
+            @context_import("h264-pps")
+            struct AmbientPpsConsumer {
+                bits<8> header;
+                bits<(context_value(h264_pps, pps_val) + 1)> data;
+            }
+            entry AmbientPpsConsumer;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const auto spsIndex = *compiled.program->structureIndex(QStringLiteral("Sps"));
+        const auto ppsIndex = *compiled.program->structureIndex(QStringLiteral("Pps"));
+        const auto consumerIndex = *compiled.program->structureIndex(QStringLiteral("AmbientPpsConsumer"));
+
+        // Case 1: NotFound (no PPS registered)
+        {
+            auto tree = AnalysisTree::create(QStringLiteral("not-found-tree"));
+            QVERIFY(tree.has_value());
+            RuleExecutionSession session(*compiled.program);
+
+            MemorySource source(bytes({0x01, 0x00}));
+            const auto view = makeView(1, 0, 16);
+            QVERIFY(view.has_value());
+
+            const auto res = session.run(makeRequest(source, consumerIndex, *view, *tree));
+            QCOMPARE(res.status, RuleExecutionStatus::DependencyUnavailable);
+            QCOMPARE(res.errorMessage, QStringLiteral("Imported context was not defined before this structure"));
+        }
+
+        // Case 2: DependencyUnavailable (PPS registered with SPS 0 gen 1, then SPS 0 redefined to gen 2)
+        {
+            auto tree = AnalysisTree::create(QStringLiteral("dep-unavail-tree"));
+            QVERIFY(tree.has_value());
+            RuleExecutionSession session(*compiled.program);
+
+            // SPS 0 gen 1 at [0, 16)
+            // PPS 0 at [16, 40) depending on SPS 0 gen 1
+            // SPS 0 gen 2 at [40, 56) (redefines SPS 0, invalidating PPS 0's dependency)
+            // AmbientPpsConsumer at [56, 72)
+            MemorySource source(bytes({0x00, 0x07, 0x00, 0x00, 0x03, 0x00, 0x0F, 0x01, 0x00}));
+            const auto sps0Gen1View = makeView(1, 0, 16);
+            const auto pps0View = makeView(2, 16, 24);
+            const auto sps0Gen2View = makeView(3, 40, 16);
+            const auto consumerView = makeView(4, 56, 16);
+            QVERIFY(sps0Gen1View.has_value() && pps0View.has_value() &&
+                    sps0Gen2View.has_value() && consumerView.has_value());
+
+            const auto sps0Gen1 = session.run(makeRequest(source, spsIndex, *sps0Gen1View, *tree));
+            QVERIFY(sps0Gen1.materialized());
+
+            const auto pps0 = session.run(makeRequest(source, ppsIndex, *pps0View, *tree));
+            QVERIFY(pps0.materialized());
+
+            const auto sps0Gen2 = session.run(makeRequest(source, spsIndex, *sps0Gen2View, *tree));
+            QVERIFY(sps0Gen2.materialized());
+
+            const auto res = session.run(makeRequest(source, consumerIndex, *consumerView, *tree));
+            QCOMPARE(res.status, RuleExecutionStatus::DependencyUnavailable);
+            QCOMPARE(res.errorMessage, QStringLiteral("Imported context generation is unavailable"));
+        }
     }
 };
 

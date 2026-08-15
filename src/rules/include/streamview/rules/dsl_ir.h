@@ -185,7 +185,7 @@ struct DslTypedContextImport final {
 
     core::ContextDefinitionKind kind =
         core::ContextDefinitionKind::H264SequenceParameterSet;
-    quint32 keyFieldIndex = 0;
+    std::optional<quint32> keyFieldIndex;
 };
 
 struct DslTypedStruct final {

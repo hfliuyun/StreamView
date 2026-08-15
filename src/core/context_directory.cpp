@@ -181,4 +181,59 @@ ContextLookupResult ContextDirectory::resolveBefore(
     return {ContextLookupStatus::Found, candidate, std::nullopt};
 }
 
+ContextLookupResult
+ContextDirectory::resolveLatestBefore(ContextDefinitionKind kind,
+                                     quint64 scopeId,
+                                     SourceBitAddress sourcePosition) const {
+    std::vector<ContextDefinitionId> resolutionStack;
+    return resolveLatestBefore(kind, scopeId, sourcePosition, resolutionStack);
+}
+
+ContextLookupResult ContextDirectory::resolveLatestBefore(
+    ContextDefinitionKind kind,
+    quint64 scopeId,
+    SourceBitAddress sourcePosition,
+    std::vector<ContextDefinitionId>& resolutionStack) const {
+    const ContextKey startKey{kind, scopeId, 0};
+    const ContextKey endKey{kind, scopeId, std::numeric_limits<quint64>::max()};
+    const auto lower = definitionsByKey_.lower_bound(startKey);
+    const auto upper = definitionsByKey_.upper_bound(endKey);
+    if (lower == upper) {
+        return {};
+    }
+
+    std::optional<ContextDefinitionId> latestCandidateId;
+    SourceBitAddress latestEndPosition(0);
+
+    for (auto it = lower; it != upper; ++it) {
+        const auto firstAfterPosition = std::upper_bound(
+            it->second.begin(),
+            it->second.end(),
+            sourcePosition,
+            [this](SourceBitAddress position, ContextDefinitionId definitionId) {
+                return position < definitions_.at(static_cast<std::size_t>(definitionId.value() - 1))
+                                      .sourceSpan.endExclusive();
+            });
+        if (firstAfterPosition == it->second.begin()) {
+            continue;
+        }
+        const auto candidateId = *std::prev(firstAfterPosition);
+        const auto& candidate =
+            definitions_.at(static_cast<std::size_t>(candidateId.value() - 1));
+        if (!latestCandidateId.has_value() ||
+            candidate.sourceSpan.endExclusive() > latestEndPosition) {
+            latestCandidateId = candidateId;
+            latestEndPosition = candidate.sourceSpan.endExclusive();
+        }
+    }
+
+    if (!latestCandidateId.has_value()) {
+        return {};
+    }
+
+    const auto& candidate =
+        definitions_.at(static_cast<std::size_t>(latestCandidateId->value() - 1));
+    return resolveBefore(candidate.key, sourcePosition, resolutionStack);
+}
+
 } // namespace streamview::core

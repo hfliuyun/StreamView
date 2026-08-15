@@ -408,25 +408,29 @@ struct TypedExpressionValidationState final {
         }
         const DslTypedContextImport& import =
             structure.contextImports.at(expression.contextImportIndex);
-        if (import.keyFieldIndex >= subjectFieldIndex ||
-            import.keyFieldIndex >= structure.fields.size() ||
-            expression.contextStructureIndex >= program.structs.size()) {
-            return fail(QStringLiteral("Typed imported context reference is out of range"));
+        if (import.keyFieldIndex.has_value()) {
+            if (*import.keyFieldIndex >= subjectFieldIndex ||
+                *import.keyFieldIndex >= structure.fields.size()) {
+                return fail(QStringLiteral("Typed imported context reference is out of range"));
+            }
+            const DslTypedField& keyField = structure.fields.at(*import.keyFieldIndex);
+            const bool keyGuaranteed = std::all_of(
+                keyField.conditions.begin(),
+                keyField.conditions.end(),
+                [&subjectConditions](const DslTypedFieldCondition& required) {
+                    return std::any_of(
+                        subjectConditions.begin(),
+                        subjectConditions.end(),
+                        [&required](const DslTypedFieldCondition& candidate) {
+                            return sameCondition(required, candidate);
+                        });
+                });
+            if (!keyGuaranteed) {
+                return fail(QStringLiteral("Typed imported context key is not guaranteed"));
+            }
         }
-        const DslTypedField& keyField = structure.fields.at(import.keyFieldIndex);
-        const bool keyGuaranteed = std::all_of(
-            keyField.conditions.begin(),
-            keyField.conditions.end(),
-            [&subjectConditions](const DslTypedFieldCondition& required) {
-                return std::any_of(
-                    subjectConditions.begin(),
-                    subjectConditions.end(),
-                    [&required](const DslTypedFieldCondition& candidate) {
-                        return sameCondition(required, candidate);
-                    });
-            });
-        if (!keyGuaranteed) {
-            return fail(QStringLiteral("Typed imported context key is not guaranteed"));
+        if (expression.contextStructureIndex >= program.structs.size()) {
+            return fail(QStringLiteral("Typed imported context reference is out of range"));
         }
         const DslTypedStruct& publisher =
             program.structs.at(expression.contextStructureIndex);
@@ -668,23 +672,29 @@ struct ComputedEvaluationResult final {
         }
         const DslTypedContextImport& import =
             structure.contextImports.at(expression.contextImportIndex);
-        if (import.keyFieldIndex >= fieldValues.size() ||
-            !fieldValues.at(import.keyFieldIndex)) {
-            ComputedEvaluationResult failure = invalidDefinition(
-                QStringLiteral("Imported context key is unavailable"));
-            failure.diagnosticFieldIndex = import.keyFieldIndex;
-            return failure;
+        std::optional<quint64> importKeyValue;
+        std::optional<quint32> diagnosticFieldIndex;
+        if (import.keyFieldIndex.has_value()) {
+            if (*import.keyFieldIndex >= fieldValues.size() ||
+                !fieldValues.at(*import.keyFieldIndex)) {
+                ComputedEvaluationResult failure = invalidDefinition(
+                    QStringLiteral("Imported context key is unavailable"));
+                failure.diagnosticFieldIndex = *import.keyFieldIndex;
+                return failure;
+            }
+            importKeyValue = *fieldValues.at(*import.keyFieldIndex);
+            diagnosticFieldIndex = *import.keyFieldIndex;
         }
         if (!contextValueResolver) {
             ComputedEvaluationResult failure = invalidDefinition(
                 QStringLiteral("Imported context value resolver is unavailable"));
-            failure.diagnosticFieldIndex = import.keyFieldIndex;
+            failure.diagnosticFieldIndex = diagnosticFieldIndex;
             return failure;
         }
         const DslContextValueResolution resolution = contextValueResolver({
             expression.contextImportIndex,
             import.kind,
-            *fieldValues.at(import.keyFieldIndex),
+            importKeyValue,
             expression.contextDefinitionKind,
             expression.contextStructureIndex,
             expression.contextExportIndex,
@@ -696,7 +706,7 @@ struct ComputedEvaluationResult final {
                 resolution.errorMessage.isEmpty()
                     ? QStringLiteral("Imported context value is unavailable")
                     : resolution.errorMessage,
-                import.keyFieldIndex,
+                diagnosticFieldIndex,
             };
             return failure;
         }
@@ -1526,12 +1536,14 @@ DslExecutionResult DslVirtualMachine::execute(
                     nullptr);
         return result;
     }
-    std::vector<std::pair<core::ContextDefinitionKind, quint32>> checkedImports;
+    std::vector<std::pair<core::ContextDefinitionKind, std::optional<quint32>>> checkedImports;
     checkedImports.reserve(structure.contextImports.size());
     for (const DslTypedContextImport& import : structure.contextImports) {
         const auto identity = std::pair{import.kind, import.keyFieldIndex};
+        const bool validKey = !import.keyFieldIndex.has_value() ||
+                              validImportContextField(structure, *import.keyFieldIndex);
         if (!validContextKind(import.kind) ||
-            !validImportContextField(structure, import.keyFieldIndex) ||
+            !validKey ||
             std::find(checkedImports.begin(), checkedImports.end(), identity) !=
                 checkedImports.end()) {
             markFailure(DslExecutionStatus::InvalidDefinition,
@@ -3738,9 +3750,13 @@ DslExecutionResult DslVirtualMachine::execute(
                     }
                 }
                 for (const DslTypedContextImport& import : structure.contextImports) {
-                    const auto key = materializedContextValue(import.keyFieldIndex);
+                    if (!import.keyFieldIndex.has_value()) {
+                        stagedContextImports.push_back({import.kind, std::nullopt});
+                        continue;
+                    }
+                    const auto key = materializedContextValue(*import.keyFieldIndex);
                     if (!key) {
-                        const DslTypedField& keyField = structure.fields.at(import.keyFieldIndex);
+                        const DslTypedField& keyField = structure.fields.at(*import.keyFieldIndex);
                         if (keyField.conditions.empty()) {
                             markFailure(DslExecutionStatus::InvalidDefinition,
                                         QStringLiteral("Typed IR context import key is unavailable"),
