@@ -1500,6 +1500,50 @@ private slots:
         QVERIFY(conditional.elseItems.empty());
     }
 
+    void parsesBooleanOperandsInAddAndMultiply() {
+        const auto result = DslParser::parse(QStringLiteral(R"(
+            pure u64 num_clock_ts(u64 pic_struct) {
+                return (pic_struct <= 2) * 1 +
+                       (pic_struct == 3 || pic_struct == 4 || pic_struct == 7) * 2 +
+                       (pic_struct == 5 || pic_struct == 6 || pic_struct == 8) * 3;
+            }
+            struct Header {
+                computed<u64> sum_bb = true + false;
+                computed<u64> sum_bu = true + 1;
+                computed<u64> sum_ub = 2 + false;
+                computed<u64> mul_bb = true * true;
+                computed<u64> mul_bu = true * 5;
+                computed<u64> mul_ub = 3 * false;
+            }
+            entry Header;
+        )"));
+
+        QVERIFY2(result.succeeded(),
+                 result.diagnostics.empty()
+                     ? ""
+                     : qPrintable(result.diagnostics.front().message));
+        QCOMPARE(result.program.pureFunctions.size(), std::size_t(1));
+        QCOMPARE(result.program.pureFunctions.front().returnType, DslScalarType::U64);
+        QCOMPARE(result.program.structs.front().items.size(), std::size_t(6));
+    }
+
+    void rejectsInvalidBooleanOperandsInSubtractionDivisionAndRemainder() {
+        const std::vector<QString> rejectedSources{
+            QStringLiteral("struct H { computed<u64> x = true - 1; } entry H;"),
+            QStringLiteral("struct H { computed<u64> x = 1 - true; } entry H;"),
+            QStringLiteral("struct H { computed<u64> x = true - false; } entry H;"),
+            QStringLiteral("struct H { computed<u64> x = true / 1; } entry H;"),
+            QStringLiteral("struct H { computed<u64> x = 1 / true; } entry H;"),
+            QStringLiteral("struct H { computed<u64> x = true % 1; } entry H;"),
+            QStringLiteral("struct H { computed<u64> x = 1 % true; } entry H;"),
+        };
+        for (const auto& src : rejectedSources) {
+            const auto result = DslParser::parse(src);
+            QVERIFY(!result.succeeded());
+            QVERIFY(hasDiagnostic(result, DslDiagnosticCode::InvalidType));
+        }
+    }
+
     void parsesCheckedLazyByteRegions() {
         const auto result = DslParser::parse(QStringLiteral(R"(
             struct Packet {
@@ -1654,7 +1698,7 @@ private slots:
                  "entry Header;"),
              DslDiagnosticCode::InvalidType},
             {QStringLiteral(
-                 "struct Header { computed<u64> value = true + 1; } entry Header;"),
+                 "struct Header { computed<u64> value = true - 1; } entry Header;"),
              DslDiagnosticCode::InvalidType},
             {QStringLiteral(
                  "struct Header { computed<bool> flag = true; "

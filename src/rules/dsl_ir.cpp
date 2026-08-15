@@ -915,10 +915,14 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         DslScalarType resultType = DslScalarType::U64;
         bool typesValid = true;
         switch (expression.binaryOperator) {
+        case DslBinaryOperator::Add:
         case DslBinaryOperator::Multiply:
+            typesValid = (left->type == DslScalarType::U64 || left->type == DslScalarType::Bool) &&
+                         (right->type == DslScalarType::U64 || right->type == DslScalarType::Bool);
+            resultType = DslScalarType::U64;
+            break;
         case DslBinaryOperator::Divide:
         case DslBinaryOperator::Remainder:
-        case DslBinaryOperator::Add:
         case DslBinaryOperator::Subtract:
             typesValid = left->type == DslScalarType::U64 &&
                          right->type == DslScalarType::U64;

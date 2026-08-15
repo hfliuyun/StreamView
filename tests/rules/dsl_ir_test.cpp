@@ -293,6 +293,50 @@ private slots:
         QVERIFY(expression->operands.empty());
     }
 
+    void lowersBooleanOperandsInAddAndMultiplyExpressions() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            pure u64 num_clock_ts(u64 pic_struct) {
+                return (pic_struct <= 2) * 1 +
+                       (pic_struct == 3 || pic_struct == 4 || pic_struct == 7) * 2 +
+                       (pic_struct == 5 || pic_struct == 6 || pic_struct == 8) * 3;
+            }
+            struct Header {
+                bits<4> pic_struct;
+                computed<u64> num_clock_ts = num_clock_ts(pic_struct);
+                computed<u64> sum = true + false;
+                computed<u64> prod = true * 5;
+            }
+            entry Header;
+        )"));
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty() ? "" : qPrintable(parsed.diagnostics.front().message));
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty() ? "" : qPrintable(compiled.diagnostics.front().message));
+
+        const auto& inlinedPureExpr =
+            compiled.program->structs.front().fields.at(1).computedExpression;
+        QVERIFY(inlinedPureExpr.has_value());
+        QCOMPARE(inlinedPureExpr->type, DslScalarType::U64);
+        QCOMPARE(inlinedPureExpr->kind, DslTypedExpressionKind::Binary);
+        QCOMPARE(inlinedPureExpr->binaryOperator, streamview::rules::DslBinaryOperator::Add);
+
+        const auto& sumExpr =
+            compiled.program->structs.front().fields.at(2).computedExpression;
+        QVERIFY(sumExpr.has_value());
+        QCOMPARE(sumExpr->kind, DslTypedExpressionKind::Binary);
+        QCOMPARE(sumExpr->binaryOperator, streamview::rules::DslBinaryOperator::Add);
+        QCOMPARE(sumExpr->type, DslScalarType::U64);
+
+        const auto& prodExpr =
+            compiled.program->structs.front().fields.at(3).computedExpression;
+        QVERIFY(prodExpr.has_value());
+        QCOMPARE(prodExpr->kind, DslTypedExpressionKind::Binary);
+        QCOMPARE(prodExpr->binaryOperator, streamview::rules::DslBinaryOperator::Multiply);
+        QCOMPARE(prodExpr->type, DslScalarType::U64);
+    }
+
     void lowersImportedContextValuesInSourceAnchoredAssertions() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             pure bool is_disabled(u64 value) {

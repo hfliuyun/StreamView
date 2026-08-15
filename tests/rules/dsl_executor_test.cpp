@@ -1009,6 +1009,94 @@ private slots:
         QCOMPARE(childNames, expectedNames);
     }
 
+    void evaluatesBooleanOperandsInAddAndMultiplyAndTableD1Mapping() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            pure u64 num_clock_ts_for_pic_struct(u64 pic_struct) {
+                return (pic_struct <= 2) * 1 +
+                       (pic_struct == 3 || pic_struct == 4 || pic_struct == 7) * 2 +
+                       (pic_struct == 5 || pic_struct == 6 || pic_struct == 8) * 3;
+            }
+            struct TableD1Record {
+                bits<4> pic_struct;
+                computed<u64> num_clock_ts = num_clock_ts_for_pic_struct(pic_struct);
+                computed<u64> bool_add_true_true = true + true;
+                computed<u64> bool_add_true_false = true + false;
+                computed<u64> bool_add_false_false = false + false;
+                computed<u64> bool_mul_true_true = true * true;
+                computed<u64> bool_mul_true_false = true * false;
+                computed<u64> bool_mul_false_false = false * false;
+            }
+            entry TableD1Record;
+        )"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY2(parsed.succeeded(),
+                 parsed.diagnostics.empty() ? "" : qPrintable(parsed.diagnostics.front().message));
+        QVERIFY2(compiled.succeeded(),
+                 compiled.diagnostics.empty() ? "" : qPrintable(compiled.diagnostics.front().message));
+
+        // Table D-1 Expected NumClockTS for all 16 values (0..15)
+        const std::vector<quint64> expectedNumClockTS{
+            1, // 0: progressive
+            1, // 1: top field
+            1, // 2: bottom field
+            2, // 3: top field, bottom field
+            2, // 4: bottom field, top field
+            3, // 5: top field, bottom field, top field repeated
+            3, // 6: bottom field, top field, bottom field repeated
+            2, // 7: frame doubling
+            3, // 8: frame tripling
+            0, // 9: reserved
+            0, // 10: reserved
+            0, // 11: reserved
+            0, // 12: reserved
+            0, // 13: reserved
+            0, // 14: reserved
+            0  // 15: reserved
+        };
+
+        for (quint64 ps = 0; ps < 16; ++ps) {
+            const quint8 byteVal = static_cast<quint8>(ps << 4);
+            MemorySource source(bytes({byteVal}));
+            const auto mapping = mappingForBytes(1);
+            QVERIFY(mapping.has_value());
+            BitReader reader(source, *mapping);
+            auto tree = AnalysisTree::create(QStringLiteral("table-d1-test"));
+            QVERIFY(tree.has_value());
+
+            const auto result = DslExecutor::decodeStruct(*compiled.program,
+                                                          quint32(0),
+                                                          reader,
+                                                          *mapping,
+                                                          0,
+                                                          *tree,
+                                                          tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::Materialized);
+            const auto structure = tree->node(*result.structureNode);
+            QVERIFY(structure.has_value());
+
+            const auto numClockTsNode = tree->node(structure->children().at(1));
+            QVERIFY(numClockTsNode.has_value());
+            QCOMPARE(numClockTsNode->name(), QStringLiteral("num_clock_ts"));
+            QCOMPARE(numClockTsNode->value().toULongLong(), expectedNumClockTS.at(ps));
+
+            // Verify boolean arithmetic coercion values on first iteration
+            if (ps == 0) {
+                const auto addTT = tree->node(structure->children().at(2));
+                QCOMPARE(addTT->value().toULongLong(), quint64(2));
+                const auto addTF = tree->node(structure->children().at(3));
+                QCOMPARE(addTF->value().toULongLong(), quint64(1));
+                const auto addFF = tree->node(structure->children().at(4));
+                QCOMPARE(addFF->value().toULongLong(), quint64(0));
+                const auto mulTT = tree->node(structure->children().at(5));
+                QCOMPARE(mulTT->value().toULongLong(), quint64(1));
+                const auto mulTF = tree->node(structure->children().at(6));
+                QCOMPARE(mulTF->value().toULongLong(), quint64(0));
+                const auto mulFF = tree->node(structure->children().at(7));
+                QCOMPARE(mulFF->value().toULongLong(), quint64(0));
+            }
+        }
+    }
+
     void rejectsMalformedRepeatLocalAssertionConditionsBeforeReadingSource() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             struct Header {

@@ -2075,10 +2075,18 @@ private:
                 }
             };
             switch (expression.binaryOperator) {
+            case DslBinaryOperator::Add:
             case DslBinaryOperator::Multiply:
+                if ((leftType && *leftType != DslScalarType::U64 && *leftType != DslScalarType::Bool) ||
+                    (rightType && *rightType != DslScalarType::U64 && *rightType != DslScalarType::Bool)) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidType,
+                         QStringLiteral("Add and multiply operators require u64 or bool operands"),
+                         expression.range});
+                }
+                return DslScalarType::U64;
             case DslBinaryOperator::Divide:
             case DslBinaryOperator::Remainder:
-            case DslBinaryOperator::Add:
             case DslBinaryOperator::Subtract:
                 requireOperands(DslScalarType::U64,
                                 QStringLiteral("Arithmetic operators require u64 operands"));

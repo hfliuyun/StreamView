@@ -571,10 +571,14 @@ struct TypedExpressionValidationState final {
 
     bool typesValid = false;
     switch (expression.binaryOperator) {
+    case DslBinaryOperator::Add:
     case DslBinaryOperator::Multiply:
+        typesValid = expression.type == DslScalarType::U64 &&
+                     (left.type == DslScalarType::U64 || left.type == DslScalarType::Bool) &&
+                     (right.type == DslScalarType::U64 || right.type == DslScalarType::Bool);
+        break;
     case DslBinaryOperator::Divide:
     case DslBinaryOperator::Remainder:
-    case DslBinaryOperator::Add:
     case DslBinaryOperator::Subtract:
         typesValid = expression.type == DslScalarType::U64 &&
                      left.type == DslScalarType::U64 && right.type == DslScalarType::U64;
@@ -836,8 +840,12 @@ struct ComputedEvaluationResult final {
         return right;
     }
 
-    const quint64 leftUnsigned = left.value.unsignedValue;
-    const quint64 rightUnsigned = right.value.unsignedValue;
+    const quint64 leftUnsigned = left.value.type == DslScalarType::Bool
+                                     ? (left.value.booleanValue ? 1ULL : 0ULL)
+                                     : left.value.unsignedValue;
+    const quint64 rightUnsigned = right.value.type == DslScalarType::Bool
+                                      ? (right.value.booleanValue ? 1ULL : 0ULL)
+                                      : right.value.unsignedValue;
     switch (expression.binaryOperator) {
     case DslBinaryOperator::Multiply:
         if (leftUnsigned != 0 &&
