@@ -1350,6 +1350,12 @@ parsing a 16-byte UUID array `bits<8> uuid_iso_iec_11578[16]` followed by dynami
 `@lazy(payload_size - 16) bytes user_data_payload_byte` to carry the unregistered
 payload bytes. Other uninterpreted SEI payload types continue to decode as opaque
 lazy byte regions via the `default` switch arm.
+Package `0.1.34` adds user data registered by Recommendation ITU-T T.35 SEI message
+decoding (`payload_type == 4`), parsing `bits<8> itu_t_t35_country_code`, conditional
+`bits<8> itu_t_t35_country_code_extension_byte` and `@lazy(payload_size - 2) bytes
+itu_t_t35_extension_payload_byte` when `itu_t_t35_country_code == 255`, and dynamic
+`@lazy(payload_size - 1) bytes itu_t_t35_payload_byte` otherwise. Other uninterpreted
+SEI payload types continue to decode as opaque lazy byte regions.
 
 When sequence parameter sets or picture parameter sets with identical
 identifiers are redefined later in the stream, subsequent slices bind to the

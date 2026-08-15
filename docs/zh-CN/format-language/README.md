@@ -1037,6 +1037,11 @@ package `0.1.33` 将 `SeiRbsp` 载荷派发重构为 `switch (payload_type)` 结
 （user data unregistered）SEI 消息解码（`payload_type == 5`），解析 16 字节 UUID 数组
 `bits<8> uuid_iso_iec_11578[16]` 与动态延迟载荷字节 `@lazy(payload_size - 16) bytes user_data_payload_byte`。
 其余未深入解析的 SEI 载荷类型继续通过 `default` 分支解析为不透明惰性字节区域。
+package `0.1.34` 新增 ITU-T T.35 注册用户数据（user data registered by Recommendation ITU-T T.35）
+SEI 消息解码（`payload_type == 4`），解析 `bits<8> itu_t_t35_country_code`，在国家代码为 255 时解析
+`bits<8> itu_t_t35_country_code_extension_byte` 与 `@lazy(payload_size - 2) bytes itu_t_t35_extension_payload_byte`，
+其他国家代码解析 `@lazy(payload_size - 1) bytes itu_t_t35_payload_byte`。
+其余未深入解析的 SEI 载荷类型继续通过 `default` 分支解析为不透明惰性字节区域。
 
 当码流中途重定义具有相同标识符的序列参数集或图像参数集时，后续 slice
 按位置绑定到最近的先前有效代（ADR-0028、ADR-0078）。诸如动态 `frame_num`
