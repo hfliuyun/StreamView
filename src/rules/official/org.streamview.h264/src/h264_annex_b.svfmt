@@ -730,6 +730,25 @@ struct SeiRbsp {
             @spec("ITU-T H.264", "7.3.2.3.1")
             @description("Specifies the SEI message payload byte size.");
         switch (payload_type) {
+            case 4: {
+                bits<8> itu_t_t35_country_code
+                    @spec("ITU-T H.264", "D.1.5, D.2.5")
+                    @description("Specifies the ITU-T Recommendation T.35 country code.");
+                if (itu_t_t35_country_code == 255) {
+                    bits<8> itu_t_t35_country_code_extension_byte
+                        @spec("ITU-T H.264", "D.1.5, D.2.5")
+                        @description("Specifies the ITU-T Recommendation T.35 country code extension byte.");
+                    @lazy(payload_size - 2)
+                    bytes itu_t_t35_extension_payload_byte
+                        @spec("ITU-T H.264", "D.1.5, D.2.5")
+                        @description("Carries the raw ITU-T Recommendation T.35 payload bytes when an extension byte is present.");
+                } else {
+                    @lazy(payload_size - 1)
+                    bytes itu_t_t35_payload_byte
+                        @spec("ITU-T H.264", "D.1.5, D.2.5")
+                        @description("Carries the raw ITU-T Recommendation T.35 payload bytes.");
+                }
+            }
             case 5: {
                 bits<8> uuid_iso_iec_11578[16]
                     @spec("ITU-T H.264", "D.1.6, D.2.6")
