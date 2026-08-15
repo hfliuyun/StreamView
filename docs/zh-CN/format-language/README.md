@@ -626,6 +626,14 @@ VM 还会在任何 source read 前把每个 imported conditional guard 验证为
 status，并在 import-key field 上给出 source location。即使 branch 未选中，malformed typed guard
 metadata 也不能隐藏。
 
+上下文导入键声明（`@context_import("...", keyFieldName)`）用于在消费结构体内绑定
+`context_value(keyFieldName, ...)` 表达式。键字段既可以在结构体顶层无条件声明，也可以
+在控制流分支和 repeat 循环块内部局部声明（ADR-0084）。在分支或循环内部声明时，每个
+`context_value` 用法静态解析并绑定到当前执行路径上有保证且最近的更早声明，repeat 迭代
+分别绑定各自迭代局部的 key 槽位。键必须为无符号标量类型（`bits`、`ue`、`ff_coded` 或
+`computed<u64>`），禁止有符号字段（`se`）和数组。定义键（`@context`）与依赖项
+（`@context_dependency`）依然严格保持顶层无条件约束。
+
 VM 在每次字段读取前按外层到内层的顺序验证并计算 presence guard。guard 为 false 时跳过
 该字段，不消耗 source bit、不创建 analysis node，也不执行 enum member、`@equals` 或
 `@range` 数值检查。选中字段沿用既有数值、诊断和 source-location 行为，因此后续选中字段紧接在上一个

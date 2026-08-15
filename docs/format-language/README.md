@@ -829,6 +829,17 @@ or field constraint check. Resolver failures use the dynamic-width statuses and
 are source-located at the import-key field. Even an unselected branch cannot
 hide malformed typed guard metadata.
 
+Context import key declarations (`@context_import("...", keyFieldName)`) bind
+`context_value(keyFieldName, ...)` expressions in consumer structures. Key fields
+may be declared unconditionally at the structure top level, or locally inside
+control flow branches and repeat loops (ADR-0084). When declared inside branches or
+loops, each `context_value` usage statically resolves to the nearest earlier
+declaration of the key name guaranteed on its execution branch, and repeat iterations
+rebind to their respective iteration's key slot. The key must be an unsigned scalar
+(`bits`, `ue`, `ff_coded`, or `computed<u64>`); signed fields (`se`) and arrays are
+rejected. Definition keys (`@context`) and dependencies (`@context_dependency`)
+remain strictly top-level and unconditional.
+
 Before each field read, the VM validates and evaluates its presence guards in
 outer-to-inner order. A false guard skips the field without consuming source
 bits, creating an analysis node, enforcing enum membership, or applying an
