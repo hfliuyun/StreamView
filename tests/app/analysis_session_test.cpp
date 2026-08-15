@@ -810,6 +810,101 @@ private slots:
         QCOMPARE(batch.topLevelNodes.size(), std::size_t(3));
         QVERIFY(restored.session->finished());
     }
+
+    void opensRealAdtsWithoutBundledPackageByFallingBackToH264() {
+        auto makeFrame = [](quint16 frameLength) {
+            std::vector<std::byte> frame(frameLength, std::byte{0x55});
+            frame[0] = std::byte{0xFF};
+            frame[1] = std::byte{0xF1};
+            frame[2] = std::byte{0x50};
+            frame[3] = std::byte{static_cast<quint8>(0x80U | ((frameLength >> 11U) & 0x03U))};
+            frame[4] = std::byte{static_cast<quint8>((frameLength >> 3U) & 0xFFU)};
+            frame[5] = std::byte{static_cast<quint8>(((frameLength & 0x07U) << 5U) | 0x1FU)};
+            frame[6] = std::byte{0xFC};
+            return frame;
+        };
+
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("real_3frame.aac"));
+
+        std::vector<std::byte> aacBytes;
+        const auto f1 = makeFrame(150);
+        const auto f2 = makeFrame(200);
+        const auto f3 = makeFrame(180);
+        aacBytes.insert(aacBytes.end(), f1.begin(), f1.end());
+        aacBytes.insert(aacBytes.end(), f2.begin(), f2.end());
+        aacBytes.insert(aacBytes.end(), f3.begin(), f3.end());
+        QVERIFY(writeFile(
+            mediaPath,
+            QByteArray(reinterpret_cast<const char*>(aacBytes.data()),
+                       static_cast<qsizetype>(aacBytes.size()))));
+
+        QString errorMessage;
+        auto session = AnalysisSession::openFile(mediaPath, &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+
+        // Format detection identifies AAC Strong candidate
+        QVERIFY(session->aacFormatDetection().candidate.has_value());
+        QCOMPARE(session->aacFormatDetection().candidate->confidence,
+                 streamview::rules::AacAdtsDetectionConfidence::Strong);
+        // H.264 candidate is empty
+        QVERIFY(!session->formatDetection().candidate.has_value());
+
+        // In the absence of bundled AAC rules, session falls back cleanly to H.264 identity
+        QCOMPARE(session->ruleIdentity().packageIdentity().packageId(),
+                 QStringLiteral("org.streamview.h264"));
+        QCOMPARE(session->ruleIdentity().entryPointId(), QStringLiteral("annex-b"));
+
+        // Analysis execution runs on fallback analyzer without fatal error
+        const auto batch = session->analyzeBatch();
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
+    }
+
+    void opensAdtsWithProbableConfidenceByFallingBackToH264() {
+        auto makeFrame = [](quint16 frameLength) {
+            std::vector<std::byte> frame(frameLength, std::byte{0x55});
+            frame[0] = std::byte{0xFF};
+            frame[1] = std::byte{0xF1};
+            frame[2] = std::byte{0x50};
+            frame[3] = std::byte{static_cast<quint8>(0x80U | ((frameLength >> 11U) & 0x03U))};
+            frame[4] = std::byte{static_cast<quint8>((frameLength >> 3U) & 0xFFU)};
+            frame[5] = std::byte{static_cast<quint8>(((frameLength & 0x07U) << 5U) | 0x1FU)};
+            frame[6] = std::byte{0xFC};
+            return frame;
+        };
+
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("probable_2frame.aac"));
+
+        std::vector<std::byte> aacBytes;
+        const auto f1 = makeFrame(150);
+        const auto f2 = makeFrame(200);
+        aacBytes.insert(aacBytes.end(), f1.begin(), f1.end());
+        aacBytes.insert(aacBytes.end(), f2.begin(), f2.end());
+        QVERIFY(writeFile(
+            mediaPath,
+            QByteArray(reinterpret_cast<const char*>(aacBytes.data()),
+                       static_cast<qsizetype>(aacBytes.size()))));
+
+        QString errorMessage;
+        auto session = AnalysisSession::openFile(mediaPath, &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+
+        // Format detection identifies AAC Probable candidate
+        QVERIFY(session->aacFormatDetection().candidate.has_value());
+        QCOMPARE(session->aacFormatDetection().candidate->confidence,
+                 streamview::rules::AacAdtsDetectionConfidence::Probable);
+
+        // Session uses H.264 identity
+        QCOMPARE(session->ruleIdentity().packageIdentity().packageId(),
+                 QStringLiteral("org.streamview.h264"));
+        QCOMPARE(session->ruleIdentity().entryPointId(), QStringLiteral("annex-b"));
+
+        const auto batch = session->analyzeBatch();
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
+    }
 };
 
 QTEST_GUILESS_MAIN(AnalysisSessionTest)

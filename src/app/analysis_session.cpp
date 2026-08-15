@@ -182,24 +182,25 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
                                   ? std::optional(formatDetection.candidate->confidence)
                                   : std::nullopt;
 
-        bool chooseAac = false;
-        if (aacConf == rules::AacAdtsDetectionConfidence::Strong) {
-            chooseAac = true;
-        } else if (aacConf == rules::AacAdtsDetectionConfidence::Probable &&
-                   h264Conf != rules::H264AnnexBDetectionConfidence::Strong &&
-                   h264Conf != rules::H264AnnexBDetectionConfidence::Probable) {
-            chooseAac = true;
-        }
+        const bool chooseAac = (aacConf == rules::AacAdtsDetectionConfidence::Strong &&
+                                h264Conf != rules::H264AnnexBDetectionConfidence::Strong);
 
         if (chooseAac) {
             auto aacAnalyzer = rules::AacAdtsAnalyzer::create(*source, &analyzerError);
-            if (!aacAnalyzer) {
-                if (errorMessage != nullptr) {
-                    *errorMessage = analyzerError;
+            if (aacAnalyzer.has_value()) {
+                analyzerVariant.emplace(std::move(*aacAnalyzer));
+            } else {
+                // If AAC analyzer creation fails (e.g. no bundled rule package yet),
+                // fall back cleanly to the existing H.264/unknown source path.
+                auto h264Analyzer = rules::H264AnnexBAnalyzer::create(*source, &analyzerError);
+                if (!h264Analyzer) {
+                    if (errorMessage != nullptr) {
+                        *errorMessage = analyzerError;
+                    }
+                    return nullptr;
                 }
-                return nullptr;
+                analyzerVariant.emplace(std::move(*h264Analyzer));
             }
-            analyzerVariant.emplace(std::move(*aacAnalyzer));
         } else {
             auto h264Analyzer = rules::H264AnnexBAnalyzer::create(*source, &analyzerError);
             if (!h264Analyzer) {
