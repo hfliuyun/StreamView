@@ -1,9 +1,9 @@
 # StreamView v0.1 分阶段实施计划
 
 Status: In Progress
-Current Phase: 3
-Last Completed Step: SEI deep decoding rectification and session-level ambient capability verification (Task T11c / commit 9c18436)
-Next Action: Conclude H.264 Phase 3 remaining checklist audit (Task T13)
+Current Phase: 4
+Last Completed Step: Phase 3 H.264 formal structure support audit and sign-off (Task T13)
+Next Action: Specify and implement AAC-LC ADTS fixed and variable header parsing (Phase 4)
 Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31882632928 (Ubuntu job 95007234862, macOS job 95007234841, Windows job 95007234953) passed 100%
 Blockers: None
 
@@ -127,7 +127,7 @@ Blockers: None
 
 依赖：M4 的映射/上下文和 M5 的规则资产管理。每个格式按“规则、fixture、诊断、双语字段文档、source-span 断言”独立验收。
 
-- [ ] H.264：EBSP/RBSP、trailing bits、SPS/PPS/VUI/HRD、slice header、SEI 与按位置重定义。
+- [x] H.264：EBSP/RBSP、trailing bits、SPS/PPS/VUI/HRD、slice header、SEI 与按位置重定义。
 - [ ] AAC-LC：ADTS、AudioSpecificConfig/GASpecificConfig/PCE，压缩 payload 保持 opaque。
 - [ ] MP4/MOV：box 层级、sample tables、`avcC`/`esds`、分页 sample index 与跨层导航；对 `moof` 明确 unsupported。
 
@@ -187,7 +187,7 @@ Blockers: None
 - [x] 所有 SEI 解析 payloadType/payloadSize。
 - [x] 深入解析 buffering period、pic timing、用户数据、recovery point、frame packing 和 display orientation。
 - [x] 支持同 ID SPS/PPS 中途重定义和按位置选择。
-- [ ] 为声明范围内每个字段建立规范引用、双语说明、合法/非法样例和 source-span 断言。
+- [x] 为声明范围内每个字段建立规范引用、双语说明、合法/非法样例和 source-span 断言。
 
 ## 阶段 4：AAC-LC 正式结构支持
 
@@ -1439,3 +1439,14 @@ Blockers: None
      - 本地三套构建与测试全量通过：dev 32/32、ci 32/32、sanitize 32/32（零 ASan/UBSan 告警）；
      - hosted run `31882632928` 在 Ubuntu 24.04 / Qt 6.11.1（job `95007234862`）、macOS 15 / Qt 6.11.1（job `95007234841`）、Windows 2022 / Qt 6.10.1（job `95007234953`）全部成功。
   Next Action 指向 Phase 3 阶段收尾审计（任务 T13）。
+- 2026-08-15：完成阶段 3（H.264 正式结构支持）收尾审计与阶段关账（任务 T13）。
+  1. H.264 Annex B 官方规则资产全量审计（`src/rules/official/org.streamview.h264/`，当前包版本 `0.1.38`）：
+     - 结构范围涵盖 `NalUnitHeader`、`AccessUnitDelimiterRbsp`、`SequenceParameterSetRbsp`、`PictureParameterSetRbsp`、`HrdParameters`、`VuiParameters`、`PredWeightTable`、`SliceHeaderRbsp`、`SeiRbsp`、`EndOfSequenceRbsp`、`EndOfStreamRbsp`；
+     - 语法元素全面覆盖 Baseline/Main/High profiles、POC Type 0/1/2、VUI/HRD 参数集、8 种切片类型（IDR、I/P/B 帧及场编码）、参考图像列表重排、显示加权预测表、7 种重点 SEI 消息（Buffering Period / Picture Timing / User Data Registered / User Data Unregistered / Recovery Point / Frame Packing / Display Orientation）以及中途按位置 SPS/PPS 上下文重定义；
+     - 规则内声明的全部字段均标注 `@spec` 标准出处引用（ITU-T H.264）与双语语义说明。
+  2. 测试套件与阶段门禁验收：
+     - H.264 Analyzer 端到端测试用例达到 174/174 全量覆盖，包含完整有序 child 名字列表断言、精确 bit 坐标映射与源区间断言、截断安全回滚与诊断可定位性；
+     - DSL 静态规则校验 `svtool rule check` 持续保持 `Rule OK`；
+     - 本地 Debug/Release/Sanitize 三套构建全量 32/32 测试通过且零 ASan/UBSan 告警；
+     - 阶段 3 清单全部项与 M6 里程碑中 H.264 项全部勾选验收。
+  Next Action 指向阶段 4（AAC-LC 正式结构支持）：编写 ADTS 与 AudioSpecificConfig 格式规范与双语 ADR。
