@@ -130,15 +130,18 @@ entry frames;
    - DSL 层的约束（`syncword @equals(4095)`、`layer @equals(0)`）与断言 `assert(aac_frame_length >= minimum_frame_length)` 形式化定义了合法 `AdtsHeader` 的规范契约模式。
 2. **逐帧错误隔离语义（Per-Frame Error Isolation）**：
    - `AacAdtsAnalyzer` 遵循与 `H264AnnexBAnalyzer`（`src/rules/h264_annex_b_analyzer.cpp:576-605`）同构的逐帧错误隔离契约：
-     - 当某一帧遇到内容类校验或 DSL 执行失败（例如 `number_of_raw_data_blocks_in_frame != 0` 违反 `@equals(0)`、断言失败或字段解码语法错误）：
-       - 对应的 `adts_frame[i]` 区域节点被标记为 `core::MaterializationState::Invalid`（或 `Partial`），并附带源码锚定的 `core::AnalysisDiagnostic`；
-       - 该帧节点被推入 `batch.topLevelNodes`；
+     - 当某帧发生内容类校验或 DSL 执行失败（例如 `number_of_raw_data_blocks_in_frame != 0` 违反 `@equals(0)`、断言失败或字段解码语法错误）：
+       - 对应的 `adts_frame[i]` 区域节点通过 `tree_.markPartial(frameNode, core::MaterializationState::Invalid, diagnostic)` 标记，其中 `diagnostic` 为 `core::ParseDiagnostic{core::DiagnosticCode::InvalidSyntax, core::DiagnosticSeverity::Error, ...}`；
+       - 该帧节点被推入 `batch.frameNodes`；
        - 分析器**继续处理下一帧**（`return true`）。根分析树保持有效，码流中后续合法的 ADTS 帧正常完成解码与物化。
      - 仅当发生不可恢复的基础设施级失败（源码 I/O 错误 `SourceError`、取消 `Cancelled`、内存耗尽 `ResourceLimit`、规则定义损坏 `InvalidDefinition`）时，分析器才返回 `false` 终结分析。
 3. **截断帧诊断与物化形态**：
-   - 当 `record.truncated == true`（码流在到达声明的 `aac_frame_length` 负载末尾前遭遇 EOF）或头部执行产生 `DslExecutionStatus::TruncatedSource` 时：
-     - `AacAdtsAnalyzer` 将该 `adts_frame[i]` 区域节点标记为 `core::MaterializationState::Partial`（若头部本身截断则标记为 `Invalid`），并附加 `core::DiagnosticCode::TruncatedSource`（`DiagnosticSeverity::Warning`）源码锚定诊断；
-     - 截断帧作为顶层节点发布至批次中，满足 ADR-0092 §1.3 第 1 条要求。
+   - 区分头部截断与负载截断两种形态：
+     - **头部截断**（帧起始位置可用字节数小于所需固定/可变头部长度，或头部解码返回 `DslExecutionStatus::TruncatedSource`）：
+       帧节点通过 `tree_.markPartial(frameNode, core::MaterializationState::Invalid, diagnostic)` 标记，其中 `diagnostic = core::ParseDiagnostic{core::DiagnosticCode::TruncatedSource, core::DiagnosticSeverity::Error, QStringLiteral("ADTS frame header is truncated"), ...}`；
+     - **负载截断**（`record.truncated == true`，头部完整成功解码，但源码在未读满声明的 `aac_frame_length` 负载字节前遭遇 EOF）：
+       头部结构节点正常物化，外层帧区域节点通过 `tree_.markPartial(frameNode, core::MaterializationState::Invalid, diagnostic)` 标记，其中 `diagnostic = core::ParseDiagnostic{core::DiagnosticCode::TruncatedSource, core::DiagnosticSeverity::Warning, QStringLiteral("ADTS frame payload is truncated at EOF"), ...}`；
+     - 两种截断形态下，帧节点均发布至 `batch.frameNodes` 中，分析器均返回 `true`（使末尾截断帧可被部分可视化并完成隔离）。
 4. **值域级非致命字段定级**：
    - `sampling_frequency_index`：采用 `@range(0, 12)` 约束（ISO/IEC 14496-3 表 1.16）。13、14 与转义值 15（在 ADTS 中依据条款 1.6.2.1 被禁用）产生非致命诊断告警，不中断帧解码。
    - `profile`：声明为 4 值枚举 `enum AacProfile`（`0` Main, `1` LC, `2` SSR, `3` LTP）。注明 profile `3` (LTP) 在 MPEG-2 AAC（`id == 1`）中为保留值。

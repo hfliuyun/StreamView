@@ -131,14 +131,17 @@ Following the ADR-0040 dichotomy and per-frame error isolation contracts:
 2. **Per-Frame Error Isolation Semantics**:
    - `AacAdtsAnalyzer` adopts the per-frame error isolation model isomorphic to `H264AnnexBAnalyzer` (`src/rules/h264_annex_b_analyzer.cpp:576-605`):
      - When a frame encounters a content validation or DSL execution failure (such as `number_of_raw_data_blocks_in_frame != 0` violating `@equals(0)`, assertion failure, or syntax/field decoding errors):
-       - The corresponding `adts_frame[i]` region node is marked with `core::MaterializationState::Invalid` (or `Partial`), attached with a source-anchored `core::AnalysisDiagnostic`.
-       - The frame node is pushed into `batch.topLevelNodes`.
+       - The corresponding `adts_frame[i]` region node is marked with `tree_.markPartial(frameNode, core::MaterializationState::Invalid, diagnostic)` with `diagnostic = core::ParseDiagnostic{core::DiagnosticCode::InvalidSyntax, core::DiagnosticSeverity::Error, ...}`;
+       - The frame node is pushed into `batch.frameNodes`;
        - The analyzer **continues to the next frame** (`return true`). The root analysis tree remains valid, and subsequent well-formed frames in the stream are parsed and materialized normally.
      - Only unrecoverable infrastructure failures (`SourceError`, `Cancelled`, `ResourceLimit`, `InvalidDefinition`) return `false` to terminate stream processing.
 3. **Truncated Frame Diagnostics and Materialization**:
-   - When `record.truncated == true` (the stream reaches EOF before the declared `aac_frame_length` payload bytes are available) or when header execution yields `DslExecutionStatus::TruncatedSource`:
-     - `AacAdtsAnalyzer` marks the `adts_frame[i]` region node as `core::MaterializationState::Partial` (or `Invalid` if the header itself is truncated) and attaches a source-anchored diagnostic with `core::DiagnosticCode::TruncatedSource` (`DiagnosticSeverity::Warning`).
-     - The truncated frame is published as a top-level node in the batch, fulfilling ADR-0092 §1.3 item 1.
+   - Differentiating header truncation versus payload truncation:
+     - **Header Truncation** (available bytes at frame offset are less than the required fixed/variable header size or header decoding yields `DslExecutionStatus::TruncatedSource`):
+       The frame node is marked using `tree_.markPartial(frameNode, core::MaterializationState::Invalid, diagnostic)` with `diagnostic = core::ParseDiagnostic{core::DiagnosticCode::TruncatedSource, core::DiagnosticSeverity::Error, QStringLiteral("ADTS frame header is truncated"), ...}`.
+     - **Payload Truncation** (`record.truncated == true` where the header is successfully decoded but the source ends before the full declared `aac_frame_length` payload bytes):
+       The header structure node is materialized normally, and the enclosing frame region node is marked using `tree_.markPartial(frameNode, core::MaterializationState::Invalid, diagnostic)` with `diagnostic = core::ParseDiagnostic{core::DiagnosticCode::TruncatedSource, core::DiagnosticSeverity::Warning, QStringLiteral("ADTS frame payload is truncated at EOF"), ...}`.
+     - In both truncation cases, the frame node is published into `batch.frameNodes`, and the analyzer returns `true` (enabling partial inspection while isolating truncated trailing frames).
 4. **Value-Domain Non-Fatal Classifications**:
    - `sampling_frequency_index`: Constrained with `@range(0, 12)` (ISO/IEC 14496-3 Table 1.16). Values 13, 14, and 15 (escape value forbidden in ADTS per subclause 1.6.2.1) produce non-fatal diagnostic warnings without stopping frame decoding.
    - `profile`: Declared with 4-value enumeration `enum AacProfile` (`0` Main, `1` LC, `2` SSR, `3` LTP). Note: profile `3` (LTP) is reserved in MPEG-2 AAC (`id == 1`).
