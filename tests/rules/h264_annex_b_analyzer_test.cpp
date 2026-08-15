@@ -14,9 +14,11 @@ using streamview::core::AnalysisNodeKind;
 using streamview::core::CancellationSource;
 using streamview::core::MaterializationState;
 using streamview::core::RandomAccessSource;
+using streamview::core::SourceBitAddress;
 using streamview::core::SourceReadResult;
 using streamview::core::SourceReadStatus;
 using streamview::core::SourcePager;
+using streamview::core::SourceSpan;
 using streamview::rules::DslParser;
 using streamview::rules::H264AnnexBAnalysisBatch;
 using streamview::rules::H264AnnexBAnalysisStatus;
@@ -380,6 +382,70 @@ struct InitialCpbDelayInfo {
         appendFixedBits(bits, info.delay, vclDelayBitLength);
         appendFixedBits(bits, info.offset, vclDelayBitLength);
     }
+    bits.push_back(true);
+    while (bits.size() % 8 != 0) {
+        bits.push_back(false);
+    }
+    std::vector<quint8> payloadBytes(bits.size() / 8, 0);
+    for (std::size_t i = 0; i < bits.size(); ++i) {
+        if (bits.at(i)) {
+            payloadBytes[i / 8] |= static_cast<quint8>(1U << (7 - (i % 8)));
+        }
+    }
+    return payloadBytes;
+}
+
+struct FramePackingGridPositions {
+    quint64 frame0GridPositionX = 0;
+    quint64 frame0GridPositionY = 0;
+    quint64 frame1GridPositionX = 0;
+    quint64 frame1GridPositionY = 0;
+};
+
+struct FramePackingArrangementInfo {
+    quint64 framePackingArrangementId = 0;
+    bool cancelFlag = false;
+    quint64 arrangementType = 3;
+    bool quincunxSamplingFlag = false;
+    quint64 contentInterpretationType = 1;
+    bool spatialFlippingFlag = false;
+    bool frame0FlippedFlag = false;
+    bool fieldViewsFlag = false;
+    bool currentFrameIsFrame0Flag = true;
+    bool frame0SelfContainedFlag = false;
+    bool frame1SelfContainedFlag = false;
+    std::optional<FramePackingGridPositions> gridPositions = std::nullopt;
+    quint64 reservedByte = 0;
+    quint64 repetitionPeriod = 1;
+    bool extensionFlag = false;
+};
+
+[[nodiscard]] std::vector<quint8> packFramePackingArrangementPayload(
+    const FramePackingArrangementInfo& info) {
+    std::vector<bool> bits;
+    appendUnsignedExpGolomb(bits, info.framePackingArrangementId);
+    bits.push_back(info.cancelFlag);
+    if (!info.cancelFlag) {
+        appendFixedBits(bits, info.arrangementType, 7);
+        bits.push_back(info.quincunxSamplingFlag);
+        appendFixedBits(bits, info.contentInterpretationType, 6);
+        bits.push_back(info.spatialFlippingFlag);
+        bits.push_back(info.frame0FlippedFlag);
+        bits.push_back(info.fieldViewsFlag);
+        bits.push_back(info.currentFrameIsFrame0Flag);
+        bits.push_back(info.frame0SelfContainedFlag);
+        bits.push_back(info.frame1SelfContainedFlag);
+        if (!info.quincunxSamplingFlag && info.arrangementType != 5) {
+            const auto& grid = info.gridPositions.value_or(FramePackingGridPositions{});
+            appendFixedBits(bits, grid.frame0GridPositionX, 4);
+            appendFixedBits(bits, grid.frame0GridPositionY, 4);
+            appendFixedBits(bits, grid.frame1GridPositionX, 4);
+            appendFixedBits(bits, grid.frame1GridPositionY, 4);
+        }
+        appendFixedBits(bits, info.reservedByte, 8);
+        appendUnsignedExpGolomb(bits, info.repetitionPeriod);
+    }
+    bits.push_back(info.extensionFlag);
     bits.push_back(true);
     while (bits.size() % 8 != 0) {
         bits.push_back(false);
@@ -10186,6 +10252,582 @@ private slots:
         QCOMPARE(seiNalNode->state(), MaterializationState::Invalid);
 
         const auto audNalNode = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(audNalNode.has_value());
+        QCOMPARE(audNalNode->state(), MaterializationState::Materialized);
+    }
+
+    void decodesFramePackingArrangementSeiMessageWithGridPositions() {
+        FramePackingArrangementInfo info;
+        info.framePackingArrangementId = 1;
+        info.cancelFlag = false;
+        info.arrangementType = 3;
+        info.quincunxSamplingFlag = false;
+        info.contentInterpretationType = 1;
+        info.spatialFlippingFlag = false;
+        info.frame0FlippedFlag = false;
+        info.fieldViewsFlag = false;
+        info.currentFrameIsFrame0Flag = true;
+        info.frame0SelfContainedFlag = false;
+        info.frame1SelfContainedFlag = false;
+        info.gridPositions = FramePackingGridPositions{1, 2, 3, 4};
+        info.reservedByte = 0;
+        info.repetitionPeriod = 1;
+        info.extensionFlag = false;
+
+        const auto payloadBytes = packFramePackingArrangementPayload(info);
+        std::vector<bool> bits;
+        appendFfCoded(bits, 45); // payload_type == 45
+        appendFfCoded(bits, payloadBytes.size());
+        for (const quint8 byte : payloadBytes) {
+            appendFixedBits(bits, byte, 8);
+        }
+        appendFixedBits(bits, 0x80, 8); // rbsp_trailing_bits
+
+        auto stream = packAnnexBNal(0x06, std::move(bits), false);
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        const QStringList expectedChildren = {
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+            QStringLiteral("frame_packing_arrangement_id[0]"),
+            QStringLiteral("frame_packing_arrangement_cancel_flag[0]"),
+            QStringLiteral("frame_packing_arrangement_type[0]"),
+            QStringLiteral("quincunx_sampling_flag[0]"),
+            QStringLiteral("content_interpretation_type[0]"),
+            QStringLiteral("spatial_flipping_flag[0]"),
+            QStringLiteral("frame0_flipped_flag[0]"),
+            QStringLiteral("field_views_flag[0]"),
+            QStringLiteral("current_frame_is_frame0_flag[0]"),
+            QStringLiteral("frame0_self_contained_flag[0]"),
+            QStringLiteral("frame1_self_contained_flag[0]"),
+            QStringLiteral("has_grid_position[0]"),
+            QStringLiteral("frame0_grid_position_x[0]"),
+            QStringLiteral("frame0_grid_position_y[0]"),
+            QStringLiteral("frame1_grid_position_x[0]"),
+            QStringLiteral("frame1_grid_position_y[0]"),
+            QStringLiteral("frame_packing_arrangement_reserved_byte[0]"),
+            QStringLiteral("frame_packing_arrangement_repetition_period[0]"),
+            QStringLiteral("frame_packing_arrangement_extension_flag[0]"),
+            QStringLiteral("rbsp_stop_one_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[0][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2][0]"),
+            QStringLiteral("rbsp_stop_one_bit"),
+            QStringLiteral("rbsp_alignment_zero_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5]"),
+            QStringLiteral("rbsp_alignment_zero_bit[6]"),
+        };
+        QCOMPARE(childNamesOf(*sei), expectedChildren);
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        const auto typeField = fieldNamed(*sei, QStringLiteral("payload_type[0]"));
+        const auto sizeField = fieldNamed(*sei, QStringLiteral("payload_size[0]"));
+        const auto idField = fieldNamed(*sei, QStringLiteral("frame_packing_arrangement_id[0]"));
+        const auto cancelField = fieldNamed(*sei, QStringLiteral("frame_packing_arrangement_cancel_flag[0]"));
+        const auto arrTypeField = fieldNamed(*sei, QStringLiteral("frame_packing_arrangement_type[0]"));
+        const auto quincunxField = fieldNamed(*sei, QStringLiteral("quincunx_sampling_flag[0]"));
+        const auto interpField = fieldNamed(*sei, QStringLiteral("content_interpretation_type[0]"));
+        const auto spatFlipField = fieldNamed(*sei, QStringLiteral("spatial_flipping_flag[0]"));
+        const auto f0FlipField = fieldNamed(*sei, QStringLiteral("frame0_flipped_flag[0]"));
+        const auto fieldViewsField = fieldNamed(*sei, QStringLiteral("field_views_flag[0]"));
+        const auto currF0Field = fieldNamed(*sei, QStringLiteral("current_frame_is_frame0_flag[0]"));
+        const auto f0SelfField = fieldNamed(*sei, QStringLiteral("frame0_self_contained_flag[0]"));
+        const auto f1SelfField = fieldNamed(*sei, QStringLiteral("frame1_self_contained_flag[0]"));
+        const auto gridX0Field = fieldNamed(*sei, QStringLiteral("frame0_grid_position_x[0]"));
+        const auto gridY0Field = fieldNamed(*sei, QStringLiteral("frame0_grid_position_y[0]"));
+        const auto gridX1Field = fieldNamed(*sei, QStringLiteral("frame1_grid_position_x[0]"));
+        const auto gridY1Field = fieldNamed(*sei, QStringLiteral("frame1_grid_position_y[0]"));
+        const auto resField = fieldNamed(*sei, QStringLiteral("frame_packing_arrangement_reserved_byte[0]"));
+        const auto repField = fieldNamed(*sei, QStringLiteral("frame_packing_arrangement_repetition_period[0]"));
+        const auto extField = fieldNamed(*sei, QStringLiteral("frame_packing_arrangement_extension_flag[0]"));
+
+        QVERIFY(typeField.has_value());
+        QVERIFY(sizeField.has_value());
+        QVERIFY(idField.has_value());
+        QVERIFY(cancelField.has_value());
+        QVERIFY(arrTypeField.has_value());
+        QVERIFY(quincunxField.has_value());
+        QVERIFY(interpField.has_value());
+        QVERIFY(spatFlipField.has_value());
+        QVERIFY(f0FlipField.has_value());
+        QVERIFY(fieldViewsField.has_value());
+        QVERIFY(currF0Field.has_value());
+        QVERIFY(f0SelfField.has_value());
+        QVERIFY(f1SelfField.has_value());
+        QVERIFY(gridX0Field.has_value());
+        QVERIFY(gridY0Field.has_value());
+        QVERIFY(gridX1Field.has_value());
+        QVERIFY(gridY1Field.has_value());
+        QVERIFY(resField.has_value());
+        QVERIFY(repField.has_value());
+        QVERIFY(extField.has_value());
+
+        QCOMPARE(typeField->value().toULongLong(), quint64(45));
+        QCOMPARE(sizeField->value().toULongLong(), quint64(payloadBytes.size()));
+        QCOMPARE(idField->value().toULongLong(), quint64(1));
+        QCOMPARE(cancelField->value().toULongLong(), quint64(0));
+        QCOMPARE(arrTypeField->value().toULongLong(), quint64(3));
+        QCOMPARE(quincunxField->value().toULongLong(), quint64(0));
+        QCOMPARE(interpField->value().toULongLong(), quint64(1));
+        QCOMPARE(spatFlipField->value().toULongLong(), quint64(0));
+        QCOMPARE(f0FlipField->value().toULongLong(), quint64(0));
+        QCOMPARE(fieldViewsField->value().toULongLong(), quint64(0));
+        QCOMPARE(currF0Field->value().toULongLong(), quint64(1));
+        QCOMPARE(f0SelfField->value().toULongLong(), quint64(0));
+        QCOMPARE(f1SelfField->value().toULongLong(), quint64(0));
+        QCOMPARE(gridX0Field->value().toULongLong(), quint64(1));
+        QCOMPARE(gridY0Field->value().toULongLong(), quint64(2));
+        QCOMPARE(gridX1Field->value().toULongLong(), quint64(3));
+        QCOMPARE(gridY1Field->value().toULongLong(), quint64(4));
+        QCOMPARE(resField->value().toULongLong(), quint64(0));
+        QCOMPARE(repField->value().toULongLong(), quint64(1));
+        QCOMPARE(extField->value().toULongLong(), quint64(0));
+
+        QCOMPARE(gridX0Field->location()->sourceSpans().front().start().absoluteBitOffset(), quint64(72));
+        QCOMPARE(gridX0Field->location()->logicalRange().bitLength(), quint64(4));
+        QCOMPARE(gridY0Field->location()->sourceSpans().front().start().absoluteBitOffset(), quint64(76));
+        QCOMPARE(gridY0Field->location()->logicalRange().bitLength(), quint64(4));
+        QCOMPARE(gridX1Field->location()->sourceSpans().front().start().absoluteBitOffset(), quint64(80));
+        QCOMPARE(gridX1Field->location()->logicalRange().bitLength(), quint64(4));
+        QCOMPARE(gridY1Field->location()->sourceSpans().front().start().absoluteBitOffset(), quint64(84));
+        QCOMPARE(gridY1Field->location()->logicalRange().bitLength(), quint64(4));
+    }
+
+    void decodesFramePackingArrangementSeiMessageWithQuincunxSamplingWithoutGridPositions() {
+        FramePackingArrangementInfo info;
+        info.framePackingArrangementId = 0;
+        info.cancelFlag = false;
+        info.arrangementType = 4; // top and bottom
+        info.quincunxSamplingFlag = true;
+        info.contentInterpretationType = 2;
+        info.spatialFlippingFlag = true;
+        info.frame0FlippedFlag = true;
+        info.fieldViewsFlag = false;
+        info.currentFrameIsFrame0Flag = false;
+        info.frame0SelfContainedFlag = true;
+        info.frame1SelfContainedFlag = true;
+        info.gridPositions = std::nullopt;
+        info.reservedByte = 0;
+        info.repetitionPeriod = 0;
+        info.extensionFlag = false;
+
+        const auto payloadBytes = packFramePackingArrangementPayload(info);
+        std::vector<bool> bits;
+        appendFfCoded(bits, 45); // payload_type == 45
+        appendFfCoded(bits, payloadBytes.size());
+        for (const quint8 byte : payloadBytes) {
+            appendFixedBits(bits, byte, 8);
+        }
+        appendFixedBits(bits, 0x80, 8); // rbsp_trailing_bits
+
+        auto stream = packAnnexBNal(0x06, std::move(bits), false);
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        const QStringList expectedChildren = {
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+            QStringLiteral("frame_packing_arrangement_id[0]"),
+            QStringLiteral("frame_packing_arrangement_cancel_flag[0]"),
+            QStringLiteral("frame_packing_arrangement_type[0]"),
+            QStringLiteral("quincunx_sampling_flag[0]"),
+            QStringLiteral("content_interpretation_type[0]"),
+            QStringLiteral("spatial_flipping_flag[0]"),
+            QStringLiteral("frame0_flipped_flag[0]"),
+            QStringLiteral("field_views_flag[0]"),
+            QStringLiteral("current_frame_is_frame0_flag[0]"),
+            QStringLiteral("frame0_self_contained_flag[0]"),
+            QStringLiteral("frame1_self_contained_flag[0]"),
+            QStringLiteral("has_grid_position[0]"),
+            QStringLiteral("frame_packing_arrangement_reserved_byte[0]"),
+            QStringLiteral("frame_packing_arrangement_repetition_period[0]"),
+            QStringLiteral("frame_packing_arrangement_extension_flag[0]"),
+            QStringLiteral("rbsp_stop_one_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[0][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[6][0]"),
+            QStringLiteral("rbsp_stop_one_bit"),
+            QStringLiteral("rbsp_alignment_zero_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5]"),
+            QStringLiteral("rbsp_alignment_zero_bit[6]"),
+        };
+        QCOMPARE(childNamesOf(*sei), expectedChildren);
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("frame_packing_arrangement_type[0]"))->value().toULongLong(), quint64(4));
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("quincunx_sampling_flag[0]"))->value().toULongLong(), quint64(1));
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("content_interpretation_type[0]"))->value().toULongLong(), quint64(2));
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("spatial_flipping_flag[0]"))->value().toULongLong(), quint64(1));
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("frame0_flipped_flag[0]"))->value().toULongLong(), quint64(1));
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("field_views_flag[0]"))->value().toULongLong(), quint64(0));
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("current_frame_is_frame0_flag[0]"))->value().toULongLong(), quint64(0));
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("frame0_self_contained_flag[0]"))->value().toULongLong(), quint64(1));
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("frame1_self_contained_flag[0]"))->value().toULongLong(), quint64(1));
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("has_grid_position[0]"))->value().toBool(), false);
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("frame_packing_arrangement_reserved_byte[0]"))->value().toULongLong(), quint64(0));
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("frame_packing_arrangement_repetition_period[0]"))->value().toULongLong(), quint64(0));
+    }
+
+    void decodesFramePackingArrangementSeiMessageWithFrameSequentialWithoutGridPositions() {
+        FramePackingArrangementInfo info;
+        info.framePackingArrangementId = 2;
+        info.cancelFlag = false;
+        info.arrangementType = 5; // frame sequential
+        info.quincunxSamplingFlag = false;
+        info.contentInterpretationType = 1;
+        info.spatialFlippingFlag = false;
+        info.frame0FlippedFlag = false;
+        info.fieldViewsFlag = true;
+        info.currentFrameIsFrame0Flag = true;
+        info.frame0SelfContainedFlag = false;
+        info.frame1SelfContainedFlag = false;
+        info.gridPositions = std::nullopt;
+        info.reservedByte = 0;
+        info.repetitionPeriod = 100;
+        info.extensionFlag = false;
+
+        const auto payloadBytes = packFramePackingArrangementPayload(info);
+        std::vector<bool> bits;
+        appendFfCoded(bits, 45); // payload_type == 45
+        appendFfCoded(bits, payloadBytes.size());
+        for (const quint8 byte : payloadBytes) {
+            appendFixedBits(bits, byte, 8);
+        }
+        appendFixedBits(bits, 0x80, 8); // rbsp_trailing_bits
+
+        auto stream = packAnnexBNal(0x06, std::move(bits), false);
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("frame_packing_arrangement_type[0]"))->value().toULongLong(), quint64(5));
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("quincunx_sampling_flag[0]"))->value().toULongLong(), quint64(0));
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("has_grid_position[0]"))->value().toBool(), false);
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("field_views_flag[0]"))->value().toULongLong(), quint64(1));
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("frame_packing_arrangement_repetition_period[0]"))->value().toULongLong(), quint64(100));
+    }
+
+    void decodesFramePackingArrangementSeiMessageWithCancelFlagTrue() {
+        FramePackingArrangementInfo info;
+        info.framePackingArrangementId = 42;
+        info.cancelFlag = true;
+        info.extensionFlag = false;
+
+        const auto payloadBytes = packFramePackingArrangementPayload(info);
+        std::vector<bool> bits;
+        appendFfCoded(bits, 45); // payload_type == 45
+        appendFfCoded(bits, payloadBytes.size());
+        for (const quint8 byte : payloadBytes) {
+            appendFixedBits(bits, byte, 8);
+        }
+        appendFixedBits(bits, 0x80, 8); // rbsp_trailing_bits
+
+        auto stream = packAnnexBNal(0x06, std::move(bits), false);
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        const QStringList expectedChildren = {
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+            QStringLiteral("frame_packing_arrangement_id[0]"),
+            QStringLiteral("frame_packing_arrangement_cancel_flag[0]"),
+            QStringLiteral("frame_packing_arrangement_extension_flag[0]"),
+            QStringLiteral("rbsp_stop_one_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[0][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1][0]"),
+            QStringLiteral("rbsp_stop_one_bit"),
+            QStringLiteral("rbsp_alignment_zero_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5]"),
+            QStringLiteral("rbsp_alignment_zero_bit[6]"),
+        };
+        QCOMPARE(childNamesOf(*sei), expectedChildren);
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("frame_packing_arrangement_id[0]"))->value().toULongLong(), quint64(42));
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("frame_packing_arrangement_cancel_flag[0]"))->value().toULongLong(), quint64(1));
+        QCOMPARE(fieldNamed(*sei, QStringLiteral("frame_packing_arrangement_extension_flag[0]"))->value().toULongLong(), quint64(0));
+    }
+
+    void decodesMultipleSeiMessagesContainingFramePackingAndRecoveryPoint() {
+        FramePackingArrangementInfo fpaInfo;
+        fpaInfo.framePackingArrangementId = 10;
+        fpaInfo.cancelFlag = true;
+        const auto fpaPayload = packFramePackingArrangementPayload(fpaInfo);
+
+        std::vector<bool> recoveryBits;
+        appendUnsignedExpGolomb(recoveryBits, 5);
+        recoveryBits.push_back(true);
+        recoveryBits.push_back(false);
+        appendFixedBits(recoveryBits, 1, 2);
+        recoveryBits.push_back(true);
+        while (recoveryBits.size() % 8 != 0) {
+            recoveryBits.push_back(false);
+        }
+        std::vector<quint8> recoveryPayload(recoveryBits.size() / 8, 0);
+        for (std::size_t i = 0; i < recoveryBits.size(); ++i) {
+            if (recoveryBits.at(i)) {
+                recoveryPayload[i / 8] |= static_cast<quint8>(1U << (7 - (i % 8)));
+            }
+        }
+
+        std::vector<bool> seiNalBits;
+        appendFfCoded(seiNalBits, 45);
+        appendFfCoded(seiNalBits, fpaPayload.size());
+        for (const quint8 byte : fpaPayload) {
+            appendFixedBits(seiNalBits, byte, 8);
+        }
+        appendFfCoded(seiNalBits, 6);
+        appendFfCoded(seiNalBits, recoveryPayload.size());
+        for (const quint8 byte : recoveryPayload) {
+            appendFixedBits(seiNalBits, byte, 8);
+        }
+        seiNalBits.push_back(true);
+        while (seiNalBits.size() % 8 != 0) {
+            seiNalBits.push_back(false);
+        }
+
+        auto stream = packAnnexBNal(0x06, std::move(seiNalBits), false);
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(1));
+
+        const auto nal = analyzer->tree().node(batch.nalUnitNodes.front());
+        QVERIFY(nal.has_value());
+        QCOMPARE(nal->state(), MaterializationState::Materialized);
+
+        const auto rbsp = analyzer->tree().node(nal->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        const QStringList expectedChildren = {
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+            QStringLiteral("frame_packing_arrangement_id[0]"),
+            QStringLiteral("frame_packing_arrangement_cancel_flag[0]"),
+            QStringLiteral("frame_packing_arrangement_extension_flag[0]"),
+            QStringLiteral("rbsp_stop_one_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[0][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5][0]"),
+            QStringLiteral("payload_type[1]"),
+            QStringLiteral("payload_size[1]"),
+            QStringLiteral("recovery_frame_cnt[1]"),
+            QStringLiteral("exact_match_flag[1]"),
+            QStringLiteral("broken_link_flag[1]"),
+            QStringLiteral("changing_slice_group_idc[1]"),
+            QStringLiteral("rbsp_stop_one_bit[1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[0][1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1][1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2][1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3][1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4][1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5][1]"),
+            QStringLiteral("rbsp_stop_one_bit"),
+            QStringLiteral("rbsp_alignment_zero_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5]"),
+            QStringLiteral("rbsp_alignment_zero_bit[6]"),
+        };
+        QCOMPARE(childNamesOf(*sei), expectedChildren);
+    }
+
+    void reportsTruncatedFramePackingArrangementSeiPayloadAndContinues() {
+        std::vector<bool> truncatedBits;
+        appendFfCoded(truncatedBits, 45);
+        appendFfCoded(truncatedBits, 7); // declared size 7 bytes, only 1 byte provided
+        appendFixedBits(truncatedBits, 0x00, 8);
+        auto stream = packAnnexBNal(0x06, std::move(truncatedBits), false);
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x50})); // AUD
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+
+        const auto seiNalNode = analyzer->tree().node(batch.nalUnitNodes.at(0));
+        QVERIFY(seiNalNode.has_value());
+        QCOMPARE(seiNalNode->state(), MaterializationState::Invalid);
+
+        const auto audNalNode = analyzer->tree().node(batch.nalUnitNodes.at(1));
         QVERIFY(audNalNode.has_value());
         QCOMPARE(audNalNode->state(), MaterializationState::Materialized);
     }

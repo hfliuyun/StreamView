@@ -825,6 +825,70 @@ struct SeiRbsp {
                     @description("Indicates whether changing slice groups are present.");
                 rbsp_trailing_bits;
             }
+            case 45: {
+                ue frame_packing_arrangement_id
+                    @spec("ITU-T H.264", "D.1.25, D.2.25")
+                    @description("Specifies an identifying number that may be used to identify the usage of the frame packing arrangement SEI message.");
+                bits<1> frame_packing_arrangement_cancel_flag
+                    @spec("ITU-T H.264", "D.1.25, D.2.25")
+                    @description("Indicates that the frame packing arrangement SEI message cancels the persistence of any previous frame packing arrangement SEI message.");
+                if (frame_packing_arrangement_cancel_flag == 0) {
+                    bits<7> frame_packing_arrangement_type @range(0, 7)
+                        @spec("ITU-T H.264", "D.1.25, D.2.25")
+                        @description("Specifies the type of packing arrangement of the constituent frames.");
+                    bits<1> quincunx_sampling_flag
+                        @spec("ITU-T H.264", "D.1.25, D.2.25")
+                        @description("Indicates whether each constituent frame is quincunx sampled.");
+                    bits<6> content_interpretation_type @range(0, 2)
+                        @spec("ITU-T H.264", "D.1.25, D.2.25")
+                        @description("Specifies the intended interpretation of the constituent frames.");
+                    bits<1> spatial_flipping_flag
+                        @spec("ITU-T H.264", "D.1.25, D.2.25")
+                        @description("Indicates whether spatial flipping was performed.");
+                    bits<1> frame0_flipped_flag
+                        @spec("ITU-T H.264", "D.1.25, D.2.25")
+                        @description("Indicates whether frame 0 has been flipped.");
+                    bits<1> field_views_flag
+                        @spec("ITU-T H.264", "D.1.25, D.2.25")
+                        @description("Indicates whether all pictures in the current coded video sequence are field pictures.");
+                    bits<1> current_frame_is_frame0_flag
+                        @spec("ITU-T H.264", "D.1.25, D.2.25")
+                        @description("Indicates whether the current decoded picture corresponds to frame 0 of the constituent frames.");
+                    bits<1> frame0_self_contained_flag
+                        @spec("ITU-T H.264", "D.1.25, D.2.25")
+                        @description("Indicates whether frame 0 is self-contained without inter-prediction from frame 1.");
+                    bits<1> frame1_self_contained_flag
+                        @spec("ITU-T H.264", "D.1.25, D.2.25")
+                        @description("Indicates whether frame 1 is self-contained without inter-prediction from frame 0.");
+                    computed<bool> has_grid_position =
+                        quincunx_sampling_flag == 0 &&
+                        frame_packing_arrangement_type != 5;
+                    if (has_grid_position) {
+                        bits<4> frame0_grid_position_x @range(0, 15)
+                            @spec("ITU-T H.264", "D.1.25, D.2.25")
+                            @description("Specifies the horizontal grid position of the constituent frame 0.");
+                        bits<4> frame0_grid_position_y @range(0, 15)
+                            @spec("ITU-T H.264", "D.1.25, D.2.25")
+                            @description("Specifies the vertical grid position of the constituent frame 0.");
+                        bits<4> frame1_grid_position_x @range(0, 15)
+                            @spec("ITU-T H.264", "D.1.25, D.2.25")
+                            @description("Specifies the horizontal grid position of the constituent frame 1.");
+                        bits<4> frame1_grid_position_y @range(0, 15)
+                            @spec("ITU-T H.264", "D.1.25, D.2.25")
+                            @description("Specifies the vertical grid position of the constituent frame 1.");
+                    }
+                    bits<8> frame_packing_arrangement_reserved_byte @range(0, 0)
+                        @spec("ITU-T H.264", "D.1.25, D.2.25")
+                        @description("Reserved byte that shall be equal to 0.");
+                    ue frame_packing_arrangement_repetition_period @range(0, 16384)
+                        @spec("ITU-T H.264", "D.1.25, D.2.25")
+                        @description("Specifies the repetition period of the frame packing arrangement SEI message.");
+                }
+                bits<1> frame_packing_arrangement_extension_flag @range(0, 0)
+                    @spec("ITU-T H.264", "D.1.25, D.2.25")
+                    @description("Extension flag that shall be equal to 0.");
+                rbsp_trailing_bits;
+            }
             default: {
                 @lazy(payload_size)
                 bytes payload_data
