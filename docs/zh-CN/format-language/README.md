@@ -195,7 +195,7 @@ conditional   := "if" "(" ( identifier "==" integer | identifier
                                | context_value "==" integer ) ")"
                  "{" { struct_item } "}"
                  [ "else" "{" { struct_item } "}" ]
-context_value := "context_value" "(" identifier "," identifier ","
+context_value := "context_value" "(" [ identifier "," ] identifier ","
                  identifier ")"
 header_value  := "header_value" "(" identifier ")"
 optional_value := "optional_value" "(" identifier "," expression ")"
@@ -276,23 +276,25 @@ primary       := integer | "true" | "false" | identifier
   context value。
 - `@context_export` 不接受参数，在一个 field 上至多出现一次，并且只允许标注具有
   `@context` 的结构中同类无条件 unsigned scalar。一个 definition 最多 export 64 个值。
-- `@context_import(kind, key_field)` 在一个 structure 上最多出现 16 次。它使用相同的已识别
-  kind 与无条件 unsigned scalar key-field 规则，保留 declaration order；相同 kind/field pair
-  是静态重复错误。
-- `context_value(import_key, context_kind, exported_field)` 保留给 dynamic `bits` width、
+- `@context_import(kind [, key_field])` 在一个 structure 上最多出现 16 次。
+  在有键形式（`@context_import(kind, key_field)`）下，它使用已识别的 kind 与无条件或局部作用域的
+  无符号标量 key 字段规则。在环境形式（`@context_import(kind)`）下，不提供 key 字段；该导入
+  在 `ContextDirectory` 中按流位置解析为在当前消费节点之前最近成功注册的 `(kind, scopeId)`
+  生成。保留声明顺序；同一结构体上声明相同 kind 的重复环境导入属于编译错误。同一结构体允许
+  针对同一 kind 同时声明有键导入与环境导入。
+- `context_value([import_key,] context_kind, exported_field)` 保留给 dynamic `bits` width、
   imported equality conditional 左侧、source-anchored assertion 的 Boolean condition，或
   computed field initializer 使用。
-  三个参数都必须是 identifier。`import_key` 必须命名
-  此前 context-eligible 的字段，并且在该
-  structure 上精确标识一个 import。kind identifier 只能是 `h264_sps`、`h264_pps`、
-  `aac_asc` 或 `iso_bmff_sample_description`，而且必须命名 imported root kind，或从其声明的
-  dependency graph 可达的 kind。该 target kind 必须恰好有一个 publishing structure，且该
-  structure 必须精确导出一个同名字段。除 dynamic `bits` width、source-anchored assertion
-  condition、computed field initializer 与精确形式 `context_value(...) == integer` 外，
-  pure-function body、condition、lazy size、switch controller 与其他 expression position
-  都拒绝这一形式。computed initializer 按完整 expression 语法接受它，因此可以与算术和
-  Boolean 运算符组合；由于 `computed<u64>` 可以充当 count repeat 的 controller，imported
-  的表项数量是通过该字段而不是直接抵达 repeat controller 的。
+  当传入三个标识符参数（`context_value(key, kind, field)`）时，绑定到与 `key` 匹配的有键导入。
+  当传入两个标识符参数（`context_value(kind, field)`）时，绑定到与 `kind` 匹配的环境导入。
+  kind identifier 只能是 `h264_sps`、`h264_pps`、`aac_asc` 或 `iso_bmff_sample_description`，
+  而且必须命名 imported root kind，或从其声明的 dependency graph 可达的 kind。该 target kind
+  必须恰好有一个 publishing structure，且该 structure 必须精确导出一个同名字段。除 dynamic `bits`
+  width、source-anchored assertion condition、computed field initializer 与精确形式
+  `context_value(...) == integer` 外，pure-function body、condition、lazy size、switch controller
+  与其他 expression position 都拒绝这一形式。computed initializer 按完整 expression 语法接受它，
+  因此可以与算术和 Boolean 运算符组合；由于 `computed<u64>` 可以充当 count repeat 的 controller，
+  imported 的表项数量是通过该字段而不是直接抵达 repeat controller 的。
 - `header_value(element_field)` 保留给与 `context_value` 相同的四个位置使用。它接受且只接受
   一个 identifier 实参，该实参必须命名程序中 sequence element structure 的一个字段，且该字段
   必须是无条件、顶层、非数组的 unsigned scalar；被 guard 的、位于 repeat 中的、数组、
@@ -633,6 +635,8 @@ metadata 也不能隐藏。
 分别绑定各自迭代局部的 key 槽位。键必须为无符号标量类型（`bits`、`ue`、`ff_coded` 或
 `computed<u64>`），禁止有符号字段（`se`）和数组。定义键（`@context`）与依赖项
 （`@context_dependency`）依然严格保持顶层无条件约束。
+
+环境上下文导入（不带 key 字段的 `@context_import("...")`）用于绑定二参 `context_value(kind, field)` 表达式（ADR-0086）。环境导入不依赖消费端提供的 key 值索引，而是在 `ContextDirectory` 中直接按流位置解析为在当前消费节点之前最近成功注册的 `(kind, scopeId)` 生成。若无任何生成存在，解析返回 `NotFound`（映射为消费节点上的 `Invalid` 状态）；若找到环境生成但其依赖闭包缺失，解析返回 `DependencyUnavailable`（映射为 `WaitingDependency` 状态）。在所有失败情况下，失败范围严格隔离至当前消费消息，分析器按声明字节长度安全续扫后续消息。
 
 VM 在每次字段读取前按外层到内层的顺序验证并计算 presence guard。guard 为 false 时跳过
 该字段，不消耗 source bit、不创建 analysis node，也不执行 enum member、`@equals` 或

@@ -235,7 +235,7 @@ conditional   := "if" "(" ( identifier "==" integer | identifier
                                | context_value "==" integer ) ")"
                  "{" { struct_item } "}"
                  [ "else" "{" { struct_item } "}" ]
-context_value := "context_value" "(" identifier "," identifier ","
+context_value := "context_value" "(" [ identifier "," ] identifier ","
                  identifier ")"
 header_value  := "header_value" "(" identifier ")"
 optional_value := "optional_value" "(" identifier "," expression ")"
@@ -338,16 +338,22 @@ The static rules for this subset are:
 - `@context_export` takes no arguments, occurs at most once on a field, and is
   valid only for the same unconditional unsigned scalar kinds in a structure
   with `@context`. One definition exports at most 64 values.
-- `@context_import(kind, key_field)` may occur at most 16 times on a structure.
-  It uses the same recognized kinds and unconditional unsigned scalar key-field
-  rules. Declaration order is preserved; an identical kind/field pair is a
-  duplicate and is rejected.
-- `context_value(import_key, context_kind, exported_field)` is reserved for a
+- `@context_import(kind [, key_field])` may occur at most 16 times on a structure.
+  In keyed form (`@context_import(kind, key_field)`), it uses the recognized kinds
+  and unconditional or locally scoped unsigned scalar key-field rules. In ambient
+  form (`@context_import(kind)`), no key field is provided; the import resolves to
+  the most recent generation of `(kind, scopeId)` successfully registered strictly
+  prior to the consumer stream bit position in `ContextDirectory`. Declaration
+  order is preserved; declaring duplicate ambient imports for the same kind on the
+  same structure is rejected. Keyed and ambient imports for the same kind may
+  coexist on the same structure.
+- `context_value([import_key,] context_kind, exported_field)` is reserved for a
   dynamic `bits` width, the left side of an imported equality conditional, the
   Boolean condition of a source-anchored assertion, or a computed field
-  initializer. All three arguments are identifiers. `import_key` names
-  an earlier context-eligible field that identifies exactly one import on the
-  structure. The kind identifier is `h264_sps`, `h264_pps`, `aac_asc`, or
+  initializer. When invoked with three arguments (`context_value(key, kind, field)`),
+  it binds to the keyed import matching `key`. When invoked with two arguments
+  (`context_value(kind, field)`), it binds to the ambient import matching `kind`.
+  The kind identifier is `h264_sps`, `h264_pps`, `aac_asc`, or
   `iso_bmff_sample_description`, and must name the imported root kind or a kind
   reachable through its declared dependency graph. Exactly one structure must
   publish that target kind, and it must export exactly one field with the named
@@ -838,7 +844,18 @@ declaration of the key name guaranteed on its execution branch, and repeat itera
 rebind to their respective iteration's key slot. The key must be an unsigned scalar
 (`bits`, `ue`, `ff_coded`, or `computed<u64>`); signed fields (`se`) and arrays are
 rejected. Definition keys (`@context`) and dependencies (`@context_dependency`)
-remain strictly top-level and unconditional.
+are strictly top-level and unconditional.
+
+Ambient context imports (`@context_import("...")` without a key field) bind
+two-argument `context_value(kind, field)` expressions (ADR-0086). Instead of
+indexing by a consumer-provided key value, ambient imports resolve to the latest
+generation of `(kind, scopeId)` successfully registered strictly before the
+consumer's stream position in `ContextDirectory`. If no generation exists,
+resolution returns `NotFound` (mapping to `Invalid` on the consumer node); if an
+ambient generation is found but its dependency closure is missing, resolution
+returns `DependencyUnavailable` (mapping to `WaitingDependency`). In all cases,
+failure is isolated to the specific consumer message and parsing continues at the
+next message based on declared byte length.
 
 Before each field read, the VM validates and evaluates its presence guards in
 outer-to-inner order. A false guard skips the field without consuming source
