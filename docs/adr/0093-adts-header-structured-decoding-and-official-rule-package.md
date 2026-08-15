@@ -11,14 +11,14 @@ Task T15 established the ADTS frame enumeration capability (`AacAdtsScanner` / `
 Task T16 introduces the official AAC rule package (`org.streamview.aac`, starting at version `0.1.0`), defines the formal ADTS header grammar in the DSL format language (`src/aac_adts.svfmt`), and activates end-to-end AAC stream analysis within StreamView.
 
 According to ISO/IEC 14496-3:2019 (Edition 5), Audio Data Transport Stream (ADTS) frames comprise:
-1. `adts_fixed_header` (28 bits, subclause 1.6.2.1, Table 1.6.2.1): Bitstream syncword, MPEG audio version, layer, CRC protection flag, profile, sampling frequency index, private bit, channel configuration, original/copy, and home.
-2. `adts_variable_header` (28 bits, subclause 1.6.2.1, Table 1.6.2.1): Copyright identification bits, total frame length (`aac_frame_length`), buffer fullness (`adts_buffer_fullness`), and number of raw data blocks minus 1 (`number_of_raw_data_blocks_in_frame`).
-3. `adts_error_check` (16 bits, subclause 1.6.2.2, Table 1.6.2.2): Present conditionally when `protection_absent == 0`.
+1. `adts_fixed_header` (28 bits, subclause 1.6.2.1): Bitstream syncword, MPEG audio version, layer, CRC protection flag, profile, sampling frequency index, private bit, channel configuration, original/copy, and home.
+2. `adts_variable_header` (28 bits, subclause 1.6.2.1): Copyright identification bits, total frame length (`aac_frame_length`), buffer fullness (`adts_buffer_fullness`), and number of raw data blocks minus 1 (`number_of_raw_data_blocks_in_frame`).
+3. `adts_error_check` (16 bits, subclause 1.6.2.2): Present conditionally when `protection_absent == 0`.
 4. `adts_raw_data_block` (subclause 1.6.2.3): Audio payload containing syntactical elements (SCE, CPE, LFE, DSE, PCE, FIL, TERM).
 
 ## Decision
 
-We specify and implement the formal `org.streamview.aac` rule package and ADTS header structured decoding:
+We specify and implement the formal `org.streamview.aac` rule package, ADTS header structured decoding, and per-frame error isolation semantics:
 
 ### 1. Official Package Manifest (`rule.toml`)
 
@@ -121,22 +121,29 @@ sequence<AdtsHeader> frames = scan(adts_frame);
 entry frames;
 ```
 
-### 3. Value Domain Classification & Diagnostic Strategy
+### 3. Value Domain Classification, Scanning Attribution & Per-Frame Error Isolation
 
-Following the ADR-0040 dichotomy:
+Following the ADR-0040 dichotomy and per-frame error isolation contracts:
 
-1. **Layout-Critical Invariants**:
-   - `syncword @equals(4095)`: 12-bit `0xFFF`. Rejection terminates frame parsing and invokes resynchronization.
-   - `layer @equals(0)`: In ISO/IEC 14496-3 / ISO/IEC 13818-7, `layer == 0` is strictly required for AAC.
-   - `number_of_raw_data_blocks_in_frame @equals(0)`: Constrains parsing to streams with 1 raw data block per frame.
-2. **Value-Domain Classifications**:
+1. **Scanner Pre-Filtering and Attribution**:
+   - `AacAdtsScanner` in C++ pre-filters candidate positions for valid syncwords `0xFFF`, `layer == 0`, and `frameLength >= headerLength`. Malformed bit sequences failing these invariants during stream scanning/resynchronization are skipped by the scanner and do not generate `AacAdtsRecord` entries or analysis tree nodes (they remain unmapped source byte spans between valid frames).
+   - The DSL-level constraints (`syncword @equals(4095)`, `layer @equals(0)`) and the assertion `assert(aac_frame_length >= minimum_frame_length)` formally define the normative schema invariants of a valid `AdtsHeader`.
+2. **Per-Frame Error Isolation Semantics**:
+   - `AacAdtsAnalyzer` adopts the per-frame error isolation model isomorphic to `H264AnnexBAnalyzer` (`src/rules/h264_annex_b_analyzer.cpp:576-605`):
+     - When a frame encounters a content validation or DSL execution failure (such as `number_of_raw_data_blocks_in_frame != 0` violating `@equals(0)`, assertion failure, or syntax/field decoding errors):
+       - The corresponding `adts_frame[i]` region node is marked with `core::MaterializationState::Invalid` (or `Partial`), attached with a source-anchored `core::AnalysisDiagnostic`.
+       - The frame node is pushed into `batch.topLevelNodes`.
+       - The analyzer **continues to the next frame** (`return true`). The root analysis tree remains valid, and subsequent well-formed frames in the stream are parsed and materialized normally.
+     - Only unrecoverable infrastructure failures (`SourceError`, `Cancelled`, `ResourceLimit`, `InvalidDefinition`) return `false` to terminate stream processing.
+3. **Truncated Frame Diagnostics and Materialization**:
+   - When `record.truncated == true` (the stream reaches EOF before the declared `aac_frame_length` payload bytes are available) or when header execution yields `DslExecutionStatus::TruncatedSource`:
+     - `AacAdtsAnalyzer` marks the `adts_frame[i]` region node as `core::MaterializationState::Partial` (or `Invalid` if the header itself is truncated) and attaches a source-anchored diagnostic with `core::DiagnosticCode::TruncatedSource` (`DiagnosticSeverity::Warning`).
+     - The truncated frame is published as a top-level node in the batch, fulfilling ADR-0092 §1.3 item 1.
+4. **Value-Domain Non-Fatal Classifications**:
    - `sampling_frequency_index`: Constrained with `@range(0, 12)` (ISO/IEC 14496-3 Table 1.16). Values 13, 14, and 15 (escape value forbidden in ADTS per subclause 1.6.2.1) produce non-fatal diagnostic warnings without stopping frame decoding.
    - `profile`: Declared with 4-value enumeration `enum AacProfile` (`0` Main, `1` LC, `2` SSR, `3` LTP). Note: profile `3` (LTP) is reserved in MPEG-2 AAC (`id == 1`).
    - `channel_configuration`: Full 8-value enumeration `enum AacChannelConfiguration` (`0` Custom/PCE, `1` Mono, `2` Stereo, `3` 3-channel, `4` 4-channel, `5` 5-channel, `6` 5.1, `7` 7.1). `channel_configuration == 0` indicates a Program Config Element (PCE) in the raw data block (supported in Task T18).
    - `adts_buffer_fullness`: `0x7FF` is a valid normative indicator denoting variable bit rate (VBR) streams.
-3. **Source-Anchored Minimum Frame Length Assertion**:
-   - Guarded via `computed<u64> minimum_frame_length` using ADR-0090 boolean arithmetic.
-   - Verified via `assert(aac_frame_length >= minimum_frame_length) at aac_frame_length;` to emit a source-anchored diagnostic if a corrupted frame declares a length smaller than the header byte count.
 
 ### 4. Explicit Postponement
 
@@ -149,12 +156,12 @@ The `.svfmt` rule definition was verified via `svtool rule check` against the St
 
 ```bash
 $ ./build/dev/tools/svtool/svtool rule check scratch/probe_t16_adts.svfmt
-Rule OK: /Users/yun/.gemini/antigravity-cli/brain/12458dc0-7cd4-40c3-b0af-86d27dcb7b62/scratch/probe_t16_adts.svfmt
+Rule OK: scratch/probe_t16_adts.svfmt
 ```
 
 ## References
 
-- ISO/IEC 14496-3:2019, Edition 5, Subclauses 1.6.2.1, 1.6.2.2, 1.6.2.3, Tables 1.11, 1.16, 1.17, 1.6.2.1, 1.6.2.2
+- ISO/IEC 14496-3:2019, Edition 5, Subclauses 1.6.2.1, 1.6.2.2, 1.6.2.3, Tables 1.11, 1.16, 1.17
 - ADR-0010: C-Style Declarative Format Description Language
 - ADR-0016: TOML Manifest And ZIP Rule Packages
 - ADR-0040: Report Unsigned Exp-Golomb Range Violations Without Stopping Decoding
