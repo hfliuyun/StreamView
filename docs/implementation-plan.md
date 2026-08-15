@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 4
-Last Completed Step: ADTS application integration rework (Task T15b rework / commit 8edede4)
+Last Completed Step: ADTS application integration fallback and session selection fix (Task T15b fix / commit 229aea5)
 Next Action: AAC official rule package, ADTS header decoding and bilingual ADR-0093 (Task T16)
-Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31895579352 (Ubuntu job 95038286039, macOS job 95038285962, Windows job 95038285995) passed 100%
+Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31896991272 (Ubuntu job 95041713226, macOS job 95041713240, Windows job 95041713206) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1517,4 +1517,19 @@ Blockers: None
   3. 全套构建与云端验证：
      - 本地 dev / ci / sanitize 三套构建全量 35/35 测试 100% 通过（ASan/UBSan 零告警，H.264 analyzer 174/174 零回归）；
      - hosted run `31895579352` 在 Ubuntu 24.04 / Qt 6.11.1（job `95038286039`）、macOS 15 / Qt 6.11.1（job `95038285962`）、Windows 2022 / Qt 6.10.1（job `95038285995`）全部成功通过。
+  Next Action 指向 Task T16（创建 AAC 官方规则包、ADTS 头结构化解码与双语 ADR-0093）。
+- 2026-08-16：阶段 4 任务 T15b 评审勘误与真实 ADTS 降级打开修复（任务 T15b 修复 / commit `229aea5`）。
+  - 历史记录勘误说明：
+    1. **置信度分级描述勘误**：在旧 T15b 提交 `eb4e52c` 的实现中，`detectAacAdtsCandidate` 曾包含 `sourceFullyInspected` 降档子句（使得 1~2 帧短流在源完全探测时被提升至 `Strong`），导致未知源或含单处 `FF F1` 的二进制被误判为 `Strong` AAC；原记录第 1 款未提及该降档子句。已在 `8edede4` 中删除该降档分支并固化严格连续帧计数（>=3 帧为 `Strong`，2 帧为 `Probable`，1 帧为 `Weak`）。
+    2. **未匹配未知源行为与平滑回退勘误**：在旧 T15b 提交 `eb4e52c` 与第一轮重构 `8edede4` 中，`AnalysisSession::createPrepared`（`src/app/analysis_session.cpp:184-213`）在无内置 AAC 规则包时调用 `AacAdtsAnalyzer::create` 返回 `nullptr`，导致真实 3 帧/8 帧 ADTS 文件无法打开，推翻了「未匹配未知源行为保持不变」的原声明。
+    3. **错误文案引用勘误**：AAC 分析器创建失败回填的错误文案原文为 `"AAC ADTS rule was not resolved exactly"`（`src/rules/aac_adts_analyzer.cpp:72`）与 `"No AAC ADTS rule package is bundled"`（`src/rules/aac_adts_analyzer.cpp:102`），此前报告曾笔误引用为未存在字符串。
+  - 真实 ADTS 会话降级打开与自动选择修复：
+    1. **自动格式选择闸门修复**：`src/app/analysis_session.cpp:185-186` 严格要求 `aacConf == Strong && h264Conf != Strong`，并彻底移除 `Probable` 分支；
+    2. **无规则包时平滑降级**：`src/app/analysis_session.cpp:191-203` 在 `chooseAac` 成立但 `AacAdtsAnalyzer::create` 失败时（当前阶段未打包 AAC 规则），干净平滑回退至既有 H.264 / 未知源分析路径（`H264AnnexBAnalyzer::create`），确保会话成功打开；
+    3. **测试矩阵补全**（`tests/app/analysis_session_test.cpp`）：
+       - 新增 `opensRealAdtsWithoutBundledPackageByFallingBackToH264`：真实 3 帧 ADTS（AAC `Strong`）在无包时成功打开会话，保留 AAC `Strong` 探测候选，分析器平滑降级至 `org.streamview.h264` / `annex-b` 且批次分析正常完成；
+       - 新增 `opensAdtsWithProbableConfidenceByFallingBackToH264`：2 帧 ADTS（AAC `Probable`）不触发 AAC 自动选择，正常走 H.264 路径打开会话并完成批次分析；
+    4. **全套构建与云端 CI 验证**：
+       - 本地 dev / ci / sanitize 三套构建全量 35/35 测试 100% 通过（ASan/UBSan 零告警，H.264 analyzer 174/174 零回归）；
+       - hosted run `31896991272` 在 Ubuntu 24.04 / Qt 6.11.1（job `95041713226`）、macOS 15 / Qt 6.11.1（job `95041713240`）、Windows 2022 / Qt 6.10.1（job `95041713206`）全部成功通过。
   Next Action 指向 Task T16（创建 AAC 官方规则包、ADTS 头结构化解码与双语 ADR-0093）。
