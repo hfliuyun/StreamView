@@ -3565,17 +3565,22 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                           scan.range);
             continue;
         }
-        if (scan.scannerName != QStringLiteral("h264_start_code")) {
+        DslScannerKind scannerKind = DslScannerKind::H264StartCode;
+        if (scan.scannerName == QStringLiteral("h264_start_code")) {
+            scannerKind = DslScannerKind::H264StartCode;
+        } else if (scan.scannerName == QStringLiteral("adts_frame")) {
+            scannerKind = DslScannerKind::AacAdtsFrame;
+        } else {
             addDiagnostic(result.diagnostics,
                           DslDiagnosticCode::UnsupportedScanner,
-                          QStringLiteral("Only h264_start_code is supported"),
+                          QStringLiteral("Only h264_start_code and adts_frame are supported"),
                           scan.range);
             continue;
         }
         DslTypedScan typedScan;
         typedScan.name = scan.name;
         typedScan.elementStructIndex = *elementIndex;
-        typedScan.scanner = DslScannerKind::H264StartCode;
+        typedScan.scanner = scannerKind;
         typedScan.range = scan.range;
         typed.scans.push_back(std::move(typedScan));
     }

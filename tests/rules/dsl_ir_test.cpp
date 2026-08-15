@@ -3542,6 +3542,22 @@ private slots:
         )"));
         QVERIFY(!noImportParsed.succeeded() || !DslCompiler::compile(noImportParsed.program).succeeded());
     }
+
+    void lowersAdtsFrameScanSequenceToTypedIr() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct AdtsFrame { bits<12> syncword @equals(4095); }
+            @index(progressive) sequence<AdtsFrame> frames = scan(adts_frame);
+            entry frames;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        QCOMPARE(compiled.program->scans.size(), std::size_t(1));
+        QCOMPARE(compiled.program->scans.front().name, QStringLiteral("frames"));
+        QCOMPARE(compiled.program->scans.front().scanner, streamview::rules::DslScannerKind::AacAdtsFrame);
+        QCOMPARE(compiled.program->entry.kind, DslEntryKind::Sequence);
+        QCOMPARE(compiled.program->entry.targetIndex, quint32(0));
+    }
 };
 
 QTEST_GUILESS_MAIN(DslIrTest)

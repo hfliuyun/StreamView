@@ -205,6 +205,7 @@ struct DslTypedStruct final {
 
 enum class DslScannerKind : quint8 {
     H264StartCode,
+    AacAdtsFrame,
 };
 
 struct DslTypedScan final {

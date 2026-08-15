@@ -3450,9 +3450,10 @@ private:
                                                QStringLiteral("Sequence element type is not declared"),
                                                scan.range});
             }
-            if (scan.scannerName != QStringLiteral("h264_start_code")) {
+            if (scan.scannerName != QStringLiteral("h264_start_code") &&
+                scan.scannerName != QStringLiteral("adts_frame")) {
                 result_.diagnostics.push_back({DslDiagnosticCode::UnsupportedScanner,
-                                               QStringLiteral("Only h264_start_code is supported"),
+                                               QStringLiteral("Only h264_start_code and adts_frame are supported"),
                                                scan.range});
             }
             bool progressive = false;

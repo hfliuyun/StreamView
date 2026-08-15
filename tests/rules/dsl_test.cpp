@@ -1812,6 +1812,19 @@ private slots:
         QVERIFY(hasDiagnostic(unsupported, DslDiagnosticCode::InvalidProgressiveAnnotation));
     }
 
+    void parsesAdtsFrameScanSequence() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct AdtsFrame { bits<12> syncword @equals(4095); }
+            @index(progressive) sequence<AdtsFrame> frames = scan(adts_frame);
+            entry frames;
+        )"));
+        QVERIFY(parsed.succeeded());
+        QCOMPARE(parsed.program.scans.size(), std::size_t(1));
+        QCOMPARE(parsed.program.scans.front().name, QStringLiteral("frames"));
+        QCOMPARE(parsed.program.scans.front().elementType, QStringLiteral("AdtsFrame"));
+        QCOMPARE(parsed.program.scans.front().scannerName, QStringLiteral("adts_frame"));
+    }
+
     void parsesPayloadDispatchDeclaration() {
         const auto result = DslParser::parse(kPayloadDispatchSource);
 
