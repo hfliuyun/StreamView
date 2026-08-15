@@ -150,8 +150,8 @@ void MainWindow::advanceAnalysis(quint64 generation) {
     }
 
     const auto batch = session_->analyzeBatch(kAnalysisBatchRecords, kAnalysisWorkBudget);
-    if (!batch.nalUnitNodes.empty() &&
-        !analysisModel_->appendTopLevelNodes(session_->tree(), batch.nalUnitNodes)) {
+    if (!batch.topLevelNodes.empty() &&
+        !analysisModel_->appendTopLevelNodes(session_->tree(), batch.topLevelNodes)) {
         analysisModel_->resetFromTree(session_->tree());
         analysisModel_->updateFromTree(session_->tree());
         ++analysisGeneration_;
@@ -172,16 +172,16 @@ void MainWindow::advanceAnalysis(quint64 generation) {
         }
     }
 
-    if (batch.status == rules::H264AnnexBAnalysisStatus::InvalidBatchSize) {
+    if (batch.status == AnalysisBatchStatus::InvalidBatchSize) {
         ++analysisGeneration_;
         statusBar()->showMessage(
             tr("Analysis batch rejected: %1").arg(batch.errorMessage));
         return;
     }
-    if (batch.status == rules::H264AnnexBAnalysisStatus::SourceError ||
-        batch.status == rules::H264AnnexBAnalysisStatus::Cancelled ||
-        batch.status == rules::H264AnnexBAnalysisStatus::ResourceLimit ||
-        batch.status == rules::H264AnnexBAnalysisStatus::InvalidRule) {
+    if (batch.status == AnalysisBatchStatus::SourceError ||
+        batch.status == AnalysisBatchStatus::Cancelled ||
+        batch.status == AnalysisBatchStatus::ResourceLimit ||
+        batch.status == AnalysisBatchStatus::InvalidRule) {
         publishAnalysisStatus(batch.status, batch.errorMessage);
         return;
     }
@@ -211,19 +211,19 @@ void MainWindow::pollAnalysisCache(quint64 generation) {
     }
 }
 
-void MainWindow::publishAnalysisStatus(rules::H264AnnexBAnalysisStatus status,
+void MainWindow::publishAnalysisStatus(AnalysisBatchStatus status,
                                        const QString& errorMessage) {
     if (!session_) {
         return;
     }
-    if (status == rules::H264AnnexBAnalysisStatus::Cancelled) {
+    if (status == AnalysisBatchStatus::Cancelled) {
         statusBar()->showMessage(
             tr("Analysis cancelled: %1 nodes").arg(session_->tree().nodeCount()));
         return;
     }
-    if (status == rules::H264AnnexBAnalysisStatus::SourceError ||
-        status == rules::H264AnnexBAnalysisStatus::ResourceLimit ||
-        status == rules::H264AnnexBAnalysisStatus::InvalidRule) {
+    if (status == AnalysisBatchStatus::SourceError ||
+        status == AnalysisBatchStatus::ResourceLimit ||
+        status == AnalysisBatchStatus::InvalidRule) {
         const QString detail = errorMessage.isEmpty() ? tr("unknown analysis error") : errorMessage;
         statusBar()->showMessage(
             tr("Analysis stopped: %1 (%2 nodes)").arg(detail).arg(session_->tree().nodeCount()));

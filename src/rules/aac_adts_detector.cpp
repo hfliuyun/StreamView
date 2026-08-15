@@ -81,7 +81,6 @@ detectAacAdtsCandidate(std::span<const std::byte> sourcePrefix,
     AacAdtsCandidate candidate;
 
     std::size_t maxChainLength = 0;
-    std::size_t totalValidFrames = 0;
 
     std::size_t offset = 0;
     while (offset + 7U <= inspectedSize) {
@@ -121,7 +120,6 @@ detectAacAdtsCandidate(std::span<const std::byte> sourcePrefix,
         if (chainLength > maxChainLength) {
             maxChainLength = chainLength;
         }
-        totalValidFrames += chainLength;
 
         if (chainLength > 1) {
             offset = chainOffset;
@@ -131,9 +129,9 @@ detectAacAdtsCandidate(std::span<const std::byte> sourcePrefix,
     }
 
     if (!candidate.evidence.empty()) {
-        if (maxChainLength >= 3U || (result.sourceFullyInspected && maxChainLength >= 2U)) {
+        if (maxChainLength >= 3U) {
             candidate.confidence = AacAdtsDetectionConfidence::Strong;
-        } else if (maxChainLength >= 2U || (result.sourceFullyInspected && maxChainLength >= 1U)) {
+        } else if (maxChainLength == 2U) {
             candidate.confidence = AacAdtsDetectionConfidence::Probable;
         } else {
             candidate.confidence = AacAdtsDetectionConfidence::Weak;

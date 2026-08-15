@@ -5,6 +5,7 @@
 #include <streamview/core/source.h>
 #include <streamview/rules/aac_adts_scanner.h>
 #include <streamview/rules/rule_catalog.h>
+#include <streamview/rules/rule_execution_session.h>
 
 #include <QString>
 #include <QtGlobal>
@@ -20,9 +21,9 @@ enum class AacAdtsAnalysisStatus : quint8 {
     Complete,
     Cancelled,
     SourceError,
-    InvalidBatchSize,
     ResourceLimit,
     InvalidRule,
+    InvalidBatchSize,
 };
 
 struct AacAdtsAnalysisBatch final {
@@ -34,9 +35,6 @@ struct AacAdtsAnalysisBatch final {
         return status == AacAdtsAnalysisStatus::Complete;
     }
 };
-
-[[nodiscard]] QString aacAdtsRuleSource(QString* errorMessage = nullptr);
-[[nodiscard]] RulePackageLoadResult loadAacAdtsRulePackage();
 
 class AacAdtsAnalyzer final {
 public:
@@ -81,13 +79,36 @@ public:
 private:
     explicit AacAdtsAnalyzer(const core::RandomAccessSource& source,
                              RuleEntryPointIdentity ruleIdentity,
+                             DslTypedProgram program,
+                             quint32 headerStructIndex,
+                             core::AnalysisTree tree,
                              std::optional<core::CancellationToken> cancellation);
 
+    [[nodiscard]] std::optional<core::FieldLocation>
+    makeLocation(std::vector<core::SourceSpan> sourceSpans);
+
+    [[nodiscard]] bool publishRecord(const AacAdtsRecord& record,
+                                     AacAdtsAnalysisBatch& batch,
+                                     bool allowExecutionCancellation,
+                                     AacAdtsAnalysisStatus* failureStatus,
+                                     QString* errorMessage);
+
+    void markRootPartial(core::DiagnosticCode code,
+                         core::MaterializationState state,
+                         const QString& message);
+
+    const core::RandomAccessSource* source_ = nullptr;
+    RuleEntryPointIdentity ruleIdentity_;
+    RuleExecutionSession executionSession_;
+    quint32 headerStructIndex_ = 0;
     AacAdtsScanner scanner_;
     core::AnalysisTree tree_;
-    RuleEntryPointIdentity ruleIdentity_;
+    std::optional<core::CancellationToken> cancellation_;
+    quint64 nextFrameIndex_ = 0;
     quint64 nextViewId_ = 1;
     bool terminal_ = false;
+    AacAdtsAnalysisStatus terminalStatus_ = AacAdtsAnalysisStatus::InProgress;
+    QString terminalErrorMessage_;
 };
 
 } // namespace streamview::rules

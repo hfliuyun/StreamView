@@ -73,7 +73,7 @@ private slots:
         QCOMPARE(result.candidate->evidence[0].channelConfiguration, quint8(2));
     }
 
-    void detectsShortTwoFrameStreamWithProbableOrStrong() {
+    void detectsShortTwoFrameStreamWithProbableConfidence() {
         std::vector<std::byte> stream;
         const auto f1 = makeAdtsFrame(120, false);
         const auto f2 = makeAdtsFrame(160, false);
@@ -83,24 +83,20 @@ private slots:
         const auto result = streamview::rules::detectAacAdtsCandidate(
             stream, static_cast<quint64>(stream.size()));
         QVERIFY(result.candidate.has_value());
-        QVERIFY(result.candidate->confidence ==
-                    streamview::rules::AacAdtsDetectionConfidence::Strong ||
-                result.candidate->confidence ==
-                    streamview::rules::AacAdtsDetectionConfidence::Probable);
+        QCOMPARE(result.candidate->confidence,
+                 streamview::rules::AacAdtsDetectionConfidence::Probable);
         QCOMPARE(result.candidate->evidence.size(), std::size_t(2));
         QCOMPARE(result.candidate->evidence[0].crcPresent, true);
         QCOMPARE(result.candidate->evidence[1].crcPresent, true);
     }
 
-    void detectsSingleFrameWithWeakOrProbable() {
+    void detectsSingleFrameWithWeakConfidence() {
         const auto stream = makeAdtsFrame(150, true);
         const auto result = streamview::rules::detectAacAdtsCandidate(
             stream, static_cast<quint64>(stream.size()));
         QVERIFY(result.candidate.has_value());
-        QVERIFY(result.candidate->confidence ==
-                    streamview::rules::AacAdtsDetectionConfidence::Weak ||
-                result.candidate->confidence ==
-                    streamview::rules::AacAdtsDetectionConfidence::Probable);
+        QCOMPARE(result.candidate->confidence,
+                 streamview::rules::AacAdtsDetectionConfidence::Weak);
     }
 
     void detectsAdtsStreamWithGarbagePrefix() {
@@ -119,9 +115,9 @@ private slots:
                  streamview::rules::AacAdtsDetectionConfidence::Strong);
     }
 
-    void rejectsPseudoSourceStartingWith0xFFFWithoutLengthChain() {
+    void classifiesPseudoSourceStartingWith0xFFFWithoutLengthChainAsWeak() {
         // Starts with 0xFF 0xF1 0x50 0x80 0x10 0x1F 0xFC (declares length 32)
-        // followed by random non-ADTS data at byte 32
+        // followed by non-ADTS data at byte 32
         std::vector<std::byte> stream(128, std::byte{0x00});
         stream[0] = std::byte{0xFF};
         stream[1] = std::byte{0xF1};
@@ -130,15 +126,56 @@ private slots:
         stream[4] = std::byte{0x10}; // length = 32
         stream[5] = std::byte{0x1F};
         stream[6] = std::byte{0xFC};
-        // Byte 32 is 0x00 (not syncword)
+        // Byte 32 is 0x00 (no syncword or second frame)
 
         const auto result = streamview::rules::detectAacAdtsCandidate(
             stream, static_cast<quint64>(stream.size()));
-        // Must NOT classify as Strong
-        if (result.candidate.has_value()) {
-            QVERIFY(result.candidate->confidence !=
-                    streamview::rules::AacAdtsDetectionConfidence::Strong);
-        }
+        QVERIFY(result.candidate.has_value());
+        QCOMPARE(result.candidate->confidence,
+                 streamview::rules::AacAdtsDetectionConfidence::Weak);
+    }
+
+    void classifiesTwoKilobyteBinaryWithAccidentalFfF1AsWeak() {
+        // 2 KiB non-AAC binary with single accidental FF F1 sequence at byte 500
+        std::vector<std::byte> stream(2048, std::byte{0x22});
+        stream[500] = std::byte{0xFF};
+        stream[501] = std::byte{0xF1};
+        stream[502] = std::byte{0x50};
+        stream[503] = std::byte{0x80};
+        stream[504] = std::byte{0x10}; // length = 32
+        stream[505] = std::byte{0x1F};
+        stream[506] = std::byte{0xFC};
+        // Byte 532 is 0x22 (not syncword)
+
+        const auto result = streamview::rules::detectAacAdtsCandidate(
+            stream, static_cast<quint64>(stream.size()));
+        QVERIFY(result.candidate.has_value());
+        QCOMPARE(result.candidate->confidence,
+                 streamview::rules::AacAdtsDetectionConfidence::Weak);
+    }
+
+    void classifiesMalformedH264WithAccidentalSyncwordInPayloadAsWeak() {
+        // H.264 start code + malformed NAL header + single accidental ADTS syncword in payload
+        std::vector<std::byte> stream(512, std::byte{0x33});
+        stream[0] = std::byte{0x00};
+        stream[1] = std::byte{0x00};
+        stream[2] = std::byte{0x00};
+        stream[3] = std::byte{0x01};
+        stream[4] = std::byte{0x80}; // invalid forbidden_zero_bit=1
+        // Payload has single accidental syncword at byte 200
+        stream[200] = std::byte{0xFF};
+        stream[201] = std::byte{0xF1};
+        stream[202] = std::byte{0x50};
+        stream[203] = std::byte{0x80};
+        stream[204] = std::byte{0x10}; // length = 32
+        stream[205] = std::byte{0x1F};
+        stream[206] = std::byte{0xFC};
+
+        const auto result = streamview::rules::detectAacAdtsCandidate(
+            stream, static_cast<quint64>(stream.size()));
+        QVERIFY(result.candidate.has_value());
+        QCOMPARE(result.candidate->confidence,
+                 streamview::rules::AacAdtsDetectionConfidence::Weak);
     }
 
     void rejectsNonAdtsData() {

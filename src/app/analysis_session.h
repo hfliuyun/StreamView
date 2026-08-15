@@ -39,6 +39,26 @@ enum class AnalysisSessionCacheStatus : quint8 {
     Failed,
 };
 
+enum class AnalysisBatchStatus : quint8 {
+    InProgress,
+    Complete,
+    Cancelled,
+    SourceError,
+    ResourceLimit,
+    InvalidRule,
+    InvalidBatchSize,
+};
+
+struct AnalysisBatchResult final {
+    AnalysisBatchStatus status = AnalysisBatchStatus::InProgress;
+    std::vector<core::AnalysisNodeId> topLevelNodes;
+    QString errorMessage;
+
+    [[nodiscard]] bool complete() const noexcept {
+        return status == AnalysisBatchStatus::Complete;
+    }
+};
+
 class AnalysisSession final {
 public:
     [[nodiscard]] static std::unique_ptr<AnalysisSession>
@@ -75,9 +95,10 @@ public:
         return aacFormatDetection_;
     }
 
-    [[nodiscard]] rules::H264AnnexBAnalysisBatch analyzeBatch(
+    [[nodiscard]] AnalysisBatchResult analyzeBatch(
         std::size_t maximumRecords = 256,
-        quint64 maximumInspectedPositions = rules::H264StartCodeScanner::defaultWorkBudget());
+        quint64 maximumInspectedPositions = 256U * 1024U,
+        quint64 maximumMappedBytes = 64U * 1024U * 1024U);
     [[nodiscard]] const core::AnalysisTree& tree() const noexcept {
         return std::visit([](const auto& a) -> const core::AnalysisTree& { return a.tree(); },
                           analyzer_);

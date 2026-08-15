@@ -25,6 +25,8 @@
 #include <span>
 #include <vector>
 
+using streamview::app::AnalysisBatchResult;
+using streamview::app::AnalysisBatchStatus;
 using streamview::app::AnalysisSession;
 using streamview::app::AnalysisSessionCacheOptions;
 using streamview::app::AnalysisSessionCacheStatus;
@@ -32,6 +34,7 @@ using streamview::app::AnalysisSessionRestoreStatus;
 using streamview::app::RawDisplayMode;
 using streamview::app::SessionAnnotation;
 using streamview::app::SessionBookmark;
+using streamview::app::SessionDocument;
 using streamview::app::SessionUserState;
 using streamview::core::MaterializationState;
 using streamview::core::PagedCachePageKind;
@@ -239,7 +242,7 @@ private slots:
 
         while (!session->finished()) {
             const auto batch = session->analyzeBatch(1);
-            QVERIFY(batch.status != streamview::rules::H264AnnexBAnalysisStatus::InvalidBatchSize);
+            QVERIFY(batch.status != AnalysisBatchStatus::InvalidBatchSize);
         }
         QCOMPARE(session->scanCursor(), session->sizeBytes());
 
@@ -268,7 +271,7 @@ private slots:
 
             QVERIFY2(session != nullptr, qPrintable(errorMessage));
             const auto batch = session->analyzeBatch();
-            QCOMPARE(batch.status, streamview::rules::H264AnnexBAnalysisStatus::SourceError);
+            QCOMPARE(batch.status, AnalysisBatchStatus::SourceError);
             QVERIFY(batch.errorMessage.contains(QStringLiteral("bit coordinate")));
             QVERIFY(!destroyed);
         }
@@ -562,8 +565,7 @@ private slots:
         QCOMPARE(openFailure->cacheStatus(), AnalysisSessionCacheStatus::Failed);
         QVERIFY(!openFailure->cacheErrorMessage().isEmpty());
         const auto openFailureBatch = openFailure->analyzeBatch();
-        QCOMPARE(openFailureBatch.status,
-                 streamview::rules::H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(openFailureBatch.status, AnalysisBatchStatus::Complete);
 
         AnalysisSessionCacheOptions queueFailureOptions;
         queueFailureOptions.databasePath =
@@ -574,8 +576,7 @@ private slots:
         QVERIFY2(queueFailure != nullptr, qPrintable(errorMessage));
         QCOMPARE(queueFailure->cacheStatus(), AnalysisSessionCacheStatus::Active);
         const auto queueFailureBatch = queueFailure->analyzeBatch();
-        QCOMPARE(queueFailureBatch.status,
-                 streamview::rules::H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(queueFailureBatch.status, AnalysisBatchStatus::Complete);
         QCOMPARE(queueFailure->cacheStatus(), AnalysisSessionCacheStatus::Failed);
         QVERIFY(queueFailure->tree().nodeCount() > 1U);
     }
@@ -630,7 +631,7 @@ private slots:
                  qPrintable(errorMessage));
 
         const auto batch = session->analyzeBatch();
-        QCOMPARE(batch.status, streamview::rules::H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
         QVERIFY(session->tree().nodeCount() > 1U);
         QTRY_VERIFY_WITH_TIMEOUT(([&session] {
                                      session->pollCacheWrites();
@@ -649,7 +650,70 @@ private slots:
         QVERIFY(!session->cacheWritesPending());
     }
 
-    void opensAndAnalyzesAacAdtsStreamPolymorphically() {
+    void unknownBinarySourceWithAccidentalFfF1DefaultsToH264WithoutCandidate() {
+        std::vector<std::byte> stream(2048, std::byte{0x22});
+        stream[500] = std::byte{0xFF};
+        stream[501] = std::byte{0xF1};
+        stream[502] = std::byte{0x50};
+        stream[503] = std::byte{0x80};
+        stream[504] = std::byte{0x10};
+        stream[505] = std::byte{0x1F};
+        stream[506] = std::byte{0xFC};
+
+        QString errorMessage;
+        auto session = AnalysisSession::create(
+            std::make_unique<MemorySource>(std::move(stream)), &errorMessage);
+
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+        QVERIFY(!session->formatDetection().candidate.has_value());
+        QVERIFY(session->aacFormatDetection().candidate.has_value());
+        QCOMPARE(session->aacFormatDetection().candidate->confidence,
+                 streamview::rules::AacAdtsDetectionConfidence::Weak);
+        QCOMPARE(session->ruleIdentity().packageIdentity().packageId(),
+                 QStringLiteral("org.streamview.h264"));
+
+        const auto batch = session->analyzeBatch();
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
+        const auto root = session->tree().node(session->tree().rootId());
+        QVERIFY(root.has_value());
+        QCOMPARE(root->state(), MaterializationState::Invalid);
+    }
+
+    void malformedH264WithAccidentalSyncwordInPayloadDefaultsToH264() {
+        std::vector<std::byte> stream(512, std::byte{0x33});
+        stream[0] = std::byte{0x00};
+        stream[1] = std::byte{0x00};
+        stream[2] = std::byte{0x00};
+        stream[3] = std::byte{0x01};
+        stream[4] = std::byte{0x80}; // invalid forbidden_zero_bit=1
+        stream[200] = std::byte{0xFF};
+        stream[201] = std::byte{0xF1};
+        stream[202] = std::byte{0x50};
+        stream[203] = std::byte{0x80};
+        stream[204] = std::byte{0x10};
+        stream[205] = std::byte{0x1F};
+        stream[206] = std::byte{0xFC};
+
+        QString errorMessage;
+        auto session = AnalysisSession::create(
+            std::make_unique<MemorySource>(std::move(stream)), &errorMessage);
+
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+        QVERIFY(session->formatDetection().candidate.has_value());
+        QCOMPARE(session->formatDetection().candidate->confidence,
+                 streamview::rules::H264AnnexBDetectionConfidence::Weak);
+        QVERIFY(session->aacFormatDetection().candidate.has_value());
+        QCOMPARE(session->aacFormatDetection().candidate->confidence,
+                 streamview::rules::AacAdtsDetectionConfidence::Weak);
+        QCOMPARE(session->ruleIdentity().packageIdentity().packageId(),
+                 QStringLiteral("org.streamview.h264"));
+
+        const auto batch = session->analyzeBatch();
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
+        QCOMPARE(batch.topLevelNodes.size(), std::size_t(1));
+    }
+
+    void restoresAndAnalyzesAacAdtsSessionWithResolvedRule() {
         auto makeFrame = [](quint16 frameLength) {
             std::vector<std::byte> frame(frameLength, std::byte{0x55});
             frame[0] = std::byte{0xFF};
@@ -662,6 +726,46 @@ private slots:
             return frame;
         };
 
+        auto makeAacPkg = []() {
+            const QByteArray toml = QByteArrayLiteral(
+                "manifest-version = 1\n\n"
+                "[package]\n"
+                "id = \"org.streamview.aac\"\n"
+                "version = \"0.1.0\"\n"
+                "authors = [\"StreamView Contributors\"]\n"
+                "license = \"Apache-2.0\"\n"
+                "dependencies = []\n\n"
+                "[compatibility]\n"
+                "language = \"0.1\"\n"
+                "engine = \">=0.1.0 <0.2.0\"\n\n"
+                "[[entrypoints]]\n"
+                "id = \"adts\"\n"
+                "format = \"audio.aac.adts\"\n"
+                "source = \"src/adts.svfmt\"\n"
+                "profiles = [\"aac-adts\"]\n"
+                "depth = \"structural\"\n");
+
+            const QByteArray svfmt = QByteArrayLiteral(
+                "struct AdtsHeader {\n"
+                "    bits<12> syncword @equals(4095);\n"
+                "    bits<1> id;\n"
+                "    bits<2> layer;\n"
+                "    bits<1> protection_absent;\n"
+                "}\n\n"
+                "@index(progressive) sequence<AdtsHeader> frames = scan(adts_frame);\n"
+                "entry frames;\n");
+
+            std::vector<streamview::rules::RulePackageFile> files{
+                {QStringLiteral("rule.toml"), toml},
+                {QStringLiteral("src/adts.svfmt"), svfmt}};
+            return streamview::rules::RulePackage::fromFiles(std::move(files));
+        };
+
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("fixture.aac"));
+        const QString sessionPath = directory.filePath(QStringLiteral("fixture.svsession"));
+
         std::vector<std::byte> aacBytes;
         const auto f1 = makeFrame(150);
         const auto f2 = makeFrame(200);
@@ -669,23 +773,42 @@ private slots:
         aacBytes.insert(aacBytes.end(), f1.begin(), f1.end());
         aacBytes.insert(aacBytes.end(), f2.begin(), f2.end());
         aacBytes.insert(aacBytes.end(), f3.begin(), f3.end());
+        QVERIFY(writeFile(
+            mediaPath,
+            QByteArray(reinterpret_cast<const char*>(aacBytes.data()),
+                       static_cast<qsizetype>(aacBytes.size()))));
+
+        auto loadedPkg = makeAacPkg();
+        QVERIFY2(loadedPkg.succeeded(), qPrintable(loadedPkg.errorMessage));
+        auto aacPin = streamview::rules::RuleEntryPointIdentity::create(
+            loadedPkg.package->identity(), QStringLiteral("adts"));
+        QVERIFY(aacPin.has_value());
 
         QString errorMessage;
-        auto session = AnalysisSession::create(
-            std::make_unique<MemorySource>(std::move(aacBytes)),
-            &errorMessage);
+        auto source = streamview::core::FileSource::open(mediaPath, &errorMessage);
+        QVERIFY2(source != nullptr, qPrintable(errorMessage));
+        auto fingerprint = source->fingerprint();
+        QVERIFY2(fingerprint.succeeded(), qPrintable(fingerprint.errorMessage));
+        auto document = SessionDocument::create(
+            mediaPath, mediaPath, std::move(*fingerprint.fingerprint), std::move(*aacPin));
+        QVERIFY(document.has_value());
+        QVERIFY2(document->save(sessionPath, &errorMessage), qPrintable(errorMessage));
+        source.reset();
 
-        QVERIFY2(session != nullptr, qPrintable(errorMessage));
-        QVERIFY(session->aacFormatDetection().candidate.has_value());
-        QCOMPARE(session->aacFormatDetection().candidate->confidence,
-                 streamview::rules::AacAdtsDetectionConfidence::Strong);
-        QCOMPARE(session->ruleIdentity().packageIdentity().packageId(), QStringLiteral("org.streamview.aac"));
-        QCOMPARE(session->ruleIdentity().entryPointId(), QStringLiteral("adts-stream"));
+        streamview::rules::RulePackageCatalog catalog;
+        QVERIFY(catalog.registerPackage(std::move(*loadedPkg.package)).succeeded());
 
-        const auto batch = session->analyzeBatch();
-        QCOMPARE(batch.status, streamview::rules::H264AnnexBAnalysisStatus::Complete);
-        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(3));
-        QVERIFY(session->finished());
+        const auto restored = AnalysisSession::restoreSession(sessionPath, catalog);
+        QCOMPARE(restored.status, AnalysisSessionRestoreStatus::Restored);
+        QVERIFY(restored.session != nullptr);
+        QCOMPARE(restored.session->ruleIdentity().packageIdentity().packageId(),
+                 QStringLiteral("org.streamview.aac"));
+        QCOMPARE(restored.session->ruleIdentity().entryPointId(), QStringLiteral("adts"));
+
+        const auto batch = restored.session->analyzeBatch();
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
+        QCOMPARE(batch.topLevelNodes.size(), std::size_t(3));
+        QVERIFY(restored.session->finished());
     }
 };
 

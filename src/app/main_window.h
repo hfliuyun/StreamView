@@ -40,7 +40,7 @@ private:
     void clearSourceSelection();
     void advanceAnalysis(quint64 generation);
     void pollAnalysisCache(quint64 generation);
-    void publishAnalysisStatus(rules::H264AnnexBAnalysisStatus status,
+    void publishAnalysisStatus(AnalysisBatchStatus status,
                                const QString& errorMessage);
     QTreeView* analysisTreeView_ = nullptr;
     AnalysisTreeModel* analysisModel_ = nullptr;

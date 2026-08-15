@@ -309,11 +309,17 @@ void AnalysisSession::enableCache(AnalysisSessionCacheOptions cacheOptions) {
 bool AnalysisSession::saveSession(const QString& sessionPath,
                                   const SessionUserState& userState,
                                   QString* errorMessage) const {
-    const auto* fileSource = dynamic_cast<const core::FileSource*>(source_.get());
-    if (fileSource == nullptr || sourcePath_.isEmpty()) {
+    if (sourcePath_.isEmpty()) {
         if (errorMessage != nullptr) {
             *errorMessage = QStringLiteral(
                 "Only a local file analysis session can be saved persistently");
+        }
+        return false;
+    }
+    const auto* fileSource = dynamic_cast<const core::FileSource*>(source_.get());
+    if (fileSource == nullptr) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Session persistence requires a file-backed source");
         }
         return false;
     }
@@ -332,26 +338,87 @@ bool AnalysisSession::saveSession(const QString& sessionPath,
     return document && document->save(sessionPath, errorMessage);
 }
 
-rules::H264AnnexBAnalysisBatch AnalysisSession::analyzeBatch(
-    std::size_t maximumRecords, quint64 maximumInspectedPositions) {
+AnalysisBatchResult AnalysisSession::analyzeBatch(
+    std::size_t maximumRecords,
+    quint64 maximumInspectedPositions,
+    quint64 maximumMappedBytes) {
     analysisStarted_ = true;
     pollCacheWrites();
+
+    AnalysisBatchResult result;
+
     if (std::holds_alternative<rules::H264AnnexBAnalyzer>(analyzer_)) {
         auto& h264 = std::get<rules::H264AnnexBAnalyzer>(analyzer_);
-        rules::H264AnnexBAnalysisBatch batch =
-            h264.analyzeBatch(maximumRecords, maximumInspectedPositions);
+        const auto batch =
+            h264.analyzeBatch(maximumRecords, maximumInspectedPositions, maximumMappedBytes);
+        switch (batch.status) {
+        case rules::H264AnnexBAnalysisStatus::InProgress:
+            result.status = AnalysisBatchStatus::InProgress;
+            break;
+        case rules::H264AnnexBAnalysisStatus::Complete:
+            result.status = AnalysisBatchStatus::Complete;
+            break;
+        case rules::H264AnnexBAnalysisStatus::Cancelled:
+            result.status = AnalysisBatchStatus::Cancelled;
+            break;
+        case rules::H264AnnexBAnalysisStatus::SourceError:
+            result.status = AnalysisBatchStatus::SourceError;
+            break;
+        case rules::H264AnnexBAnalysisStatus::ResourceLimit:
+            result.status = AnalysisBatchStatus::ResourceLimit;
+            break;
+        case rules::H264AnnexBAnalysisStatus::InvalidRule:
+            result.status = AnalysisBatchStatus::InvalidRule;
+            break;
+        case rules::H264AnnexBAnalysisStatus::InvalidBatchSize:
+            result.status = AnalysisBatchStatus::InvalidBatchSize;
+            break;
+        }
+        result.topLevelNodes = batch.nalUnitNodes;
+        result.errorMessage = batch.errorMessage;
         publishCachePages(batch);
-        return batch;
     } else {
         auto& aac = std::get<rules::AacAdtsAnalyzer>(analyzer_);
-        auto aacBatch = aac.analyzeBatch(maximumRecords, maximumInspectedPositions);
-        rules::H264AnnexBAnalysisBatch batch;
-        batch.status = static_cast<rules::H264AnnexBAnalysisStatus>(aacBatch.status);
-        batch.nalUnitNodes = aacBatch.frameNodes;
-        batch.errorMessage = aacBatch.errorMessage;
-        publishCachePages(batch);
-        return batch;
+        const auto batch = aac.analyzeBatch(maximumRecords, maximumInspectedPositions);
+        switch (batch.status) {
+        case rules::AacAdtsAnalysisStatus::InProgress:
+            result.status = AnalysisBatchStatus::InProgress;
+            break;
+        case rules::AacAdtsAnalysisStatus::Complete:
+            result.status = AnalysisBatchStatus::Complete;
+            break;
+        case rules::AacAdtsAnalysisStatus::Cancelled:
+            result.status = AnalysisBatchStatus::Cancelled;
+            break;
+        case rules::AacAdtsAnalysisStatus::SourceError:
+            result.status = AnalysisBatchStatus::SourceError;
+            break;
+        case rules::AacAdtsAnalysisStatus::ResourceLimit:
+            result.status = AnalysisBatchStatus::ResourceLimit;
+            break;
+        case rules::AacAdtsAnalysisStatus::InvalidRule:
+            result.status = AnalysisBatchStatus::InvalidRule;
+            break;
+        case rules::AacAdtsAnalysisStatus::InvalidBatchSize:
+            result.status = AnalysisBatchStatus::InvalidBatchSize;
+            break;
+        }
+        result.topLevelNodes = batch.frameNodes;
+        result.errorMessage = batch.errorMessage;
+        if (cacheStatus_ == AnalysisSessionCacheStatus::Active && cacheOwner_ &&
+            finished() && !materializedCacheSubmitted_) {
+            materializedCacheSubmitted_ = true;
+            rules::MaterializedResultCacheExportResult exported =
+                rules::exportMaterializedResultCachePages(tree(), 0);
+            if (!exported.succeeded()) {
+                disableCache(exported.errorMessage);
+            } else {
+                acceptCacheWrite(cacheOwner_->writeMaterializedResult(std::move(exported.pages)));
+            }
+        }
     }
+
+    return result;
 }
 
 void AnalysisSession::pollCacheWrites() {
