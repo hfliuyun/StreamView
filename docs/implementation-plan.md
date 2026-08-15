@@ -1196,7 +1196,7 @@ Blockers: None
      - 验证所有节点均具有完整有序子节点列表与准确 source spans。
   4. 测试与验证：
      - `svtool rule check` 通过；
-     - H.264 analyzer 套件为 131 测试用例（132/132 包含 fixture setup）；DSL parser 77/77、DSL IR 77/77、executor 134/134 全部通过；
+     - H.264 analyzer 套件为 131 测试用例（132/132 包含 fixture setup）；DSL parser 77/77、DSL IR 77/77、executor 133/133 全部通过；
      - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
      - hosted run `31824494864` 在 Ubuntu 24.04 / Qt 6.11.1（job `94845285948`）、macOS 15 / Qt 6.11.1（job `94845285989`）、Windows 2022 / Qt 6.10.1（job `94845286130`）全部成功。
   勾选阶段 3 第 3 项（所有 SEI 解析 payloadType/payloadSize）。Next Action 指向 Task T7。
