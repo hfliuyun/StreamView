@@ -889,6 +889,29 @@ struct SeiRbsp {
                     @description("Extension flag that shall be equal to 0.");
                 rbsp_trailing_bits;
             }
+            case 47: {
+                bits<1> display_orientation_cancel_flag
+                    @spec("ITU-T H.264", "D.1.27, D.2.27")
+                    @description("Indicates that the display orientation SEI message cancels the persistence of any previous display orientation SEI message.");
+                if (display_orientation_cancel_flag == 0) {
+                    bits<1> hor_flip
+                        @spec("ITU-T H.264", "D.1.27, D.2.27")
+                        @description("Indicates whether the intended display is horizontally flipped.");
+                    bits<1> ver_flip
+                        @spec("ITU-T H.264", "D.1.27, D.2.27")
+                        @description("Indicates whether the intended display is vertically flipped.");
+                    bits<16> anticlockwise_rotation
+                        @spec("ITU-T H.264", "D.1.27, D.2.27")
+                        @description("Specifies the intended anti-clockwise rotation degree in units of 2^-16 of a degree.");
+                    ue display_orientation_repetition_period @range(0, 16384)
+                        @spec("ITU-T H.264", "D.1.27, D.2.27")
+                        @description("Specifies the repetition period of the display orientation SEI message.");
+                    bits<1> display_orientation_extension_flag @range(0, 0)
+                        @spec("ITU-T H.264", "D.1.27, D.2.27")
+                        @description("Extension flag that shall be equal to 0.");
+                }
+                rbsp_trailing_bits;
+            }
             default: {
                 @lazy(payload_size)
                 bytes payload_data
