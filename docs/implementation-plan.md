@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Picture Timing SEI message decoding (Task T11c-3 / payload_type == 1 / package 0.1.38 / ADR-0091 / commit 6fbf585)
-Next Action: Conclude H.264 Phase 3 remaining checklist items or proceed to next roadmap phase
-Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31881638934 (Ubuntu job 95004954416, macOS job 95004954388, Windows job 95004954414) passed 100%
+Last Completed Step: SEI deep decoding rectification and session-level ambient capability verification (Task T11c / commit 9c18436)
+Next Action: Conclude H.264 Phase 3 remaining checklist audit (Task T13)
+Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31882632928 (Ubuntu job 95007234862, macOS job 95007234841, Windows job 95007234953) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1424,3 +1424,18 @@ Blockers: None
      - 规则引擎与解析全量验证：`svtool rule check` Rule OK，H.264 analyzer 174/174（由 166 扩充至 174 且旧规则下测试确为 red），本地 dev/ci/sanitize 均为 32/32（无 sanitizer 警告）；
      - hosted run `31881638934` 在 Ubuntu 24.04 / Qt 6.11.1（job `95004954416`）、macOS 15 / Qt 6.11.1（job `95004954388`）、Windows 2022 / Qt 6.10.1（job `95004954414`）全部成功。
   Next Action 指向 Phase 3 剩余清单核验或下一阶段里程碑推进。
+- 2026-08-15：完成 ADR 规范整改与 Session 层环境上下文能力钉死测试（任务 T11c 整改 / commit `fefd90a` 与 commit `9c18436`）。
+  1. ADR 双语规范修正（`fefd90a`）：
+     - ADR-0089（英中）：修正 §5 消费语法为落地实际形态（`computed<bool> is_aligned = byte_aligned(); computed<bool> needs_trailing_bits = !is_aligned; if (needs_trailing_bits) { rbsp_trailing_bits; }`，对应 `src/rules/official/org.streamview.h264/src/h264_annex_b.svfmt:894-898`）；在能力验证矩阵与影响说明中如实记录直接条件形态 `if (!byte_aligned())` 被条件文法解析闸门拦截（`src/rules/dsl.cpp:1180`，报错原文 `Conditions require a field or context_value equality`）；
+     - ADR-0090（英中）：更新 §3 解析器层描述，准确反映保留既有共享错误文本 `Arithmetic operators require u64 operands` 的实现；
+     - ADR-0086（英中）：在 §5 追加 5.1 节修订记录，明确环境上下文导入依赖登记时机按需触发（commit `6fbf585`，`src/rules/rule_execution_session.cpp:338-343`）为单消息粒度失败隔离的必要要求。
+  2. Session 级能力测试（`9c18436`，`tests/rules/rule_execution_session_test.cpp`）：
+     - 新增 `materializesStructureWithUnaccessedAmbientImportWithoutContextAndIsolatesFailures`：
+       - (a) 验证声明 `@context_import("h264-sps")` 但执行路径未访问 `context_value` 的消息结构体在 `ContextDirectory` 无任何 SPS 时正常物化（`Materialized`）且不登记导入依赖（`importedContexts.empty()`）；
+       - (b) 验证求值 `context_value` 的分支在无 SPS 时精确产生单消息级 `DependencyUnavailable` 诊断；
+       - (c) 验证 SPS 注册后求值分支成功绑定对应 generation；
+       - (d) 验证 SPS 注册后执行未求值分支依然保持按需登记（`importedContexts.empty()`）。
+  3. 全量验证门禁：
+     - 本地三套构建与测试全量通过：dev 32/32、ci 32/32、sanitize 32/32（零 ASan/UBSan 告警）；
+     - hosted run `31882632928` 在 Ubuntu 24.04 / Qt 6.11.1（job `95007234862`）、macOS 15 / Qt 6.11.1（job `95007234841`）、Windows 2022 / Qt 6.10.1（job `95007234953`）全部成功。
+  Next Action 指向 Phase 3 阶段收尾审计（任务 T13）。
