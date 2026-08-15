@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 3
-Last Completed Step: Specify and implement SEI container structure and dispatch (Task T6 / package 0.1.31 / ADR-0080)
-Next Action: Specify and implement Task T7 (user_data_unregistered SEI payload parsing); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
-Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31824494864 (Ubuntu job 94845285948, macOS job 94845285989, Windows job 94845286130) passed 100%
+Last Completed Step: Specify and implement recovery point SEI message decoding (Task T7 / package 0.1.32 / ADR-0081)
+Next Action: Specify and implement Task T8 (user_data_unregistered SEI payload parsing / payload_type == 5); pic_init_qp_minus26 and slice_qp_delta stay deferred because their domains depend on the SPS-derived QpBdOffsetY, which @range cannot express, and POC derivation, DPB, and output-order semantics remain deferred
+Last Verification: Local dev/ci/sanitize 32/32 passing with zero sanitizer warnings; hosted CI run 31859117579 (Ubuntu job 94949154063, macOS job 94949153997, Windows job 94949154008) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1200,3 +1200,22 @@ Blockers: None
      - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
      - hosted run `31824494864` 在 Ubuntu 24.04 / Qt 6.11.1（job `94845285948`）、macOS 15 / Qt 6.11.1（job `94845285989`）、Windows 2022 / Qt 6.10.1（job `94845286130`）全部成功。
   勾选阶段 3 第 3 项（所有 SEI 解析 payloadType/payloadSize）。Next Action 指向 Task T7。
+- 2026-08-15：完成恢复点 SEI 消息（Recovery Point SEI, payload_type == 6）解码与条件 RBSP 对齐支持（任务 T7 / ADR-0081 / 包版本 0.1.32）。
+  1. DSL 语法、编译器与 VM 增强：
+     - `src/rules/dsl.cpp`：`validateTerminals` 支持 `rbsp_trailing_bits;` 作为 `if` 分支或 `switch` 分支内的末尾项，同时严格禁止直接出现在 repeat 循环体顶层；
+     - `src/rules/dsl_ir.cpp`：`RbspTrailingBits` 编译支持携带分支条件约束（`conditions`）与迭代索引（`repeatIndices`），生成 `rbsp_stop_one_bit[repeatIndex]` 和 `rbsp_alignment_zero_bit[zeroIndex][repeatIndex]` 命名；
+     - `src/rules/dsl_vm.cpp`：`ReadRbspTrailingBits` 操作码支持条件执行求值，当条件未命中时安全跳过保留字段并递进字段索引；顶层无条件 `rbsp_trailing_bits` 仍强制要求为结构体终结指令。
+  2. 官方规则包（`src/rules/official/org.streamview.h264/src/h264_annex_b.svfmt`）：
+     - 在 `SeiRbsp` 的 `while (more_rbsp_data())` 循环中引入 `if (payload_type == 6)` 分支，解码 `ue recovery_frame_cnt`、`bits<1> exact_match_flag`、`bits<1> broken_link_flag`、`bits<2> changing_slice_group_idc @range(0, 2)` 以及条件 `rbsp_trailing_bits;` 对齐字节边界；其他 payload 类型保持为 `@lazy(payload_size) bytes payload_data`；
+     - `rule.toml` 包版本升级至 `0.1.32`。
+  3. 自动化测试套件：
+     - `tests/rules/dsl_test.cpp`：覆盖条件分支内 `rbsp_trailing_bits` 的合法解析及非末尾位置报错；
+     - `tests/rules/dsl_ir_test.cpp`：覆盖条件分支内 trailing bits 的条件与操作码编译；
+     - `tests/rules/dsl_executor_test.cpp`：覆盖条件命中与跳过两种执行路径及字段物化；
+     - `tests/rules/h264_annex_b_analyzer_test.cpp`：新增 5 个针对性测试用例（单恢复点 SEI 完整有序子节点列表断言、多 bit Exp-Golomb recovery_frame_cnt、changing_slice_group_idc 越界非致命告警、recovery_point + user_data 混合多 SEI NAL、截断 recovery_point 码流安全回滚与后续 NAL 正常解析）。
+  4. 测试与验证：
+     - `svtool rule check` 通过；
+     - H.264 analyzer 套件增至 138/138；DSL parser 79/79、DSL IR 78/78、executor 135/135 全部通过；
+     - 本机 dev/ci/sanitize 均为 32/32 且无 sanitizer 报告；
+     - hosted run `31859117579` 在 Ubuntu 24.04 / Qt 6.11.1（job `94949154063`）、macOS 15 / Qt 6.11.1（job `94949153997`）、Windows 2022 / Qt 6.10.1（job `94949154008`）全部成功。
+  Next Action 指向 Task T8（user_data_unregistered SEI payload parsing）。
