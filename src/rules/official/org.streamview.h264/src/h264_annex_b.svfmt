@@ -1,3 +1,9 @@
+pure u64 num_clock_ts_for_pic_struct(u64 pic_struct) {
+    return (pic_struct <= 2) * 1 +
+           (pic_struct == 3 || pic_struct == 4 || pic_struct == 7) * 2 +
+           (pic_struct == 5 || pic_struct == 6 || pic_struct == 8) * 3;
+}
+
 @spec("ITU-T H.264", "7.3.1")
 @description("The eight-bit NAL unit header prefix.")
 struct NalUnitHeader {
@@ -218,6 +224,17 @@ struct SequenceParameterSetRbsp {
         optional_value(vcl_hrd_cpb_cnt_minus1, 0) + 1 @context_export;
     computed<u64> effective_vcl_hrd_initial_cpb_removal_delay_length_minus1 =
         optional_value(vcl_hrd_initial_cpb_removal_delay_length_minus1, 23) @context_export;
+    computed<u64> effective_cpb_removal_delay_length_minus1 =
+        optional_value(nal_hrd_cpb_removal_delay_length_minus1,
+                       optional_value(vcl_hrd_cpb_removal_delay_length_minus1, 23)) @context_export;
+    computed<u64> effective_dpb_output_delay_length_minus1 =
+        optional_value(nal_hrd_dpb_output_delay_length_minus1,
+                       optional_value(vcl_hrd_dpb_output_delay_length_minus1, 23)) @context_export;
+    computed<u64> effective_time_offset_length =
+        optional_value(nal_hrd_time_offset_length,
+                       optional_value(vcl_hrd_time_offset_length, 24)) @context_export;
+    computed<u64> effective_pic_struct_present_flag =
+        optional_value(pic_struct_present_flag, 0) @context_export;
     rbsp_trailing_bits;
 }
 
@@ -735,6 +752,7 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
 @spec("ITU-T H.264", "7.3.2.3")
 @description("Supplemental enhancement information (SEI) raw byte sequence payload.")
 @context_import("h264-sps", seq_parameter_set_id)
+@context_import("h264-sps")
 struct SeiRbsp {
     repeat (64) while (more_rbsp_data()) {
         ff_coded<8> payload_type
@@ -781,6 +799,103 @@ struct SeiRbsp {
                     }
                 }
                 rbsp_trailing_bits;
+            }
+            case 1: {
+                computed<bool> cpb_dpb_delays_present =
+                    context_value(h264_sps, effective_nal_hrd_parameters_present_flag) == 1 ||
+                    context_value(h264_sps, effective_vcl_hrd_parameters_present_flag) == 1;
+                if (cpb_dpb_delays_present) {
+                    bits<(context_value(h264_sps, effective_cpb_removal_delay_length_minus1) + 1)> cpb_removal_delay
+                        @spec("ITU-T H.264", "D.1.2, D.2.2")
+                        @description("Specifies how many clock ticks to wait before removal from the CPB.");
+                    bits<(context_value(h264_sps, effective_dpb_output_delay_length_minus1) + 1)> dpb_output_delay
+                        @spec("ITU-T H.264", "D.1.2, D.2.2")
+                        @description("Specifies how many clock ticks to wait before output from the DPB.");
+                }
+                computed<bool> pic_struct_present =
+                    context_value(h264_sps, effective_pic_struct_present_flag) == 1;
+                if (pic_struct_present) {
+                    bits<4> pic_struct @range(0, 8)
+                        @spec("ITU-T H.264", "D.1.2, D.2.2, Table D-1")
+                        @description("Indicates whether the picture is a frame, field, or frame repetition.");
+                    computed<u64> num_clock_ts = num_clock_ts_for_pic_struct(pic_struct);
+                    repeat (num_clock_ts, 3) {
+                        bits<1> clock_timestamp_flag
+                            @spec("ITU-T H.264", "D.1.2, D.2.2")
+                            @description("Indicates whether clock timestamp information is present.");
+                        if (clock_timestamp_flag == 1) {
+                            bits<2> ct_type @range(0, 2)
+                                @spec("ITU-T H.264", "D.1.2, D.2.2, Table D-2")
+                                @description("Specifies the scan type of the source picture.");
+                            bits<1> nuit_field_based_flag
+                                @spec("ITU-T H.264", "D.1.2, D.2.2")
+                                @description("Indicates whether the display time calculation is field based.");
+                            bits<5> counting_type @range(0, 6)
+                                @spec("ITU-T H.264", "D.1.2, D.2.2, Table D-3")
+                                @description("Specifies the method of dropping frames for time code.");
+                            bits<1> full_timestamp_flag
+                                @spec("ITU-T H.264", "D.1.2, D.2.2")
+                                @description("Indicates whether seconds, minutes, and hours are present.");
+                            bits<1> discontinuity_flag
+                                @spec("ITU-T H.264", "D.1.2, D.2.2")
+                                @description("Indicates whether time difference can be calculated.");
+                            bits<1> cnt_dropped_flag
+                                @spec("ITU-T H.264", "D.1.2, D.2.2")
+                                @description("Indicates whether frame numbers are skipped for counting.");
+                            bits<8> n_frames
+                                @spec("ITU-T H.264", "D.1.2, D.2.2")
+                                @description("Specifies the frame number within current second.");
+                            if (full_timestamp_flag == 1) {
+                                bits<6> full_seconds_value @range(0, 59)
+                                    @spec("ITU-T H.264", "D.1.2, D.2.2")
+                                    @description("Specifies seconds of the timestamp in range 0..59.");
+                                bits<6> full_minutes_value @range(0, 59)
+                                    @spec("ITU-T H.264", "D.1.2, D.2.2")
+                                    @description("Specifies minutes of the timestamp in range 0..59.");
+                                bits<5> full_hours_value @range(0, 23)
+                                    @spec("ITU-T H.264", "D.1.2, D.2.2")
+                                    @description("Specifies hours of the timestamp in range 0..23.");
+                            } else {
+                                bits<1> seconds_flag
+                                    @spec("ITU-T H.264", "D.1.2, D.2.2")
+                                    @description("Indicates presence of seconds_value and minutes_flag.");
+                                if (seconds_flag == 1) {
+                                    bits<6> partial_seconds_value @range(0, 59)
+                                        @spec("ITU-T H.264", "D.1.2, D.2.2")
+                                        @description("Specifies seconds of the timestamp in range 0..59.");
+                                    bits<1> minutes_flag
+                                        @spec("ITU-T H.264", "D.1.2, D.2.2")
+                                        @description("Indicates presence of minutes_value and hours_flag.");
+                                    if (minutes_flag == 1) {
+                                        bits<6> partial_minutes_value @range(0, 59)
+                                            @spec("ITU-T H.264", "D.1.2, D.2.2")
+                                            @description("Specifies minutes of the timestamp in range 0..59.");
+                                        bits<1> hours_flag
+                                            @spec("ITU-T H.264", "D.1.2, D.2.2")
+                                            @description("Indicates presence of hours_value.");
+                                        if (hours_flag == 1) {
+                                            bits<5> partial_hours_value @range(0, 23)
+                                                @spec("ITU-T H.264", "D.1.2, D.2.2")
+                                                @description("Specifies hours of the timestamp in range 0..23.");
+                                        }
+                                    }
+                                }
+                            }
+                            computed<bool> has_time_offset =
+                                context_value(h264_sps, effective_time_offset_length) > 0;
+                            if (has_time_offset) {
+                                bits<(context_value(h264_sps, effective_time_offset_length))> time_offset
+                                    @spec("ITU-T H.264", "D.1.2, D.2.2")
+                                    @description("Specifies offset between clock timestamp and CPB removal time (two's complement).");
+                            }
+                        }
+                    }
+                }
+                computed<bool> is_aligned = byte_aligned();
+                computed<bool> needs_trailing_bits = !is_aligned;
+                if (needs_trailing_bits) {
+                    rbsp_trailing_bits;
+                }
             }
             case 4: {
                 bits<8> itu_t_t35_country_code

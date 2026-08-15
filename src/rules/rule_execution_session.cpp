@@ -336,26 +336,8 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
             materialized.imported->key = *executionImport.key;
             importedContexts.push_back(std::move(*importCache.at(importIndex)));
         } else {
-            const ImportMaterialization materialized =
-                materializeImport(static_cast<quint32>(importIndex), std::nullopt);
-            if (!materialized.materialized()) {
-                result.status = ruleStatus(materialized.status);
-                result.errorMessage = materialized.errorMessage;
-                core::ParseDiagnostic diagnostic;
-                diagnostic.code = result.status == RuleExecutionStatus::ResourceLimit
-                                      ? core::DiagnosticCode::ResourceLimit
-                                  : result.status ==
-                                            RuleExecutionStatus::DependencyUnavailable
-                                      ? core::DiagnosticCode::DependencyUnavailable
-                                      : core::DiagnosticCode::InvalidSyntax;
-                diagnostic.severity = core::DiagnosticSeverity::Error;
-                diagnostic.message = result.errorMessage;
-                diagnostic.fieldPath = structure.name;
-                if (result.execution.structureNode) {
-                    (void)request.tree->addDiagnostic(*result.execution.structureNode,
-                                                      std::move(diagnostic));
-                }
-                return result;
+            if (!importCache.at(importIndex).has_value()) {
+                continue;
             }
             importedContexts.push_back(std::move(*importCache.at(importIndex)));
         }

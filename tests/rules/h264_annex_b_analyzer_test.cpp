@@ -492,6 +492,97 @@ struct DisplayOrientationInfo {
     return payloadBytes;
 }
 
+struct ClockTimestampTestInfo {
+    bool clockTimestampFlag = false;
+    quint8 ctType = 0;
+    bool nuitFieldBasedFlag = false;
+    quint8 countingType = 0;
+    bool fullTimestampFlag = false;
+    bool discontinuityFlag = false;
+    bool cntDroppedFlag = false;
+    quint8 nFrames = 0;
+    quint8 fullSeconds = 0;
+    quint8 fullMinutes = 0;
+    quint8 fullHours = 0;
+    bool secondsFlag = false;
+    quint8 partialSeconds = 0;
+    bool minutesFlag = false;
+    quint8 partialMinutes = 0;
+    bool hoursFlag = false;
+    quint8 partialHours = 0;
+    quint64 timeOffset = 0;
+};
+
+struct PictureTimingTestInfo {
+    bool cpbDpbDelaysPresent = false;
+    quint32 cpbRemovalDelayBits = 24;
+    quint64 cpbRemovalDelay = 0;
+    quint32 dpbOutputDelayBits = 24;
+    quint64 dpbOutputDelay = 0;
+    bool picStructPresent = false;
+    quint8 picStruct = 0;
+    quint32 timeOffsetBits = 24;
+    std::vector<ClockTimestampTestInfo> timestamps;
+};
+
+[[nodiscard]] std::vector<quint8> packPictureTimingPayload(
+    const PictureTimingTestInfo& info) {
+    std::vector<bool> bits;
+    if (info.cpbDpbDelaysPresent) {
+        appendFixedBits(bits, info.cpbRemovalDelay, info.cpbRemovalDelayBits);
+        appendFixedBits(bits, info.dpbOutputDelay, info.dpbOutputDelayBits);
+    }
+    if (info.picStructPresent) {
+        appendFixedBits(bits, info.picStruct, 4);
+        for (const auto& ts : info.timestamps) {
+            bits.push_back(ts.clockTimestampFlag);
+            if (ts.clockTimestampFlag) {
+                appendFixedBits(bits, ts.ctType, 2);
+                bits.push_back(ts.nuitFieldBasedFlag);
+                appendFixedBits(bits, ts.countingType, 5);
+                bits.push_back(ts.fullTimestampFlag);
+                bits.push_back(ts.discontinuityFlag);
+                bits.push_back(ts.cntDroppedFlag);
+                appendFixedBits(bits, ts.nFrames, 8);
+                if (ts.fullTimestampFlag) {
+                    appendFixedBits(bits, ts.fullSeconds, 6);
+                    appendFixedBits(bits, ts.fullMinutes, 6);
+                    appendFixedBits(bits, ts.fullHours, 5);
+                } else {
+                    bits.push_back(ts.secondsFlag);
+                    if (ts.secondsFlag) {
+                        appendFixedBits(bits, ts.partialSeconds, 6);
+                        bits.push_back(ts.minutesFlag);
+                        if (ts.minutesFlag) {
+                            appendFixedBits(bits, ts.partialMinutes, 6);
+                            bits.push_back(ts.hoursFlag);
+                            if (ts.hoursFlag) {
+                                appendFixedBits(bits, ts.partialHours, 5);
+                            }
+                        }
+                    }
+                }
+                if (info.timeOffsetBits > 0) {
+                    appendFixedBits(bits, ts.timeOffset, info.timeOffsetBits);
+                }
+            }
+        }
+    }
+    if (bits.size() % 8 != 0) {
+        bits.push_back(true);
+        while (bits.size() % 8 != 0) {
+            bits.push_back(false);
+        }
+    }
+    std::vector<quint8> payloadBytes(bits.size() / 8, 0);
+    for (std::size_t i = 0; i < bits.size(); ++i) {
+        if (bits.at(i)) {
+            payloadBytes[i / 8] |= static_cast<quint8>(1U << (7 - (i % 8)));
+        }
+    }
+    return payloadBytes;
+}
+
 [[nodiscard]] std::vector<std::byte> replaceCodewordBeforeNextNal(
     std::vector<std::byte> data,
     std::size_t sourceBitOffset,
@@ -8648,7 +8739,7 @@ private slots:
     }
 
     void decodesSeiMessageWithZeroPayloadSize() {
-        const auto stream = packSeiNal({{1, {}}});
+        const auto stream = packSeiNal({{255, {}}});
         MemorySource source(stream);
         QString errorMessage;
         auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
@@ -11181,6 +11272,837 @@ private slots:
         QCOMPARE(seiNalNode->state(), MaterializationState::Invalid);
 
         const auto audNalNode = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(audNalNode.has_value());
+        QCOMPARE(audNalNode->state(), MaterializationState::Materialized);
+    }
+
+void decodesPictureTimingSeiMessageWithCpbDpbDelaysAndFullTimestamp() {
+        const auto spsNal = bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0xe4, 0x20, 0x00, 0x00,
+            0x7d, 0x00, 0x00, 0x1d, 0x4c, 0x1c, 0x03, 0x5e, 0xf7, 0xc1, 0x40
+        });
+
+        PictureTimingTestInfo info;
+        info.cpbDpbDelaysPresent = true;
+        info.cpbRemovalDelayBits = 24;
+        info.cpbRemovalDelay = 1000;
+        info.dpbOutputDelayBits = 24;
+        info.dpbOutputDelay = 2000;
+        info.picStructPresent = true;
+        info.picStruct = 0; // NumClockTS = 1
+        info.timeOffsetBits = 24;
+
+        ClockTimestampTestInfo ts;
+        ts.clockTimestampFlag = true;
+        ts.ctType = 1;
+        ts.nuitFieldBasedFlag = false;
+        ts.countingType = 0;
+        ts.fullTimestampFlag = true;
+        ts.discontinuityFlag = false;
+        ts.cntDroppedFlag = false;
+        ts.nFrames = 12;
+        ts.fullSeconds = 34;
+        ts.fullMinutes = 56;
+        ts.fullHours = 12;
+        ts.timeOffset = 12345;
+        info.timestamps.push_back(ts);
+
+        const auto payloadBytes = packPictureTimingPayload(info);
+        std::vector<bool> bits;
+        appendFfCoded(bits, 1); // payload_type == 1
+        appendFfCoded(bits, payloadBytes.size());
+        for (const quint8 byte : payloadBytes) {
+            appendFixedBits(bits, byte, 8);
+        }
+        appendFixedBits(bits, 0x80, 8); // rbsp_trailing_bits
+
+        auto stream = spsNal;
+        appendNal(stream, packAnnexBNal(0x06, std::move(bits), false));
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x10})); // AUD
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(3));
+
+        const auto seiNalNode = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(seiNalNode.has_value());
+        QCOMPARE(seiNalNode->state(), MaterializationState::Materialized);
+
+        const auto rbsp = analyzer->tree().node(seiNalNode->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        const QStringList expectedChildren = {
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+            QStringLiteral("cpb_dpb_delays_present[0]"),
+            QStringLiteral("cpb_removal_delay[0]"),
+            QStringLiteral("dpb_output_delay[0]"),
+            QStringLiteral("pic_struct_present[0]"),
+            QStringLiteral("pic_struct[0]"),
+            QStringLiteral("num_clock_ts[0]"),
+            QStringLiteral("clock_timestamp_flag[0][0]"),
+            QStringLiteral("ct_type[0][0]"),
+            QStringLiteral("nuit_field_based_flag[0][0]"),
+            QStringLiteral("counting_type[0][0]"),
+            QStringLiteral("full_timestamp_flag[0][0]"),
+            QStringLiteral("discontinuity_flag[0][0]"),
+            QStringLiteral("cnt_dropped_flag[0][0]"),
+            QStringLiteral("n_frames[0][0]"),
+            QStringLiteral("full_seconds_value[0][0]"),
+            QStringLiteral("full_minutes_value[0][0]"),
+            QStringLiteral("full_hours_value[0][0]"),
+            QStringLiteral("has_time_offset[0][0]"),
+            QStringLiteral("time_offset[0][0]"),
+            QStringLiteral("is_aligned[0]"),
+            QStringLiteral("needs_trailing_bits[0]"),
+            QStringLiteral("rbsp_stop_one_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[0][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5][0]"),
+            QStringLiteral("rbsp_stop_one_bit"),
+            QStringLiteral("rbsp_alignment_zero_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5]"),
+            QStringLiteral("rbsp_alignment_zero_bit[6]"),
+        };
+        QCOMPARE(childNamesOf(*sei), expectedChildren);
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        const auto typeField = fieldNamed(*sei, QStringLiteral("payload_type[0]"));
+        const auto sizeField = fieldNamed(*sei, QStringLiteral("payload_size[0]"));
+        const auto cpbField = fieldNamed(*sei, QStringLiteral("cpb_removal_delay[0]"));
+        const auto dpbField = fieldNamed(*sei, QStringLiteral("dpb_output_delay[0]"));
+        const auto picStructField = fieldNamed(*sei, QStringLiteral("pic_struct[0]"));
+        const auto numClockTsField = fieldNamed(*sei, QStringLiteral("num_clock_ts[0]"));
+        const auto tsFlagField = fieldNamed(*sei, QStringLiteral("clock_timestamp_flag[0][0]"));
+        const auto ctTypeField = fieldNamed(*sei, QStringLiteral("ct_type[0][0]"));
+        const auto nuitField = fieldNamed(*sei, QStringLiteral("nuit_field_based_flag[0][0]"));
+        const auto countingTypeField = fieldNamed(*sei, QStringLiteral("counting_type[0][0]"));
+        const auto fullTsFlagField = fieldNamed(*sei, QStringLiteral("full_timestamp_flag[0][0]"));
+        const auto discFlagField = fieldNamed(*sei, QStringLiteral("discontinuity_flag[0][0]"));
+        const auto cntDroppedField = fieldNamed(*sei, QStringLiteral("cnt_dropped_flag[0][0]"));
+        const auto nFramesField = fieldNamed(*sei, QStringLiteral("n_frames[0][0]"));
+        const auto secField = fieldNamed(*sei, QStringLiteral("full_seconds_value[0][0]"));
+        const auto minField = fieldNamed(*sei, QStringLiteral("full_minutes_value[0][0]"));
+        const auto hrField = fieldNamed(*sei, QStringLiteral("full_hours_value[0][0]"));
+        const auto offsetField = fieldNamed(*sei, QStringLiteral("time_offset[0][0]"));
+
+        QVERIFY(typeField.has_value());
+        QVERIFY(sizeField.has_value());
+        QVERIFY(cpbField.has_value());
+        QVERIFY(dpbField.has_value());
+        QVERIFY(picStructField.has_value());
+        QVERIFY(numClockTsField.has_value());
+        QVERIFY(tsFlagField.has_value());
+        QVERIFY(ctTypeField.has_value());
+        QVERIFY(nuitField.has_value());
+        QVERIFY(countingTypeField.has_value());
+        QVERIFY(fullTsFlagField.has_value());
+        QVERIFY(discFlagField.has_value());
+        QVERIFY(cntDroppedField.has_value());
+        QVERIFY(nFramesField.has_value());
+        QVERIFY(secField.has_value());
+        QVERIFY(minField.has_value());
+        QVERIFY(hrField.has_value());
+        QVERIFY(offsetField.has_value());
+
+        QCOMPARE(typeField->value().toULongLong(), quint64(1));
+        QCOMPARE(sizeField->value().toULongLong(), quint64(payloadBytes.size()));
+        QCOMPARE(cpbField->value().toULongLong(), quint64(1000));
+        QCOMPARE(dpbField->value().toULongLong(), quint64(2000));
+        QCOMPARE(picStructField->value().toULongLong(), quint64(0));
+        QCOMPARE(numClockTsField->value().toULongLong(), quint64(1));
+        QCOMPARE(tsFlagField->value().toULongLong(), quint64(1));
+        QCOMPARE(ctTypeField->value().toULongLong(), quint64(1));
+        QCOMPARE(nuitField->value().toULongLong(), quint64(0));
+        QCOMPARE(countingTypeField->value().toULongLong(), quint64(0));
+        QCOMPARE(fullTsFlagField->value().toULongLong(), quint64(1));
+        QCOMPARE(discFlagField->value().toULongLong(), quint64(0));
+        QCOMPARE(cntDroppedField->value().toULongLong(), quint64(0));
+        QCOMPARE(nFramesField->value().toULongLong(), quint64(12));
+        QCOMPARE(secField->value().toULongLong(), quint64(34));
+        QCOMPARE(minField->value().toULongLong(), quint64(56));
+        QCOMPARE(hrField->value().toULongLong(), quint64(12));
+        QCOMPARE(offsetField->value().toULongLong(), quint64(12345));
+    }
+
+    void decodesPictureTimingSeiMessageWithPartialTimestamp() {
+        const auto spsNal = bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0xe4, 0x20, 0x00, 0x00,
+            0x7d, 0x00, 0x00, 0x1d, 0x4c, 0x1c, 0x03, 0x5e, 0xf7, 0xc1, 0x40
+        });
+
+        PictureTimingTestInfo info;
+        info.cpbDpbDelaysPresent = true;
+        info.cpbRemovalDelayBits = 24;
+        info.cpbRemovalDelay = 1000;
+        info.dpbOutputDelayBits = 24;
+        info.dpbOutputDelay = 2000;
+        info.picStructPresent = true;
+        info.picStruct = 0;
+        info.timeOffsetBits = 24;
+
+        ClockTimestampTestInfo ts;
+        ts.clockTimestampFlag = true;
+        ts.ctType = 0;
+        ts.nuitFieldBasedFlag = true;
+        ts.countingType = 2;
+        ts.fullTimestampFlag = false;
+        ts.discontinuityFlag = true;
+        ts.cntDroppedFlag = false;
+        ts.nFrames = 5;
+        ts.secondsFlag = true;
+        ts.partialSeconds = 45;
+        ts.minutesFlag = true;
+        ts.partialMinutes = 30;
+        ts.hoursFlag = true;
+        ts.partialHours = 8;
+        ts.timeOffset = 500;
+        info.timestamps.push_back(ts);
+
+        const auto payloadBytes = packPictureTimingPayload(info);
+        std::vector<bool> bits;
+        appendFfCoded(bits, 1);
+        appendFfCoded(bits, payloadBytes.size());
+        for (const quint8 byte : payloadBytes) {
+            appendFixedBits(bits, byte, 8);
+        }
+        appendFixedBits(bits, 0x80, 8);
+
+        auto stream = spsNal;
+        appendNal(stream, packAnnexBNal(0x06, std::move(bits), false));
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x10}));
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(3));
+
+        const auto seiNalNode = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(seiNalNode.has_value());
+        QCOMPARE(seiNalNode->state(), MaterializationState::Materialized);
+
+        const auto rbsp = analyzer->tree().node(seiNalNode->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        const QStringList expectedChildren = {
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+            QStringLiteral("cpb_dpb_delays_present[0]"),
+            QStringLiteral("cpb_removal_delay[0]"),
+            QStringLiteral("dpb_output_delay[0]"),
+            QStringLiteral("pic_struct_present[0]"),
+            QStringLiteral("pic_struct[0]"),
+            QStringLiteral("num_clock_ts[0]"),
+            QStringLiteral("clock_timestamp_flag[0][0]"),
+            QStringLiteral("ct_type[0][0]"),
+            QStringLiteral("nuit_field_based_flag[0][0]"),
+            QStringLiteral("counting_type[0][0]"),
+            QStringLiteral("full_timestamp_flag[0][0]"),
+            QStringLiteral("discontinuity_flag[0][0]"),
+            QStringLiteral("cnt_dropped_flag[0][0]"),
+            QStringLiteral("n_frames[0][0]"),
+            QStringLiteral("seconds_flag[0][0]"),
+            QStringLiteral("partial_seconds_value[0][0]"),
+            QStringLiteral("minutes_flag[0][0]"),
+            QStringLiteral("partial_minutes_value[0][0]"),
+            QStringLiteral("hours_flag[0][0]"),
+            QStringLiteral("partial_hours_value[0][0]"),
+            QStringLiteral("has_time_offset[0][0]"),
+            QStringLiteral("time_offset[0][0]"),
+            QStringLiteral("is_aligned[0]"),
+            QStringLiteral("needs_trailing_bits[0]"),
+            QStringLiteral("rbsp_stop_one_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[0][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1][0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2][0]"),
+            QStringLiteral("rbsp_stop_one_bit"),
+            QStringLiteral("rbsp_alignment_zero_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5]"),
+            QStringLiteral("rbsp_alignment_zero_bit[6]"),
+        };
+        QCOMPARE(childNamesOf(*sei), expectedChildren);
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        const auto secField = fieldNamed(*sei, QStringLiteral("partial_seconds_value[0][0]"));
+        const auto minField = fieldNamed(*sei, QStringLiteral("partial_minutes_value[0][0]"));
+        const auto hrField = fieldNamed(*sei, QStringLiteral("partial_hours_value[0][0]"));
+        const auto offsetField = fieldNamed(*sei, QStringLiteral("time_offset[0][0]"));
+
+        QVERIFY(secField.has_value());
+        QVERIFY(minField.has_value());
+        QVERIFY(hrField.has_value());
+        QVERIFY(offsetField.has_value());
+
+        QCOMPARE(secField->value().toULongLong(), quint64(45));
+        QCOMPARE(minField->value().toULongLong(), quint64(30));
+        QCOMPARE(hrField->value().toULongLong(), quint64(8));
+        QCOMPARE(offsetField->value().toULongLong(), quint64(500));
+    }
+
+    void decodesPictureTimingSeiMessageWithMultiTimestampPicStruct8() {
+        const auto spsNal = bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0xe4, 0x20, 0x00, 0x00,
+            0x7d, 0x00, 0x00, 0x1d, 0x4c, 0x1c, 0x03, 0x5e, 0xf7, 0xc1, 0x40
+        });
+
+        PictureTimingTestInfo info;
+        info.cpbDpbDelaysPresent = true;
+        info.cpbRemovalDelayBits = 24;
+        info.cpbRemovalDelay = 100;
+        info.dpbOutputDelayBits = 24;
+        info.dpbOutputDelay = 200;
+        info.picStructPresent = true;
+        info.picStruct = 8; // frame tripling -> NumClockTS = 3
+        info.timeOffsetBits = 24;
+
+        ClockTimestampTestInfo ts0;
+        ts0.clockTimestampFlag = true;
+        ts0.ctType = 1;
+        ts0.nuitFieldBasedFlag = false;
+        ts0.countingType = 0;
+        ts0.fullTimestampFlag = true;
+        ts0.discontinuityFlag = false;
+        ts0.cntDroppedFlag = false;
+        ts0.nFrames = 1;
+        ts0.fullSeconds = 10;
+        ts0.fullMinutes = 20;
+        ts0.fullHours = 5;
+        ts0.timeOffset = 100;
+        info.timestamps.push_back(ts0);
+
+        ClockTimestampTestInfo ts1;
+        ts1.clockTimestampFlag = false;
+        info.timestamps.push_back(ts1);
+
+        ClockTimestampTestInfo ts2;
+        ts2.clockTimestampFlag = true;
+        ts2.ctType = 2;
+        ts2.nuitFieldBasedFlag = false;
+        ts2.countingType = 0;
+        ts2.fullTimestampFlag = true;
+        ts2.discontinuityFlag = false;
+        ts2.cntDroppedFlag = false;
+        ts2.nFrames = 2;
+        ts2.fullSeconds = 11;
+        ts2.fullMinutes = 21;
+        ts2.fullHours = 6;
+        ts2.timeOffset = 200;
+        info.timestamps.push_back(ts2);
+
+        const auto payloadBytes = packPictureTimingPayload(info);
+        std::vector<bool> bits;
+        appendFfCoded(bits, 1);
+        appendFfCoded(bits, payloadBytes.size());
+        for (const quint8 byte : payloadBytes) {
+            appendFixedBits(bits, byte, 8);
+        }
+        appendFixedBits(bits, 0x80, 8);
+
+        auto stream = spsNal;
+        appendNal(stream, packAnnexBNal(0x06, std::move(bits), false));
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x10}));
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(3));
+
+        const auto seiNalNode = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(seiNalNode.has_value());
+        QCOMPARE(seiNalNode->state(), MaterializationState::Materialized);
+
+        const auto rbsp = analyzer->tree().node(seiNalNode->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        const QStringList expectedChildren = {
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+            QStringLiteral("cpb_dpb_delays_present[0]"),
+            QStringLiteral("cpb_removal_delay[0]"),
+            QStringLiteral("dpb_output_delay[0]"),
+            QStringLiteral("pic_struct_present[0]"),
+            QStringLiteral("pic_struct[0]"),
+            QStringLiteral("num_clock_ts[0]"),
+            QStringLiteral("clock_timestamp_flag[0][0]"),
+            QStringLiteral("ct_type[0][0]"),
+            QStringLiteral("nuit_field_based_flag[0][0]"),
+            QStringLiteral("counting_type[0][0]"),
+            QStringLiteral("full_timestamp_flag[0][0]"),
+            QStringLiteral("discontinuity_flag[0][0]"),
+            QStringLiteral("cnt_dropped_flag[0][0]"),
+            QStringLiteral("n_frames[0][0]"),
+            QStringLiteral("full_seconds_value[0][0]"),
+            QStringLiteral("full_minutes_value[0][0]"),
+            QStringLiteral("full_hours_value[0][0]"),
+            QStringLiteral("has_time_offset[0][0]"),
+            QStringLiteral("time_offset[0][0]"),
+            QStringLiteral("clock_timestamp_flag[0][1]"),
+            QStringLiteral("clock_timestamp_flag[0][2]"),
+            QStringLiteral("ct_type[0][2]"),
+            QStringLiteral("nuit_field_based_flag[0][2]"),
+            QStringLiteral("counting_type[0][2]"),
+            QStringLiteral("full_timestamp_flag[0][2]"),
+            QStringLiteral("discontinuity_flag[0][2]"),
+            QStringLiteral("cnt_dropped_flag[0][2]"),
+            QStringLiteral("n_frames[0][2]"),
+            QStringLiteral("full_seconds_value[0][2]"),
+            QStringLiteral("full_minutes_value[0][2]"),
+            QStringLiteral("full_hours_value[0][2]"),
+            QStringLiteral("has_time_offset[0][2]"),
+            QStringLiteral("time_offset[0][2]"),
+            QStringLiteral("is_aligned[0]"),
+            QStringLiteral("needs_trailing_bits[0]"),
+            QStringLiteral("rbsp_stop_one_bit[0]"),
+            QStringLiteral("rbsp_stop_one_bit"),
+            QStringLiteral("rbsp_alignment_zero_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5]"),
+            QStringLiteral("rbsp_alignment_zero_bit[6]"),
+        };
+        QCOMPARE(childNamesOf(*sei), expectedChildren);
+    }
+
+    void decodesPictureTimingSeiMessageWithoutHrdDelaysPicStructOnly() {
+        const auto spsNal = bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0xe4, 0x20, 0x00, 0x00,
+            0x7d, 0x00, 0x00, 0x1d, 0x4c, 0x12, 0x80
+        });
+
+        PictureTimingTestInfo info;
+        info.cpbDpbDelaysPresent = false;
+        info.picStructPresent = true;
+        info.picStruct = 3; // NumClockTS = 2
+        info.timeOffsetBits = 24;
+
+        ClockTimestampTestInfo ts0;
+        ts0.clockTimestampFlag = true;
+        ts0.ctType = 0;
+        ts0.nuitFieldBasedFlag = false;
+        ts0.countingType = 0;
+        ts0.fullTimestampFlag = true;
+        ts0.discontinuityFlag = false;
+        ts0.cntDroppedFlag = false;
+        ts0.nFrames = 1;
+        ts0.fullSeconds = 1;
+        ts0.fullMinutes = 2;
+        ts0.fullHours = 3;
+        ts0.timeOffset = 10;
+        info.timestamps.push_back(ts0);
+
+        ClockTimestampTestInfo ts1;
+        ts1.clockTimestampFlag = true;
+        ts1.ctType = 0;
+        ts1.nuitFieldBasedFlag = false;
+        ts1.countingType = 0;
+        ts1.fullTimestampFlag = true;
+        ts1.discontinuityFlag = false;
+        ts1.cntDroppedFlag = false;
+        ts1.nFrames = 2;
+        ts1.fullSeconds = 4;
+        ts1.fullMinutes = 5;
+        ts1.fullHours = 6;
+        ts1.timeOffset = 20;
+        info.timestamps.push_back(ts1);
+
+        const auto payloadBytes = packPictureTimingPayload(info);
+        std::vector<bool> bits;
+        appendFfCoded(bits, 1);
+        appendFfCoded(bits, payloadBytes.size());
+        for (const quint8 byte : payloadBytes) {
+            appendFixedBits(bits, byte, 8);
+        }
+        appendFixedBits(bits, 0x80, 8);
+
+        auto stream = spsNal;
+        appendNal(stream, packAnnexBNal(0x06, std::move(bits), false));
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x10}));
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(3));
+
+        const auto seiNalNode = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(seiNalNode.has_value());
+        QCOMPARE(seiNalNode->state(), MaterializationState::Materialized);
+
+        const auto rbsp = analyzer->tree().node(seiNalNode->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        const QStringList expectedChildren = {
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+            QStringLiteral("cpb_dpb_delays_present[0]"),
+            QStringLiteral("pic_struct_present[0]"),
+            QStringLiteral("pic_struct[0]"),
+            QStringLiteral("num_clock_ts[0]"),
+            QStringLiteral("clock_timestamp_flag[0][0]"),
+            QStringLiteral("ct_type[0][0]"),
+            QStringLiteral("nuit_field_based_flag[0][0]"),
+            QStringLiteral("counting_type[0][0]"),
+            QStringLiteral("full_timestamp_flag[0][0]"),
+            QStringLiteral("discontinuity_flag[0][0]"),
+            QStringLiteral("cnt_dropped_flag[0][0]"),
+            QStringLiteral("n_frames[0][0]"),
+            QStringLiteral("full_seconds_value[0][0]"),
+            QStringLiteral("full_minutes_value[0][0]"),
+            QStringLiteral("full_hours_value[0][0]"),
+            QStringLiteral("has_time_offset[0][0]"),
+            QStringLiteral("time_offset[0][0]"),
+            QStringLiteral("clock_timestamp_flag[0][1]"),
+            QStringLiteral("ct_type[0][1]"),
+            QStringLiteral("nuit_field_based_flag[0][1]"),
+            QStringLiteral("counting_type[0][1]"),
+            QStringLiteral("full_timestamp_flag[0][1]"),
+            QStringLiteral("discontinuity_flag[0][1]"),
+            QStringLiteral("cnt_dropped_flag[0][1]"),
+            QStringLiteral("n_frames[0][1]"),
+            QStringLiteral("full_seconds_value[0][1]"),
+            QStringLiteral("full_minutes_value[0][1]"),
+            QStringLiteral("full_hours_value[0][1]"),
+            QStringLiteral("has_time_offset[0][1]"),
+            QStringLiteral("time_offset[0][1]"),
+            QStringLiteral("is_aligned[0]"),
+            QStringLiteral("needs_trailing_bits[0]"),
+            QStringLiteral("rbsp_stop_one_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[0][0]"),
+            QStringLiteral("rbsp_stop_one_bit"),
+            QStringLiteral("rbsp_alignment_zero_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5]"),
+            QStringLiteral("rbsp_alignment_zero_bit[6]"),
+        };
+        QCOMPARE(childNamesOf(*sei), expectedChildren);
+    }
+
+    void decodesPictureTimingSeiMessageWithByteAlignedPayload() {
+        const auto spsNal = bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0xe4, 0x20, 0x00, 0x00,
+            0x7d, 0x00, 0x00, 0x1d, 0x4c, 0x1c, 0x03, 0x5e, 0xf7, 0xc0, 0x40
+        });
+
+        PictureTimingTestInfo info;
+        info.cpbDpbDelaysPresent = true;
+        info.cpbRemovalDelayBits = 24;
+        info.cpbRemovalDelay = 1234;
+        info.dpbOutputDelayBits = 24;
+        info.dpbOutputDelay = 5678;
+        info.picStructPresent = false;
+
+        const auto payloadBytes = packPictureTimingPayload(info);
+        QCOMPARE(payloadBytes.size(), std::size_t(6)); // exactly 48 bits = 6 bytes
+
+        std::vector<bool> bits;
+        appendFfCoded(bits, 1);
+        appendFfCoded(bits, payloadBytes.size());
+        for (const quint8 byte : payloadBytes) {
+            appendFixedBits(bits, byte, 8);
+        }
+        appendFixedBits(bits, 0x80, 8);
+
+        auto stream = spsNal;
+        appendNal(stream, packAnnexBNal(0x06, std::move(bits), false));
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x10}));
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(3));
+
+        const auto seiNalNode = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(seiNalNode.has_value());
+        QCOMPARE(seiNalNode->state(), MaterializationState::Materialized);
+
+        const auto rbsp = analyzer->tree().node(seiNalNode->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto childNamesOf = [&](const auto& node) {
+            QStringList names;
+            for (const auto childId : node.children()) {
+                if (const auto child = analyzer->tree().node(childId)) {
+                    names.append(child->name());
+                }
+            }
+            return names;
+        };
+
+        const QStringList expectedChildren = {
+            QStringLiteral("payload_type[0]"),
+            QStringLiteral("payload_size[0]"),
+            QStringLiteral("cpb_dpb_delays_present[0]"),
+            QStringLiteral("cpb_removal_delay[0]"),
+            QStringLiteral("dpb_output_delay[0]"),
+            QStringLiteral("pic_struct_present[0]"),
+            QStringLiteral("is_aligned[0]"),
+            QStringLiteral("needs_trailing_bits[0]"),
+            QStringLiteral("rbsp_stop_one_bit"),
+            QStringLiteral("rbsp_alignment_zero_bit[0]"),
+            QStringLiteral("rbsp_alignment_zero_bit[1]"),
+            QStringLiteral("rbsp_alignment_zero_bit[2]"),
+            QStringLiteral("rbsp_alignment_zero_bit[3]"),
+            QStringLiteral("rbsp_alignment_zero_bit[4]"),
+            QStringLiteral("rbsp_alignment_zero_bit[5]"),
+            QStringLiteral("rbsp_alignment_zero_bit[6]"),
+        };
+        QCOMPARE(childNamesOf(*sei), expectedChildren);
+    }
+
+    void decodesPictureTimingSeiMessageWithLatestSpsAcrossMultipleSpsDefinitions() {
+        const auto sps0Nal = bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0xe4, 0x20, 0x00, 0x00,
+            0x7d, 0x00, 0x00, 0x1d, 0x4c, 0x1c, 0x03, 0x5d, 0xef, 0xc0, 0x40
+        });
+        const auto sps1Nal = bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0x5d, 0x39, 0x08, 0x00, 0x00,
+            0x1f, 0x40, 0x00, 0x07, 0x53, 0x07, 0x00, 0xd7, 0x39, 0xf0, 0x10
+        });
+
+        PictureTimingTestInfo info;
+        info.cpbDpbDelaysPresent = true;
+        info.cpbRemovalDelayBits = 8;
+        info.cpbRemovalDelay = 42;
+        info.dpbOutputDelayBits = 8;
+        info.dpbOutputDelay = 99;
+        info.picStructPresent = false;
+
+        const auto payloadBytes = packPictureTimingPayload(info);
+        QCOMPARE(payloadBytes.size(), std::size_t(2)); // exactly 16 bits = 2 bytes
+
+        std::vector<bool> bits;
+        appendFfCoded(bits, 1);
+        appendFfCoded(bits, payloadBytes.size());
+        for (const quint8 byte : payloadBytes) {
+            appendFixedBits(bits, byte, 8);
+        }
+        appendFixedBits(bits, 0x80, 8);
+
+        auto stream = sps0Nal;
+        appendNal(stream, sps1Nal);
+        appendNal(stream, packAnnexBNal(0x06, std::move(bits), false));
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x10}));
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(4));
+
+        const auto seiNalNode = analyzer->tree().node(batch.nalUnitNodes.at(2));
+        QVERIFY(seiNalNode.has_value());
+        QCOMPARE(seiNalNode->state(), MaterializationState::Materialized);
+
+        const auto rbsp = analyzer->tree().node(seiNalNode->children().at(2));
+        QVERIFY(rbsp.has_value());
+        const auto sei = analyzer->tree().node(rbsp->children().front());
+        QVERIFY(sei.has_value());
+        QCOMPARE(sei->state(), MaterializationState::Materialized);
+
+        const auto fieldNamed = [&](const auto& parentNode, const QString& name) {
+            const auto found = std::find_if(
+                parentNode.children().begin(), parentNode.children().end(), [&](const auto id) {
+                    const auto node = analyzer->tree().node(id);
+                    return node && node->name() == name;
+                });
+            return found == parentNode.children().end() ? std::nullopt
+                                                        : analyzer->tree().node(*found);
+        };
+
+        const auto cpbField = fieldNamed(*sei, QStringLiteral("cpb_removal_delay[0]"));
+        const auto dpbField = fieldNamed(*sei, QStringLiteral("dpb_output_delay[0]"));
+
+        QVERIFY(cpbField.has_value());
+        QVERIFY(dpbField.has_value());
+        QCOMPARE(cpbField->value().toULongLong(), quint64(42));
+        QCOMPARE(dpbField->value().toULongLong(), quint64(99));
+        QCOMPARE(cpbField->location()->logicalRange().bitLength(), quint64(8));
+        QCOMPARE(dpbField->location()->logicalRange().bitLength(), quint64(8));
+    }
+
+    void reportsMissingSpsDependencyForPictureTimingSeiMessageAndContinues() {
+        PictureTimingTestInfo info;
+        info.cpbDpbDelaysPresent = true;
+        info.cpbRemovalDelayBits = 24;
+        info.cpbRemovalDelay = 1234;
+        info.dpbOutputDelayBits = 24;
+        info.dpbOutputDelay = 5678;
+        info.picStructPresent = false;
+
+        const auto payloadBytes = packPictureTimingPayload(info);
+        std::vector<bool> bits;
+        appendFfCoded(bits, 1);
+        appendFfCoded(bits, payloadBytes.size());
+        for (const quint8 byte : payloadBytes) {
+            appendFixedBits(bits, byte, 8);
+        }
+        appendFixedBits(bits, 0x80, 8);
+
+        auto stream = packAnnexBNal(0x06, std::move(bits), false);
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x10}));
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(2));
+
+        const auto seiNalNode = analyzer->tree().node(batch.nalUnitNodes.at(0));
+        QVERIFY(seiNalNode.has_value());
+        QCOMPARE(seiNalNode->state(), MaterializationState::Invalid);
+
+        const auto audNalNode = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(audNalNode.has_value());
+        QCOMPARE(audNalNode->state(), MaterializationState::Materialized);
+    }
+
+    void reportsTruncatedPictureTimingSeiPayloadAndContinues() {
+        const auto spsNal = bytes({
+            0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0xf4, 0xe4, 0x20, 0x00, 0x00,
+            0x7d, 0x00, 0x00, 0x1d, 0x4c, 0x1c, 0x03, 0x5e, 0xf7, 0xc1, 0x40
+        });
+
+        std::vector<bool> truncatedBits;
+        appendFfCoded(truncatedBits, 1);
+        appendFfCoded(truncatedBits, 15); // declared size 15 bytes, only 2 bytes provided
+        appendFixedBits(truncatedBits, 0x1234, 16);
+        auto stream = spsNal;
+        appendNal(stream, packAnnexBNal(0x06, std::move(truncatedBits), false));
+        appendNal(stream, bytes({0x00, 0x00, 0x01, 0x09, 0x10}));
+
+        MemorySource source(stream);
+        QString errorMessage;
+        auto analyzer = H264AnnexBAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, H264AnnexBAnalysisStatus::Complete);
+        QCOMPARE(batch.nalUnitNodes.size(), std::size_t(3));
+
+        const auto spsNalNode = analyzer->tree().node(batch.nalUnitNodes.at(0));
+        QVERIFY(spsNalNode.has_value());
+        QCOMPARE(spsNalNode->state(), MaterializationState::Materialized);
+
+        const auto seiNalNode = analyzer->tree().node(batch.nalUnitNodes.at(1));
+        QVERIFY(seiNalNode.has_value());
+        QCOMPARE(seiNalNode->state(), MaterializationState::Invalid);
+
+        const auto audNalNode = analyzer->tree().node(batch.nalUnitNodes.at(2));
         QVERIFY(audNalNode.has_value());
         QCOMPARE(audNalNode->state(), MaterializationState::Materialized);
     }
