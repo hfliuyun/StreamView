@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 4
-Last Completed Step: Remove unreachable payload truncation warning in AAC ADTS analyzer (Task T18c-2)
+Last Completed Step: Clarify reachability rationale and pin narrowed behavior for rules without payload (Task T18c-2-fix)
 Next Action: Verify AAC profile handling and align documentation (Task T18d)
-Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31937210029 (Ubuntu job 95140905425, macOS job 95140905350, Windows job 95140905352) passed 100%
+Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31938569503 (Ubuntu job 95144248440, macOS job 95144248392, Windows job 95144248467) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1692,4 +1692,18 @@ Blockers: None
      - 实测构造 200 字节声明、仅有 50 字节的截断码流，删除前后诊断输出 100% 一致（`diag code=0 sev=2 msg="Lazy byte region exceeds the available source range"`，`AdtsHeader` 保持 17 子节点且状态为 `Invalid`）；
      - 本地全量测试 35/35 在 dev/ci/sanitize 三套构建下全部通过（零 sanitizer 告警，AAC analyzer 23/23，H.264 analyzer 174/174）；
      - hosted CI run `31937210029` 在 Ubuntu 24.04 / Qt 6.11.1（job `95140905425`）、macOS 15 / Qt 6.11.1（job `95140905350`）、Windows 2022 / Qt 6.10.1（job `95140905352`）全部 100% 成功通过。
+  Next Action 指向 Task T18d（Profile 处理验证与全库路线图文档对齐）。
+- 2026-08-16：完成可达性论证前提缺陷修正、能力边界回归测试与文档整改（任务 T18c-2-fix / commit `474a4af`）。
+  1. 新增能力边界回归测试（`tests/rules/aac_adts_analyzer_test.cpp:379-475`）：
+     - 新增 `materializesTruncatedTrailingFrameWhenRuleLacksPayloadDeclaration` 用例，构造未声明载荷区域的自定义 ADTS 规则包，验证完整帧 + 截断尾帧码流；
+     - 实测断言钉住收窄后的已知能力边界：尾帧 region 节点状态为 `MaterializationState::Materialized`，诊断数严格为 0，`logicalRange().bitLength()` 等于实际可用比特数（30 字节 = 240 比特，被 clamp 的结果）；
+     - AAC analyzer 测试套件用例数由 23 扩展至 24，全部 24/24 通过。
+  2. 双语 ADR-0095 §4 G3 与 §5 记述整改：
+     - 移除无条件不可达表述，明确声明三路径论证严格依赖「生效规则声明了覆盖帧剩余字节的 `@lazy` 区域」（官方包 `0.1.3` 满足）；
+     - 明示收窄后果：未声明载荷区域的自定义/第三方包截断尾帧将以 `Materialized` 且无诊断呈现；
+     - 阐明架构理由：C++ 中硬编码格式专属诊断违反 DSL-first 架构约束，截断上报的正当机制是规则声明载荷区域后由 VM 通用契约触发；
+     - 记录 `record.truncated` 现状：在 `src/` 中已无读取点，作为 scanner 扫描事实保留，由 scanner 测试套件持续断言。
+  3. 构建与持续集成验证：
+     - 本地全量测试 35/35 在 dev/ci/sanitize 三套构建下全部通过（零 sanitizer 告警，AAC analyzer 24/24，H.264 analyzer 174/174）；
+     - hosted CI run `31938569503` 在 Ubuntu 24.04 / Qt 6.11.1（job `95144248440`）、macOS 15 / Qt 6.11.1（job `95144248392`）、Windows 2022 / Qt 6.10.1（job `95144248467`）全部 100% 成功通过。
   Next Action 指向 Task T18d（Profile 处理验证与全库路线图文档对齐）。
