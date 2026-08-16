@@ -7,8 +7,8 @@ Proposed
 In MPEG-4 Audio (ISO/IEC 14496-3:2019, Edition 5), decoder configuration for Advanced Audio Coding (AAC) streams is formally standardized via `AudioSpecificConfig` (ASC, subclause 1.6.2.1). While ADTS streams convey basic stream properties (profile, sample rate index, channel configuration) in every frame header (ADR-0092, ADR-0093), modern audio delivery mechanisms—including MPEG-4 Part 14 containers (MP4 `esds` box, subclause 1.6.6) and streaming protocols—rely on `AudioSpecificConfig` to initialize the audio decoder before parsing compressed raw data blocks.
 
 To fulfill Phase 4 of the StreamView implementation plan, the official `org.streamview.aac` rule package must provide structured decoding for:
-1. **AudioSpecificConfig (ASC)**: Including base and extended Audio Object Types (`audioObjectType`), standard and explicit sampling frequencies (`samplingFrequencyIndex` / `samplingFrequency`), channel configurations, and General Audio configuration (`GASpecificConfig`);
-2. **Program Config Element (PCE)**: For custom multichannel layouts when `channelConfiguration == 0` (subclause 1.6.2.1, Table 1.18);
+1. **AudioSpecificConfig (ASC)**: Including base and extended Audio Object Types (`audioObjectType`), standard and explicit sampling frequencies (`samplingFrequencyIndex` / `samplingFrequency`), channel configurations, and General Audio configuration (`GASpecificConfig`, subclause 4.4.1);
+2. **Program Config Element (PCE)**: For custom multichannel layouts when `channelConfiguration == 0` (subclause 4.4.1.1, Table 4.2);
 3. **Multi-Entry Package Manifest**: Updating `org.streamview.aac` manifest (`rule.toml`) to version `0.1.1` with dedicated entry points for both `adts` and `asc`.
 
 ### Empirical Probing and Language Capability Analysis
@@ -146,126 +146,126 @@ struct AudioSpecificConfig {
 
     // GASpecificConfig syntax
     bits<1> frame_length_flag
-        @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+        @spec("ISO/IEC 14496-3:2019", "4.4.1")
         @description("Frame length flag (0: 1024 lines IMDCT, 1: 960 lines IMDCT).");
     bits<1> depends_on_core_coder
-        @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+        @spec("ISO/IEC 14496-3:2019", "4.4.1")
         @description("Core coder dependency flag.");
     if (depends_on_core_coder == 1) {
         bits<14> core_coder_delay
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1")
             @description("Core coder delay value in samples.");
     }
     bits<1> extension_flag
-        @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+        @spec("ISO/IEC 14496-3:2019", "4.4.1")
         @description("Extension flag for audio object type specific extensions.");
 
     if (channel_configuration == 0) {
         // Program Config Element (PCE)
         bits<4> element_instance_tag
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("PCE instance identifier tag.");
         bits<2> object_type
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("PCE audio object type.");
         bits<4> pce_sampling_frequency_index
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @range(0, 12)
             @description("PCE sampling frequency index (0..12 standard).");
         bits<4> num_front_channel_elements
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Number of front channel elements.");
         bits<4> num_side_channel_elements
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Number of side channel elements.");
         bits<4> num_back_channel_elements
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Number of back channel elements.");
         bits<2> num_lfe_channel_elements
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Number of low-frequency enhancement channel elements.");
         bits<3> num_assoc_data_elements
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Number of associated data elements.");
         bits<4> num_valid_cc_elements
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Number of valid coupling channel elements.");
 
         bits<1> mono_mixdown_present
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Mono mixdown present flag.");
         if (mono_mixdown_present == 1) {
             bits<4> mono_mixdown_element_number
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Mono mixdown element number.");
         }
 
         bits<1> stereo_mixdown_present
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Stereo mixdown present flag.");
         if (stereo_mixdown_present == 1) {
             bits<4> stereo_mixdown_element_number
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Stereo mixdown element number.");
         }
 
         bits<1> matrix_mixdown_idx_present
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Matrix mixdown index present flag.");
         if (matrix_mixdown_idx_present == 1) {
             bits<2> matrix_mixdown_idx
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Matrix mixdown index.");
             bits<1> pseudo_surround_enable
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Pseudo surround enable flag.");
         }
 
         repeat (num_front_channel_elements, 15) {
             bits<1> front_element_is_cpe
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Front channel element is channel pair element flag.");
             bits<4> front_element_tag_select
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Front channel element instance tag selector.");
         }
 
         repeat (num_side_channel_elements, 15) {
             bits<1> side_element_is_cpe
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Side channel element is channel pair element flag.");
             bits<4> side_element_tag_select
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Side channel element instance tag selector.");
         }
 
         repeat (num_back_channel_elements, 15) {
             bits<1> back_element_is_cpe
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Back channel element is channel pair element flag.");
             bits<4> back_element_tag_select
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Back channel element instance tag selector.");
         }
 
         repeat (num_lfe_channel_elements, 3) {
             bits<4> lfe_element_tag_select
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("LFE channel element instance tag selector.");
         }
 
         repeat (num_assoc_data_elements, 7) {
             bits<4> assoc_data_element_tag_select
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Associated data element instance tag selector.");
         }
 
         repeat (num_valid_cc_elements, 15) {
             bits<1> cc_element_is_ind_sw
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Coupling channel element independently switched flag.");
             bits<4> valid_cc_element_tag_select
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Valid coupling channel element instance tag selector.");
         }
 
@@ -289,17 +289,17 @@ struct AudioSpecificConfig {
 
         repeat (pce_alignment_bits, 7) {
             bits<1> byte_alignment_zero_bit
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @equals(0)
                 @description("Byte alignment stuffing zero bit.");
         }
 
         bits<8> comment_field_bytes
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Length in bytes of comment field data.");
         repeat (comment_field_bytes, 255) {
             bits<8> comment_field_data
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Comment field data byte.");
         }
     }
@@ -353,8 +353,15 @@ Unit test coverage required for Task T17c (using bitstreams assembled by generat
 - SBR/PS backward-compatible sync extension (`syncExtensionType == 0x2b7`) and non-GA audio object types are unparsed in this slice and deferred to dedicated extensions.
 
 ## References
-- ISO/IEC 14496-3:2019, Information technology — Coding of audio-visual objects — Part 3: Audio (subclauses 1.6.2.1, 1.6.6).
+- ISO/IEC 14496-3:2019, Information technology — Coding of audio-visual objects — Part 3: Audio (subclauses 1.6.2.1, 4.4.1, 4.4.1.1, 1.6.6).
 - [ADR-0040: Non-Fatal Syntax Warnings and Range Annotations](0040-non-fatal-syntax-warnings-and-range-annotations.md)
 - [ADR-0090: Boolean Arithmetic and Logical Expressions in DSL](0090-boolean-arithmetic-and-logical-expressions-in-dsl.md)
 - [ADR-0092: AAC ADTS Frame Enumeration and Rule Package Architecture](0092-aac-adts-frame-enumeration-and-rule-package.md)
 - [ADR-0093: ADTS Header Structured Decoding and Official Rule Package](0093-adts-header-structured-decoding-and-official-rule-package.md)
+
+## Amendment: Subclause Reference Correction
+
+Subsequent specification auditing (Task T17d) clarified the distinct subclause citations under ISO/IEC 14496-3:2019 (Edition 5):
+1. **AudioSpecificConfig**: Subpart 1 subclause **1.6.2.1** (*AudioSpecificConfig*).
+2. **GASpecificConfig**: Subpart 4 subclause **4.4.1** (*GASpecificConfig* / *General Audio specific configuration*).
+3. **program_config_element** (PCE): Subpart 4 subclause **4.4.1.1** (*Program config element (PCE)*).

@@ -192,7 +192,7 @@ Blockers: None
 ## 阶段 4：AAC-LC 正式结构支持
 
 - [x] 解析 ADTS fixed/variable header、frame length、buffer fullness、raw block count 和 CRC。
-- [ ] 解析 AudioSpecificConfig、GASpecificConfig 和 Program Config Element。
+- [x] 解析 AudioSpecificConfig、GASpecificConfig 和 Program Config Element。（验收：ADR-0094 9 项测试矩阵 + resolvesAscEntryPointFromBundledRulePackage，本地 dev/ci/sanitize 35/35，hosted run 31928187049 全平台通过）
 - [ ] 将 `raw_data_block` 整体标记为压缩载荷，不隐藏实现 Huffman 解码。
 - [ ] 对 HE-AAC、ELD 和其他 profile 明确报告部分识别或不支持。
 - [ ] 验证 ADTS、ASC、截断、CRC 错误和不支持 profile 的逐 bit 结果。
@@ -1563,13 +1563,13 @@ Blockers: None
 - 2026-08-16：完成 AudioSpecificConfig 与 Program Config Element 规则消费落地（任务 T17c / commit `d32d606`）。
   1. 架构规范与双语 ADR-0094（`docs/adr/0094-audio-specific-config-and-program-config-element.md` 与 `docs/zh-CN/adr/0094-audio-specific-config-and-program-config-element.md`）：
      - 依据 ISO/IEC 14496-3:2019 subclause 1.6.2.1 与 4.4.1 规范定义 `AudioSpecificConfig`、`GASpecificConfig` 与 `program_config_element`（PCE）结构化语法；
-     - 严格推导并形式化验证 PCE 字节对齐补零位精确计算公式：`pce_total_bits = 16 + (audio_object_type == 31) * 6 + (sampling_frequency_index == 15) * 24 + depends_on_core_coder * 14 + 34 + mono_mixdown_present * 4 + stereo_mixdown_present * 4 + matrix_mixdown_idx_present * 3 + num_front_channel_elements * 5 + num_side_channel_elements * 5 + num_back_channel_elements * 5 + num_lfe_channel_elements * 4 + num_assoc_data_elements * 4 + num_valid_cc_elements * 5`，`pce_rem = pce_total_bits % 8`，`pce_alignment_bits = (8 - pce_rem) % 8`；
-     - 纠正 `src/rules/official/org.streamview.aac/src/aac_adts.svfmt:19` 结构条款号引用为 `1.6.2.2`。
+     - 严格推导并形式化验证 PCE 字节对齐补零位精确计算公式：`pce_total_bits = 16 + (audio_object_type == 31) * 6 + (sampling_frequency_index == 15) * 24 + depends_on_core_coder * 14 + 34 + mono_mixdown_present * 4 + stereo_mixdown_present * 4 + matrix_mixdown_idx_present * 3 + num_front_channel_elements * 5 + num_side_channel_elements * 5 + num_back_channel_elements * 5 + num_lfe_channel_elements * 4 + num_assoc_data_elements * 4 + num_valid_cc_elements * 5`，`pce_rem = pce_total_bits % 8`，`pce_alignment_bits = (8 - pce_rem) % 8`。
   2. 官方规则包与资源注册（`src/rules/official/org.streamview.aac/`）：
      - `rule.toml`：发布版本 `0.1.1`，新增 `asc` 入口点（`id = "asc"`, `format = "audio.aac.asc"`, `source = "src/aac_asc.svfmt"`, `depth = "structural"`），并将 `detector = "aac-adts"` 固化于 `adts` 入口点块内；
      - `src/aac_asc.svfmt`：实现 ASC / PCE 完整规则源码（184 行），`svtool rule check` 实测 `Rule OK`；
      - `src/rules/CMakeLists.txt`：将 `official/org.streamview.aac/src/aac_asc.svfmt` 纳入 `streamview_official_rules_aac` Qt 资源编译；
-     - `src/rules/aac_adts_analyzer.cpp`：`loadAacAdtsRulePackage` 读取并注册 `src/aac_asc.svfmt`。
+     - `src/rules/aac_adts_analyzer.cpp`：`loadAacAdtsRulePackage` 读取并注册 `src/aac_asc.svfmt`；
+     - 公共 API 变更说明：`src/rules/include/streamview/rules/aac_adts_analyzer.h:39` 导出 `loadAacAdtsRulePackage()`。测试（`tests/rules/aac_adts_analyzer_test.cpp`）需要直接驱动官方内置规则包并解析多入口点（`adts` 与 `asc`）、校验包元数据和编译内置规则，而非依赖测试内合成的内存包（如 `tests/app/analysis_session_test.cpp:428` 模式）。该导出仅供测试套件与 `bundledAacAdtsRule()` 内部使用，不对外承诺 public ABI 稳定性。
   3. 测试套件与验证矩阵（`tests/rules/aac_adts_analyzer_test.cpp`）：
      - `resolvesAscEntryPointFromBundledRulePackage`：验证 `org.streamview.aac` 0.1.1 内置包成功加载，`RulePackageCatalog::resolve` 成功解析 `asc` 入口点且元数据（format, depth, sourcePath）完全匹配；
      - `decodesAscCase1Baseline`：基线 ASC（AOT=2, SFI=3, CC=0, DCC=0），对齐 6 bit，`comment_field_bytes` 偏移 7 字节，完整 118 个有序子节点名称与值断言通过；
@@ -1585,4 +1585,20 @@ Blockers: None
      - Red 验证：实测在旧版基数 31 错误公式下，Case 1 与 Case 4 对齐位数算错导致 `comment_field_bytes` 数值由 90 严重错位为 2，证实新测试为强有效信号；
      - 本地 dev / ci / sanitize 三套构建全量 35/35 测试全部通过（ASan/UBSan 零告警，AAC analyzer 23/23，H.264 analyzer 174/174）；
      - hosted run 31928187049 在 Ubuntu 24.04 / Qt 6.11.1（job 95118891822）、macOS 15 / Qt 6.11.1（job 95118891810）、Windows 2022 / Qt 6.10.1（job 95118891801）全部成功通过。
+  Next Action 指向 Task T17d（T17c 规范引用整改与记录补齐）。
+
+- 2026-08-16：完成 T17c 规范引用整改与记录补齐（任务 T17d）。
+  1. 规范标准条款号全面厘清（对照 ISO/IEC 14496-3:2019 第 5 版基线）：
+     - `adts_fixed_header` + `adts_variable_header`：子条款 **1.A.1**（标题：*Fixed and variable header of ADTS*，位于 Subpart 1 Annex 1.A）；
+     - `adts_error_check`（`crc_check`）：子条款 **1.A.2**（标题：*Error detection*，位于 Subpart 1 Annex 1.A）；
+     - `AudioSpecificConfig`：子条款 **1.6.2.1**（标题：*AudioSpecificConfig*，位于 Subpart 1 1.6.2）；
+     - `GASpecificConfig`：子条款 **4.4.1**（标题：*GASpecificConfig* / *General Audio specific configuration*，位于 Subpart 4 4.4）；
+     - `program_config_element`（PCE）：子条款 **4.4.1.1**（标题：*Program config element (PCE)*，位于 Subpart 4 4.4.1）。
+  2. 回退与纠正：
+     - 回退 `aac_adts.svfmt:19` 此前误改的 `1.6.2.2`，修正为 `1.A.1`；`crc_check` 修正为 `1.A.2`；
+     - `aac_asc.svfmt`：ASC 基础头标 `1.6.2.1`、GASpecificConfig 段标 `4.4.1`、PCE 段 25 个字段全量标 `4.4.1.1`；
+     - 双语 ADR 文档同步更新：ADR-0092、ADR-0093 与 ADR-0094 英中双语版本文末均追加「条款引用更正」小节，更新引用列表；
+     - 包版本变更：`org.streamview.aac` 由于 `.svfmt` 文件内 `@spec` 注解变更导致内容哈希变化，升级 patch 版本至 `0.1.2`（`rule.toml` 与对应测试断言同步更新）。
+  3. 阶段 4 实施计划勾选：
+     - 勾选「解析 AudioSpecificConfig、GASpecificConfig 和 Program Config Element」复选框，关联 ADR-0094 9 项测试矩阵与 hosted run 31928187049 验收证据。
   Next Action 指向 Task T18（AAC raw data block 与 channel stream element 解码架构探索）。

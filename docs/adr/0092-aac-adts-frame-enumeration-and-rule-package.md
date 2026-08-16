@@ -139,3 +139,10 @@ ADTS stream parsing employs a hybrid length-chain stepping and resynchronization
 - ADR-0040: Report Unsigned Exp-Golomb Range Violations Without Stopping Decoding
 - ADR-0059: Add Bounded P-Slice Reference Picture List Modification Loop
 - ADR-0090: Boolean Operands In Arithmetic Expressions
+- ADR-0091: Strict Source Range Validation For Empty Slice Payload
+
+## Amendment: Subclause Reference Correction
+
+Subsequent specification auditing (Task T17d) clarified the subclause structure in ISO/IEC 14496-3:2019 (Edition 5):
+1. `adts_fixed_header` and `adts_variable_header` are defined in Subpart 1 Annex 1.A subclause **1.A.1** (*Fixed and variable header of ADTS*), rather than subclause 1.6.2.1 (which defines `AudioSpecificConfig`).
+2. `adts_error_check` (`crc_check`) is defined in Subpart 1 Annex 1.A subclause **1.A.2** (*Error detection*).

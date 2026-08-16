@@ -7,7 +7,7 @@
 在 MPEG-4 音频规范（ISO/IEC 14496-3:2019，第 5 版）中，高级音频编码（AAC）码流的解码器配置由 `AudioSpecificConfig`（ASC，条款 1.6.2.1）形式化标准化。虽然 ADTS 码流在每个帧头中携带基本流属性（Profile、采样率索引、声道配置；参见 ADR-0092、ADR-0093），但现代音频分发载体（包括 MPEG-4 Part 14 容器的 MP4 `esds` box、条款 1.6.6 及流媒体协议）均依赖 `AudioSpecificConfig` 在解析压缩 raw data block 之前初始化音频解码器。
 
 为完成 StreamView 实施计划的阶段 4，官方 `org.streamview.aac` 规则包必须提供以下内容的结构化解码：
-1. **AudioSpecificConfig (ASC)**：包括基础及扩展音频对象类型（`audioObjectType`）、标准及显式采样率（`samplingFrequencyIndex` / `samplingFrequency`）、声道配置以及通用音频配置（`GASpecificConfig`）；
+1. **AudioSpecificConfig (ASC)**：包括基础及扩展音频对象类型（`audioObjectType`）、标准及显式采样率（`samplingFrequencyIndex` / `samplingFrequency`）、声道配置以及通用音频配置（`GASpecificConfig`，子条款 4.4.1）；
 2. **Program Config Element (PCE)**：当 `channelConfiguration == 0` 时用于自定义多声道布局（条款 1.6.2.1，表 1.18）；
 3. **多入口包清单**：更新 `org.streamview.aac` 包清单（`rule.toml`）至版本 `0.1.1`，同时包含 `adts` 与 `asc` 独立入口点。
 
@@ -163,109 +163,109 @@ struct AudioSpecificConfig {
     if (channel_configuration == 0) {
         // Program Config Element (PCE)
         bits<4> element_instance_tag
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("PCE instance identifier tag.");
         bits<2> object_type
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("PCE audio object type.");
         bits<4> pce_sampling_frequency_index
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @range(0, 12)
             @description("PCE sampling frequency index (0..12 standard).");
         bits<4> num_front_channel_elements
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Number of front channel elements.");
         bits<4> num_side_channel_elements
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Number of side channel elements.");
         bits<4> num_back_channel_elements
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Number of back channel elements.");
         bits<2> num_lfe_channel_elements
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Number of low-frequency enhancement channel elements.");
         bits<3> num_assoc_data_elements
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Number of associated data elements.");
         bits<4> num_valid_cc_elements
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Number of valid coupling channel elements.");
 
         bits<1> mono_mixdown_present
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Mono mixdown present flag.");
         if (mono_mixdown_present == 1) {
             bits<4> mono_mixdown_element_number
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Mono mixdown element number.");
         }
 
         bits<1> stereo_mixdown_present
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Stereo mixdown present flag.");
         if (stereo_mixdown_present == 1) {
             bits<4> stereo_mixdown_element_number
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Stereo mixdown element number.");
         }
 
         bits<1> matrix_mixdown_idx_present
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Matrix mixdown index present flag.");
         if (matrix_mixdown_idx_present == 1) {
             bits<2> matrix_mixdown_idx
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Matrix mixdown index.");
             bits<1> pseudo_surround_enable
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Pseudo surround enable flag.");
         }
 
         repeat (num_front_channel_elements, 15) {
             bits<1> front_element_is_cpe
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Front channel element is channel pair element flag.");
             bits<4> front_element_tag_select
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Front channel element instance tag selector.");
         }
 
         repeat (num_side_channel_elements, 15) {
             bits<1> side_element_is_cpe
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Side channel element is channel pair element flag.");
             bits<4> side_element_tag_select
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Side channel element instance tag selector.");
         }
 
         repeat (num_back_channel_elements, 15) {
             bits<1> back_element_is_cpe
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Back channel element is channel pair element flag.");
             bits<4> back_element_tag_select
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Back channel element instance tag selector.");
         }
 
         repeat (num_lfe_channel_elements, 3) {
             bits<4> lfe_element_tag_select
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("LFE channel element instance tag selector.");
         }
 
         repeat (num_assoc_data_elements, 7) {
             bits<4> assoc_data_element_tag_select
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Associated data element instance tag selector.");
         }
 
         repeat (num_valid_cc_elements, 15) {
             bits<1> cc_element_is_ind_sw
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Coupling channel element independently switched flag.");
             bits<4> valid_cc_element_tag_select
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Valid coupling channel element instance tag selector.");
         }
 
@@ -289,17 +289,17 @@ struct AudioSpecificConfig {
 
         repeat (pce_alignment_bits, 7) {
             bits<1> byte_alignment_zero_bit
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @equals(0)
                 @description("Byte alignment stuffing zero bit.");
         }
 
         bits<8> comment_field_bytes
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
             @description("Length in bytes of comment field data.");
         repeat (comment_field_bytes, 255) {
             bits<8> comment_field_data
-                @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+                @spec("ISO/IEC 14496-3:2019", "4.4.1.1")
                 @description("Comment field data byte.");
         }
     }
@@ -358,3 +358,10 @@ fromFiles succeeded=1
 - [ADR-0090：DSL 布尔算术与逻辑表达式](0090-boolean-arithmetic-and-logical-expressions-in-dsl.md)
 - [ADR-0092：AAC ADTS 分帧枚举与规则包架构](0092-aac-adts-frame-enumeration-and-rule-package.md)
 - [ADR-0093：ADTS 头结构化解码与官方规则包](0093-adts-header-structured-decoding-and-official-rule-package.md)
+
+## 条款引用更正
+
+后续规范审查（任务 T17d）厘清了 ISO/IEC 14496-3:2019（第 5 版）各结构的独立子条款归属：
+1. **AudioSpecificConfig**：第 1 部分子条款 **1.6.2.1**（*AudioSpecificConfig*）；
+2. **GASpecificConfig**：第 4 部分子条款 **4.4.1**（*GASpecificConfig* / *General Audio specific configuration*）；
+3. **program_config_element**（PCE）：第 4 部分子条款 **4.4.1.1**（*Program config element (PCE)*）。

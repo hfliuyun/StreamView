@@ -11,10 +11,10 @@ Task T15 established the ADTS frame enumeration capability (`AacAdtsScanner` / `
 Task T16 introduces the official AAC rule package (`org.streamview.aac`, starting at version `0.1.0`), defines the formal ADTS header grammar in the DSL format language (`src/aac_adts.svfmt`), and activates end-to-end AAC stream analysis within StreamView.
 
 According to ISO/IEC 14496-3:2019 (Edition 5), Audio Data Transport Stream (ADTS) frames comprise:
-1. `adts_fixed_header` (28 bits, subclause 1.6.2.1): Bitstream syncword, MPEG audio version, layer, CRC protection flag, profile, sampling frequency index, private bit, channel configuration, original/copy, and home.
-2. `adts_variable_header` (28 bits, subclause 1.6.2.1): Copyright identification bits, total frame length (`aac_frame_length`), buffer fullness (`adts_buffer_fullness`), and number of raw data blocks minus 1 (`number_of_raw_data_blocks_in_frame`).
-3. `adts_error_check` (16 bits, subclause 1.6.2.2): Present conditionally when `protection_absent == 0`.
-4. `adts_raw_data_block` (subclause 1.6.2.3): Audio payload containing syntactical elements (SCE, CPE, LFE, DSE, PCE, FIL, TERM).
+1. `adts_fixed_header` (28 bits, subclause 1.A.1): Bitstream syncword, MPEG audio version, layer, CRC protection flag, profile, sampling frequency index, private bit, channel configuration, original/copy, and home.
+2. `adts_variable_header` (28 bits, subclause 1.A.1): Copyright identification bits, total frame length (`aac_frame_length`), buffer fullness (`adts_buffer_fullness`), and number of raw data blocks minus 1 (`number_of_raw_data_blocks_in_frame`).
+3. `adts_error_check` (16 bits, subclause 1.A.2): Present conditionally when `protection_absent == 0`.
+4. `adts_raw_data_block` (subclauses 1.A.1 / 4.5.2.1.1): Audio payload containing syntactical elements (SCE, CPE, LFE, DSE, PCE, FIL, TERM).
 
 ## Decision
 
@@ -72,7 +72,7 @@ enum AacChannelConfiguration {
     seven_one = 7;
 }
 
-@spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+@spec("ISO/IEC 14496-3:2019", "1.A.1")
 @description("Audio Data Transport Stream (ADTS) fixed and variable header.")
 struct AdtsHeader {
     bits<12> syncword @equals(4095)
@@ -107,7 +107,7 @@ struct AdtsHeader {
         @description("Number of raw data blocks minus 1; 0 denotes single raw data block.");
     if (protection_absent == 0) {
         bits<16> crc_check
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.2")
+            @spec("ISO/IEC 14496-3:2019", "1.A.2")
             @description("16-bit CRC error check word.");
     }
     computed<u64> minimum_frame_length =
@@ -164,10 +164,16 @@ Rule OK: scratch/probe_t16_adts.svfmt
 
 ## References
 
-- ISO/IEC 14496-3:2019, Edition 5, Subclauses 1.6.2.1, 1.6.2.2, 1.6.2.3, Tables 1.11, 1.16, 1.17
+- ISO/IEC 14496-3:2019, Edition 5, Subclauses 1.A.1, 1.A.2, Tables 1.11, 1.16, 1.17
 - ADR-0010: C-Style Declarative Format Description Language
 - ADR-0016: TOML Manifest And ZIP Rule Packages
 - ADR-0040: Report Unsigned Exp-Golomb Range Violations Without Stopping Decoding
 - ADR-0054: Source-Anchored Assertion Statements
 - ADR-0090: Boolean Operands In Arithmetic Expressions
 - ADR-0092: AAC ADTS Frame Enumeration Mechanism and Official Rule Package
+
+## Amendment: Subclause Reference Correction
+
+Subsequent specification auditing (Task T17d) clarified the subclause structure in ISO/IEC 14496-3:2019 (Edition 5):
+1. `adts_fixed_header` and `adts_variable_header` are defined in Subpart 1 Annex 1.A subclause **1.A.1** (*Fixed and variable header of ADTS*), rather than subclause 1.6.2.1 (which defines `AudioSpecificConfig`).
+2. `adts_error_check` (`crc_check`) is defined in Subpart 1 Annex 1.A subclause **1.A.2** (*Error detection*).

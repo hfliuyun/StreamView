@@ -11,10 +11,10 @@
 任务 T16 引入官方 AAC 规则包（`org.streamview.aac`，版本从 `0.1.0` 起步），在 DSL 格式语言中定义正式的 ADTS 头部语法（`src/aac_adts.svfmt`），并在 StreamView 中激活端到端 AAC 码流分析。
 
 依据 ISO/IEC 14496-3:2019（第 5 版），音频数据传输流（ADTS）帧由以下结构组成：
-1. `adts_fixed_header`（28 bits，条款 1.6.2.1）：包含同步字、MPEG 音频版本、layer、CRC 保护标志、profile、采样率索引、私有位、声道配置、original/copy 与 home。
-2. `adts_variable_header`（28 bits，条款 1.6.2.1）：包含版权标识位、总帧长度（`aac_frame_length`）、缓冲区饱满度（`adts_buffer_fullness`）与每帧原始数据块数减 1（`number_of_raw_data_blocks_in_frame`）。
-3. `adts_error_check`（16 bits，条款 1.6.2.2）：在 `protection_absent == 0` 时条件存在。
-4. `adts_raw_data_block`（条款 1.6.2.3）：音频负载，包含 SCE、CPE、LFE、DSE、PCE、FIL、TERM 等语法元素。
+1. `adts_fixed_header`（28 bits，条款 1.A.1）：包含同步字、MPEG 音频版本、layer、CRC 保护标志、profile、采样率索引、私有位、声道配置、original/copy 与 home。
+2. `adts_variable_header`（28 bits，条款 1.A.1）：包含版权标识位、总帧长度（`aac_frame_length`）、缓冲区饱满度（`adts_buffer_fullness`）与每帧原始数据块数减 1（`number_of_raw_data_blocks_in_frame`）。
+3. `adts_error_check`（16 bits，条款 1.A.2）：在 `protection_absent == 0` 时条件存在。
+4. `adts_raw_data_block`（条款 1.A.1 / 4.5.2.1.1）：音频负载，包含 SCE、CPE、LFE、DSE、PCE、FIL、TERM 等语法元素。
 
 ## 决策
 
@@ -72,7 +72,7 @@ enum AacChannelConfiguration {
     seven_one = 7;
 }
 
-@spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+@spec("ISO/IEC 14496-3:2019", "1.A.1")
 @description("Audio Data Transport Stream (ADTS) fixed and variable header.")
 struct AdtsHeader {
     bits<12> syncword @equals(4095)
@@ -107,7 +107,7 @@ struct AdtsHeader {
         @description("Number of raw data blocks minus 1; 0 denotes single raw data block.");
     if (protection_absent == 0) {
         bits<16> crc_check
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.2")
+            @spec("ISO/IEC 14496-3:2019", "1.A.2")
             @description("16-bit CRC error check word.");
     }
     computed<u64> minimum_frame_length =
@@ -164,10 +164,17 @@ Rule OK: scratch/probe_t16_adts.svfmt
 
 ## 参考资料
 
-- ISO/IEC 14496-3:2019, Edition 5, Subclauses 1.6.2.1, 1.6.2.2, 1.6.2.3, Tables 1.11, 1.16, 1.17
+- ISO/IEC 14496-3:2019, Edition 5, Subclauses 1.A.1, 1.A.2, Tables 1.11, 1.16, 1.17
 - ADR-0010: C-Style Declarative Format Description Language
 - ADR-0016: TOML Manifest And ZIP Rule Packages
 - ADR-0040: Report Unsigned Exp-Golomb Range Violations Without Stopping Decoding
 - ADR-0054: Source-Anchored Assertion Statements
 - ADR-0090: Boolean Operands In Arithmetic Expressions
 - ADR-0092: AAC ADTS Frame Enumeration Mechanism and Official Rule Package
+
+## 条款引用更正
+
+后续规范审查（任务 T17d）厘清了 ISO/IEC 14496-3:2019（第 5 版）的子条款归属：
+1. `adts_fixed_header` 与 `adts_variable_header` 规范定义位于第 1 部分附录 1.A 的子条款 **1.A.1**（*Fixed and variable header of ADTS*），而非子条款 1.6.2.1（后者为 `AudioSpecificConfig`）；
+2. `adts_error_check`（`crc_check`）规范定义位于第 1 部分附录 1.A 的子条款 **1.A.2**（*Error detection*）。
+

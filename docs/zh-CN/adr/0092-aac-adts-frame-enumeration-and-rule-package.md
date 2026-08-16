@@ -139,3 +139,11 @@ ADTS 码流解析采用“长度链快速推进 + 状态机重同步”的混合
 - ADR-0040: Report Unsigned Exp-Golomb Range Violations Without Stopping Decoding
 - ADR-0059: Add Bounded P-Slice Reference Picture List Modification Loop
 - ADR-0090: Boolean Operands In Arithmetic Expressions
+- ADR-0091: Strict Source Range Validation For Empty Slice Payload
+
+## 条款引用更正
+
+后续规范审查（任务 T17d）厘清了 ISO/IEC 14496-3:2019（第 5 版）的子条款归属：
+1. `adts_fixed_header` 与 `adts_variable_header` 规范定义位于第 1 部分附录 1.A 的子条款 **1.A.1**（*Fixed and variable header of ADTS*），而非子条款 1.6.2.1（后者为 `AudioSpecificConfig`）；
+2. `adts_error_check`（`crc_check`）规范定义位于第 1 部分附录 1.A 的子条款 **1.A.2**（*Error detection*）。
+
