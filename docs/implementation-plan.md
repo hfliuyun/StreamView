@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 4
 Last Completed Step: Profile handling verification, roadmap alignment, and discipline consolidation (Task T18d)
 Next Action: Bit-by-bit acceptance audit and Phase 4 completion (Task T18e)
-Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings (AAC analyzer 25/25, H.264 174/174); hosted CI run 31938569503 passing 100% (T18c-2-fix2 and T18d Markdown-only/audit verified locally)
+Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings (AAC analyzer 25/25, H.264 174/174); hosted CI run 31940274828 (Ubuntu job 95148322141, macOS job 95148322138, Windows job 95148322165) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1726,7 +1726,7 @@ Blockers: None
   3. 防复发纪律建立（ADR-0095 §7 及计划纪律第 6 条）：
      - 确立「默认尾部追加」与「同 Commit 行号复核」双重约束。
   Next Action 指向 Task T18d（Profile 处理验证与全库路线图文档对齐）。
-- 2026-08-16：完成 Profile 处理验证、Phase 4 第 4 项能力边界闭环、路线图对齐与纪律条款集中归拢（任务 T18d / commit `TBD`）。
+- 2026-08-16：完成 Profile 处理验证、Phase 4 第 4 项能力边界闭环、路线图对齐与纪律条款集中归拢（任务 T18d / commit `835a5c3`）。
   1. Profile 处理现状实测与能力边界闭环（Phase 4 第 4 项勾选）：
      - 验证 ADTS 2-bit profile 字段（0=Main, 1=LC, 2=SSR, 3=LTP）全部合法物化（新增用例 `decodesAllStandardAdtsProfilesMainLcSsrLtp`，`tests/rules/aac_adts_analyzer_test.cpp:1914-1958`）；
      - 明确 ADTS 负向测试在 2-bit 语法层不可构造（`bits<2>` 值域 0..3 恰好被 `enum AacProfile` 全覆盖）；
