@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 5
 Last Completed Step: Bit-by-bit acceptance audit closure across Category 1-5 and Phase 4 completion (Task T18e)
 Next Action: Author Phase 5 ADR and architectural design for MP4/MOV container support
-Last Verification: Local dev/ci/sanitize 36/36 passing with zero sanitizer warnings (AAC analyzer 31/31, H.264 174/174); hosted CI run 31942876801 (Ubuntu job 95154475938, macOS job 95154475965, Windows job 95154475927) passed 100%
+Last Verification: Local dev/ci/sanitize 36/36 passing with zero sanitizer warnings (AAC analyzer 31/31, H.264 174/174); hosted CI run 31944036393 (Ubuntu job 95157275757, macOS job 95157275636, Windows job 95157275621) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1772,7 +1772,7 @@ Blockers: None
      - 新增测试用例按纪律第 6 条追加至类末尾，AAC analyzer 测试用例数由 28 增至 31，全部 31/31 通过；
      - CTest 目标数因 §0b 引入 `markdown_hygiene` 目标由 35 增至 36，dev/ci/sanitize 三套构建全部 36/36 全绿。
   Next Action 指向 Phase 5 ADR 与架构设计编写。
-- 2026-08-16：完成 T18f 阶段 4 收尾校正（任务 T18f / commit `TBD`）。
+- 2026-08-16：完成 T18f 阶段 4 收尾校正（任务 T18f / commit `f8f162a`）。
   1. F1 / F2 Markdown 卫生检查护栏修正（commit `04f15cd`）：
      - 在 `cmake/check_markdown_hygiene.cmake` 中对分号进行转义保护，消除分号导致列表分割进而引发的行号位移缺陷；
      - 给出真实等号证明（`ADR-0090:40` 插入制表符，护栏报出 `:40` 与 `awk` 实测 `:40` 严格相等）；
