@@ -2,8 +2,8 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Phase 5 ADR-0096 architecture and design specification (Task P5a)
-Next Action: Task P5b — DSL compiler unrecognized annotation gate hardening
+Last Completed Step: DSL compiler unrecognized annotation compile gate (Task P5b)
+Next Action: Task P5c — ISOBMFF container language primitives probing & ADR-0097
 Last Verification: Local dev/ci/sanitize 36/36 passing with zero sanitizer warnings (AAC analyzer 31/31, H.264 174/174); hosted CI run 31944036393 (Ubuntu job 95157275757, macOS job 95157275636, Windows job 95157275621) passed 100%
 Blockers: None
 
@@ -1828,4 +1828,18 @@ Blockers: None
   3. 卫生检查与验证：
      - 本地 `markdown_hygiene` 护栏验证通过；按 ADR-0019 Markdown-only 跳过 hosted CI。
   Next Action 指向 Task P5b 主体（DSL 编译器未识别注解编译闸门实现）。
+- 2026-08-16：完成 Task P5b DSL 未识别注解编译闸门加固（任务 P5b / commit `b1820bb`）。
+  1. 统一注解注册表与编译闸门：
+     - 在 `src/rules/dsl.cpp` 引入 `knownAnnotations` 静态注册表与 `validateAnnotations`，集中管理 11 个合法注解（`spec`、`description`、`equals`、`range`、`enum`、`lazy`、`index`、`context`、`context_export`、`context_import`、`context_dependency`）及 1 个预留注解（`target_format`）；
+     - 严格拦截标量字段前置/后置、struct、enum、sequence、payload dispatch、entry 等 5 大宿主位置上的未识别注解，统一报错 `DslDiagnosticCode::InvalidAnnotation`（彻底消除 N2 `@equalss(4095)` 静默通过缺陷）；
+     - 严格保持 computed、@lazy 区域、compressed_payload、sequence 等既有白名单宿主的允许集与原始诊断文案完全不变。
+  2. 测试与回归断言：
+     - 在 `tests/rules/dsl_test.cpp:2171-2241` 末尾追加 `rejectsUnrecognizedAnnotationsAndEnforcesHostWhitelist` 与 `verifiesExistingWhitelistedHostsPreserveAllowedSetsAndDiagnostics`；
+     - 5 大宿主位置 `@bogus(1)` 拦截、N2 拼写错误拦截及既有白名单宿主回归用例全部实测通过；
+     - 官方规则包 `org.streamview.h264` 与 `org.streamview.aac` 经 `svtool rule check` 静态校验零回归通过；
+     - 根据纪律第 7 条同步复核并修正 ADR-0095 中因 `dsl.cpp` 变更引发的行号引用（`:2634`、`:2660`）。
+  3. 验证与 Hosted CI：
+     - 本地 3 套构建全绿（dev/ci/sanitize 36/36，全量通过且无 sanitizer 告警）；
+     - Hosted CI run `31953480299`（Windows `95180435231`、Ubuntu `95180435295`、macOS `95180435300`）三平台全部通过。
+  Next Action 指向 Task P5c（ISOBMFF 容器语言原语探测与 ADR-0097 编写）。
 
