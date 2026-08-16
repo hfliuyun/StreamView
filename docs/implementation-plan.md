@@ -1868,3 +1868,22 @@ Blockers: None
      - H.264 与 AAC 三份 bundled rule source 均通过 `svtool rule check`；
      - 本地 dev、ci、sanitize 完整构建与 CTest 均为 36/36，零 ASan/UBSan 报告；本补丁尚无对应 hosted matrix 结果。
   Next Action 保持 Task P5c（ISOBMFF 容器语言原语探测与 ADR-0097 编写）。
+- 2026-08-17：完成 Task P5b-R 评审遗留整改与外部审计补丁收口（任务 P5b-R / commit `274a744` 与 `2624276`）。
+  1. R1 恢复字段错误恢复守卫（`src/rules/dsl.cpp:1787-1791`）：
+     - 恢复 `recoverField()` 中的 `!at(DslTokenKind::RightBrace)` 守卫，消除字段语法错误时误吞结构体闭合花括号引发的级联噪声；
+     - 在 `tests/rules/dsl_test.cpp:2242` 追加用例 `recoversFieldSyntaxErrorWithoutDroppingClosingBrace`，锁定单条诊断。
+  2. R4 循环体内 Unsupported 诊断去重（`src/rules/dsl_ir.cpp:28-36`）：
+     - `addDiagnostic` 按 `(code, message, range)` 对诊断去重，消除 `repeat` 循环体展开时多次重复报出 `Unsupported statements cannot be repeat-local items` 的缺陷；
+     - 在 `tests/rules/dsl_ir_test.cpp:3562` 追加用例 `deduplicatesUnsupportedDiagnosticsInsideRepeats`，锁定诊断条数由 3 条降为 1 条。
+  3. R2 / R3 / R5 / R6 / R7 规范与 ADR 闭环：
+     - R2：复核并修正 ADR-0094 双语版行号引用为 `src/rules/dsl.cpp:3394`；
+     - R3：更新双语语言参考（`docs/format-language/README.md` 与 `docs/zh-CN/format-language/README.md`），明确注解编译报错契约、11 大注解 × 宿主白名单矩阵及 `target_format` 预留限制；
+     - R5：新建双语 ADR-0098（`docs/adr/0098-*.md` 与 `docs/zh-CN/adr/0098-*.md`），系统沉淀未识别注解编译闸门与显式 `unsupported` 语法；
+     - R6：在双语 ADR-0094 末尾追加 Amendment，澄清非 GA / 转义 AOT 不支持诊断行为；
+     - R7：在双语 ADR-0095 §5.2、ADR-0098 与本计划中明确转义 AOT（`audio_object_type == 31`）一律统一判定为 Unsupported，不进行逐值细分；修正计划头部 commit 引用至 `de7e5da`。
+  4. 构建、验证与 Hosted CI：
+     - 官方 H.264 与 AAC 三份 bundled rule 均通过 `svtool rule check`（全量 `Rule OK`）；
+     - 本地 dev/ci/sanitize 三套构建全部 36/36 全绿（零 ASan/UBSan 告警）；
+     - 连同外部审计 4 个 commit 共同推送后，Hosted CI run `31965623068` 在 macOS 15（job `95210238754`）、Windows 2022（job `95210238781`）、Ubuntu 24.04（job `95210238826`）三平台全部 100% 成功通过。
+  Next Action 保持 Task P5c（ISOBMFF 容器语言原语探测与 ADR-0097 编写）。
+
