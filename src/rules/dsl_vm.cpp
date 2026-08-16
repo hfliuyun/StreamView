@@ -33,6 +33,8 @@ constexpr quint64 maximumUnsignedExpGolombValue = std::numeric_limits<quint64>::
 
 [[nodiscard]] core::DiagnosticCode diagnosticForStatus(DslExecutionStatus status) noexcept {
     switch (status) {
+    case DslExecutionStatus::Unsupported:
+        return core::DiagnosticCode::UnsupportedSyntax;
     case DslExecutionStatus::SourceError:
         return core::DiagnosticCode::SourceError;
     case DslExecutionStatus::Cancelled:
@@ -1112,6 +1114,8 @@ DslExecutionResult DslVirtualMachine::execute(
         }
         const auto state = status == DslExecutionStatus::Cancelled
                                ? core::MaterializationState::Cancelled
+                           : status == DslExecutionStatus::Unsupported
+                               ? core::MaterializationState::Unsupported
                            : status == DslExecutionStatus::DependencyUnavailable
                                ? core::MaterializationState::WaitingDependency
                                : core::MaterializationState::Invalid;
@@ -1918,16 +1922,88 @@ DslExecutionResult DslVirtualMachine::execute(
         previousAssertionPosition = assertion.assertionFieldIndex;
     }
 
+    if (structure.unsupportedStatements.size() >
+        DslTypedUnsupported::maximumPerStructure()) {
+        markFailure(DslExecutionStatus::InvalidDefinition,
+                    QStringLiteral("Typed IR declares too many unsupported statements"),
+                    nullptr,
+                    std::nullopt,
+                    std::nullopt,
+                    false);
+        return result;
+    }
+    quint32 previousUnsupportedPosition = 0;
+    for (std::size_t unsupportedIndex = 0;
+         unsupportedIndex < structure.unsupportedStatements.size();
+         ++unsupportedIndex) {
+        const DslTypedUnsupported& unsupported =
+            structure.unsupportedStatements.at(unsupportedIndex);
+        const bool ordered = unsupportedIndex == 0 ||
+                             unsupported.statementFieldIndex >=
+                                 previousUnsupportedPosition;
+        if (!ordered || unsupported.reason.isEmpty() ||
+            unsupported.statementFieldIndex > structure.fields.size() ||
+            unsupported.anchorFieldIndex >= unsupported.statementFieldIndex ||
+            unsupported.anchorFieldIndex >= structure.fields.size()) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Typed unsupported statement is invalid"),
+                        nullptr,
+                        std::nullopt,
+                        std::nullopt,
+                        false);
+            return result;
+        }
+        const DslTypedField& anchor =
+            structure.fields.at(unsupported.anchorFieldIndex);
+        const bool sourceBacked =
+            anchor.type.kind == DslValueTypeKind::UnsignedBits ||
+            anchor.type.kind == DslValueTypeKind::Enum ||
+            anchor.type.kind == DslValueTypeKind::UnsignedExpGolomb ||
+            anchor.type.kind == DslValueTypeKind::SignedExpGolomb ||
+            anchor.type.kind == DslValueTypeKind::FfCoded;
+        const bool anchorAvailable = std::all_of(
+            anchor.conditions.begin(),
+            anchor.conditions.end(),
+            [&unsupported](const DslTypedFieldCondition& required) {
+                return std::any_of(
+                    unsupported.conditions.begin(),
+                    unsupported.conditions.end(),
+                    [&required](const DslTypedFieldCondition& candidate) {
+                        return sameCondition(required, candidate);
+                    });
+            });
+        if (anchor.kind != DslTypedFieldKind::Declared || !sourceBacked ||
+            !anchorAvailable ||
+            !validateConditions(unsupported.conditions,
+                                unsupported.statementFieldIndex,
+                                &anchor,
+                                QStringLiteral("unsupported statement"))) {
+            if (result.status != DslExecutionStatus::InvalidDefinition ||
+                result.errorMessage.isEmpty()) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed unsupported anchor is invalid"),
+                            &anchor,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+            }
+            return result;
+        }
+        previousUnsupportedPosition = unsupported.statementFieldIndex;
+    }
+
     const std::size_t bytecodeBegin = structure.bytecodeOffset;
     const std::size_t bytecodeEnd = bytecodeBegin + structure.bytecodeLength;
     std::size_t nextSentinelOpcodeIndex = 0;
     std::size_t nextWhileRepeatOpcodeIndex = 0;
     std::size_t nextAssertionOpcodeIndex = 0;
+    std::size_t nextUnsupportedOpcodeIndex = 0;
     std::size_t nextRepeatOpcodeIndex = 0;
     quint32 assertionFieldPosition = 0;
     bool assertionBytecodeBegan = false;
     bool assertionBytecodeEnded = false;
-    const bool requiresPositionedAssertionPreflight = !structure.assertions.empty();
+    const bool requiresPositionedAssertionPreflight =
+        !structure.assertions.empty() || !structure.unsupportedStatements.empty();
     const auto sentinelPendingAtOrBefore = [&]() {
         return nextSentinelOpcodeIndex < structure.sentinelRepeats.size() &&
                structure.sentinelRepeats.at(nextSentinelOpcodeIndex)
@@ -1942,6 +2018,11 @@ DslExecutionResult DslVirtualMachine::execute(
         return nextAssertionOpcodeIndex < structure.assertions.size() &&
                structure.assertions.at(nextAssertionOpcodeIndex)
                        .assertionFieldIndex <= assertionFieldPosition;
+    };
+    const auto unsupportedPendingAtOrBefore = [&]() {
+        return nextUnsupportedOpcodeIndex < structure.unsupportedStatements.size() &&
+               structure.unsupportedStatements.at(nextUnsupportedOpcodeIndex)
+                       .statementFieldIndex <= assertionFieldPosition;
     };
     const auto repeatPendingAtOrBefore = [&]() {
         return nextRepeatOpcodeIndex < structure.repeatBounds.size() &&
@@ -1971,7 +2052,8 @@ DslExecutionResult DslVirtualMachine::execute(
         }
         const DslInstruction& instruction = program.bytecode.at(instructionIndex);
         if (!requiresPositionedAssertionPreflight) {
-            if (instruction.opcode == DslOpcode::AssertExpression) {
+            if (instruction.opcode == DslOpcode::AssertExpression ||
+                instruction.opcode == DslOpcode::MarkUnsupported) {
                 rejectPositionedAssertionBytecode(nullptr);
                 return result;
             }
@@ -1999,7 +2081,8 @@ DslExecutionResult DslVirtualMachine::execute(
         case DslOpcode::RegisterCompressedPayload:
             if (!assertionBytecodeBegan || sentinelPendingAtOrBefore() ||
                 whileRepeatPendingAtOrBefore() ||
-                assertionPendingAtOrBefore() || repeatPendingAtOrBefore()) {
+                assertionPendingAtOrBefore() || unsupportedPendingAtOrBefore() ||
+                repeatPendingAtOrBefore()) {
                 rejectPositionedAssertionBytecode(nullptr);
                 return result;
             }
@@ -2008,7 +2091,8 @@ DslExecutionResult DslVirtualMachine::execute(
         case DslOpcode::ReadRbspTrailingBits:
             if (!assertionBytecodeBegan || sentinelPendingAtOrBefore() ||
                 whileRepeatPendingAtOrBefore() ||
-                assertionPendingAtOrBefore() || repeatPendingAtOrBefore()) {
+                assertionPendingAtOrBefore() || unsupportedPendingAtOrBefore() ||
+                repeatPendingAtOrBefore()) {
                 rejectPositionedAssertionBytecode(nullptr);
                 return result;
             }
@@ -2031,6 +2115,26 @@ DslExecutionResult DslVirtualMachine::execute(
                 return result;
             }
             ++nextAssertionOpcodeIndex;
+            break;
+        }
+        case DslOpcode::MarkUnsupported: {
+            const DslTypedUnsupported* unsupported =
+                nextUnsupportedOpcodeIndex < structure.unsupportedStatements.size()
+                    ? &structure.unsupportedStatements.at(nextUnsupportedOpcodeIndex)
+                    : nullptr;
+            if (!assertionBytecodeBegan || unsupported == nullptr ||
+                instruction.operand != nextUnsupportedOpcodeIndex ||
+                instruction.immediate != 0 ||
+                unsupported->statementFieldIndex != assertionFieldPosition ||
+                sentinelPendingAtOrBefore() || whileRepeatPendingAtOrBefore() ||
+                assertionPendingAtOrBefore()) {
+                rejectPositionedAssertionBytecode(
+                    unsupported != nullptr
+                        ? &structure.fields.at(unsupported->anchorFieldIndex)
+                        : nullptr);
+                return result;
+            }
+            ++nextUnsupportedOpcodeIndex;
             break;
         }
         case DslOpcode::AssertRepeatCount: {
@@ -2084,7 +2188,8 @@ DslExecutionResult DslVirtualMachine::execute(
             if (!assertionBytecodeBegan || instruction.operand != structureIndex ||
                 instruction.immediate != 0 || sentinelPendingAtOrBefore() ||
                 whileRepeatPendingAtOrBefore() ||
-                assertionPendingAtOrBefore() || repeatPendingAtOrBefore()) {
+                assertionPendingAtOrBefore() || unsupportedPendingAtOrBefore() ||
+                repeatPendingAtOrBefore()) {
                 rejectPositionedAssertionBytecode(nullptr);
                 return result;
             }
@@ -2101,6 +2206,7 @@ DslExecutionResult DslVirtualMachine::execute(
          nextSentinelOpcodeIndex != structure.sentinelRepeats.size() ||
          nextWhileRepeatOpcodeIndex != structure.whileRepeats.size() ||
          nextAssertionOpcodeIndex != structure.assertions.size() ||
+         nextUnsupportedOpcodeIndex != structure.unsupportedStatements.size() ||
          nextRepeatOpcodeIndex != structure.repeatBounds.size())) {
         rejectPositionedAssertionBytecode(nullptr);
         return result;
@@ -2305,6 +2411,7 @@ DslExecutionResult DslVirtualMachine::execute(
     quint32 nextSentinelRepeatIndex = 0;
     quint32 nextWhileRepeatIndex = 0;
     quint32 nextAssertionIndex = 0;
+    quint32 nextUnsupportedIndex = 0;
     bool ended = false;
     struct WhileRepeatRuntimeState {
         quint32 currentIteration = std::numeric_limits<quint32>::max();
@@ -3394,6 +3501,46 @@ DslExecutionResult DslVirtualMachine::execute(
                         true);
             return result;
         }
+        case DslOpcode::MarkUnsupported: {
+            const DslTypedUnsupported* unsupported =
+                instruction.operand < structure.unsupportedStatements.size()
+                    ? &structure.unsupportedStatements.at(instruction.operand)
+                    : nullptr;
+            if (!result.structureNode || unsupported == nullptr ||
+                instruction.operand != nextUnsupportedIndex ||
+                instruction.immediate != 0 ||
+                unsupported->statementFieldIndex != nextFieldIndex ||
+                unsupported->anchorFieldIndex >= fieldRanges.size()) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed unsupported instruction is invalid"),
+                            nullptr);
+                return result;
+            }
+            ++nextUnsupportedIndex;
+            const DslTypedField& anchor =
+                structure.fields.at(unsupported->anchorFieldIndex);
+            const std::optional<bool> unsupportedPresent =
+                conditionsPresent(unsupported->conditions,
+                                  &anchor,
+                                  QStringLiteral("unsupported statement"));
+            if (!unsupportedPresent) {
+                return result;
+            }
+            if (!*unsupportedPresent) {
+                break;
+            }
+            const std::optional<MaterializedFieldRange>& anchorRange =
+                fieldRanges.at(unsupported->anchorFieldIndex);
+            markFailure(DslExecutionStatus::Unsupported,
+                        unsupported->reason,
+                        &anchor,
+                        anchorRange ? std::optional<quint64>(anchorRange->start)
+                                    : std::nullopt,
+                        anchorRange ? std::optional<quint64>(anchorRange->bitCount)
+                                    : std::nullopt,
+                        anchorRange.has_value());
+            return result;
+        }
         case DslOpcode::AssertEquals: {
             const DslTypedField* field = instruction.operand < structure.fields.size()
                                              ? &structure.fields.at(instruction.operand)
@@ -3704,7 +3851,8 @@ DslExecutionResult DslVirtualMachine::execute(
                 nextFieldIndex != structure.fields.size() ||
                 nextSentinelRepeatIndex != structure.sentinelRepeats.size() ||
                 nextWhileRepeatIndex != structure.whileRepeats.size() ||
-                nextAssertionIndex != structure.assertions.size()) {
+                nextAssertionIndex != structure.assertions.size() ||
+                nextUnsupportedIndex != structure.unsupportedStatements.size()) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Typed IR end instruction is invalid"),
                             nullptr);

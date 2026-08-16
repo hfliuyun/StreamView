@@ -163,6 +163,18 @@ struct DslTypedAssertion final {
     DslSourceRange range;
 };
 
+struct DslTypedUnsupported final {
+    [[nodiscard]] static constexpr std::size_t maximumPerStructure() noexcept {
+        return 1'024;
+    }
+
+    QString reason;
+    quint32 anchorFieldIndex = 0;
+    quint32 statementFieldIndex = 0;
+    std::vector<DslTypedFieldCondition> conditions;
+    DslSourceRange range;
+};
+
 struct DslTypedContextDependency final {
     core::ContextDefinitionKind kind =
         core::ContextDefinitionKind::H264SequenceParameterSet;
@@ -197,6 +209,7 @@ struct DslTypedStruct final {
     std::vector<DslTypedSentinelRepeat> sentinelRepeats;
     std::vector<DslTypedWhileRepeat> whileRepeats;
     std::vector<DslTypedAssertion> assertions;
+    std::vector<DslTypedUnsupported> unsupportedStatements;
     std::optional<DslTypedContextDefinition> contextDefinition;
     std::vector<DslTypedContextImport> contextImports;
     quint32 bytecodeOffset = 0;
@@ -257,6 +270,7 @@ enum class DslOpcode : quint8 {
     AssertSentinelTerminated,
     AssertWhileRepeatTerminated,
     AssertExpression,
+    MarkUnsupported,
     EndStructure,
 };
 

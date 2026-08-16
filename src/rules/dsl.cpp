@@ -1447,6 +1447,46 @@ private:
         items.push_back(std::move(item));
     }
 
+    void parseUnsupported(std::vector<DslStructItem>& items,
+                          const std::vector<DslAnnotation>& leadingAnnotations) {
+        const DslSourcePosition start = consume().range.start;
+        if (!leadingAnnotations.empty()) {
+            result_.diagnostics.push_back(
+                {DslDiagnosticCode::InvalidAnnotation,
+                 QStringLiteral("Annotations are not allowed before unsupported statements"),
+                 leadingAnnotations.front().range});
+        }
+
+        DslUnsupported unsupported;
+        expect(DslTokenKind::LeftParen, QStringLiteral("'(' after unsupported"));
+        if (at(DslTokenKind::StringLiteral)) {
+            unsupported.reason = consume().lexeme;
+        } else {
+            error(DslDiagnosticCode::MissingToken,
+                  QStringLiteral("Expected a string reason for unsupported syntax"));
+        }
+        expect(DslTokenKind::RightParen, QStringLiteral("')' after unsupported reason"));
+        if (!matchIdentifier(QStringLiteral("at"))) {
+            error(DslDiagnosticCode::MissingToken,
+                  QStringLiteral("Expected 'at' after unsupported reason"));
+        }
+        if (at(DslTokenKind::Identifier)) {
+            unsupported.anchorFieldRange = current().range;
+            unsupported.anchorFieldName = consume().lexeme;
+        } else {
+            error(DslDiagnosticCode::MissingToken,
+                  QStringLiteral("Expected unsupported anchor field name"));
+        }
+        expect(DslTokenKind::Semicolon, QStringLiteral("';' after unsupported statement"));
+        unsupported.range = {start, lexResult_.tokens.at(index_ - 1).range.end};
+
+        DslStructItem item;
+        item.kind = DslStructItemKind::Unsupported;
+        item.unsupported = std::move(unsupported);
+        item.range = item.unsupported.range;
+        items.push_back(std::move(item));
+    }
+
     void parseStructItems(std::vector<DslStructItem>& items) {
         while (!at(DslTokenKind::RightBrace) && !at(DslTokenKind::EndOfFile)) {
             const std::vector<DslAnnotation> annotations = parseAnnotations(true);
@@ -1456,6 +1496,8 @@ private:
                 parseCompressedPayload(items, annotations);
             } else if (isIdentifier(QStringLiteral("assert"))) {
                 parseAssertion(items, annotations);
+            } else if (isIdentifier(QStringLiteral("unsupported"))) {
+                parseUnsupported(items, annotations);
             } else if (isLazyRegionIntroducer()) {
                 if (!annotations.empty()) {
                     result_.diagnostics.push_back(
@@ -3593,6 +3635,7 @@ private:
                 }
                 break;
             case DslStructItemKind::Assertion:
+            case DslStructItemKind::Unsupported:
                 break;
             case DslStructItemKind::Conditional:
                 if (declaresName(item.thenItems, name) || declaresName(item.elseItems, name)) {

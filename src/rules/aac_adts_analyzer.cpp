@@ -406,6 +406,9 @@ bool AacAdtsAnalyzer::publishRecord(const AacAdtsRecord& record,
                 case DslExecutionStatus::DependencyUnavailable:
                     diagnostic.code = core::DiagnosticCode::DependencyUnavailable;
                     break;
+                case DslExecutionStatus::Unsupported:
+                    diagnostic.code = core::DiagnosticCode::UnsupportedSyntax;
+                    break;
                 case DslExecutionStatus::InvalidSyntax:
                 case DslExecutionStatus::InvalidDefinition:
                 case DslExecutionStatus::Materialized:
@@ -422,6 +425,8 @@ bool AacAdtsAnalyzer::publishRecord(const AacAdtsRecord& record,
 
             const auto terminalState = execution.status == DslExecutionStatus::Cancelled
                                            ? core::MaterializationState::Cancelled
+                                       : execution.status == DslExecutionStatus::Unsupported
+                                           ? core::MaterializationState::Unsupported
                                            : core::MaterializationState::Invalid;
             (void)tree_.markPartial(*frameNode, terminalState, std::move(diagnostic));
             batch.frameNodes.push_back(*frameNode);
@@ -445,6 +450,12 @@ bool AacAdtsAnalyzer::publishRecord(const AacAdtsRecord& record,
                 *failureStatus = AacAdtsAnalysisStatus::InvalidRule;
                 *errorMessage = execution.errorMessage;
                 return false;
+            }
+
+            if (execution.status == DslExecutionStatus::Unsupported) {
+                // Unsupported syntax is a content-level result. Preserve the
+                // prefix and continue scanning subsequent ADTS frames.
+                return true;
             }
 
             // Content failures (InvalidSyntax, TruncatedSource, DependencyUnavailable)

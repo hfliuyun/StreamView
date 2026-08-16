@@ -556,6 +556,9 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
             case DslExecutionStatus::DependencyUnavailable:
                 diagnostic.code = core::DiagnosticCode::DependencyUnavailable;
                 break;
+            case DslExecutionStatus::Unsupported:
+                diagnostic.code = core::DiagnosticCode::UnsupportedSyntax;
+                break;
             case DslExecutionStatus::InvalidSyntax:
             case DslExecutionStatus::InvalidDefinition:
             case DslExecutionStatus::Materialized:
@@ -834,6 +837,10 @@ bool H264AnnexBAnalyzer::decodePayloadStructure(PendingNalUnit& pending,
             break;
         case RuleExecutionStatus::DependencyUnavailable:
             code = core::DiagnosticCode::DependencyUnavailable;
+            break;
+        case RuleExecutionStatus::Unsupported:
+            code = core::DiagnosticCode::UnsupportedSyntax;
+            state = core::MaterializationState::Unsupported;
             break;
         case RuleExecutionStatus::SourceError:
             code = core::DiagnosticCode::SourceError;

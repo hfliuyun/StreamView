@@ -17,6 +17,7 @@ namespace streamview::rules {
 
 enum class RuleExecutionStatus : quint8 {
     Materialized,
+    Unsupported,
     TruncatedSource,
     InvalidSyntax,
     DependencyUnavailable,

@@ -1318,6 +1318,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         std::vector<quint32> contextExportFieldIndices;
         std::vector<quint64> repeatIndices;
         std::size_t assertionCount = 0;
+        std::size_t unsupportedCount = 0;
         const std::vector<DslTypedFieldCondition>* currentConditions = nullptr;
         const auto sameCondition = [](const DslTypedFieldCondition& left,
                                       const DslTypedFieldCondition& right) {
@@ -2711,6 +2712,91 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                  conditions,
                  assertion.range});
         };
+        const auto compileUnsupported =
+            [&](const DslUnsupported& unsupported,
+                const std::vector<DslTypedFieldCondition>& conditions) {
+            ++unsupportedCount;
+            if (unsupportedCount > DslTypedUnsupported::maximumPerStructure()) {
+                if (unsupportedCount ==
+                    DslTypedUnsupported::maximumPerStructure() + 1) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidCondition,
+                                  QStringLiteral(
+                                      "A structure may contain at most 1024 unsupported statements"),
+                                  unsupported.range);
+                }
+                return;
+            }
+            if (!repeatIndices.empty()) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidCondition,
+                              QStringLiteral(
+                                  "Unsupported statements cannot be repeat-local items"),
+                              unsupported.range);
+                return;
+            }
+            if (unsupported.reason.isEmpty()) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidCondition,
+                              QStringLiteral("Unsupported statements require a non-empty reason"),
+                              unsupported.range);
+                return;
+            }
+
+            std::optional<quint32> anchorFieldIndex;
+            const auto anchor = std::find_if(
+                declaredFields.rbegin(),
+                declaredFields.rend(),
+                [&unsupported](const DeclaredField& declared) {
+                    return declared.name == unsupported.anchorFieldName;
+                });
+            if (anchor == declaredFields.rend()) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::UnknownReference,
+                              QStringLiteral(
+                                  "Unsupported anchor field must be declared earlier"),
+                              unsupported.anchorFieldRange);
+            } else if (anchor->source == nullptr || anchor->source->arrayLength ||
+                       !anchor->typedIndex) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::InvalidType,
+                              QStringLiteral(
+                                  "Unsupported anchors require a source-backed scalar field"),
+                              unsupported.anchorFieldRange);
+            } else {
+                const bool available = std::all_of(
+                    anchor->conditions.begin(),
+                    anchor->conditions.end(),
+                    [&conditions, &sameCondition](
+                        const DslTypedFieldCondition& required) {
+                        return std::any_of(
+                            conditions.begin(),
+                            conditions.end(),
+                            [&required, &sameCondition](
+                                const DslTypedFieldCondition& candidate) {
+                                return sameCondition(required, candidate);
+                            });
+                    });
+                if (!available) {
+                    addDiagnostic(
+                        result.diagnostics,
+                        DslDiagnosticCode::InvalidCondition,
+                        QStringLiteral(
+                            "Unsupported anchor field is not guaranteed on the current branch"),
+                        unsupported.anchorFieldRange);
+                } else {
+                    anchorFieldIndex = *anchor->typedIndex;
+                }
+            }
+            if (anchorFieldIndex) {
+                typedStruct.unsupportedStatements.push_back(
+                    {unsupported.reason,
+                     *anchorFieldIndex,
+                     static_cast<quint32>(typedStruct.fields.size()),
+                     conditions,
+                     unsupported.range});
+            }
+        };
         const auto compileItems =
             [&](const auto& self, const std::vector<DslStructItem>& items,
                 const std::vector<DslTypedFieldCondition>& conditions,
@@ -2730,6 +2816,10 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 }
                 if (item.kind == DslStructItemKind::Assertion) {
                     compileAssertion(item.assertion, conditions);
+                    continue;
+                }
+                if (item.kind == DslStructItemKind::Unsupported) {
+                    compileUnsupported(item.unsupported, conditions);
                     continue;
                 }
                 if (item.kind == DslStructItemKind::CompressedPayload) {
@@ -3462,6 +3552,12 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             [](const DslTypedAssertion& left, const DslTypedAssertion& right) {
                 return left.assertionFieldIndex < right.assertionFieldIndex;
             });
+        std::stable_sort(
+            typedStruct.unsupportedStatements.begin(),
+            typedStruct.unsupportedStatements.end(),
+            [](const DslTypedUnsupported& left, const DslTypedUnsupported& right) {
+                return left.statementFieldIndex < right.statementFieldIndex;
+            });
         typed.structs.push_back(std::move(typedStruct));
     }
 
@@ -3696,6 +3792,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         quint32 sentinelRepeatIndex = 0;
         quint32 whileRepeatIndex = 0;
         quint32 assertionIndex = 0;
+        quint32 unsupportedIndex = 0;
         for (std::size_t fieldIndex = 0; fieldIndex <= structure.fields.size();
              ++fieldIndex) {
             while (emitted &&
@@ -3726,6 +3823,14 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                      static_cast<quint32>(assertionIndex),
                      0});
                 ++assertionIndex;
+            }
+            while (emitted &&
+                   unsupportedIndex < structure.unsupportedStatements.size() &&
+                   structure.unsupportedStatements.at(unsupportedIndex)
+                           .statementFieldIndex == fieldIndex) {
+                emitted = appendInstruction(
+                    {DslOpcode::MarkUnsupported, unsupportedIndex, 0});
+                ++unsupportedIndex;
             }
             while (emitted && repeatBoundIndex < structure.repeatBounds.size() &&
                    structure.repeatBounds.at(repeatBoundIndex).firstFieldIndex == fieldIndex) {
@@ -3836,6 +3941,13 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             addDiagnostic(result.diagnostics,
                           DslDiagnosticCode::InvalidCondition,
                           QStringLiteral("Typed assertion position is invalid"),
+                          {});
+            emitted = false;
+        }
+        if (unsupportedIndex != structure.unsupportedStatements.size()) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidCondition,
+                          QStringLiteral("Typed unsupported statement position is invalid"),
                           {});
             emitted = false;
         }

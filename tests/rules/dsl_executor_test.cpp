@@ -7809,6 +7809,112 @@ private slots:
             QCOMPARE(tree->node(structNode->children().at(1))->value().toULongLong(), quint64(0x42));
         }
     }
+
+    void marksUnsupportedSyntaxAtAFieldAndPreservesTheDecodedPrefix() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header {
+                bits<5> type;
+                bits<3> flags;
+                if (type == 5) {
+                    unsupported("Profile-specific payload is unsupported") at type;
+                }
+                bits<8> payload;
+            }
+            entry Header;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        QCOMPARE(compiled.program->structs.front().unsupportedStatements.size(),
+                 std::size_t(1));
+
+        {
+            MemorySource source(bytes({0x29, 0xaa}));
+            const auto mapping = mappingForBytes(2);
+            const auto range = SourceSpan::create(
+                streamview::core::SourceBitAddress(0), 16);
+            auto tree = AnalysisTree::create(QStringLiteral("unsupported"));
+            QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+            BitReader reader(source, *range);
+
+            const auto result = DslExecutor::decodeStruct(
+                *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::Unsupported);
+            QCOMPARE(result.bitsConsumed, quint64(8));
+            const auto structure = tree->node(*result.structureNode);
+            QVERIFY(structure.has_value());
+            QCOMPARE(structure->state(), MaterializationState::Unsupported);
+            QCOMPARE(structure->children().size(), std::size_t(2));
+            QCOMPARE(structure->diagnostics().size(), std::size_t(1));
+            QCOMPARE(structure->diagnostics().front().code,
+                     streamview::core::DiagnosticCode::UnsupportedSyntax);
+            QCOMPARE(structure->diagnostics().front().fieldPath,
+                     QStringLiteral("Header.type"));
+            QVERIFY(structure->diagnostics().front().location.has_value());
+            QCOMPARE(structure->diagnostics().front().location->logicalRange().bitLength(),
+                     quint64(5));
+        }
+
+        {
+            MemorySource source(bytes({0x11, 0xaa}));
+            const auto mapping = mappingForBytes(2);
+            const auto range = SourceSpan::create(
+                streamview::core::SourceBitAddress(0), 16);
+            auto tree = AnalysisTree::create(QStringLiteral("supported"));
+            QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+            BitReader reader(source, *range);
+
+            const auto result = DslExecutor::decodeStruct(
+                *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::Materialized);
+            QCOMPARE(result.bitsConsumed, quint64(16));
+            const auto structure = tree->node(*result.structureNode);
+            QVERIFY(structure.has_value());
+            QCOMPARE(structure->state(), MaterializationState::Materialized);
+            QCOMPARE(structure->children().size(), std::size_t(3));
+        }
+    }
+
+    void supportsFfCodedUnsupportedAnchors() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct SeiPayload {
+                ff_coded<8> payload_type;
+                unsupported("SEI payload type is unsupported") at payload_type;
+                bits<8> payload;
+            }
+            entry SeiPayload;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0xff, 0xff, 0x03, 0xaa}));
+        const auto mapping = mappingForBytes(4);
+        const auto range = SourceSpan::create(
+            streamview::core::SourceBitAddress(0), 32);
+        auto tree = AnalysisTree::create(QStringLiteral("ff-coded-unsupported"));
+        QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+        BitReader reader(source, *range);
+
+        const auto result = DslExecutor::decodeStruct(
+            *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+        QVERIFY2(result.status == DslExecutionStatus::Unsupported,
+                 qPrintable(result.errorMessage));
+        QCOMPARE(result.bitsConsumed, quint64(24));
+
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->state(), MaterializationState::Unsupported);
+        QCOMPARE(structure->children().size(), std::size_t(1));
+        QCOMPARE(structure->diagnostics().size(), std::size_t(1));
+        QCOMPARE(structure->diagnostics().front().code,
+                 streamview::core::DiagnosticCode::UnsupportedSyntax);
+        QVERIFY(structure->diagnostics().front().location.has_value());
+        QCOMPARE(structure->diagnostics().front().location->logicalRange().start().bitOffset(),
+                 quint64(0));
+        QCOMPARE(structure->diagnostics().front().location->logicalRange().bitLength(),
+                 quint64(24));
+    }
 };
 
 QTEST_GUILESS_MAIN(DslExecutorTest)

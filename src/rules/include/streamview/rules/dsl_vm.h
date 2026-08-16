@@ -17,6 +17,7 @@ namespace streamview::rules {
 
 enum class DslExecutionStatus : quint8 {
     Materialized,
+    Unsupported,
     TruncatedSource,
     InvalidSyntax,
     DependencyUnavailable,

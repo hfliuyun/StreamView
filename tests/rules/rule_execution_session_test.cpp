@@ -2296,6 +2296,43 @@ private slots:
         QCOMPARE(unacc3Node->name(), QStringLiteral("unaccessed_payload"));
         QCOMPARE(unacc3Node->value().toULongLong(), quint64(0x5678));
     }
+
+    void preservesUnsupportedStatusWithoutPublishingContext() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header {
+                bits<5> type;
+                bits<3> flags;
+                unsupported("Profile payload is unsupported") at type;
+                bits<8> payload;
+            }
+            entry Header;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0x29, 0xaa}));
+        const auto view = makeView(1, 0, 16);
+        auto tree = AnalysisTree::create(QStringLiteral("unsupported-session"));
+        QVERIFY(view.has_value() && tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        const auto result = session.run(
+            makeRequest(source, quint32(0), *view, *tree));
+        QCOMPARE(result.status, RuleExecutionStatus::Unsupported);
+        QCOMPARE(result.execution.status, DslExecutionStatus::Unsupported);
+        QCOMPARE(result.execution.bitsConsumed, quint64(8));
+        QVERIFY(!result.publishedDefinition.has_value());
+        QVERIFY(result.importedContexts.empty());
+
+        const auto structure = tree->node(*result.execution.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->state(),
+                 streamview::core::MaterializationState::Unsupported);
+        QCOMPARE(structure->diagnostics().size(), std::size_t(1));
+        QCOMPARE(structure->diagnostics().front().code,
+                 DiagnosticCode::UnsupportedSyntax);
+    }
 };
 
 QTEST_APPLESS_MAIN(RuleExecutionSessionTest)

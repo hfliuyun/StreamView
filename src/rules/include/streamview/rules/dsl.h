@@ -256,6 +256,13 @@ struct DslAssertion final {
     DslSourceRange range;
 };
 
+struct DslUnsupported final {
+    QString reason;
+    QString anchorFieldName;
+    DslSourceRange anchorFieldRange;
+    DslSourceRange range;
+};
+
 struct DslEqualityCondition final {
     QString fieldName;
     std::optional<DslExpression> expression;
@@ -271,6 +278,7 @@ enum class DslStructItemKind : quint8 {
     RbspTrailingBits,
     CompressedPayload,
     Assertion,
+    Unsupported,
     Conditional,
     Switch,
     Repeat,
@@ -306,6 +314,7 @@ struct DslStructItem final {
     DslRbspTrailingBits rbspTrailingBits;
     DslCompressedPayload compressedPayload;
     DslAssertion assertion;
+    DslUnsupported unsupported;
     DslEqualityCondition condition;
     std::vector<DslStructItem> thenItems;
     std::vector<DslStructItem> elseItems;

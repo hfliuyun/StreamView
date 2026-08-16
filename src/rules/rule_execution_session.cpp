@@ -13,6 +13,8 @@ namespace {
     switch (status) {
     case DslExecutionStatus::Materialized:
         return RuleExecutionStatus::Materialized;
+    case DslExecutionStatus::Unsupported:
+        return RuleExecutionStatus::Unsupported;
     case DslExecutionStatus::TruncatedSource:
         return RuleExecutionStatus::TruncatedSource;
     case DslExecutionStatus::InvalidSyntax:
