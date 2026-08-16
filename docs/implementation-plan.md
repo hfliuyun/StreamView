@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 4
-Last Completed Step: ADR-0095 test citation hardening and audit gap reconciliation (Task T18a-fix2)
-Next Action: Expand AAC ADTS analyzer runner view mapping to frame span (Task T18b)
-Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31930252331 (Ubuntu job 95123835282, macOS job 95123835271, Windows job 95123835269) passed 100%
+Last Completed Step: AAC ADTS analyzer runner view mapping expansion to frame span (Task T18b)
+Next Action: Consume lazy raw data block in official AAC rule package and bump to 0.1.3 (Task T18c)
+Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31934776263 (Ubuntu job 95134873874, macOS job 95134873797, Windows job 95134873867) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1656,3 +1656,13 @@ Blockers: None
      - 修正 `dsl_ir.cpp:185` 行号引用；
      - 验证矩阵 P7/P8 标注为「parser 与 compiler 双闸门」。
   Next Action 指向 Task T18b（更新 AAC ADTS 分析器执行器视图映射至帧跨度）。
+- 2026-08-16：完成 AAC ADTS 分析器执行器视图映射扩展至帧跨度（任务 T18b / commit `e3f1f1b`）。
+  1. 分析器执行逻辑视图映射扩展（`src/rules/aac_adts_analyzer.cpp`）：
+     - 将 `publishRecord` 中的 `SourceMapping` 构造由 `{*record.headerSpan}` 调整为 `{*record.frameSpan}`，解除后续 Task T18c 消费 `@lazy raw_data_block` 时的视图跨度阻塞（ADR-0095 §3）；
+     - 将局部变量 `headerViewId` 重命名为 `frameViewId`，保持语义命名一致性。
+  2. 纯能力/执行器切片与零断言变更验证：
+     - 规则包 `org.streamview.aac` 保持版本 `0.1.2`，未修改任何 `.svfmt` 与 `rule.toml` 资产；
+     - 现有测试断言改动数为 0，实测确认对既有规则输出为精确 no-op；
+     - 本地全量测试 35/35 在 dev/ci/sanitize 三套构建下全部通过（零 sanitizer 告警，AAC analyzer 23/23，H.264 analyzer 174/174）；
+     - hosted CI run `31934776263` 在 Ubuntu 24.04 / Qt 6.11.1（job `95134873874`）、macOS 15 / Qt 6.11.1（job `95134873797`）、Windows 2022 / Qt 6.10.1（job `95134873867`）全部 100% 成功通过。
+  Next Action 指向 Task T18c（官方 AAC 规则包消费 `@lazy raw_data_block`、升级至 0.1.3 并同步迁移测试断言）。
