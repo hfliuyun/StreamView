@@ -19,7 +19,7 @@ Prior to specifying the grammar, empirical probing was conducted on scratch fixt
    ```
    error: Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type
    ```
-   Furthermore, referencing outer structure fields from separate sub-structures is blocked by compiler dominance analysis (`src/rules/dsl.cpp:3394` and `src/rules/dsl_ir.cpp:1557-1561`):
+   Furthermore, referencing outer structure fields from separate sub-structures is blocked by compiler dominance analysis (`src/rules/dsl.cpp:3395` and `src/rules/dsl_ir.cpp:1564-1569`):
    ```
    error: Computed dependency is not guaranteed on the current branch
    ```

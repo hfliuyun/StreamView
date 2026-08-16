@@ -1,6 +1,6 @@
 # ADR-0098: Unrecognized Annotation Compiler Gate and Explicit Unsupported Syntax
 
-- **Status**: Accepted
+- **Status**: Proposed
 - **Date**: 2026-08-17
 - **Authors**: StreamView Contributors
 
@@ -17,7 +17,7 @@ During format coverage expansion and security auditing of the DSL compiler and r
    - Halt further decoding of the unsupported syntax subtree;
    - Preserve already materialized header fields with valid coordinates;
    - Publish the node with `MaterializationState::Unsupported` and a non-fatal `DiagnosticCode::UnsupportedSyntax` warning;
-   - Maintain format-neutral core engine decoupling without format-specific C++ string synthesis (Gemini Rule 5.1).
+   - Maintain format-neutral core engine decoupling without format-specific C++ string synthesis; format semantics must live in the DSL/rule layer, never in the analysis core.
 
 ---
 
@@ -56,7 +56,7 @@ unsupported("reason text") at anchor_field;
 
 1. **Parser & Compiler Rules**:
    - The anchor field must be a source-backed scalar field declared earlier on the current execution branch.
-   - Prohibited inside `repeat` loops (`DslDiagnosticCode::InvalidCondition: "Unsupported statements cannot be repeat-local items"`). Diagnostics emitted across unrolled loop bodies are deduplicated by `(code, message, range)` in `addDiagnostic` ([`src/rules/dsl_ir.cpp:28-36`](file:///Users/yun/code/streamview/src/rules/dsl_ir.cpp#L28-L36)).
+   - Prohibited inside `repeat` loops (`DslDiagnosticCode::InvalidCondition: "Unsupported statements cannot be repeat-local items"`). Identical diagnostics emitted across unrolled loop bodies are deduplicated by `(code, message, range)` in `addDiagnostic` ([`src/rules/dsl_ir.cpp:28-41`](file:///Users/yun/code/streamview/src/rules/dsl_ir.cpp#L28-L41)). Deduplication is global to the compiler rather than specific to `unsupported`: `addDiagnostic` is the single emission path for compiler diagnostics (201 call sites within `dsl_ir.cpp`), so any identical diagnostic produced more than once collapses to a single entry. A visible side effect is that `struct S { bits<4> n; repeat (n, 3) { bits<4> e @equals(99); } }` previously reported three identical `@equals value does not fit the field width` diagnostics and now reports exactly one.
    - A single structure may declare at most 1024 unsupported statements.
 2. **Bytecode & VM Execution**:
    - Lowered to opcode `DslOpcode::MarkUnsupported`.
@@ -71,7 +71,7 @@ unsupported("reason text") at anchor_field;
 ### Positive
 - Misspelled annotations can no longer silently bypass validation or omit critical format constraints.
 - Format rules express profile boundaries and unsupported extensions natively within the DSL rather than relying on C++ analyzer hacks.
-- Diagnostics during compilation are deduplicated across unrolled loop iterations.
+- Identical compiler diagnostics are deduplicated globally by `(code, message, range)` through `addDiagnostic`, not only `unsupported` statements: repeated `@equals` violations in repeat bodies previously produced one diagnostic per unrolled iteration and now produce a single entry.
 
 ### Negative / Limitations
 - Adding new annotations in the future requires updating the central `knownAnnotations` registry table.
@@ -85,7 +85,7 @@ unsupported("reason text") at anchor_field;
 2. **Fatal `InvalidSyntax` on Unsupported Profiles**:
    Rejecting unsupported profile streams with fatal errors was rejected because unsupported standard profiles are valid media bitstreams; the analyzer must present decoded header metadata non-fatally.
 3. **Format-Specific C++ Diagnostic Synthesis**:
-   Synthesizing unsupported warnings in C++ analyzers was rejected to preserve format-neutral core separation (Gemini Rule 5.1).
+   Synthesizing unsupported warnings in C++ analyzers was rejected to preserve format-neutral core separation; format semantics must live only in the DSL/rule layer.
 
 ---
 
@@ -93,11 +93,11 @@ unsupported("reason text") at anchor_field;
 
 | Probe / Test Case | Command / Test Symbol | Expected Output / Assertion | Verification Result |
 | :--- | :--- | :--- | :--- |
-| **Unknown Annotation Gate (N2)** | `scratch/probe_annotation_gate` | `diag code=14 msg="Unknown annotation '@equalss'"` | Verified compile error on misspelled annotation. |
+| **Unknown Annotation Gate (N2)** | `tests/rules/dsl_test.cpp:2171` (`rejectsUnrecognizedAnnotationsAndEnforcesHostWhitelist`) | `DslDiagnosticCode::InvalidAnnotation` on misspelled `@equalss(4095)` | Verified compile error on misspelled annotation. |
 | **Host Whitelist Validation** | `tests/rules/dsl_test.cpp:2171` (`rejectsUnrecognizedAnnotationsAndEnforcesHostWhitelist`) | `InvalidAnnotation` on all 5 host positions (`@bogus(1)`) | Verified on leading/trailing field, struct, enum, sequence. |
 | **Field Error Recovery Guard** | `tests/rules/dsl_test.cpp:2242` (`recoversFieldSyntaxErrorWithoutDroppingClosingBrace`) | Exactly 1 diagnostic (`MissingToken: Expected field name`) | Verified struct closing brace preserved. |
 | **Unsupported Loop Deduplication** | `tests/rules/dsl_ir_test.cpp:3562` (`deduplicatesUnsupportedDiagnosticsInsideRepeats`) | Exactly 1 diagnostic (`Unsupported statements cannot be repeat-local items`) | Verified loop diagnostic deduplication. |
-| **AAC Non-GA AOT Unsupported** | `tests/rules/aac_adts_analyzer_test.cpp:1960-2467` | `MaterializationState::Unsupported`, `UnsupportedSyntax` | Verified AOT 5, 29, 39, and escaped AOT 31. |
+| **AAC Non-GA AOT Unsupported** | `tests/rules/aac_adts_analyzer_test.cpp:959` (`reportsAscEscapedAudioObjectTypeAsUnsupported`), `:1866` (`reportsAscNonGaAot5SbrAsUnsupported`), `:1936` (`reportsAscNonGaAot29ParametricStereoAsUnsupported`), `:2006` (`reportsAscNonGaAot39EnhancedLowDelayAsUnsupported`) | `MaterializationState::Unsupported`, `UnsupportedSyntax`, `DiagnosticSeverity::Warning` | Verified AOT 5, 29, 39, and escaped AOT 31; each asserts `DiagnosticSeverity::Warning`. |
 | **Bundled Rules Verification** | `svtool rule check` on H.264 & AAC packages | `Rule OK` across all `.svfmt` files | Zero regressions across official rules. |
 
 ---

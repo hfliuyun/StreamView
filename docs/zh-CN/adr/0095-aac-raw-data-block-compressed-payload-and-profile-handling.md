@@ -118,7 +118,7 @@ StreamView 实施计划阶段 4 规定了对 AAC-LC 音频（ISO/IEC 14496-3:201
 1. **ADTS 传输流**：通过 `@enum(AacProfile)` 约束于 `AacProfile`（0=Main, 1=LC, 2=SSR, 3=LTP）。在 ADTS 中传输的 HE-AAC v1/v2 码流依据广播规范在 ADTS 头中均携带 `profile = 1` (LC)，作为 LC 帧正常解码，其 raw data 载荷保持未解析状态。
 2. **AudioSpecificConfig (ASC)**：先解码 ASC 公共前缀。AOT 5（SBR）、AOT 29（Parametric Stereo）以及外层 AOT 31 的转义编码（包括 AOT 39）随后执行 `unsupported("reason") at audio_object_type;`。结构保留前缀，转为 `MaterializationState::Unsupported`，产生 `DiagnosticCode::UnsupportedSyntax`，并在解释任何 GA/PCE 后缀之前停止。
 3. **未声明载荷区域的 ADTS 规则**：匹配 `audio.aac.adts` 格式但仅声明头部字段、未声明 `@lazy` 载荷区域的规则包无法获得载荷截断上报。载荷截断的尾帧将呈现为有效物化且零诊断，其比特长度被 clamp 至实际可用字节数。未来若要通用化区域级截断探测，必须通过格式中立的核心机制（例如在 scanner 标记截断时，将容器 region 节点置为部分物化并携带通用截断诊断）而非在 C++ 中合成格式专属文案。
-4. **阶段 4 第 4 项正式闭环判定**：格式中立的 DSL/IR/VM 现已提供 `unsupported("reason") at field;` 及对应执行/会话状态。AAC analyzer 将其作为内容层结果，发布 Unsupported 子树并可继续扫描后续 ADTS 帧。官方 AAC 包版本为 `0.1.4`；SBR、PS 与 ELD 的专属 SpecificConfig 解码仍不在声明子集内。在官方 AAC 规则包（`profiles = ["lc"]`）中，声明 `audio_object_type == 31`（转义 AOT）的码流在 `audio_object_type` 处一律无条件发出 `unsupported("Escaped Audio Object Types (AOT >= 31) are not supported")`；所有转义 AOT 取值（AOT 32, 34, 40, 41, 42 等）均统一判定为 Unsupported，不进行逐值分支细分解码。
+4. **阶段 4 第 4 项正式闭环判定**：格式中立的 DSL/IR/VM 现已提供 `unsupported("reason") at field;` 及对应执行/会话状态。AAC analyzer 将其作为内容层结果，发布 Unsupported 子树并可继续扫描后续 ADTS 帧。官方 AAC 包版本为 `0.1.4`；SBR、PS 与 ELD 的专属 SpecificConfig 解码仍不在声明子集内。在官方 AAC 规则包（`profiles = ["lc"]`）中，声明 `audio_object_type == 31`（转义 AOT）的码流在 `audio_object_type` 处一律无条件发出 `unsupported("Escaped AAC object types require a profile-specific SpecificConfig")`；所有转义 AOT 取值（AOT 32, 34, 40, 41, 42 等）均统一判定为 Unsupported，不进行逐值分支细分解码。
 
 ### 6. 逐 bit 验收审计范围与覆盖矩阵（B1, C1, C3）
 
@@ -177,8 +177,8 @@ clang++ -std=c++20     -Isrc/rules/include -Isrc/core/include     -I/opt/homebre
 | **P4: 15 字节截断帧映射** | 声明 20 字节但在 15 字节处截断（120 位映射） | `status=1 materialized=0, AdtsHeader state=5 diags=1: code=0 sev=2 msg="Lazy byte region exceeds the available source range"` | 载荷截断触发 VM 原生 Error 级 TruncatedSource。 |
 | **P5: 7 字节仅头部视图** | 20 字节 ADTS 帧在 56 位头部映射下执行 | `status=1 materialized=0, AdtsHeader state=5 diags=1: code=0 sev=2 msg="Lazy byte region exceeds the available source range"` | 证实当前执行器仅头部映射是真实阻塞项。 |
 | **P6: T18b 视图映射 No-Op 验证** | 现有官方 `AdtsHeader`（无 lazy）分别在 56 位、160 位与 120 位视图下执行 | 三种视图输出完全一致：`status=0 materialized=1` | 证实 T18b 单独修改视图映射对既有规则输出完全无影响。 |
-| **P7: 重复 @range 双闸门验证（N3）** | `bits<5> aot @range(0, 4) @range(23, 23);` | `diag code=14 msg="@range may appear at most once on a field"` | 证实单个字段不可并列多个 @range（`src/rules/dsl.cpp:2676` / `src/rules/dsl_ir.cpp:173`）。 |
-| **P8: 多参数 @range 双闸门验证（N3）** | `bits<5> aot @range(2, 5, 29, 39);` | `diag code=14 msg="@range requires two integer arguments"` | 证实 @range 无法接收非连续离散值（`src/rules/dsl.cpp:2702` / `src/rules/dsl_ir.cpp:185`）。 |
+| **P7: 重复 @range 双闸门验证（N3）** | `bits<5> aot @range(0, 4) @range(23, 23);` | `diag code=14 msg="@range may appear at most once on a field"` | 证实单个字段不可并列多个 @range（`src/rules/dsl.cpp:2677` / `src/rules/dsl_ir.cpp:180`）。 |
+| **P8: 多参数 @range 双闸门验证（N3）** | `bits<5> aot @range(2, 5, 29, 39);` | `diag code=14 msg="@range requires two integer arguments"` | 证实 @range 无法接收非连续离散值（`src/rules/dsl.cpp:2703` / `src/rules/dsl_ir.cpp:192`）。 |
 | **P9: 拼写错误注解验证（N2）** | `bits<12> syncword @equalss(4095);` 作用于错误码流（`syncword=255`） | 错拼：`status=0 materialized=1 diags=0`<br>正拼 `@equals`：`status=2 materialized=0 diags=1 msg="Field value violates @equals constraint"` | 证实未识别注解被静默忽略。 |
 
 ---

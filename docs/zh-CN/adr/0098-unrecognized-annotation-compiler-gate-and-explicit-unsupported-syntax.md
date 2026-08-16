@@ -1,6 +1,6 @@
 # ADR-0098：未识别注解编译闸门与显式不支持语法
 
-- **状态**：Accepted
+- **状态**：Proposed
 - **日期**：2026-08-17
 - **作者**：StreamView 贡献者
 
@@ -17,7 +17,7 @@
    - 立即终止该不支持语法子树的后续解码；
    - 保留已成功物化的头部字段及其有效坐标；
    - 将节点发布为 `MaterializationState::Unsupported` 状态并附加非致命的 `DiagnosticCode::UnsupportedSyntax` 警告；
-   - 保持核心引擎格式中立，禁止在 C++ 分析器中硬编码格式专属字符串合成（Gemini 规则 5.1）。
+   - 保持核心引擎格式中立，禁止在 C++ 分析器中硬编码格式专属字符串合成；格式语义只能进 DSL/规则层，不得修改分析核心塞入格式专属逻辑。
 
 ---
 
@@ -56,7 +56,7 @@ unsupported("reason text") at anchor_field;
 
 1. **解析与编译规则**：
    - 锚点字段必须是在当前分支早先声明的 source-backed 标量字段；
-   - 禁止置于 `repeat` 循环体内部（`DslDiagnosticCode::InvalidCondition: "Unsupported statements cannot be repeat-local items"`）。循环展开过程中产生的重复诊断在 [`src/rules/dsl_ir.cpp:28-36`](file:///Users/yun/code/streamview/src/rules/dsl_ir.cpp#L28-L36) 的 `addDiagnostic` 中按 `(code, message, range)` 统一去重；
+   - 禁止置于 `repeat` 循环体内部（`DslDiagnosticCode::InvalidCondition: "Unsupported statements cannot be repeat-local items"`）。循环展开过程中产生的相同诊断在 [`src/rules/dsl_ir.cpp:28-41`](file:///Users/yun/code/streamview/src/rules/dsl_ir.cpp#L28-L41) 的 `addDiagnostic` 中按 `(code, message, range)` 统一去重。去重对编译器是全局性的，并非 `unsupported` 专属：`addDiagnostic` 是编译期诊断的唯一发射路径（在 `dsl_ir.cpp` 内有 201 个调用点），任何产生多次的相同诊断都会收敛为一条。可见连带效果是 `struct S { bits<4> n; repeat (n, 3) { bits<4> e @equals(99); } }` 原先报出三条相同的 `@equals value does not fit the field width` 诊断，现在只报一条；
    - 单个结构体至多声明 1024 条 unsupported 语句。
 2. **Bytecode 与 VM 执行**：
    - 降级为操作码 `DslOpcode::MarkUnsupported`；
@@ -71,7 +71,7 @@ unsupported("reason text") at anchor_field;
 ### 正向收益
 - 彻底消除未识别注解静默通过导致的约束失效风险；
 - 规则包可原生在 DSL 内表达 Profile 边界与未支持扩展，不再依赖 C++ 分析器侵入式处理；
-- 编译期循环展开诊断实现按位置去重。
+- 编译期相同诊断通过 `addDiagnostic` 按 `(code, message, range)` 全局去重（不限于 `unsupported` 语句）：repeat 体内的重复 `@equals` 违规原先每条展开各报一次，现在收敛为一条。
 
 ### 负向代价 / 约束
 - 未来新增注解必须在中央 `knownAnnotations` 注册表中显式登记其合法宿主集合。
@@ -85,7 +85,7 @@ unsupported("reason text") at anchor_field;
 2. **对不支持 Profile 报致命 `InvalidSyntax`**：
    将不支持 Profile 报致命错误会导致正常媒体文件无法展示任何已解析元数据，与非致命分析器设计目标冲突，故否决。
 3. **在 C++ 分析器中硬编码诊断字符串合成**：
-   违反 Gemini 规则 5.1（格式语义必须留在 DSL/规则层），故否决。
+   违反全局约束（格式语义只能进 DSL/规则层，不得塞入分析核心），故否决。
 
 ---
 
@@ -93,11 +93,11 @@ unsupported("reason text") at anchor_field;
 
 | 探针 / 测试用例 | 执行命令 / 测试符号 | 预期输出 / 断言结果 | 验证结论 |
 | :--- | :--- | :--- | :--- |
-| **未识别注解闸门（N2）** | `scratch/probe_annotation_gate` | `diag code=14 msg="Unknown annotation '@equalss'"` | 证实拼写错误注解被编译期拦截。 |
+| **未识别注解闸门（N2）** | `tests/rules/dsl_test.cpp:2171`（`rejectsUnrecognizedAnnotationsAndEnforcesHostWhitelist`） | 拼写错误 `@equalss(4095)` 返回 `DslDiagnosticCode::InvalidAnnotation` | 证实拼写错误注解被编译期拦截。 |
 | **宿主白名单校验** | `tests/rules/dsl_test.cpp:2171`（`rejectsUnrecognizedAnnotationsAndEnforcesHostWhitelist`） | 5 大宿主位置 `@bogus(1)` 均返回 `InvalidAnnotation` | 证实前置/后置字段、struct、enum、sequence 均受拦截。 |
 | **字段错误恢复守卫** | `tests/rules/dsl_test.cpp:2242`（`recoversFieldSyntaxErrorWithoutDroppingClosingBrace`） | 仅 1 条诊断（`MissingToken: Expected field name`） | 证实结构体闭合花括号不被误吞。 |
 | **循环 Unsupported 去重** | `tests/rules/dsl_ir_test.cpp:3562`（`deduplicatesUnsupportedDiagnosticsInsideRepeats`） | 仅 1 条诊断（`Unsupported statements cannot be repeat-local items`） | 证实循环展开诊断已正确去重。 |
-| **AAC 非 GA AOT Unsupported** | `tests/rules/aac_adts_analyzer_test.cpp:1960-2467` | `MaterializationState::Unsupported`, `UnsupportedSyntax` | 证实 AOT 5、29、39 与转义 AOT 31 均输出 Unsupported。 |
+| **AAC 非 GA AOT Unsupported** | `tests/rules/aac_adts_analyzer_test.cpp:959`（`reportsAscEscapedAudioObjectTypeAsUnsupported`）、`:1866`（`reportsAscNonGaAot5SbrAsUnsupported`）、`:1936`（`reportsAscNonGaAot29ParametricStereoAsUnsupported`）、`:2006`（`reportsAscNonGaAot39EnhancedLowDelayAsUnsupported`） | `MaterializationState::Unsupported`、`UnsupportedSyntax`、`DiagnosticSeverity::Warning` | 证实 AOT 5、29、39 与转义 AOT 31 均输出 Unsupported，且均断言 `DiagnosticSeverity::Warning`。 |
 | **官方规则包校验** | `svtool rule check` 检查 H.264 与 AAC 规则包 | 所有 `.svfmt` 文件均输出 `Rule OK` | 证实既有官方规则包零回归。 |
 
 ---
