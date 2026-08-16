@@ -453,19 +453,6 @@ bool AacAdtsAnalyzer::publishRecord(const AacAdtsRecord& record,
         }
     }
 
-    if (record.truncated) {
-        // Payload truncation: header was fully decoded, but frame payload reached EOF prematurely.
-        core::ParseDiagnostic diagnostic;
-        diagnostic.code = core::DiagnosticCode::TruncatedSource;
-        diagnostic.severity = core::DiagnosticSeverity::Warning;
-        diagnostic.message = QStringLiteral("ADTS frame payload is truncated at EOF");
-        diagnostic.fieldPath = QStringLiteral("adts_frame[%1]").arg(frameIndex);
-        diagnostic.location = *frameLocation;
-        (void)tree_.markPartial(*frameNode, core::MaterializationState::Invalid, std::move(diagnostic));
-        batch.frameNodes.push_back(*frameNode);
-        return true;
-    }
-
     if (!tree_.transition(*frameNode, core::MaterializationState::Materialized)) {
         *errorMessage = QStringLiteral("Unable to materialize decoded ADTS frame node");
         *failureStatus = AacAdtsAnalysisStatus::InvalidRule;
