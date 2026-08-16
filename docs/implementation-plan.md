@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 5
 Last Completed Step: P5b-R / P5b-R2 review remediation — annotation compile gate and explicit unsupported syntax (ADR-0098), plus UnsupportedSyntax severity alignment to non-fatal Warning
 Next Action: Task P5c — ISOBMFF container language primitives probing & ADR-0097
-Last Verification: P5b-R2 local dev/ci/sanitize 36/36 passing with zero sanitizer warnings (dev 50.16s, ci 16.49s, sanitize 131.35s); targeted suites dsl 87 / dsl_ir 88 / AAC 31 / H.264 174; all three bundled H.264/AAC .svfmt sources pass `svtool rule check`. Latest hosted baseline: P5b-R run 31965623068 (macOS job 95210238754, Windows job 95210238781, Ubuntu job 95210238826) on commit 2624276; P5b-R2 hosted run pending after push
+Last Verification: P5b-R2 local dev/ci/sanitize 36/36 passing with zero sanitizer warnings (dev 50.16s, ci 16.49s, sanitize 131.35s); targeted suites dsl 87 / dsl_ir 88 / AAC 31 / H.264 174; all three bundled H.264/AAC .svfmt sources pass `svtool rule check`. Latest hosted baseline: P5b-R run 31965623068 (macOS job 95210238754, Windows job 95210238781, Ubuntu job 95210238826) on commit 2624276; P5b-R2 hosted run 31969610307 (macOS job 95219881189, Ubuntu job 95219881227, Windows job 95219881244) on commit 7671916
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1887,3 +1887,20 @@ Blockers: None
      - 连同外部审计 4 个 commit 共同推送后，Hosted CI run `31965623068` 在 macOS 15（job `95210238754`）、Windows 2022（job `95210238781`）、Ubuntu 24.04（job `95210238826`）三平台全部 100% 成功通过。
   Next Action 保持 Task P5c（ISOBMFF 容器语言原语探测与 ADR-0097 编写）。
 
+- 2026-08-17：完成 Task P5b-R2 复审遗留整改（commit `a41d2bc` 与 `7671916`）。
+  1. F1（本任务唯一代码决策，方案①改代码）：`markFailure` 仅当 `DslExecutionStatus::Unsupported` 时产出 `DiagnosticSeverity::Warning`，其余失败状态保持 Error；
+     - 改动前（红）：4 条 severity 断言全部 FAIL，`Actual (severity): 2 (Error) / Expected: 1 (Warning)`；
+     - 改动后（绿）：`streamview_aac_adts_analyzer_tests` 31/31 全过；severity 由 `reportsAscEscapedAudioObjectTypeAsUnsupported`（:997）、`reportsAscNonGaAot5SbrAsUnsupported`（:1902）、`reportsAscNonGaAot29ParametricStereoAsUnsupported`（:1972）、`reportsAscNonGaAot39EnhancedLowDelayAsUnsupported`（:2043）锁定为 Warning；
+  2. F2–F8 与 ADR-0098 补充（docs commit `7671916`）：
+     - F2：ADR-0095 §5.2 双语改引实际字符串 `unsupported("Escaped AAC object types require a profile-specific SpecificConfig")`；
+     - F3：删除 ADR-0098 双语「Gemini Rule 5.1」虚构引用，改为「格式语义只能进 DSL/规则层」全局约束；
+     - F4：验证矩阵改真实测试符号与现场行号（`dsl_test.cpp:2171`、`aac_adts_analyzer_test.cpp:959/1866/1936/2006`），删除不可复跑的 `scratch/probe_annotation_gate` 与越界区间 `:1960-2467`；
+     - F5：ADR-0094 双语行号 `dsl.cpp:3394→3395`、`dsl_ir.cpp:1557-1561→1564-1569`；ADR-0095 P7/P8 行号 `2676→2677`、`2702→2703`、`dsl_ir.cpp:173→180`、`185→192`；ADR-0086/0090/0092 引用按纪律第 8 条作为历史快照保留；
+     - F6：活跃状态头回写 P5b-R / P5b-R2 实测与 hosted 结果；
+     - F7：ADR-0098 双语 Status 统一为 Proposed；
+     - F8：中文语言参考两行超长行（原 :502=942、:503=522 字符）按既有宽度重排，还原 `该 repeat 中嵌套`；
+     - 补充：ADR-0098 明确 `addDiagnostic` 去重为编译器全局行为（dsl_ir.cpp 内 201 个调用点），并以 `struct S { bits<4> n; repeat (n, 3) { bits<4> e @equals(99); } }` 实测（诊断 3 条→1 条）写入文档；
+  3. 验证与 Hosted CI：
+     - 本地 dev/ci/sanitize 三套 36/36 全绿（dev 50.16s、ci 16.49s、sanitize 131.35s，零 sanitizer 告警）；定向套件 dsl 87 / dsl_ir 88 / AAC 31 / H.264 174；三份 bundled `.svfmt` 全部 `Rule OK`；
+     - push 后 Hosted CI run `31969610307` 在 macOS 15（job `95219881189`）、Ubuntu 24.04（job `95219881227`）、Windows 2022（job `95219881244`）三平台全部成功。
+  Next Action 保持 Task P5c（ISOBMFF 容器语言原语探测与 ADR-0097 编写）。
