@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 4
-Last Completed Step: Official AAC rule package consumes lazy raw data block (Task T18c)
-Next Action: Remove unreachable legacy warning code in AAC ADTS analyzer (Task T18c-2)
-Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31936367969 (Ubuntu job 95138832621, macOS job 95138832586, Windows job 95138832588) passed 100%
+Last Completed Step: Remove unreachable payload truncation warning in AAC ADTS analyzer (Task T18c-2)
+Next Action: Verify AAC profile handling and align documentation (Task T18d)
+Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31937210029 (Ubuntu job 95140905425, macOS job 95140905350, Windows job 95140905352) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1680,3 +1680,16 @@ Blockers: None
      - 本地全量测试 35/35 在 dev/ci/sanitize 三套构建下全部通过（零 sanitizer 告警，AAC analyzer 23/23，H.264 analyzer 174/174）；
      - hosted CI run `31936367969` 在 Ubuntu 24.04 / Qt 6.11.1（job `95138832621`）、macOS 15 / Qt 6.11.1（job `95138832586`）、Windows 2022 / Qt 6.10.1（job `95138832588`）全部 100% 成功通过。
   Next Action 指向 Task T18c-2（清理 AAC ADTS 分析器中已不可达的载荷截断 Warning 遗留代码）。
+- 2026-08-16：完成 AAC ADTS 分析器不可达载荷截断 Warning 遗留代码清理与可达性论证（任务 T18c-2 / commit `7e5b176`）。
+  1. 分析器死代码清理（`src/rules/aac_adts_analyzer.cpp`）：
+     - 删除原 `publishRecord` 中的 `if (record.truncated) { ... }` 合成 Warning 代码块，执行器能力切片，不升规则包版本（`org.streamview.aac` 保持 `0.1.3`）；
+     - 确认 `frameIndex` 与 `frameLocation` 在节点构造与异常诊断分支中仍被正常使用，无任何未使用变量或编译器告警。
+  2. 穷举三路径严格可达性论证（ADR-0095 §4 G3）：
+     - **路径 A（DSL 失败隔离）**：`!execution.materialized()` 分支在第 426 行标记 `Invalid` 后于第 452 行直接 `return true`，绝无可能流向后续语句；
+     - **路径 B（VM 截断必然性）**：`availableBytes < aac_frame_length` 时，Reader 剩余 `availableBytes - minimum_frame_length < raw_data_block_bytes`，`src/rules/dsl_vm.cpp:3140` 中的 `bitCount > reader.remainingBits()` 无条件成立，恒定返回 `TruncatedSource`，必然落入路径 A；
+     - **路径 C（守卫恒真不变式）**：Scanner 产出任何 record 均要求 `offset + 7 <= sourceSize`，`availableHeader >= 7` 字节，`record.headerSpan->bitLength() >= 56 > 0` 恒真，第 329 行守卫绝无可能短路。
+  3. 实测行为等价性与全量验证：
+     - 实测构造 200 字节声明、仅有 50 字节的截断码流，删除前后诊断输出 100% 一致（`diag code=0 sev=2 msg="Lazy byte region exceeds the available source range"`，`AdtsHeader` 保持 17 子节点且状态为 `Invalid`）；
+     - 本地全量测试 35/35 在 dev/ci/sanitize 三套构建下全部通过（零 sanitizer 告警，AAC analyzer 23/23，H.264 analyzer 174/174）；
+     - hosted CI run `31937210029` 在 Ubuntu 24.04 / Qt 6.11.1（job `95140905425`）、macOS 15 / Qt 6.11.1（job `95140905350`）、Windows 2022 / Qt 6.10.1（job `95140905352`）全部 100% 成功通过。
+  Next Action 指向 Task T18d（Profile 处理验证与全库路线图文档对齐）。
