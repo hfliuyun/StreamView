@@ -1707,3 +1707,12 @@ Blockers: None
      - 本地全量测试 35/35 在 dev/ci/sanitize 三套构建下全部通过（零 sanitizer 告警，AAC analyzer 24/24，H.264 analyzer 174/174）；
      - hosted CI run `31938569503` 在 Ubuntu 24.04 / Qt 6.11.1（job `95144248440`）、macOS 15 / Qt 6.11.1（job `95144248392`）、Windows 2022 / Qt 6.10.1（job `95144248467`）全部 100% 成功通过。
   Next Action 指向 Task T18d（Profile 处理验证与全库路线图文档对齐）。
+- 2026-08-16：完成 zh §5 补齐、全库测试行号引用校准与防漂移纪律建立（任务 T18c-2-fix2 / commit `TBD`）。
+  1. 双语 ADR-0095 §5 完全对称：
+     - 在中文版 §5 补齐第 3 条「未声明载荷区域的 ADTS 规则」能力边界记述，保证 EN/zh 均为 3 条。
+  2. 测试行号全量校准：
+     - 因新增用例位于 `:379-475`，全面校准 ADR-0095 §4 及 §6 中对 `tests/rules/aac_adts_analyzer_test.cpp` 的所有行号引用（Frame 0/1、截断用例、版本断言、ASC 用例 `:629-1865`、`comment_field_bytes` 7 处断言行号）；
+     - 逐条通过 `sed -n` 校验，确认 `:144` 为唯一未发生位移的断言行号。
+  3. 防复发纪律建立（ADR-0095 §7 及计划纪律第 6 条）：
+     - 确立「默认尾部追加」与「同 Commit 行号复核」双重约束。
+  Next Action 指向 Task T18d（Profile 处理验证与全库路线图文档对齐）。

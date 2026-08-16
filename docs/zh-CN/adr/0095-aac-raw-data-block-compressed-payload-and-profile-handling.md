@@ -91,14 +91,14 @@ StreamView 实施计划阶段 4 规定了对 AAC-LC 音频（ISO/IEC 14496-3:201
 - `aac_adts_analyzer.cpp:456-467` 处的 C++ 合成 Warning 诊断被 VM 原生诊断取代。
 
 **任务 T18c 需同步迁移的测试套件清单**：
-- `tests/rules/aac_adts_analyzer_test.cpp:143-170`（`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl` 帧 0）：子节点数（第 144 行）由 16 推进至 18；`expectedNames0` 追加 `raw_data_block_bytes` 与 `raw_data_block`；
-- `tests/rules/aac_adts_analyzer_test.cpp:193-220`（`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl` 帧 1）：子节点数（第 194 行）由 17 推进至 19；`expectedNames1` 追加 `raw_data_block_bytes` 与 `raw_data_block`；
-- `tests/rules/aac_adts_analyzer_test.cpp:321-361`（`handlesPayloadTruncationAtEof`）：
-  - 第 352 行：`DiagnosticSeverity::Warning` $\to$ `DiagnosticSeverity::Error`；
-  - 第 353 行：`"ADTS frame payload is truncated at EOF"` $\to$ `"Lazy byte region exceeds the available source range"`；
-  - 第 360 行：`header1->state() == MaterializationState::Materialized` $\to$ `header1->state() == MaterializationState::Invalid`；
-  - 第 356 行：`node1->children().size() == 1` 保持不变。
-- `tests/rules/aac_adts_analyzer_test.cpp:488`（`resolvesAscEntryPointFromBundledRulePackage`）：`loaded.package->identity().packageVersion()` 断言由 `"0.1.2"` 同步升级为 `"0.1.3"`。
+- `tests/rules/aac_adts_analyzer_test.cpp:141-187`（`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl` 帧 0）：子节点数（第 144 行）由 16 推进至 18；`expectedNames0` 追加 `raw_data_block_bytes` 与 `raw_data_block`；
+- `tests/rules/aac_adts_analyzer_test.cpp:189-230`（`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl` 帧 1）：子节点数（第 196 行）由 17 推进至 19；`expectedNames1` 追加 `raw_data_block_bytes` 与 `raw_data_block`；
+- `tests/rules/aac_adts_analyzer_test.cpp:325-365`（`handlesPayloadTruncationAtEof`）：
+  - 第 356 行：`DiagnosticSeverity::Warning` $\to$ `DiagnosticSeverity::Error`；
+  - 第 357 行：`"ADTS frame payload is truncated at EOF"` $\to$ `"Lazy byte region exceeds the available source range"`；
+  - 第 364 行：`header1->state() == MaterializationState::Materialized` $\to$ `header1->state() == MaterializationState::Invalid`；
+  - 第 360 行：`node1->children().size() == 1` 保持不变。
+- `tests/rules/aac_adts_analyzer_test.cpp:602`（`resolvesAscEntryPointFromBundledRulePackage`）：`loaded.package->identity().packageVersion()` 断言由 `"0.1.2"` 同步升级为 `"0.1.3"`。
 
 *死代码清理、有条件可达性论证与行为收窄（G3，任务 T18c-2）*：
 在 `src/rules/aac_adts_analyzer.cpp` 中，已彻底删除原载荷截断合成 Warning 分支（`if (record.truncated) { ... }`）。
@@ -115,6 +115,7 @@ StreamView 实施计划阶段 4 规定了对 AAC-LC 音频（ISO/IEC 14496-3:201
 
 1. **ADTS 传输流**：通过 `@enum(AacProfile)` 约束于 `AacProfile`（0=Main, 1=LC, 2=SSR, 3=LTP）。在 ADTS 中传输的 HE-AAC v1/v2 码流依据广播规范在 ADTS 头中均携带 `profile = 1` (LC)，作为 LC 帧正常解码，其 raw data 载荷保持未解析状态。
 2. **AudioSpecificConfig (ASC)**：非 GA 音频对象类型（例如 SBR=5, PS=29, ELD=39）能够成功解析 GA 基础头语法且不报错（`MaterializationState::Materialized`），正如 ADR-0094 §3:315 所记录。在未来里程碑引入专属非 GA 载荷解析器之前，这被正式确认为已知且受控的已记录能力边界。
+3. **未声明载荷区域的 ADTS 规则**：匹配 `audio.aac.adts` 格式但仅声明头部字段、未声明 `@lazy` 载荷区域的规则包无法获得载荷截断上报。载荷截断的尾帧将呈现为有效物化且零诊断，其比特长度被 clamp 至实际可用字节数。未来若要通用化区域级截断探测，必须通过格式中立的核心机制（例如在 scanner 标记截断时，将容器 region 节点置为部分物化并携带通用截断诊断）而非在 C++ 中合成格式专属文案。
 
 ### 6. 逐 bit 验收审计范围与覆盖矩阵（B1, C1, C3）
 
@@ -130,11 +131,11 @@ StreamView 规则不进行 CRC-16 多项式除法或算术校验和计算（正�
 
 | 类别 | 既有已验证覆盖（`file:line`） | 待在任务 T18e 补齐的缺口项 |
 | :--- | :--- | :--- |
-| **1. ADTS 头部** | `tests/rules/aac_adts_analyzer_test.cpp:106-227`（`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`，帧 0 有序名称 [:165-170] 与数值 [:172-183]，帧 1 有序名称 [:216-220] 与数值 [:222-226]）。 | 1. 下标 8–11 字段（`original_copy`、`home`、`copyright_identification_bit`、`copyright_identification_start`）在当前全部 ADTS 用例中均缺失数值断言。<br>2. 全部 ADTS 测试中当前 `logicalRange()` / `bitOffset()` / `bitLength()` 断言数为 0。 |
-| **2. ASC / PCE** | `tests/rules/aac_adts_analyzer_test.cpp:515-1751`（`decodesAscCase1`..`7`, `rejectsAscCase8NonzeroAlignmentBit`, `rejectsAscCase9PrematureTruncation`，覆盖 113–122 个有序子节点名称，以及有效用例中各 1 处 `comment_field_bytes` 的字节偏移与值断言 [:675, :839, :1003, :1173, :1338, :1505, :1675]）。 | 除 `comment_field_bytes` 外，所有 ASC/PCE 字段均缺失 `logicalRange()` / `bitOffset()` / `bitLength()` 断言。 |
-| **3. 码流截断** | `tests/rules/aac_adts_analyzer_test.cpp:286-320`（`handlesHeaderTruncationWithCrcPresent`）、`:321-361`（`handlesPayloadTruncationAtEof`）、`:363-386`（`handlesTrailingGarbageSmallerThanHeader`）、`:388-417`（`resynchronizesAcrossCorruptedByteSpan`）。 | 1. `handlesPayloadTruncationAtEof` 相关断言将在 T18c 中完成迁移。<br>2. 截断节点与诊断位置目前无 `logicalRange()` 显式断言。 |
-| **4. CRC 存在性/错误** | `tests/rules/aac_adts_analyzer_test.cpp:185-227`（`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl` 帧 1，包含 `crc_check` 字段名与值 `0x1234` 断言 [:225]）、`:286-320`（`handlesHeaderTruncationWithCrcPresent`）。 | `crc_check` 的 bit 偏移（bit 56..71）在当前全部测试中无显式断言。 |
-| **5. 不支持 Profile** | `tests/rules/aac_adts_analyzer_test.cpp:106-227`（`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`，验证 `profile = 1 (LC)` [:176]），`:515-1751`（ASC 各用例验证 AOT 2, 5, 29, 39 解析 GA 头部）。 | 补充显式拒绝非标 ADTS profile（如 profile=4）的负向测试。 |
+| **1. ADTS 头部** | `tests/rules/aac_adts_analyzer_test.cpp:106-231`（`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`，帧 0 有序名称 [:167-171] 与数值 [:174-185]，帧 1 有序名称 [:220-224] 与数值 [:226-230]）。 | 1. 下标 8–11 字段（`original_copy`、`home`、`copyright_identification_bit`、`copyright_identification_start`）在当前全部 ADTS 用例中均缺失数值断言。<br>2. 全部 ADTS 测试中当前 `logicalRange()` / `bitOffset()` / `bitLength()` 断言数为 0。 |
+| **2. ASC / PCE** | `tests/rules/aac_adts_analyzer_test.cpp:629-1865`（`decodesAscCase1`..`7`, `rejectsAscCase8NonzeroAlignmentBit`, `rejectsAscCase9PrematureTruncation`，覆盖 113–122 个有序子节点名称，以及有效用例中各 1 处 `comment_field_bytes` 的字节偏移与值断言 [:789, :953, :1117, :1287, :1452, :1619, :1789]）。 | 除 `comment_field_bytes` 外，所有 ASC/PCE 字段均缺失 `logicalRange()` / `bitOffset()` / `bitLength()` 断言。 |
+| **3. 码流截断** | `tests/rules/aac_adts_analyzer_test.cpp:290-323`（`handlesHeaderTruncationWithCrcPresent`）、`:325-365`（`handlesPayloadTruncationAtEof`）、`:379-475`（`materializesTruncatedTrailingFrameWhenRuleLacksPayloadDeclaration`）、`:477-500`（`handlesTrailingGarbageSmallerThanHeader`）、`:502-530`（`resynchronizesAcrossCorruptedByteSpan`）。 | 1. `handlesPayloadTruncationAtEof` 相关断言已在 T18c 中完成迁移。<br>2. 截断节点与诊断位置目前无 `logicalRange()` 显式断言。 |
+| **4. CRC 存在性/错误** | `tests/rules/aac_adts_analyzer_test.cpp:189-230`（`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl` 帧 1，包含 `crc_check` 字段名与值 `0x1234` 断言 [:229]）、`:290-323`（`handlesHeaderTruncationWithCrcPresent`）。 | `crc_check` 的 bit 偏移（bit 56..71）在当前全部测试中无显式断言。 |
+| **5. 不支持 Profile** | `tests/rules/aac_adts_analyzer_test.cpp:106-231`（`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`，验证 `profile = 1 (LC)` [:178]），`:629-1865`（ASC 各用例验证 AOT 2, 5, 29, 39 解析 GA 头部）。 | 补充显式拒绝非标 ADTS profile（如 profile=4）的负向测试。 |
 
 ### 7. 阶段 4 任务切片与纪律规划
 
@@ -146,6 +147,11 @@ StreamView 规则不进行 CRC-16 多项式除法或算术校验和计算（正�
 - **任务 T18c-2**（当前任务）：清理 `src/rules/aac_adts_analyzer.cpp:456-467` 死代码与可达性论证（执行器能力切片，不升版本）；
 - **任务 T18d**：Profile 处理验证与文档对齐；
 - **任务 T18e**：关闭类别 1、2、3、4、5 全部缺口、阶段 4 复选框全量勾选（`docs/implementation-plan.md:196-198`）、推进阶段至 Phase 5。
+
+#### 测试引用防漂移纪律
+为防止因测试用例增删改导致文档中的测试行号引用漂移失效：
+1. **默认尾部追加**：新增测试用例默认一律追加至测试类的最末尾（已有用例的最后一个之后）。若有极充分理由必须在测试类中部插入，则必须在同一 commit 内全局检索并修正所有受影响文档中的行号引用。
+2. **同 Commit 行号复核**：任何修改或新增 `tests/` 中用例的 commit，必须在提交前使用 `grep -n` 全量核验所有引用该测试文件的文档行号，发现漂移即刻就地修正。
 
 ---
 

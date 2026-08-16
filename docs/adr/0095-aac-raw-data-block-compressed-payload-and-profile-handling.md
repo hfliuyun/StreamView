@@ -91,14 +91,14 @@ We adopt the universal DSL VM truncation contract (Option A):
 - The legacy C++ synthetic warning at `aac_adts_analyzer.cpp:456-467` is superseded by this native VM diagnostic.
 
 **Test Suite Migrations required in Task T18c**:
-- `tests/rules/aac_adts_analyzer_test.cpp:143-170` (Frame 0 in `createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`): `children().size()` at line 144 advances from 16 to 18; `expectedNames0` appends `raw_data_block_bytes` and `raw_data_block`.
-- `tests/rules/aac_adts_analyzer_test.cpp:193-220` (Frame 1 in `createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`): `children().size()` at line 194 advances from 17 to 19; `expectedNames1` appends `raw_data_block_bytes` and `raw_data_block`.
-- `tests/rules/aac_adts_analyzer_test.cpp:321-361` (`handlesPayloadTruncationAtEof`):
-  - Line 352: `DiagnosticSeverity::Warning` $\to$ `DiagnosticSeverity::Error`;
-  - Line 353: `"ADTS frame payload is truncated at EOF"` $\to$ `"Lazy byte region exceeds the available source range"`;
-  - Line 360: `header1->state() == MaterializationState::Materialized` $\to$ `header1->state() == MaterializationState::Invalid`;
-  - Line 356: `node1->children().size() == 1` remains unchanged.
-- `tests/rules/aac_adts_analyzer_test.cpp:488` (`resolvesAscEntryPointFromBundledRulePackage`): `loaded.package->identity().packageVersion()` assertion updates from `"0.1.2"` to `"0.1.3"`.
+- `tests/rules/aac_adts_analyzer_test.cpp:141-187` (Frame 0 in `createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`): `children().size()` at line 144 advances from 16 to 18; `expectedNames0` appends `raw_data_block_bytes` and `raw_data_block`.
+- `tests/rules/aac_adts_analyzer_test.cpp:189-230` (Frame 1 in `createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`): `children().size()` at line 196 advances from 17 to 19; `expectedNames1` appends `raw_data_block_bytes` and `raw_data_block`.
+- `tests/rules/aac_adts_analyzer_test.cpp:325-365` (`handlesPayloadTruncationAtEof`):
+  - Line 356: `DiagnosticSeverity::Warning` $\to$ `DiagnosticSeverity::Error`;
+  - Line 357: `"ADTS frame payload is truncated at EOF"` $\to$ `"Lazy byte region exceeds the available source range"`;
+  - Line 364: `header1->state() == MaterializationState::Materialized` $\to$ `header1->state() == MaterializationState::Invalid`;
+  - Line 360: `node1->children().size() == 1` remains unchanged.
+- `tests/rules/aac_adts_analyzer_test.cpp:602` (`resolvesAscEntryPointFromBundledRulePackage`): `loaded.package->identity().packageVersion()` assertion updates from `"0.1.2"` to `"0.1.3"`.
 
 *Dead Code Removal, Qualified Reachability Rationale & Behavior Narrowing (G3, Task T18c-2)*:
 In `src/rules/aac_adts_analyzer.cpp`, the legacy synthetic warning branch for payload truncation (`if (record.truncated) { ... }`) was removed.
@@ -131,11 +131,11 @@ StreamView rules do NOT perform CRC-16 polynomial division or arithmetic checksu
 
 | Category | Existing Verified Coverage (`file:line`) | Identified Gaps to be Closed in Task T18e |
 | :--- | :--- | :--- |
-| **1. ADTS Headers** | `tests/rules/aac_adts_analyzer_test.cpp:106-227` (`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`, ordered names list for Frame 0 [:165-170] and Frame 1 [:216-220], field values for indices 0–7 and 12–15 [:172-183], and Frame 1 values [:222-226]). | 1. Indices 8–11 (`original_copy`, `home`, `copyright_identification_bit`, `copyright_identification_start`) lack value assertions across all ADTS tests.<br>2. `logicalRange()`, `bitOffset()`, and `bitLength()` assertions are absent across all ADTS tests (0 assertions). |
-| **2. ASC / PCE** | `tests/rules/aac_adts_analyzer_test.cpp:515-1751` (`decodesAscCase1`..`7`, `rejectsAscCase8NonzeroAlignmentBit`, `rejectsAscCase9PrematureTruncation`, verifying 113–122 ordered child node names, and one `comment_field_bytes` byte offset and value assertion per valid case at :675, :839, :1003, :1173, :1338, :1505, :1675). | All ASC/PCE fields except `comment_field_bytes` lack `logicalRange()` / `bitOffset()` / `bitLength()` assertions. |
-| **3. Stream Truncation** | `tests/rules/aac_adts_analyzer_test.cpp:286-320` (`handlesHeaderTruncationWithCrcPresent`), `:321-361` (`handlesPayloadTruncationAtEof`), `:363-386` (`handlesTrailingGarbageSmallerThanHeader`), `:388-417` (`resynchronizesAcrossCorruptedByteSpan`). | 1. `handlesPayloadTruncationAtEof` assertions will be migrated in T18c.<br>2. No tests assert `logicalRange()` on truncated frame nodes or diagnostics. |
-| **4. CRC Presence / Errors** | `tests/rules/aac_adts_analyzer_test.cpp:185-227` (`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl` Frame 1, asserting `crc_check` name at index 15 and value `0x1234` at line 225), `:286-320` (`handlesHeaderTruncationWithCrcPresent`). | Bit offset assertion for `crc_check` (bit 56..71) is absent across all tests. |
-| **5. Unsupported Profiles** | `tests/rules/aac_adts_analyzer_test.cpp:106-227` (`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`, asserting `profile = 1 (LC)` at line 176), `:515-1751` (ASC cases testing AOT 2, 5, 29, 39 parsing GA header). | Explicit negative tests asserting rejection of non-standard ADTS profile values (e.g. invalid enum index) via `@enum(AacProfile)` are absent. |
+| **1. ADTS Headers** | `tests/rules/aac_adts_analyzer_test.cpp:106-231` (`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`, ordered names list for Frame 0 [:167-171] and Frame 1 [:220-224], field values for indices 0–7 and 12–15 [:174-185], and Frame 1 values [:226-230]). | 1. Indices 8–11 (`original_copy`, `home`, `copyright_identification_bit`, `copyright_identification_start`) lack value assertions across all ADTS tests.<br>2. `logicalRange()`, `bitOffset()`, and `bitLength()` assertions are absent across all ADTS tests (0 assertions). |
+| **2. ASC / PCE** | `tests/rules/aac_adts_analyzer_test.cpp:629-1865` (`decodesAscCase1`..`7`, `rejectsAscCase8NonzeroAlignmentBit`, `rejectsAscCase9PrematureTruncation`, verifying 113–122 ordered child node names, and one `comment_field_bytes` byte offset and value assertion per valid case at :789, :953, :1117, :1287, :1452, :1619, :1789). | All ASC/PCE fields except `comment_field_bytes` lack `logicalRange()` / `bitOffset()` / `bitLength()` assertions. |
+| **3. Stream Truncation** | `tests/rules/aac_adts_analyzer_test.cpp:290-323` (`handlesHeaderTruncationWithCrcPresent`), `:325-365` (`handlesPayloadTruncationAtEof`), `:379-475` (`materializesTruncatedTrailingFrameWhenRuleLacksPayloadDeclaration`), `:477-500` (`handlesTrailingGarbageSmallerThanHeader`), `:502-530` (`resynchronizesAcrossCorruptedByteSpan`). | 1. `handlesPayloadTruncationAtEof` assertions migrated in T18c.<br>2. No tests assert `logicalRange()` on truncated frame nodes or diagnostics. |
+| **4. CRC Presence / Errors** | `tests/rules/aac_adts_analyzer_test.cpp:189-230` (`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl` Frame 1, asserting `crc_check` name at index 15 and value `0x1234` at line 229), `:290-323` (`handlesHeaderTruncationWithCrcPresent`). | Bit offset assertion for `crc_check` (bit 56..71) is absent across all tests. |
+| **5. Unsupported Profiles** | `tests/rules/aac_adts_analyzer_test.cpp:106-231` (`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`, asserting `profile = 1 (LC)` at line 178), `:629-1865` (ASC cases testing AOT 2, 5, 29, 39 parsing GA header). | Explicit negative tests asserting rejection of non-standard ADTS profile values (e.g. invalid enum index) via `@enum(AacProfile)` are absent. |
 
 ### 7. Phase 4 Task Slicing and Discipline
 
@@ -147,6 +147,11 @@ To uphold strict single-responsibility commits and keep capability changes separ
 - **Task T18c-2** (Current): Dead code removal in `src/rules/aac_adts_analyzer.cpp:456-467` with reachability rationale (runner capability slice, no version bump).
 - **Task T18d**: Profile handling verification & documentation alignment.
 - **Task T18e**: Bit-by-bit audit closing all gaps in Category 1, 2, 3, 4, and 5, Phase 4 checkbox completion (`docs/implementation-plan.md:196-198`), Phase advancement to Phase 5.
+
+#### Anti-Recurrence Discipline for Test Citations
+To prevent documentation line citation drift when modifying test suites:
+1. **Append-by-Default**: New test methods must be appended to the end of the test class by default (after the last existing test case). If middle insertion is strictly required, all affected downstream document line number citations across all ADRs and implementation plans must be audited and updated within the same commit.
+2. **Same-Commit Line Audit**: Any commit modifying or adding test cases in `tests/` must run `grep -n` against all documentation referencing that test file and reconcile any drifted line numbers in the same commit.
 
 ---
 
