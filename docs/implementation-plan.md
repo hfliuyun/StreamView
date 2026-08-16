@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 4
-Last Completed Step: AudioSpecificConfig and Program Config Element structured decoding (Task T17c / commit d32d606)
+Last Completed Step: Specification reference corrections and Task T17d audit reconciliation (Task T17d / commit 6afa22c)
 Next Action: AAC raw data block & channel stream element decoding exploration (Task T18)
-Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31928187049 (Ubuntu job 95118891822, macOS job 95118891810, Windows job 95118891801) passed 100%
+Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31930252331 (Ubuntu job 95123835282, macOS job 95123835271, Windows job 95123835269) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1600,5 +1600,6 @@ Blockers: None
      - 双语 ADR 文档同步更新：ADR-0092、ADR-0093 与 ADR-0094 英中双语版本文末均追加「条款引用更正」小节，更新引用列表；
      - 包版本变更：`org.streamview.aac` 由于 `.svfmt` 文件内 `@spec` 注解变更导致内容哈希变化，升级 patch 版本至 `0.1.2`（`rule.toml` 与对应测试断言同步更新）。
   3. 阶段 4 实施计划勾选：
-     - 勾选「解析 AudioSpecificConfig、GASpecificConfig 和 Program Config Element」复选框，关联 ADR-0094 9 项测试矩阵与 hosted run 31928187049 验收证据。
+     - 勾选「解析 AudioSpecificConfig、GASpecificConfig 和 Program Config Element」复选框，关联 ADR-0094 9 项测试矩阵与 hosted run 31928187049 验收证据；
+     - hosted run 31930252331 在 Ubuntu 24.04 / Qt 6.11.1（job 95123835282）、macOS 15 / Qt 6.11.1（job 95123835271）、Windows 2022 / Qt 6.10.1（job 95123835269）全部成功通过。
   Next Action 指向 Task T18（AAC raw data block 与 channel stream element 解码架构探索）。
