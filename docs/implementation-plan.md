@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 4
-Last Completed Step: Profile handling verification, roadmap alignment, and discipline consolidation (Task T18d)
-Next Action: Bit-by-bit acceptance audit and Phase 4 completion (Task T18e)
-Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings (AAC analyzer 25/25, H.264 174/174); hosted CI run 31940274828 (Ubuntu job 95148322141, macOS job 95148322138, Windows job 95148322165) passed 100%
+Last Completed Step: Pre-remediation for ASC non-GA AOT empirical coverage and citation precision (Task T18e-§0)
+Next Action: Close bit-by-bit audit gaps across Category 1-5 and advance to Phase 5 (Task T18e-main)
+Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings (AAC analyzer 28/28, H.264 174/174); hosted CI run 31941684357 (Ubuntu job 95151697094, macOS job 95151697041, Windows job 95151697136) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1741,3 +1741,19 @@ Blockers: None
      - 新增测试用例按纪律第 6 条追加至类末尾（`:1916-1958`），前序所有 24 个用例行号零位移；
      - 本地 dev/ci/sanitize 35/35 全绿，AAC analyzer 25/25，H.264 analyzer 174/174。
   Next Action 指向 Task T18e（阶段 4 逐 bit 验收审计收尾与阶段推进）。
+- 2026-08-16：完成 T18e-§0 前置修正（任务 T18e-§0 / commit `2925801`）。
+  1. S1 ASC 非 GA AOT 实测覆盖追加：
+     - 在 `tests/rules/aac_adts_analyzer_test.cpp` 末尾追加三个测试用例：`decodesAscNonGaAot5Sbr`（`:1960-2128`，AOT 5）、`decodesAscNonGaAot29ParametricStereo`（`:2130-2298`，AOT 29）、`decodesAscNonGaAot39EnhancedLowDelay`（`:2300-2467`，AOT 39）；
+     - 全部断言 `DslExecutionStatus::Materialized`、`MaterializationState::Materialized`、零诊断、完整有序子节点名单及 `audio_object_type` / `audio_object_type_ext` 字段值；
+     - AAC analyzer 测试用例数由 25 扩展至 28，全部 28/28 通过。
+  2. S2 修正虚报表述与真实用例绑定：
+     - 计划 :207 勾选注与 ADR-0095 §6 类别 5 证据列全量替换为真实测试用例引用，明确 AOT 5/29 布局与 AOT 2 相同的原因（`aac_asc.svfmt:2` 无约束且 GA 字段无条件解析）。
+  3. S3 行号修正：全量将 `:1914-1958` 更正为 `:1916-1958`。
+  4. S4 计划行号引用更新与纪律条款扩写：
+     - ADR-0095 双语版更新 `implementation-plan.md:196-198` / `:198` $	o$ `:206-208` / `:208`；
+     - 纪律第 7 条扩写为「任何使被引用文件行号发生位移的 commit（含 tests/ 与 docs/ 自身），提交前用 grep -n 全量复核所有引用文档中的行号，发现漂移即修正」。
+  5. S5 / S6 ADR-0092 文件补齐末尾换行与 T18 正文描述对齐。
+  6. 构建与 Hosted CI 验证：
+     - 本地 dev/ci/sanitize 35/35 全绿（AAC 28/28，H.264 174/174）；
+     - hosted CI run `31941684357` 在 Ubuntu 24.04 / Qt 6.11.1（job `95151697094`）、macOS 15 / Qt 6.11.1（job `95151697041`）、Windows 2022 / Qt 6.10.1（job `95151697136`）全部 100% 成功通过。
+  Next Action 指向 Task T18e 主体（阶段 4 逐 bit 验收审计收尾与阶段推进）。
