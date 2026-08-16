@@ -58,6 +58,10 @@ struct AdtsHeader {
         (protection_absent == 1) * 7 +
         (protection_absent == 0) * 9;
     assert(aac_frame_length >= minimum_frame_length) at aac_frame_length;
+    computed<u64> raw_data_block_bytes = aac_frame_length - minimum_frame_length;
+    @lazy(raw_data_block_bytes) bytes raw_data_block
+        @spec("ISO/IEC 14496-3:2019", "4.5.2.1")
+        @description("Raw audio data payload block.");
 }
 
 @index(progressive)

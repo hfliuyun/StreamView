@@ -98,6 +98,9 @@ StreamView 实施计划阶段 4 规定了对 AAC-LC 音频（ISO/IEC 14496-3:201
   - 第 353 行：`"ADTS frame payload is truncated at EOF"` $\to$ `"Lazy byte region exceeds the available source range"`；
   - 第 360 行：`header1->state() == MaterializationState::Materialized` $\to$ `header1->state() == MaterializationState::Invalid`；
   - 第 356 行：`node1->children().size() == 1` 保持不变。
+- `tests/rules/aac_adts_analyzer_test.cpp:488`（`resolvesAscEntryPointFromBundledRulePackage`）：`loaded.package->identity().packageVersion()` 断言由 `"0.1.2"` 同步升级为 `"0.1.3"`。
+
+*死代码保留说明（G3）*：在 `src/rules/aac_adts_analyzer.cpp:456-467` 中，一旦消费 lazy 载荷，载荷截断的原有合成 Warning 路径将变得不可达，因为 VM 原生的 `!execution.materialized()` 路径在第 426 行已将节点标记为 `Invalid` 并在第 452 行提前返回。依据单职责纪律（规则 3），本切片保留该代码块不动，将在专属执行器清理切片（任务 T18c-2）中安全删除。
 
 ### 5. Profile 处理与明确能力边界
 
@@ -129,8 +132,9 @@ StreamView 规则不进行 CRC-16 多项式除法或算术校验和计算（正�
 为保持严格的单职责提交与能力/规则解耦：
 
 - **任务 T18a**：探测结论、双语 ADR-0095、实施计划记录（Markdown-only）；
-- **任务 T18b**（当前任务）：分析器视图映射扩展至帧跨度（`src/rules/aac_adts_analyzer.cpp:346`），执行器能力切片，不改规则、不升包版本；
-- **任务 T18c**：规则消费 `@lazy raw_data_block`（`aac_adts.svfmt`），包版本升级至 `0.1.3`，测试套件更新；
+- **任务 T18b**：分析器视图映射扩展至帧跨度（`src/rules/aac_adts_analyzer.cpp:346`），执行器能力切片，不改规则、不升包版本；
+- **任务 T18c**（当前任务）：规则消费 `@lazy raw_data_block`（`aac_adts.svfmt`），包版本升级至 `0.1.3`，测试套件更新；
+- **任务 T18c-2**：清理 `src/rules/aac_adts_analyzer.cpp:456-467` 死代码与可达性论证（执行器能力切片，不升版本）；
 - **任务 T18d**：Profile 处理验证与文档对齐；
 - **任务 T18e**：关闭类别 1、2、3、4、5 全部缺口、阶段 4 复选框全量勾选（`docs/implementation-plan.md:196-198`）、推进阶段至 Phase 5。
 

@@ -98,6 +98,9 @@ We adopt the universal DSL VM truncation contract (Option A):
   - Line 353: `"ADTS frame payload is truncated at EOF"` $\to$ `"Lazy byte region exceeds the available source range"`;
   - Line 360: `header1->state() == MaterializationState::Materialized` $\to$ `header1->state() == MaterializationState::Invalid`;
   - Line 356: `node1->children().size() == 1` remains unchanged.
+- `tests/rules/aac_adts_analyzer_test.cpp:488` (`resolvesAscEntryPointFromBundledRulePackage`): `loaded.package->identity().packageVersion()` assertion updates from `"0.1.2"` to `"0.1.3"`.
+
+*Dead Code Retention Note (G3)*: In `src/rules/aac_adts_analyzer.cpp:456-467`, the legacy synthetic warning path for payload truncation becomes unreachable once the lazy payload is consumed, because the VM's native `!execution.materialized()` path marks the node `Invalid` at line 426 and returns at line 452. In accordance with single-responsibility discipline (Rule 3), this code block is retained untouched in Task T18c and will be cleaned up in a dedicated runner slice (Task T18c-2).
 
 ### 5. Profile Handling and Explicit Capability Boundaries
 
@@ -129,8 +132,9 @@ StreamView rules do NOT perform CRC-16 polynomial division or arithmetic checksu
 To uphold strict single-responsibility commits and keep capability changes separate from rule consumption:
 
 - **Task T18a**: Probing conclusions, bilingual ADR-0095, implementation plan update (Markdown-only).
-- **Task T18b** (Current): Analyzer view mapping update to frame span (`src/rules/aac_adts_analyzer.cpp:346`), runner capability slice without package version bump.
-- **Task T18c**: Rule consumption of `@lazy raw_data_block` in `aac_adts.svfmt`, package version bump to `0.1.3`, test suite updates.
+- **Task T18b**: Analyzer view mapping update to frame span (`src/rules/aac_adts_analyzer.cpp:346`), runner capability slice without package version bump.
+- **Task T18c** (Current): Rule consumption of `@lazy raw_data_block` in `aac_adts.svfmt`, package version bump to `0.1.3`, test suite updates.
+- **Task T18c-2**: Dead code removal in `src/rules/aac_adts_analyzer.cpp:456-467` with reachability rationale (runner capability slice, no version bump).
 - **Task T18d**: Profile handling verification & documentation alignment.
 - **Task T18e**: Bit-by-bit audit closing all gaps in Category 1, 2, 3, 4, and 5, Phase 4 checkbox completion (`docs/implementation-plan.md:196-198`), Phase advancement to Phase 5.
 

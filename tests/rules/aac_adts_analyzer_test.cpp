@@ -141,7 +141,7 @@ private slots:
         const auto header0 = analyzer->tree().node(node0->children()[0]);
         QVERIFY(header0.has_value());
         QCOMPARE(header0->name(), QStringLiteral("AdtsHeader"));
-        QCOMPARE(header0->children().size(), std::size_t(16));
+        QCOMPARE(header0->children().size(), std::size_t(18));
 
         const std::vector<QString> expectedNames0 = {
             QStringLiteral("syncword"),
@@ -159,7 +159,9 @@ private slots:
             QStringLiteral("aac_frame_length"),
             QStringLiteral("adts_buffer_fullness"),
             QStringLiteral("number_of_raw_data_blocks_in_frame"),
-            QStringLiteral("minimum_frame_length")
+            QStringLiteral("minimum_frame_length"),
+            QStringLiteral("raw_data_block_bytes"),
+            QStringLiteral("raw_data_block")
         };
 
         for (std::size_t i = 0; i < expectedNames0.size(); ++i) {
@@ -191,7 +193,7 @@ private slots:
 
         const auto header1 = analyzer->tree().node(node1->children()[0]);
         QVERIFY(header1.has_value());
-        QCOMPARE(header1->children().size(), std::size_t(17));
+        QCOMPARE(header1->children().size(), std::size_t(19));
 
         const std::vector<QString> expectedNames1 = {
             QStringLiteral("syncword"),
@@ -210,7 +212,9 @@ private slots:
             QStringLiteral("adts_buffer_fullness"),
             QStringLiteral("number_of_raw_data_blocks_in_frame"),
             QStringLiteral("crc_check"),
-            QStringLiteral("minimum_frame_length")
+            QStringLiteral("minimum_frame_length"),
+            QStringLiteral("raw_data_block_bytes"),
+            QStringLiteral("raw_data_block")
         };
 
         for (std::size_t i = 0; i < expectedNames1.size(); ++i) {
@@ -349,15 +353,15 @@ private slots:
         QCOMPARE(node1->state(), streamview::core::MaterializationState::Invalid);
         QVERIFY(!node1->diagnostics().empty());
         QCOMPARE(node1->diagnostics().front().code, streamview::core::DiagnosticCode::TruncatedSource);
-        QCOMPARE(node1->diagnostics().front().severity, streamview::core::DiagnosticSeverity::Warning);
-        QCOMPARE(node1->diagnostics().front().message, QStringLiteral("ADTS frame payload is truncated at EOF"));
+        QCOMPARE(node1->diagnostics().front().severity, streamview::core::DiagnosticSeverity::Error);
+        QCOMPARE(node1->diagnostics().front().message, QStringLiteral("Lazy byte region exceeds the available source range"));
 
-        // Header structure node inside truncated frame is fully materialized
+        // Header structure node inside truncated frame is invalid due to truncated lazy payload
         QCOMPARE(node1->children().size(), std::size_t(1));
         const auto header1 = analyzer->tree().node(node1->children()[0]);
         QVERIFY(header1.has_value());
         QCOMPARE(header1->name(), QStringLiteral("AdtsHeader"));
-        QCOMPARE(header1->state(), streamview::core::MaterializationState::Materialized);
+        QCOMPARE(header1->state(), streamview::core::MaterializationState::Invalid);
     }
 
     void handlesTrailingGarbageSmallerThanHeader() {
@@ -485,7 +489,7 @@ private slots:
         QVERIFY(loaded.succeeded());
         QVERIFY(loaded.package.has_value());
         QCOMPARE(loaded.package->identity().packageId(), QStringLiteral("org.streamview.aac"));
-        QCOMPARE(loaded.package->identity().packageVersion(), QStringLiteral("0.1.2"));
+        QCOMPARE(loaded.package->identity().packageVersion(), QStringLiteral("0.1.3"));
 
         streamview::rules::RulePackageCatalog catalog;
         const auto reg = catalog.registerPackage(streamview::rules::RulePackage(*loaded.package));
