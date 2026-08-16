@@ -116,6 +116,7 @@ StreamView 实施计划阶段 4 规定了对 AAC-LC 音频（ISO/IEC 14496-3:201
 1. **ADTS 传输流**：通过 `@enum(AacProfile)` 约束于 `AacProfile`（0=Main, 1=LC, 2=SSR, 3=LTP）。在 ADTS 中传输的 HE-AAC v1/v2 码流依据广播规范在 ADTS 头中均携带 `profile = 1` (LC)，作为 LC 帧正常解码，其 raw data 载荷保持未解析状态。
 2. **AudioSpecificConfig (ASC)**：非 GA 音频对象类型（例如 SBR=5, PS=29, ELD=39）能够成功解析 GA 基础头语法且不报错（`MaterializationState::Materialized`），正如 ADR-0094 §3:315 所记录。在未来里程碑引入专属非 GA 载荷解析器之前，这被正式确认为已知且受控的已记录能力边界。
 3. **未声明载荷区域的 ADTS 规则**：匹配 `audio.aac.adts` 格式但仅声明头部字段、未声明 `@lazy` 载荷区域的规则包无法获得载荷截断上报。载荷截断的尾帧将呈现为有效物化且零诊断，其比特长度被 clamp 至实际可用字节数。未来若要通用化区域级截断探测，必须通过格式中立的核心机制（例如在 scanner 标记截断时，将容器 region 节点置为部分物化并携带通用截断诊断）而非在 C++ 中合成格式专属文案。
+4. **阶段 4 第 4 项正式闭环判定（以能力边界形式闭环）**：StreamView v0.1 不提供 profile 不支持的非致命 DSL/内核上报机制（否则会致命拒绝整帧）。ADTS 0..3 标准 Profile 及 ASC GA/非 GA AOT（包括 HE-AAC SBR=5, PS=29 及 AAC-ELD=39）均解析至其已声明基线语法并合法物化。专属非致命不支持诊断依赖未来独立语言/内核特性（如 `@unsupported` 注解），阶段 4 第 4 项在此以「能力边界已记录且有测试钉住」正式闭环。
 
 ### 6. 逐 bit 验收审计范围与覆盖矩阵（B1, C1, C3）
 
@@ -135,7 +136,7 @@ StreamView 规则不进行 CRC-16 多项式除法或算术校验和计算（正�
 | **2. ASC / PCE** | `tests/rules/aac_adts_analyzer_test.cpp:629-1865`（`decodesAscCase1`..`7`, `rejectsAscCase8NonzeroAlignmentBit`, `rejectsAscCase9PrematureTruncation`，覆盖 113–122 个有序子节点名称，以及有效用例中各 1 处 `comment_field_bytes` 的字节偏移与值断言 [:789, :953, :1117, :1287, :1452, :1619, :1789]）。 | 除 `comment_field_bytes` 外，所有 ASC/PCE 字段均缺失 `logicalRange()` / `bitOffset()` / `bitLength()` 断言。 |
 | **3. 码流截断** | `tests/rules/aac_adts_analyzer_test.cpp:290-323`（`handlesHeaderTruncationWithCrcPresent`）、`:325-365`（`handlesPayloadTruncationAtEof`）、`:379-475`（`materializesTruncatedTrailingFrameWhenRuleLacksPayloadDeclaration`）、`:477-500`（`handlesTrailingGarbageSmallerThanHeader`）、`:502-530`（`resynchronizesAcrossCorruptedByteSpan`）。 | 1. `handlesPayloadTruncationAtEof` 相关断言已在 T18c 中完成迁移。<br>2. 截断节点与诊断位置目前无 `logicalRange()` 显式断言。 |
 | **4. CRC 存在性/错误** | `tests/rules/aac_adts_analyzer_test.cpp:189-230`（`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl` 帧 1，包含 `crc_check` 字段名与值 `0x1234` 断言 [:229]）、`:290-323`（`handlesHeaderTruncationWithCrcPresent`）。 | `crc_check` 的 bit 偏移（bit 56..71）在当前全部测试中无显式断言。 |
-| **5. 不支持 Profile** | `tests/rules/aac_adts_analyzer_test.cpp:106-231`（`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`，验证 `profile = 1 (LC)` [:178]），`:629-1865`（ASC 各用例验证 AOT 2, 5, 29, 39 解析 GA 头部）。 | 补充显式拒绝非标 ADTS profile（如 profile=4）的负向测试。 |
+| **5. 不支持 Profile** | `tests/rules/aac_adts_analyzer_test.cpp:106-231`（`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`，验证 `profile = 1 (LC)` [:178]），`:629-1865`（ASC 各用例验证 AOT 2, 5, 29, 39 解析 GA 头部），`:1914-1958`（`decodesAllStandardAdtsProfilesMainLcSsrLtp`，验证 4 个标准 ADTS profile 0..3 均正常物化）。 | ADTS 负向测试在 2 bit 语法层不可构造（`bits<2>` 值域 0..3 完全被 `enum AacProfile` 覆盖）。ASC 非 GA AOT 正常物化基线头语法（见 §5 第 4 条闭环说明）。 |
 
 ### 7. 阶段 4 任务切片与纪律规划
 
@@ -144,8 +145,8 @@ StreamView 规则不进行 CRC-16 多项式除法或算术校验和计算（正�
 - **任务 T18a**：探测结论、双语 ADR-0095、实施计划记录（Markdown-only）；
 - **任务 T18b**：分析器视图映射扩展至帧跨度（`src/rules/aac_adts_analyzer.cpp:346`），执行器能力切片，不改规则、不升包版本；
 - **任务 T18c**：规则消费 `@lazy raw_data_block`（`aac_adts.svfmt`），包版本升级至 `0.1.3`，测试套件更新；
-- **任务 T18c-2**（当前任务）：清理 `src/rules/aac_adts_analyzer.cpp:456-467` 死代码与可达性论证（执行器能力切片，不升版本）；
-- **任务 T18d**：Profile 处理验证与文档对齐；
+- **任务 T18c-2**：清理 `src/rules/aac_adts_analyzer.cpp:456-467` 死代码与可达性论证（执行器能力切片，不升版本）；
+- **任务 T18d**（当前任务）：Profile 处理验证与文档对齐；
 - **任务 T18e**：关闭类别 1、2、3、4、5 全部缺口、阶段 4 复选框全量勾选（`docs/implementation-plan.md:196-198`）、推进阶段至 Phase 5。
 
 #### 测试引用防漂移纪律

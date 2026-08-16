@@ -1904,6 +1904,59 @@ private slots:
         QVERIFY(analyzer->finished());
     }
 
+    /**
+     * @brief Verifies that all 4 standard ADTS profile values (0=Main, 1=LC, 2=SSR, 3=LTP)
+     * defined in ISO/IEC 14496-3:2019 are fully supported and decoded without error.
+     *
+     * In ADTS header syntax, the profile field is 2 bits (domain 0..3), which exactly
+     * matches the 4 enumerators of enum AacProfile. Therefore, negative testing for out-of-range
+     * profile enum indices is unconstructible in 2-bit ADTS syntax. This test confirms that
+     * the full 2-bit domain maps cleanly to valid AST nodes.
+     */
+    void decodesAllStandardAdtsProfilesMainLcSsrLtp() {
+        const auto loaded = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(loaded.succeeded());
+
+        // Construct 4 frames with profile = 0 (Main), 1 (LC), 2 (SSR), 3 (LTP)
+        std::vector<std::byte> stream;
+        const auto f0 = makeAdtsFrame(100, true, 0); // Main
+        const auto f1 = makeAdtsFrame(100, true, 1); // LC
+        const auto f2 = makeAdtsFrame(100, true, 2); // SSR
+        const auto f3 = makeAdtsFrame(100, true, 3); // LTP
+        stream.insert(stream.end(), f0.begin(), f0.end());
+        stream.insert(stream.end(), f1.begin(), f1.end());
+        stream.insert(stream.end(), f2.begin(), f2.end());
+        stream.insert(stream.end(), f3.begin(), f3.end());
+
+        const MemorySource source(std::move(stream));
+        QString error;
+        auto analyzer = streamview::rules::AacAdtsAnalyzer::create(source, &error);
+        QVERIFY2(analyzer.has_value(), qPrintable(error));
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, streamview::rules::AacAdtsAnalysisStatus::Complete);
+        QCOMPARE(batch.frameNodes.size(), std::size_t(4));
+
+        const std::array<quint64, 4> expectedProfiles = {0, 1, 2, 3};
+        for (std::size_t i = 0; i < 4; ++i) {
+            const auto frameNode = analyzer->tree().node(batch.frameNodes[i]);
+            QVERIFY(frameNode.has_value());
+            QCOMPARE(frameNode->state(), streamview::core::MaterializationState::Materialized);
+            QVERIFY(frameNode->diagnostics().empty());
+
+            const auto headerNode = analyzer->tree().node(frameNode->children()[0]);
+            QVERIFY(headerNode.has_value());
+            QCOMPARE(headerNode->state(), streamview::core::MaterializationState::Materialized);
+            QVERIFY(headerNode->diagnostics().empty());
+
+            // Index 4 in AdtsHeader is profile
+            const auto profileChild = analyzer->tree().node(headerNode->children()[4]);
+            QVERIFY(profileChild.has_value());
+            QCOMPARE(profileChild->name(), QStringLiteral("profile"));
+            QCOMPARE(profileChild->value().toULongLong(), expectedProfiles[i]);
+            QCOMPARE(profileChild->state(), streamview::core::MaterializationState::Materialized);
+        }
+    }
+
 };
 
 QTEST_MAIN(AacAdtsAnalyzerTest)

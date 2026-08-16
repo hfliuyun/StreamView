@@ -148,3 +148,9 @@ Subsequent specification auditing (Task T17d) clarified the subclause structure 
 2. `adts_error_check` (`crc_check`) is defined in Subpart 1 Annex 1.A subclause **1.A.2** (*Error detection*).
 
 The body text citations and References have been synchronized accordingly.
+
+## Amendment: Roadmap Scope and Version Alignment (Task T18d)
+
+During phase implementation, task scoping and rule package versioning evolved as follows:
+1. **Task T17 (ADR-0094)**: ASC, GASpecificConfig, and Program Config Element (PCE) were integrated cohesively into `org.streamview.aac` **v0.1.2** (advancing from v0.1.0).
+2. **Task T18 (ADR-0095)**: Bounded `@lazy raw_data_block` payload encapsulation, package version advancement to **v0.1.3**, runner frame-span view mapping, and profile capability boundary closure.

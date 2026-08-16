@@ -149,3 +149,8 @@ ADTS 码流解析采用“长度链快速推进 + 状态机重同步”的混合
 
 正文表述与参考资料已同步更正。
 
+## 附录修订：路线图范围与版本号对齐（任务 T18d）
+
+在阶段实施过程中，任务范围与规则包版本号演进对齐如下：
+1. **任务 T17（ADR-0094）**：AudioSpecificConfig (ASC)、GASpecificConfig 与 Program Config Element (PCE) 在官方包 `org.streamview.aac` **v0.1.2** 中统一交付（自 v0.1.0 推进）。
+2. **任务 T18（ADR-0095）**：`@lazy raw_data_block` 压缩载荷封装、官方规则包版本升级至 **v0.1.3**、分析器帧跨度视图映射及 Profile 能力边界闭环。
