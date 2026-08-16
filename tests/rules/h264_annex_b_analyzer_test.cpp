@@ -876,12 +876,78 @@ class H264AnnexBAnalyzerTest final : public QObject {
 
 private slots:
     void loadsBundledRule() {
+        const auto loaded = streamview::rules::loadH264AnnexBRulePackage();
+        QVERIFY(loaded.succeeded());
+        QCOMPARE(loaded.package->manifest().packageId,
+                 QStringLiteral("org.streamview.h264"));
+        QCOMPARE(loaded.package->manifest().packageVersion.text(),
+                 QStringLiteral("0.1.39"));
+        QCOMPARE(loaded.package->manifest().entryPoints.size(), std::size_t(1));
+        const auto& entryPoint = loaded.package->manifest().entryPoints.front();
+        QCOMPARE(entryPoint.profiles,
+                 QStringList({QStringLiteral("baseline"),
+                              QStringLiteral("main"),
+                              QStringLiteral("high")}));
+        QCOMPARE(entryPoint.depth,
+                 QStringLiteral("baseline-main-high-slice-header"));
+
         QString errorMessage;
         const QString source = h264AnnexBRuleSource(&errorMessage);
 
         QVERIFY2(!source.isEmpty(), qPrintable(errorMessage));
         const auto parsed = DslParser::parse(source);
         QVERIFY(parsed.succeeded());
+        const auto hasAnnotation = [](const std::vector<streamview::rules::DslAnnotation>& annotations,
+                                      const QString& name) {
+            return std::any_of(annotations.begin(),
+                               annotations.end(),
+                               [&name](const streamview::rules::DslAnnotation& annotation) {
+                                   return annotation.name == name;
+                               });
+        };
+        const auto verifySourceMetadata =
+            [&](const auto& self,
+                const std::vector<streamview::rules::DslStructItem>& items) -> void {
+            for (const auto& item : items) {
+                const std::vector<streamview::rules::DslAnnotation>* annotations = nullptr;
+                QString fieldName;
+                if (item.kind == streamview::rules::DslStructItemKind::Field) {
+                    annotations = &item.field.annotations;
+                    fieldName = item.field.name;
+                } else if (item.kind ==
+                           streamview::rules::DslStructItemKind::LazyRegion) {
+                    annotations = &item.lazyRegion.annotations;
+                    fieldName = item.lazyRegion.name;
+                } else if (item.kind ==
+                           streamview::rules::DslStructItemKind::CompressedPayload) {
+                    annotations = &item.compressedPayload.annotations;
+                    fieldName = item.compressedPayload.name;
+                }
+                if (annotations != nullptr) {
+                    QVERIFY2(hasAnnotation(*annotations, QStringLiteral("spec")),
+                             qPrintable(QStringLiteral("Missing field-level @spec: %1")
+                                            .arg(fieldName)));
+                    QVERIFY2(hasAnnotation(*annotations, QStringLiteral("description")),
+                             qPrintable(QStringLiteral("Missing field-level @description: %1")
+                                            .arg(fieldName)));
+                }
+                if (item.kind == streamview::rules::DslStructItemKind::Conditional) {
+                    self(self, item.thenItems);
+                    self(self, item.elseItems);
+                } else if (item.kind == streamview::rules::DslStructItemKind::Switch) {
+                    for (const auto& arm : item.switchArms) {
+                        self(self, arm.items);
+                    }
+                } else if (item.kind == streamview::rules::DslStructItemKind::Repeat ||
+                           item.kind == streamview::rules::DslStructItemKind::SentinelRepeat ||
+                           item.kind == streamview::rules::DslStructItemKind::WhileRepeat) {
+                    self(self, item.repeatItems);
+                }
+            }
+        };
+        for (const auto& structure : parsed.program.structs) {
+            verifySourceMetadata(verifySourceMetadata, structure.items);
+        }
         QCOMPARE(parsed.program.structs.size(), std::size_t(7));
         QCOMPARE(parsed.program.structs.at(0).name, QStringLiteral("NalUnitHeader"));
         QCOMPARE(parsed.program.structs.at(0).items.size(), std::size_t(4));
@@ -7656,7 +7722,8 @@ private slots:
         QVERIFY(forbidden->metadata().specification.has_value());
         QCOMPARE(forbidden->metadata().specification->standard,
                  QStringLiteral("ITU-T H.264"));
-        QCOMPARE(forbidden->metadata().specification->clause, QStringLiteral("7.3.1"));
+        QCOMPARE(forbidden->metadata().specification->clause,
+                 QStringLiteral("7.3.1, 7.4.1"));
         QVERIFY(!forbidden->metadata().description.isEmpty());
         QVERIFY(!referenceIdc->metadata().description.isEmpty());
         QVERIFY(!unitType->metadata().description.isEmpty());

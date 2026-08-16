@@ -8,10 +8,13 @@ pure u64 num_clock_ts_for_pic_struct(u64 pic_struct) {
 @description("The eight-bit NAL unit header prefix.")
 struct NalUnitHeader {
     bits<1> forbidden_zero_bit @equals(0)
+        @spec("ITU-T H.264", "7.3.1, 7.4.1")
         @description("Must be zero in a conforming NAL unit.");
     bits<2> nal_ref_idc
+        @spec("ITU-T H.264", "7.3.1, 7.4.1")
         @description("Indicates the reference priority of the NAL unit.");
     bits<5> nal_unit_type
+        @spec("ITU-T H.264", "7.3.1, 7.4.1")
         @description("Identifies the syntax carried by the NAL unit.");
     assert(nal_unit_type != 5 || nal_ref_idc != 0) at nal_ref_idc;
 }
@@ -20,6 +23,7 @@ struct NalUnitHeader {
 @description("The access unit delimiter raw byte sequence payload.")
 struct AccessUnitDelimiterRbsp {
     bits<3> primary_pic_type
+        @spec("ITU-T H.264", "7.3.2.4, 7.4.2.4")
         @description("Constrains the slice types present in the following primary picture.");
     rbsp_trailing_bits;
 }
@@ -42,24 +46,51 @@ enum PicOrderCntType {
 @context("h264-sps", seq_parameter_set_id)
 struct SequenceParameterSetRbsp {
     bits<8> profile_idc @enum(SpsProfileIdc) @context_export
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
         @description("Identifies the supported H.264 profile.");
-    bits<1> constraint_set0_flag;
-    bits<1> constraint_set1_flag;
-    bits<1> constraint_set2_flag;
-    bits<1> constraint_set3_flag;
-    bits<1> constraint_set4_flag;
-    bits<1> constraint_set5_flag;
-    bits<2> reserved_zero_2bits @equals(0);
+    bits<1> constraint_set0_flag
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+        @description("Signals the profile constraint set 0 condition.");
+    bits<1> constraint_set1_flag
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+        @description("Signals the profile constraint set 1 condition.");
+    bits<1> constraint_set2_flag
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+        @description("Signals the profile constraint set 2 condition.");
+    bits<1> constraint_set3_flag
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+        @description("Signals the profile constraint set 3 condition.");
+    bits<1> constraint_set4_flag
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+        @description("Signals the profile constraint set 4 condition.");
+    bits<1> constraint_set5_flag
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+        @description("Signals the profile constraint set 5 condition.");
+    bits<2> reserved_zero_2bits @equals(0)
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+        @description("Reserved profile bits that shall be zero.");
     bits<8> level_idc
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
         @description("Identifies the H.264 level.");
     ue seq_parameter_set_id
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
         @description("Identifies this sequence parameter set.");
     if (profile_idc == 100) {
-        ue chroma_format_idc @equals(1);
-        ue bit_depth_luma_minus8 @equals(0);
-        ue bit_depth_chroma_minus8 @equals(0);
-        bits<1> qpprime_y_zero_transform_bypass_flag @equals(0);
-        bits<1> seq_scaling_matrix_present_flag @equals(0);
+        ue chroma_format_idc @equals(1)
+            @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+            @description("Selects the supported 4:2:0 chroma format.");
+        ue bit_depth_luma_minus8 @equals(0)
+            @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+            @description("Signals the luma bit depth offset from eight.");
+        ue bit_depth_chroma_minus8 @equals(0)
+            @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+            @description("Signals the chroma bit depth offset from eight.");
+        bits<1> qpprime_y_zero_transform_bypass_flag @equals(0)
+            @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+            @description("Signals transform-bypass support for lossless coding.");
+        bits<1> seq_scaling_matrix_present_flag @equals(0)
+            @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+            @description("Signals sequence scaling matrices, outside the supported subset.");
     }
     ue log2_max_frame_num_minus4 @range(0, 12) @context_export
         @spec("ITU-T H.264", "7.4.2.1.1")
@@ -95,120 +126,235 @@ struct SequenceParameterSetRbsp {
         optional_value(log2_max_pic_order_cnt_lsb_minus4, 0) @context_export;
     computed<u64> effective_delta_pic_order_always_zero_flag =
         optional_value(delta_pic_order_always_zero_flag, 1) @context_export;
-    ue max_num_ref_frames @context_export;
-    bits<1> gaps_in_frame_num_value_allowed_flag;
-    ue pic_width_in_mbs_minus1;
-    ue pic_height_in_map_units_minus1;
-    bits<1> frame_mbs_only_flag @context_export;
+    ue max_num_ref_frames @context_export
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+        @description("Sets the maximum number of reference frames.");
+    bits<1> gaps_in_frame_num_value_allowed_flag
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+        @description("Allows gaps in the decoded frame-number sequence.");
+    ue pic_width_in_mbs_minus1
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+        @description("Signals picture width in macroblocks minus one.");
+    ue pic_height_in_map_units_minus1
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+        @description("Signals picture height in map units minus one.");
+    bits<1> frame_mbs_only_flag @context_export
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+        @description("Signals whether all pictures are frame coded.");
     if (frame_mbs_only_flag == 0) {
-        bits<1> mb_adaptive_frame_field_flag;
+        bits<1> mb_adaptive_frame_field_flag
+            @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+            @description("Allows macroblock-adaptive frame or field coding.");
     }
-    bits<1> direct_8x8_inference_flag;
-    bits<1> frame_cropping_flag;
+    bits<1> direct_8x8_inference_flag
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+        @description("Signals direct 8x8 motion-vector inference support.");
+    bits<1> frame_cropping_flag
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+        @description("Signals the presence of frame cropping offsets.");
     if (frame_cropping_flag == 1) {
-        ue frame_crop_left_offset;
-        ue frame_crop_right_offset;
-        ue frame_crop_top_offset;
-        ue frame_crop_bottom_offset;
+        ue frame_crop_left_offset
+            @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+            @description("Crops samples from the left edge of the decoded frame.");
+        ue frame_crop_right_offset
+            @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+            @description("Crops samples from the right edge of the decoded frame.");
+        ue frame_crop_top_offset
+            @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+            @description("Crops samples from the top edge of the decoded frame.");
+        ue frame_crop_bottom_offset
+            @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+            @description("Crops samples from the bottom edge of the decoded frame.");
     }
-    bits<1> vui_parameters_present_flag;
+    bits<1> vui_parameters_present_flag
+        @spec("ITU-T H.264", "7.3.2.1.1, 7.4.2.1.1")
+        @description("Signals the presence of video usability information.");
     if (vui_parameters_present_flag == 1) {
-        bits<1> aspect_ratio_info_present_flag @spec("ITU-T H.264", "E.1.1");
+        bits<1> aspect_ratio_info_present_flag
+            @spec("ITU-T H.264", "E.1.1")
+            @description("Signals the presence of aspect-ratio information.");
         if (aspect_ratio_info_present_flag == 1) {
-            bits<8> aspect_ratio_idc @spec("ITU-T H.264", "E.1.1");
+            bits<8> aspect_ratio_idc
+                @spec("ITU-T H.264", "E.1.1")
+                @description("Identifies the coded sample aspect ratio.");
             if (aspect_ratio_idc == 255) {
-                bits<16> sar_width @spec("ITU-T H.264", "E.1.1");
-                bits<16> sar_height @spec("ITU-T H.264", "E.1.1");
+                bits<16> sar_width
+                    @spec("ITU-T H.264", "E.1.1")
+                    @description("Carries the extended sample aspect-ratio width.");
+                bits<16> sar_height
+                    @spec("ITU-T H.264", "E.1.1")
+                    @description("Carries the extended sample aspect-ratio height.");
             }
         }
-        bits<1> overscan_info_present_flag @spec("ITU-T H.264", "E.1.1");
+        bits<1> overscan_info_present_flag
+            @spec("ITU-T H.264", "E.1.1")
+            @description("Signals the presence of overscan information.");
         if (overscan_info_present_flag == 1) {
-            bits<1> overscan_appropriate_flag @spec("ITU-T H.264", "E.1.1");
+            bits<1> overscan_appropriate_flag
+                @spec("ITU-T H.264", "E.1.1")
+                @description("Signals whether the coded frame is appropriate for overscan display.");
         }
-        bits<1> video_signal_type_present_flag @spec("ITU-T H.264", "E.1.1");
+        bits<1> video_signal_type_present_flag
+            @spec("ITU-T H.264", "E.1.1")
+            @description("Signals the presence of video-signal type information.");
         if (video_signal_type_present_flag == 1) {
-            bits<3> video_format @spec("ITU-T H.264", "E.1.1");
-            bits<1> video_full_range_flag @spec("ITU-T H.264", "E.1.1");
-            bits<1> colour_description_present_flag @spec("ITU-T H.264", "E.1.1");
+            bits<3> video_format
+                @spec("ITU-T H.264", "E.1.1")
+                @description("Identifies the coded video format.");
+            bits<1> video_full_range_flag
+                @spec("ITU-T H.264", "E.1.1")
+                @description("Signals whether video samples use the full nominal range.");
+            bits<1> colour_description_present_flag
+                @spec("ITU-T H.264", "E.1.1")
+                @description("Signals the presence of colour description fields.");
             if (colour_description_present_flag == 1) {
-                bits<8> colour_primaries @spec("ITU-T H.264", "E.1.1");
-                bits<8> transfer_characteristics @spec("ITU-T H.264", "E.1.1");
-                bits<8> matrix_coefficients @spec("ITU-T H.264", "E.1.1");
+                bits<8> colour_primaries
+                    @spec("ITU-T H.264", "E.1.1")
+                    @description("Identifies the colour primaries.");
+                bits<8> transfer_characteristics
+                    @spec("ITU-T H.264", "E.1.1")
+                    @description("Identifies the opto-electronic transfer characteristics.");
+                bits<8> matrix_coefficients
+                    @spec("ITU-T H.264", "E.1.1")
+                    @description("Identifies the matrix coefficients used for colour conversion.");
             }
         }
-        bits<1> chroma_loc_info_present_flag @spec("ITU-T H.264", "E.1.1");
+        bits<1> chroma_loc_info_present_flag
+            @spec("ITU-T H.264", "E.1.1")
+            @description("Signals the presence of chroma sample location fields.");
         if (chroma_loc_info_present_flag == 1) {
             ue chroma_sample_loc_type_top_field @range(0, 5)
-                @spec("ITU-T H.264", "E.2.1");
+                @spec("ITU-T H.264", "E.2.1")
+                @description("Selects the chroma sample location for the top field.");
             ue chroma_sample_loc_type_bottom_field @range(0, 5)
-                @spec("ITU-T H.264", "E.2.1");
+                @spec("ITU-T H.264", "E.2.1")
+                @description("Selects the chroma sample location for the bottom field.");
         }
-        bits<1> timing_info_present_flag @spec("ITU-T H.264", "E.1.1");
+        bits<1> timing_info_present_flag
+            @spec("ITU-T H.264", "E.1.1")
+            @description("Signals the presence of timing information.");
         if (timing_info_present_flag == 1) {
-            bits<32> num_units_in_tick @spec("ITU-T H.264", "E.1.1");
-            bits<32> time_scale @spec("ITU-T H.264", "E.1.1");
-            bits<1> fixed_frame_rate_flag @spec("ITU-T H.264", "E.1.1");
+            bits<32> num_units_in_tick
+                @spec("ITU-T H.264", "E.1.1")
+                @description("Sets the number of clock ticks per coded frame interval.");
+            bits<32> time_scale
+                @spec("ITU-T H.264", "E.1.1")
+                @description("Sets the timing clock scale.");
+            bits<1> fixed_frame_rate_flag
+                @spec("ITU-T H.264", "E.1.1")
+                @description("Signals a fixed frame-rate interval.");
         }
-        bits<1> nal_hrd_parameters_present_flag @spec("ITU-T H.264", "E.1.1");
+        bits<1> nal_hrd_parameters_present_flag
+            @spec("ITU-T H.264", "E.1.1")
+            @description("Signals the presence of NAL hypothetical reference decoder parameters.");
         if (nal_hrd_parameters_present_flag == 1) {
             ue nal_hrd_cpb_cnt_minus1 @range(0, 31)
-                @spec("ITU-T H.264", "E.2.2");
-            bits<4> nal_hrd_bit_rate_scale @spec("ITU-T H.264", "E.1.2");
-            bits<4> nal_hrd_cpb_size_scale @spec("ITU-T H.264", "E.1.2");
+                @spec("ITU-T H.264", "E.2.2")
+                @description("Sets the NAL HRD coded-picture-buffer count minus one.");
+            bits<4> nal_hrd_bit_rate_scale
+                @spec("ITU-T H.264", "E.1.2")
+                @description("Scales NAL HRD bit-rate values.");
+            bits<4> nal_hrd_cpb_size_scale
+                @spec("ITU-T H.264", "E.1.2")
+                @description("Scales NAL HRD coded-picture-buffer size values.");
             computed<u64> nal_hrd_cpb_count = nal_hrd_cpb_cnt_minus1 + 1;
             repeat (nal_hrd_cpb_count, 32) {
-                ue nal_hrd_bit_rate_value_minus1 @spec("ITU-T H.264", "E.1.2");
-                ue nal_hrd_cpb_size_value_minus1 @spec("ITU-T H.264", "E.1.2");
-                bits<1> nal_hrd_cbr_flag @spec("ITU-T H.264", "E.1.2");
+                ue nal_hrd_bit_rate_value_minus1
+                    @spec("ITU-T H.264", "E.1.2")
+                    @description("Carries one NAL HRD bit-rate value minus one.");
+                ue nal_hrd_cpb_size_value_minus1
+                    @spec("ITU-T H.264", "E.1.2")
+                    @description("Carries one NAL HRD coded-picture-buffer size minus one.");
+                bits<1> nal_hrd_cbr_flag
+                    @spec("ITU-T H.264", "E.1.2")
+                    @description("Signals constant bit rate for one NAL HRD entry.");
             }
             bits<5> nal_hrd_initial_cpb_removal_delay_length_minus1
-                @spec("ITU-T H.264", "E.1.2");
+                @spec("ITU-T H.264", "E.1.2")
+                @description("Sets the NAL HRD initial removal-delay field length minus one.");
             bits<5> nal_hrd_cpb_removal_delay_length_minus1
-                @spec("ITU-T H.264", "E.1.2");
+                @spec("ITU-T H.264", "E.1.2")
+                @description("Sets the NAL HRD removal-delay field length minus one.");
             bits<5> nal_hrd_dpb_output_delay_length_minus1
-                @spec("ITU-T H.264", "E.1.2");
-            bits<5> nal_hrd_time_offset_length @spec("ITU-T H.264", "E.1.2");
+                @spec("ITU-T H.264", "E.1.2")
+                @description("Sets the NAL HRD output-delay field length minus one.");
+            bits<5> nal_hrd_time_offset_length
+                @spec("ITU-T H.264", "E.1.2")
+                @description("Sets the NAL HRD time-offset field length.");
         }
-        bits<1> vcl_hrd_parameters_present_flag @spec("ITU-T H.264", "E.1.1");
+        bits<1> vcl_hrd_parameters_present_flag
+            @spec("ITU-T H.264", "E.1.1")
+            @description("Signals the presence of VCL hypothetical reference decoder parameters.");
         if (vcl_hrd_parameters_present_flag == 1) {
             ue vcl_hrd_cpb_cnt_minus1 @range(0, 31)
-                @spec("ITU-T H.264", "E.2.2");
-            bits<4> vcl_hrd_bit_rate_scale @spec("ITU-T H.264", "E.1.2");
-            bits<4> vcl_hrd_cpb_size_scale @spec("ITU-T H.264", "E.1.2");
+                @spec("ITU-T H.264", "E.2.2")
+                @description("Sets the VCL HRD coded-picture-buffer count minus one.");
+            bits<4> vcl_hrd_bit_rate_scale
+                @spec("ITU-T H.264", "E.1.2")
+                @description("Scales VCL HRD bit-rate values.");
+            bits<4> vcl_hrd_cpb_size_scale
+                @spec("ITU-T H.264", "E.1.2")
+                @description("Scales VCL HRD coded-picture-buffer size values.");
             computed<u64> vcl_hrd_cpb_count = vcl_hrd_cpb_cnt_minus1 + 1;
             repeat (vcl_hrd_cpb_count, 32) {
-                ue vcl_hrd_bit_rate_value_minus1 @spec("ITU-T H.264", "E.1.2");
-                ue vcl_hrd_cpb_size_value_minus1 @spec("ITU-T H.264", "E.1.2");
-                bits<1> vcl_hrd_cbr_flag @spec("ITU-T H.264", "E.1.2");
+                ue vcl_hrd_bit_rate_value_minus1
+                    @spec("ITU-T H.264", "E.1.2")
+                    @description("Carries one VCL HRD bit-rate value minus one.");
+                ue vcl_hrd_cpb_size_value_minus1
+                    @spec("ITU-T H.264", "E.1.2")
+                    @description("Carries one VCL HRD coded-picture-buffer size minus one.");
+                bits<1> vcl_hrd_cbr_flag
+                    @spec("ITU-T H.264", "E.1.2")
+                    @description("Signals constant bit rate for one VCL HRD entry.");
             }
             bits<5> vcl_hrd_initial_cpb_removal_delay_length_minus1
-                @spec("ITU-T H.264", "E.1.2");
+                @spec("ITU-T H.264", "E.1.2")
+                @description("Sets the VCL HRD initial removal-delay field length minus one.");
             bits<5> vcl_hrd_cpb_removal_delay_length_minus1
-                @spec("ITU-T H.264", "E.1.2");
+                @spec("ITU-T H.264", "E.1.2")
+                @description("Sets the VCL HRD removal-delay field length minus one.");
             bits<5> vcl_hrd_dpb_output_delay_length_minus1
-                @spec("ITU-T H.264", "E.1.2");
-            bits<5> vcl_hrd_time_offset_length @spec("ITU-T H.264", "E.1.2");
+                @spec("ITU-T H.264", "E.1.2")
+                @description("Sets the VCL HRD output-delay field length minus one.");
+            bits<5> vcl_hrd_time_offset_length
+                @spec("ITU-T H.264", "E.1.2")
+                @description("Sets the VCL HRD time-offset field length.");
         }
         computed<bool> hrd_parameters_present =
             nal_hrd_parameters_present_flag == 1 || vcl_hrd_parameters_present_flag == 1;
         if (hrd_parameters_present) {
-            bits<1> low_delay_hrd_flag @spec("ITU-T H.264", "E.1.1");
+            bits<1> low_delay_hrd_flag
+                @spec("ITU-T H.264", "E.1.1")
+                @description("Signals low-delay operation for the active HRD parameters.");
         }
-        bits<1> pic_struct_present_flag @spec("ITU-T H.264", "E.1.1");
-        bits<1> bitstream_restriction_flag @spec("ITU-T H.264", "E.1.1");
+        bits<1> pic_struct_present_flag
+            @spec("ITU-T H.264", "E.1.1")
+            @description("Signals picture-structure information in picture-timing SEI.");
+        bits<1> bitstream_restriction_flag
+            @spec("ITU-T H.264", "E.1.1")
+            @description("Signals the presence of bitstream restriction parameters.");
         if (bitstream_restriction_flag == 1) {
             bits<1> motion_vectors_over_pic_boundaries_flag
-                @spec("ITU-T H.264", "E.1.1");
+                @spec("ITU-T H.264", "E.1.1")
+                @description("Allows motion vectors to point outside picture boundaries.");
             ue max_bytes_per_pic_denom @range(0, 16)
-                @spec("ITU-T H.264", "E.2.1");
+                @spec("ITU-T H.264", "E.2.1")
+                @description("Limits coded bytes per picture denominator.");
             ue max_bits_per_mb_denom @range(0, 16)
-                @spec("ITU-T H.264", "E.2.1");
+                @spec("ITU-T H.264", "E.2.1")
+                @description("Limits coded bits per macroblock denominator.");
             ue log2_max_mv_length_horizontal @range(0, 16)
-                @spec("ITU-T H.264", "E.2.1");
+                @spec("ITU-T H.264", "E.2.1")
+                @description("Sets the maximum horizontal motion-vector length exponent.");
             ue log2_max_mv_length_vertical @range(0, 16)
-                @spec("ITU-T H.264", "E.2.1");
-            ue max_num_reorder_frames @spec("ITU-T H.264", "E.1.1");
-            ue max_dec_frame_buffering @spec("ITU-T H.264", "E.1.1");
+                @spec("ITU-T H.264", "E.2.1")
+                @description("Sets the maximum vertical motion-vector length exponent.");
+            ue max_num_reorder_frames
+                @spec("ITU-T H.264", "E.1.1")
+                @description("Limits the number of reorderable decoded frames.");
+            ue max_dec_frame_buffering
+                @spec("ITU-T H.264", "E.1.1")
+                @description("Signals the maximum decoded-picture-buffer size.");
         }
     }
     computed<u64> effective_nal_hrd_parameters_present_flag =
@@ -257,10 +403,13 @@ struct PictureParameterSetRbsp {
         @spec("ITU-T H.264", "7.4.2.2")
         @description("Identifies the referenced sequence parameter set; conformant values are 0 to 31.");
     bits<1> entropy_coding_mode_flag @context_export
+        @spec("ITU-T H.264", "7.3.2.2, 7.4.2.2")
         @description("Selects CAVLC or CABAC entropy coding for slices using this PPS.");
     bits<1> bottom_field_pic_order_in_frame_present_flag @context_export
+        @spec("ITU-T H.264", "7.3.2.2, 7.4.2.2")
         @description("Signals bottom-field picture-order syntax in associated slice headers.");
     ue num_slice_groups_minus1 @equals(0)
+        @spec("ITU-T H.264", "7.3.2.2, 7.4.2.2")
         @description("The supported base syntax contains one slice group.");
     ue num_ref_idx_l0_default_active_minus1 @range(0, 31) @context_export
         @spec("ITU-T H.264", "7.4.2.2")
@@ -269,10 +418,13 @@ struct PictureParameterSetRbsp {
         @spec("ITU-T H.264", "7.4.2.2")
         @description("Sets the default list 1 reference count; conformant values are 0 to 31.");
     bits<1> weighted_pred_flag @context_export
+        @spec("ITU-T H.264", "7.3.2.2, 7.4.2.2")
         @description("Enables weighted prediction for P and SP slices using this PPS.");
     bits<2> weighted_bipred_idc @enum(WeightedBipredIdc) @context_export
+        @spec("ITU-T H.264", "7.3.2.2, 7.4.2.2")
         @description("Selects the supported weighted biprediction mode.");
     se pic_init_qp_minus26
+        @spec("ITU-T H.264", "7.3.2.2, 7.4.2.2")
         @description("Sets the initial luma quantization parameter relative to 26.");
     se pic_init_qs_minus26 @range(-26, 25)
         @spec("ITU-T H.264", "7.4.2.2")
@@ -281,10 +433,13 @@ struct PictureParameterSetRbsp {
         @spec("ITU-T H.264", "7.4.2.2")
         @description("Sets the first chroma quantization-parameter index offset; conformant values are -12 to 12.");
     bits<1> deblocking_filter_control_present_flag @context_export
+        @spec("ITU-T H.264", "7.3.2.2, 7.4.2.2")
         @description("Signals deblocking-filter control syntax in associated slice headers.");
     bits<1> constrained_intra_pred_flag
+        @spec("ITU-T H.264", "7.3.2.2, 7.4.2.2")
         @description("Restricts intra prediction to intra-coded neighboring macroblocks.");
     bits<1> redundant_pic_cnt_present_flag @context_export
+        @spec("ITU-T H.264", "7.3.2.2, 7.4.2.2")
         @description("Signals redundant-picture count syntax in associated slice headers.");
     computed<bool> has_pps_extension = more_rbsp_data();
     assert(!has_pps_extension ||
@@ -346,10 +501,13 @@ enum DisableDeblockingFilterIdc {
 @context_import("h264-pps", pic_parameter_set_id)
 struct IdrSliceLayerWithoutPartitioningRbsp {
     ue first_mb_in_slice
+        @spec("ITU-T H.264", "7.3.3, 7.4.3")
         @description("Identifies the first macroblock in this slice.");
     ue slice_type @enum(IdrAllISliceType)
+        @spec("ITU-T H.264", "7.3.3, 7.4.3")
         @description("Selects the supported all-I slice header form.");
     ue pic_parameter_set_id @range(0, 255)
+        @spec("ITU-T H.264", "7.3.3, 7.4.3")
         @description("Selects the active picture parameter set.");
     bits<(context_value(pic_parameter_set_id,
                         h264_sps,
@@ -375,6 +533,7 @@ struct IdrSliceLayerWithoutPartitioningRbsp {
         bits<(context_value(pic_parameter_set_id,
                             h264_sps,
                             effective_log2_max_pic_order_cnt_lsb_minus4) + 4)> pic_order_cnt_lsb
+            @spec("ITU-T H.264", "7.3.3, 7.4.3")
             @description("Carries the type-0 picture-order-count least-significant bits.");
         computed<bool> has_delta_pic_order_cnt_bottom =
             context_value(pic_parameter_set_id,
@@ -411,10 +570,13 @@ struct IdrSliceLayerWithoutPartitioningRbsp {
             @description("Identifies the redundant representation of this picture.");
     }
     bits<1> no_output_of_prior_pics_flag
+        @spec("ITU-T H.264", "7.3.3.3, 7.4.3.3")
         @description("Controls output of pictures preceding this IDR picture.");
     bits<1> long_term_reference_flag
+        @spec("ITU-T H.264", "7.3.3.3, 7.4.3.3")
         @description("Marks the IDR picture as a long-term reference when set.");
     se slice_qp_delta
+        @spec("ITU-T H.264", "7.3.3, 7.4.3")
         @description("Adjusts the initial luma quantization parameter for the slice.");
     if (context_value(pic_parameter_set_id,
                       h264_pps,
@@ -442,17 +604,21 @@ struct IdrSliceLayerWithoutPartitioningRbsp {
 @context_import("h264-pps", pic_parameter_set_id)
 struct NonIdrSliceLayerWithoutPartitioningRbsp {
     ue first_mb_in_slice
+        @spec("ITU-T H.264", "7.3.3, 7.4.3")
         @description("Identifies the first macroblock in this slice.");
     ue slice_type @enum(NonIdrSliceType)
+        @spec("ITU-T H.264", "7.3.3, 7.4.3")
         @description("Selects the supported non-IDR I, P, or B slice header form.");
     computed<bool> is_p_slice = slice_type == 0 || slice_type == 5;
     computed<bool> is_b_slice = slice_type == 1 || slice_type == 6;
     computed<bool> uses_reference_lists = is_p_slice || is_b_slice;
     ue pic_parameter_set_id @range(0, 255)
+        @spec("ITU-T H.264", "7.3.3, 7.4.3")
         @description("Selects the active picture parameter set.");
     bits<(context_value(pic_parameter_set_id,
                         h264_sps,
                         log2_max_frame_num_minus4) + 4)> frame_num
+        @spec("ITU-T H.264", "7.3.3, 7.4.3")
         @description("Identifies the decoded picture within the frame-number wrap.");
     if (context_value(pic_parameter_set_id,
                       h264_sps,
@@ -470,6 +636,7 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
         bits<(context_value(pic_parameter_set_id,
                             h264_sps,
                             effective_log2_max_pic_order_cnt_lsb_minus4) + 4)> pic_order_cnt_lsb
+            @spec("ITU-T H.264", "7.3.3, 7.4.3")
             @description("Carries the type-0 picture-order-count least-significant bits.");
         computed<bool> has_delta_pic_order_cnt_bottom =
             context_value(pic_parameter_set_id,
@@ -727,6 +894,7 @@ struct NonIdrSliceLayerWithoutPartitioningRbsp {
         }
     }
     se slice_qp_delta
+        @spec("ITU-T H.264", "7.3.3, 7.4.3")
         @description("Adjusts the initial luma quantization parameter for the slice.");
     if (context_value(pic_parameter_set_id,
                       h264_pps,
