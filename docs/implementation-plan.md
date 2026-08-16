@@ -203,9 +203,9 @@ Blockers: None
 
 - [x] 解析 ADTS fixed/variable header、frame length、buffer fullness、raw block count 和 CRC。
 - [x] 解析 AudioSpecificConfig、GASpecificConfig 和 Program Config Element。（验收：ADR-0094 9 项测试矩阵 + resolvesAscEntryPointFromBundledRulePackage，本地 dev/ci/sanitize 35/35，hosted run 31928187049 全平台通过）
-- [x] 将 `raw_data_block` 整体标记为压缩载荷，不隐藏实现 Huffman 解码。（验收：ADR-0095 §2 `@lazy raw_data_block` 规则声明，v0.1.3，tests/rules/aac_adts_analyzer_test.cpp:141-230 帧 0/1 载荷封装实测通过）
+- [x] 将 `raw_data_block` 整体标记为压缩载荷，不隐藏实现 Huffman 解码。（验收：ADR-0095 §2 `@lazy raw_data_block` 规则声明，v0.1.3，tests/rules/aac_adts_analyzer_test.cpp:141-230 帧 0/1 载荷封装及 :2600/:2652 `MaterializationState::Lazy` 状态断言实测通过）
 - [x] 对 HE-AAC、ELD 和其他 profile 明确报告部分识别或不支持。（验收：ADR-0095 §5 明确能力边界闭环；ADTS 0..3 经 tests/rules/aac_adts_analyzer_test.cpp:1916-1958 实测钉住；ASC AOT 5/29/39 分别经 :1960-2128、:2130-2298、:2300-2467 实测钉住；未来非致命上报机制顺延至独立能力切片）
-- [x] 验证 ADTS、ASC、截断、CRC 错误和不支持 profile 的逐 bit 结果。（验收：ADR-0095 §6 5 类验收矩阵全量关闭；新增测试用例 :2473-2600、:2606-2677、:2682-2740；AAC analyzer 套件 31/31 全量通过）
+- [x] 验证 ADTS、ASC、截断、CRC 错误和不支持 profile 的逐 bit 结果。（验收：ADR-0095 §6 5 类验收矩阵全量关闭；测试用例 :2473-2655、:2661-2732、:2737-2795；AAC analyzer 套件 31/31 全量通过）
 
 ## 阶段 5：非分片 MP4/MOV 与跨层导航
 
@@ -1771,5 +1771,20 @@ Blockers: None
   3. 测试与验证：
      - 新增测试用例按纪律第 6 条追加至类末尾，AAC analyzer 测试用例数由 28 增至 31，全部 31/31 通过；
      - CTest 目标数因 §0b 引入 `markdown_hygiene` 目标由 35 增至 36，dev/ci/sanitize 三套构建全部 36/36 全绿。
+  Next Action 指向 Phase 5 ADR 与架构设计编写。
+- 2026-08-16：完成 T18f 阶段 4 收尾校正（任务 T18f / commit `TBD`）。
+  1. F1 / F2 Markdown 卫生检查护栏修正（commit `04f15cd`）：
+     - 在 `cmake/check_markdown_hygiene.cmake` 中对分号进行转义保护，消除分号导致列表分割进而引发的行号位移缺陷；
+     - 给出真实等号证明（`ADR-0090:40` 插入制表符，护栏报出 `:40` 与 `awk` 实测 `:40` 严格相等）；
+     - 扫描范围限制为 `git ls-files "*.md"` 并排除 `third_party/`。
+  2. F3 / F4 测试断言与覆盖校正：
+     - 在 `decodesAdtsHeaderBitByBitRangesAndZeroLengthPayload` 中对 Frame 2 补充 `raw_data_block` 的 `MaterializationState::Lazy` 状态断言（`:2600`）；
+     - 对 Frame 3（100 字节含 CRC）补充 19 个完整子节点、`crc_check`（bit 56..71）、`raw_data_block`（bit 72..800，len 728，`MaterializationState::Lazy`）全量断言（`:2652`）。
+  3. F5 验收表述与未抽样余量校正：
+     - 计划 :206 验收注补入 Lazy 状态断言引用（`:2600` 与 `:2652`）；
+     - ADR-0095 §6 类别 2 明确将 PCE 标量字段与声道循环列表列入显式未抽样余量声明；
+     - 同 commit 执行纪律第 7 条行号复核，全量同步所有受位移影响的测试行号引用（`:2473-2655`、`:2661-2732`、`:2737-2795`）。
+  4. 测试与 Hosted CI 验证：
+     - dev/ci/sanitize 三套构建全部 36/36 全绿，AAC analyzer 31/31，H.264 analyzer 174/174。
   Next Action 指向 Phase 5 ADR 与架构设计编写。
 

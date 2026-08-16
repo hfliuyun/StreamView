@@ -2596,6 +2596,61 @@ private slots:
                 QCOMPARE(c->location()->logicalRange().start().bitOffset(), expectedFields2[i].bitOffset);
                 QCOMPARE(c->location()->logicalRange().bitLength(), expectedFields2[i].bitLength);
             }
+            if (expectedFields2[i].name == QStringLiteral("raw_data_block")) {
+                QCOMPARE(c->state(), streamview::core::MaterializationState::Lazy);
+            }
+        }
+
+        // 4. Frame 3: Exhaustive bit-by-bit range & value checks for Frame with CRC (19 fields)
+        const auto fn3 = analyzer->tree().node(batch.frameNodes[3]);
+        QVERIFY(fn3.has_value());
+        QCOMPARE(fn3->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(fn3->diagnostics().empty());
+
+        const auto hn3 = analyzer->tree().node(fn3->children()[0]);
+        QVERIFY(hn3.has_value());
+
+        const std::vector<ExpectedField> expectedFields3 = {
+            {QStringLiteral("syncword"), 0, 12, 4095, false},
+            {QStringLiteral("id"), 12, 1, 0, false},
+            {QStringLiteral("layer"), 13, 2, 0, false},
+            {QStringLiteral("protection_absent"), 15, 1, 0, false},
+            {QStringLiteral("profile"), 16, 2, 1, false},
+            {QStringLiteral("sampling_frequency_index"), 18, 4, 4, false},
+            {QStringLiteral("private_bit"), 22, 1, 0, false},
+            {QStringLiteral("channel_configuration"), 23, 3, 2, false},
+            {QStringLiteral("original_copy"), 26, 1, 0, false},
+            {QStringLiteral("home"), 27, 1, 0, false},
+            {QStringLiteral("copyright_identification_bit"), 28, 1, 0, false},
+            {QStringLiteral("copyright_identification_start"), 29, 1, 0, false},
+            {QStringLiteral("aac_frame_length"), 30, 13, 100, false},
+            {QStringLiteral("adts_buffer_fullness"), 43, 11, 2047, false},
+            {QStringLiteral("number_of_raw_data_blocks_in_frame"), 54, 2, 0, false},
+            {QStringLiteral("crc_check"), 56, 16, 0x1234, false},
+            {QStringLiteral("minimum_frame_length"), 0, 0, 9, true},
+            {QStringLiteral("raw_data_block_bytes"), 0, 0, 91, true},
+            {QStringLiteral("raw_data_block"), 72, 728, 0, false}
+        };
+
+        QCOMPARE(hn3->children().size(), expectedFields3.size());
+        for (std::size_t i = 0; i < expectedFields3.size(); ++i) {
+            const auto c = analyzer->tree().node(hn3->children()[i]);
+            QVERIFY(c.has_value());
+            QCOMPARE(c->name(), expectedFields3[i].name);
+            if (!expectedFields3[i].isComputed && expectedFields3[i].name != QStringLiteral("raw_data_block")) {
+                QCOMPARE(c->value().toULongLong(), expectedFields3[i].value);
+            }
+            if (expectedFields3[i].isComputed) {
+                QCOMPARE(c->value().toULongLong(), expectedFields3[i].value);
+            }
+            if (!expectedFields3[i].isComputed) {
+                QVERIFY(c->location().has_value());
+                QCOMPARE(c->location()->logicalRange().start().bitOffset(), expectedFields3[i].bitOffset);
+                QCOMPARE(c->location()->logicalRange().bitLength(), expectedFields3[i].bitLength);
+            }
+            if (expectedFields3[i].name == QStringLiteral("raw_data_block")) {
+                QCOMPARE(c->state(), streamview::core::MaterializationState::Lazy);
+            }
         }
     }
 
