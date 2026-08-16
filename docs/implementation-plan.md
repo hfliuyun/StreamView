@@ -3,7 +3,7 @@
 Status: In Progress
 Current Phase: 4
 Last Completed Step: ADR-0095 test citation hardening and audit gap reconciliation (Task T18a-fix2)
-Next Action: Update AAC ADTS analyzer runner view mapping to frame span (Task T18b)
+Next Action: Expand AAC ADTS analyzer runner view mapping to frame span (Task T18b)
 Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31930252331 (Ubuntu job 95123835282, macOS job 95123835271, Windows job 95123835269) passed 100%
 Blockers: None
 

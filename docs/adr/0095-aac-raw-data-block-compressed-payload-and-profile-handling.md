@@ -94,9 +94,9 @@ We adopt the universal DSL VM truncation contract (Option A):
 - `tests/rules/aac_adts_analyzer_test.cpp:143-170` (Frame 0 in `createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`): `children().size()` at line 144 advances from 16 to 18; `expectedNames0` appends `raw_data_block_bytes` and `raw_data_block`.
 - `tests/rules/aac_adts_analyzer_test.cpp:193-220` (Frame 1 in `createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`): `children().size()` at line 194 advances from 17 to 19; `expectedNames1` appends `raw_data_block_bytes` and `raw_data_block`.
 - `tests/rules/aac_adts_analyzer_test.cpp:321-361` (`handlesPayloadTruncationAtEof`):
-  - Line 352: `DiagnosticSeverity::Warning` $	o$ `DiagnosticSeverity::Error`;
-  - Line 353: `"ADTS frame payload is truncated at EOF"` $	o$ `"Lazy byte region exceeds the available source range"`;
-  - Line 360: `header1->state() == MaterializationState::Materialized` $	o$ `header1->state() == MaterializationState::Invalid`;
+  - Line 352: `DiagnosticSeverity::Warning` $\to$ `DiagnosticSeverity::Error`;
+  - Line 353: `"ADTS frame payload is truncated at EOF"` $\to$ `"Lazy byte region exceeds the available source range"`;
+  - Line 360: `header1->state() == MaterializationState::Materialized` $\to$ `header1->state() == MaterializationState::Invalid`;
   - Line 356: `node1->children().size() == 1` remains unchanged.
 
 ### 5. Profile Handling and Explicit Capability Boundaries
@@ -128,8 +128,8 @@ StreamView rules do NOT perform CRC-16 polynomial division or arithmetic checksu
 
 To uphold strict single-responsibility commits and keep capability changes separate from rule consumption:
 
-- **Task T18a** (Current): Probing conclusions, bilingual ADR-0095, implementation plan update (Markdown-only).
-- **Task T18b**: Analyzer view mapping update to frame span (`src/rules/aac_adts_analyzer.cpp:346`), runner capability slice without package version bump.
+- **Task T18a**: Probing conclusions, bilingual ADR-0095, implementation plan update (Markdown-only).
+- **Task T18b** (Current): Analyzer view mapping update to frame span (`src/rules/aac_adts_analyzer.cpp:346`), runner capability slice without package version bump.
 - **Task T18c**: Rule consumption of `@lazy raw_data_block` in `aac_adts.svfmt`, package version bump to `0.1.3`, test suite updates.
 - **Task T18d**: Profile handling verification & documentation alignment.
 - **Task T18e**: Bit-by-bit audit closing all gaps in Category 1, 2, 3, 4, and 5, Phase 4 checkbox completion (`docs/implementation-plan.md:196-198`), Phase advancement to Phase 5.
