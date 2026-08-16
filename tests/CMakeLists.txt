@@ -140,3 +140,9 @@ if(TARGET streamview)
             PASS_REGULAR_EXPRESSION "StreamView 0[.]1[.]0"
     )
 endif()
+
+add_test(
+    NAME markdown_hygiene
+    COMMAND ${CMAKE_COMMAND} -DPROJECT_SOURCE_DIR=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_markdown_hygiene.cmake
+)
+
