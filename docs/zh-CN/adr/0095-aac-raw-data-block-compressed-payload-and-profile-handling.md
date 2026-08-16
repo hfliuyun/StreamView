@@ -100,11 +100,16 @@ StreamView 实施计划阶段 4 规定了对 AAC-LC 音频（ISO/IEC 14496-3:201
   - 第 356 行：`node1->children().size() == 1` 保持不变。
 - `tests/rules/aac_adts_analyzer_test.cpp:488`（`resolvesAscEntryPointFromBundledRulePackage`）：`loaded.package->identity().packageVersion()` 断言由 `"0.1.2"` 同步升级为 `"0.1.3"`。
 
-*死代码清理与全路径可达性论证（G3，任务 T18c-2）*：
-在 `src/rules/aac_adts_analyzer.cpp` 中，已彻底删除原载荷截断合成 Warning 分支（`if (record.truncated) { ... }`）。通过穷举三条控制流路径严密论证其绝对不可达：
-1. **路径 A（DSL 执行失败隔离）**：在 `publishRecord` 中，DSL 执行失败（`!execution.materialized()`）时，第 426 行将 `frameNode` 标记为 `Invalid` 并附带 VM 诊断，加入 `batch.frameNodes`，随后第 452 行直接 `return true`（致命错误则更早返回 `false`），控制流绝不落入被删分支。
-2. **路径 B（VM 截断判定的算术必然性）**：截断发生时 `availableBytes < aac_frame_length`（`src/rules/aac_adts_scanner.cpp:143`）。由于 `raw_data_block_bytes = aac_frame_length - minimum_frame_length`，在读取完 `minimum_frame_length` 字节头部后，Reader 剩余字节为 `availableBytes - minimum_frame_length < raw_data_block_bytes`。因此 `src/rules/dsl_vm.cpp:3140` 中的 `bitCount > reader.remainingBits()` 判定无条件成立，恒定返回 `DslExecutionStatus::TruncatedSource`（`"Lazy byte region exceeds the available source range"`），进而无条件触发路径 A。（边界注意：当 `availableBytes == aac_frame_length` 时，scanner 第 140 行走非截断分支，`record.truncated` 为 false）。
-3. **路径 C（守卫条件恒真不变式）**：在 `AacAdtsScanner` 中，任何产出的 record 都必须满足 `offset + 7 <= sourceSize`（`src/rules/aac_adts_scanner.cpp:57-65`），确保 `availableHeader = min(availableBytes, headerLength) >= 7` 字节（`src/rules/aac_adts_scanner.cpp:144`）。因此 `record.headerSpan->bitLength() >= 56 > 0` 恒真，证实第 329 行的 `record.headerSpan && record.headerSpan->bitLength() > 0` 守卫绝不会短路绕过 DSL 执行。
+*死代码清理、有条件可达性论证与行为收窄（G3，任务 T18c-2）*：
+在 `src/rules/aac_adts_analyzer.cpp` 中，已彻底删除原载荷截断合成 Warning 分支（`if (record.truncated) { ... }`）。
+
+1. **有条件可达性论证（官方包满足）**：三路径论证成立的严格前提是「生效规则声明了覆盖帧剩余字节的 `@lazy` 区域」（官方包 `org.streamview.aac` 0.1.3 满足该前提）：
+   - **路径 A（DSL 执行失败隔离）**：在 `publishRecord` 中，DSL 执行失败（`!execution.materialized()`）时，第 426 行将 `frameNode` 标记为 `Invalid` 并附带 VM 诊断，加入 `batch.frameNodes`，随后第 452 行直接 `return true`（致命错误则更早返回 `false`），控制流绝不落入后续语句。
+   - **路径 B（VM 截断判定的算术必然性）**：截断发生时 `availableBytes < aac_frame_length`（`src/rules/aac_adts_scanner.cpp:143`）。由于 `raw_data_block_bytes = aac_frame_length - minimum_frame_length`，在读取完 `minimum_frame_length` 字节头部后，Reader 剩余字节为 `availableBytes - minimum_frame_length < raw_data_block_bytes`。因此 `src/rules/dsl_vm.cpp:3140` 中的 `bitCount > reader.remainingBits()` 判定无条件成立，恒定返回 `DslExecutionStatus::TruncatedSource`（`"Lazy byte region exceeds the available source range"`），进而无条件触发路径 A。（边界注意：当 `availableBytes == aac_frame_length` 时，scanner 第 140 行走非截断分支，`record.truncated` 为 false）。
+   - **路径 C（守卫条件恒真不变式）**：在 `AacAdtsScanner` 中，任何产出的 record 都必须满足 `offset + 7 <= sourceSize`（`src/rules/aac_adts_scanner.cpp:57-65`），确保 `availableHeader = min(availableBytes, headerLength) >= 7` 字节（`src/rules/aac_adts_scanner.cpp:144`）。因此 `record.headerSpan->bitLength() >= 56 > 0` 恒真，证实第 329 行的 `record.headerSpan && record.headerSpan->bitLength() > 0` 守卫绝不会短路绕过 DSL 执行。
+2. **自定义/第三方规则的行为收窄后果**：对不满足该条件的规则（未声明载荷区域的自定义包，准入门见 `src/app/analysis_session.cpp:144-147`），载荷截断的尾帧将以 `Materialized` 且无诊断呈现，其逻辑范围被 clamp 至实际可用字节数。该已知能力边界由回归测试 `materializesTruncatedTrailingFrameWhenRuleLacksPayloadDeclaration`（`tests/rules/aac_adts_analyzer_test.cpp:379-475`）严格钉住。
+3. **架构理由**：被删代码块在 C++ 中硬编码合成格式专属诊断，违反「格式语义只能进 DSL/规则」全局禁令；截断上报的正当机制是规则声明载荷区域后由 VM 通用契约产生（ADR-0092 §1.3）。
+4. **`record.truncated` 现状**：`record.truncated` 在 `src/` 内已无读取点，作为 scanner 层扫描事实保留，scanner 测试套件（`tests/rules/aac_adts_scanner_test.cpp`）继续断言。
 
 ### 5. Profile 处理与明确能力边界
 

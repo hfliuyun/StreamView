@@ -364,6 +364,116 @@ private slots:
         QCOMPARE(header1->state(), streamview::core::MaterializationState::Invalid);
     }
 
+    /**
+     * @brief Pins the known capability boundary / narrowed behavior when an ADTS rule
+     * package does NOT declare a payload region (e.g. lacks @lazy raw_data_block).
+     *
+     * In this scenario, the scanner flags record.truncated == true, but the DSL VM
+     * successfully decodes all declared header fields within the available frame mapping.
+     * Because format-specific diagnostics are no longer synthesized in C++, the trailing
+     * truncated frame region node transitions to Materialized with zero diagnostics, with its
+     * logical range clamped to available bytes in the source (30 bytes * 8 = 240 bits).
+     *
+     * This test intentionally documents and pins this narrowed capability boundary.
+     */
+    void materializesTruncatedTrailingFrameWhenRuleLacksPayloadDeclaration() {
+        const QByteArray toml = QByteArrayLiteral(
+            "manifest-version = 1\n\n"
+            "[package]\n"
+            "id = \"org.custom.aac\"\n"
+            "version = \"0.1.0\"\n"
+            "authors = [\"Custom Author\"]\n"
+            "license = \"MIT\"\n"
+            "dependencies = []\n\n"
+            "[compatibility]\n"
+            "language = \"0.1\"\n"
+            "engine = \">=0.1.0 <0.2.0\"\n\n"
+            "[[entrypoints]]\n"
+            "id = \"adts\"\n"
+            "format = \"audio.aac.adts\"\n"
+            "source = \"src/adts.svfmt\"\n"
+            "profiles = [\"lc\"]\n"
+            "depth = \"structural\"\n");
+
+        const QByteArray svfmt = QByteArrayLiteral(
+            "struct AdtsHeader {\n"
+            "    bits<12> syncword @equals(4095);\n"
+            "    bits<1> id;\n"
+            "    bits<2> layer;\n"
+            "    bits<1> protection_absent;\n"
+            "    bits<2> profile;\n"
+            "    bits<4> sampling_frequency_index;\n"
+            "    bits<1> private_bit;\n"
+            "    bits<3> channel_configuration;\n"
+            "    bits<1> original_copy;\n"
+            "    bits<1> home;\n"
+            "    bits<1> copyright_identification_bit;\n"
+            "    bits<1> copyright_identification_start;\n"
+            "    bits<13> aac_frame_length;\n"
+            "    bits<11> adts_buffer_fullness;\n"
+            "    bits<2> number_of_raw_data_blocks_in_frame;\n"
+            "}\n\n"
+            "@index(progressive) sequence<AdtsHeader> frames = scan(adts_frame);\n"
+            "entry frames;\n");
+
+        std::vector<streamview::rules::RulePackageFile> files{
+            {QStringLiteral("rule.toml"), toml},
+            {QStringLiteral("src/adts.svfmt"), svfmt}};
+        auto pkgRes = streamview::rules::RulePackage::fromFiles(std::move(files));
+        QVERIFY(pkgRes.succeeded());
+        QVERIFY(pkgRes.package.has_value());
+
+        const auto pkgIdentity = pkgRes.package->identity();
+        streamview::rules::RulePackageCatalog catalog;
+        const auto reg = catalog.registerPackage(std::move(*pkgRes.package));
+        QVERIFY(reg.succeeded());
+
+        const auto resolved = catalog.resolve(
+            pkgIdentity,
+            QStringLiteral("adts"),
+            streamview::rules::languageVersion(),
+            streamview::core::version());
+        QVERIFY2(resolved.succeeded(), qPrintable(resolved.errorMessage));
+
+        // Stream: Frame 0 (50 bytes complete) + Frame 1 (declares 100 bytes, truncated to 30 bytes)
+        const auto f0 = makeAdtsFrame(50, true);
+        const auto f1Full = makeAdtsFrame(100, true);
+        std::vector<std::byte> stream(f0.begin(), f0.end());
+        stream.insert(stream.end(), f1Full.begin(), f1Full.begin() + 30);
+
+        const MemorySource source(std::move(stream));
+        QString error;
+        auto analyzer = streamview::rules::AacAdtsAnalyzer::create(source, resolved, &error);
+        QVERIFY2(analyzer.has_value(), qPrintable(error));
+
+        const auto batch = analyzer->analyzeBatch();
+        QVERIFY(batch.complete());
+        QCOMPARE(batch.frameNodes.size(), std::size_t(2));
+
+        // Frame 0: Fully materialized complete frame
+        const auto node0 = analyzer->tree().node(batch.frameNodes[0]);
+        QVERIFY(node0.has_value());
+        QCOMPARE(node0->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(node0->diagnostics().empty());
+        QVERIFY(node0->location().has_value());
+        QCOMPARE(node0->location()->logicalRange().bitLength(), quint64(50U * 8U));
+
+        // Frame 1 (truncated trailing frame): Known capability boundary pins Materialized with 0 diagnostics
+        // and logicalRange bitLength clamped to available bytes (30 bytes * 8 = 240 bits)
+        const auto node1 = analyzer->tree().node(batch.frameNodes[1]);
+        QVERIFY(node1.has_value());
+        QCOMPARE(node1->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(node1->diagnostics().empty());
+        QVERIFY(node1->location().has_value());
+        QCOMPARE(node1->location()->logicalRange().bitLength(), quint64(30U * 8U));
+
+        const auto header1 = analyzer->tree().node(node1->children()[0]);
+        QVERIFY(header1.has_value());
+        QCOMPARE(header1->state(), streamview::core::MaterializationState::Materialized);
+        QCOMPARE(header1->children().size(), std::size_t(15));
+        QVERIFY(header1->diagnostics().empty());
+    }
+
     void handlesTrailingGarbageSmallerThanHeader() {
         std::vector<std::byte> stream;
         const auto f1 = makeAdtsFrame(150, true);
