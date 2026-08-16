@@ -1553,3 +1553,9 @@ Blockers: None
      - H.264 规则套件 174/174 零回归，全量测试套件 35/35 在 dev/ci/sanitize 三套构建下 100% 通过（零 ASan/UBSan 告警）；
      - hosted run `31900233536` 在 Ubuntu 24.04 / Qt 6.11.1（job `95049723785`）、macOS 15 / Qt 6.11.1（job `95049723689`）、Windows 2022 / Qt 6.10.1（job `95049723728`）全部成功通过。
   Next Action 指向 Task T17（AAC raw data block 与 AudioSpecificConfig 架构探索与双语 ADR-0094）。
+
+- 2026-08-16：阶段 4 任务 T16 审计记录更正（任务 T16 补正）。
+  - 更正说明：
+    1. **标准条款引用更正**：上一条记录提及「依据 ISO/IEC 13818-7:2006 §8.2 与 ISO/IEC 14496-3:2009 §1.A.1」，`src/rules/official/org.streamview.aac/src/aac_adts.svfmt` 与 ADR-0093 实际采用 `docs/standards.md:10` 固定的 ISO/IEC 14496-3:2019 Edition 5 subclause 1.6.2.1（固定头）与 1.6.2.2（可变头）；
+    2. **入口点深度值更正**：上一条记录提及「深度 `structural`」，`src/rules/official/org.streamview.aac/rule.toml` 实际声明为 `depth = "adts-frame"`（严格对齐 ADR-0092 §4.1）。
+  Next Action 指向 Task T17（AudioSpecificConfig、GASpecificConfig 与 Program Config Element 架构探索、双语 ADR-0094 与规则落地）。
