@@ -45,8 +45,8 @@ To establish deterministic facts prior to code modifications, the following tech
 
 5. **Profile Reporting Constraints in Current DSL**:
    Auditing `src/rules/` confirms that no mechanism currently exists in the DSL to emit `MaterializationState::Unsupported` or `DiagnosticCode::UnsupportedSyntax`:
-   - `@enum` violation is fatal (`DiagnosticCode::InvalidSyntax`, Severity: Error, `src/rules/dsl_vm.cpp:2782-2799`), which would reject frame decoding rather than non-fatally reporting unsupported capability.
-   - Non-contiguous value sets (e.g. AOT 2, 5, 29, 39) cannot be expressed via `@range`: `@range` requires exactly two integer arguments (`src/rules/dsl.cpp:2560` / `src/rules/dsl_ir.cpp:183`) and duplicate `@range` annotations on a single field are rejected by compiler gate (`src/rules/dsl.cpp:2534` / `src/rules/dsl_ir.cpp:173`, `@range may appear at most once on a field`).
+   - `@enum` violation is fatal (`DiagnosticCode::InvalidSyntax`, Severity: Error, `src/rules/dsl_vm.cpp:2782-2790`), which would reject frame decoding rather than non-fatally reporting unsupported capability.
+   - Non-contiguous value sets (e.g. AOT 2, 5, 29, 39) cannot be expressed via `@range`: `@range` requires exactly two integer arguments (`src/rules/dsl.cpp:2560` / `src/rules/dsl_ir.cpp:185`) and duplicate `@range` annotations on a single field are rejected (`src/rules/dsl.cpp:2534` / `src/rules/dsl_ir.cpp:173`, `@range may appear at most once on a field`).
    - In ADTS headers, the 2-bit `profile` field (ISO/IEC 14496-3 Table 1.A.1) only encodes 0..3 (Main, LC, SSR, LTP); it cannot represent AOT 5 (SBR), 29 (PS), or 39 (ELD). In standard broadcast streams, HE-AAC streams in ADTS declare `profile = 1` (LC) in the ADTS header and convey SBR/PS extensions in-band inside `raw_data_block`.
 
 6. **Silent Ignorance of Unrecognized Annotations (N2)**:
@@ -56,13 +56,15 @@ To establish deterministic facts prior to code modifications, the following tech
 
 ## Decision
 
-### 1. Specification Citations for `raw_data_block` (B2, N4)
+### 1. Specification Citations for `raw_data_block` (B2, C4)
 
 In ISO/IEC 14496-3:2019 (Edition 5):
 - **ADTS Payload Sequencing**: Subpart 1 Annex 1.A subclause **1.A.1** (*Fixed and variable header of ADTS*) and Table 1.A.5 (`adts_frame()`), where `adts_frame()` sequences `adts_fixed_header()`, `adts_variable_header()`, optional `adts_error_check()`, followed by `raw_data_block()`.
 - **Raw Data Block Syntax Definition**: Subpart 4 (General Audio) subclause **4.5.2.1** (*raw_data_block* / *Syntactic elements*), which standardizes the grammatical element composition of `raw_data_block()` (SCE, CPE, LFE, DSE, PCE, FIL, TERM).
 
-To maintain strict normative precision, `@spec("ISO/IEC 14496-3:2019", "4.5.2.1")` is assigned to `raw_data_block`, distinguishing the payload's syntax definition from the `1.A.1` fixed/variable header clauses.
+*Normative Verification Note*: As the repository does not bundle normative ISO/IEC standard body texts (`docs/standards.md:3-4`), the specific subclause number `4.5.2.1` and Table `1.A.5` are derived from ISO/IEC 14496-3 structural hierarchy and secondary MPEG-4 Audio references, but are explicitly marked as unverified against the physical standard text. The confirmed minimum normative scope is Subpart 1 Annex 1.A (ADTS transport framing) and Subpart 4 (General Audio syntax).
+
+To maintain strict syntactic decoupling, `@spec("ISO/IEC 14496-3:2019", "4.5.2.1")` is assigned to `raw_data_block`, distinguishing the payload's syntax definition from the `1.A.1` fixed/variable header clauses.
 
 ### 2. DSL Rule Definition for `raw_data_block` (N1)
 
@@ -80,7 +82,7 @@ In `src/rules/official/org.streamview.aac/src/aac_adts.svfmt`, append the follow
 In `src/rules/aac_adts_analyzer.cpp:346`, update the logical view construction from `{*record.headerSpan}` to `{*record.frameSpan}`.
 Because the scanner (`src/rules/aac_adts_scanner.cpp:134-148`) bounds `record.frameSpan` to `availableBytes`, mapping the full frame span allows the DSL VM to decode the header fields and immediately register the lazy payload region across the frame payload bytes.
 
-### 4. Harmonized Truncation Contract and Test Migration (N5)
+### 4. Harmonized Truncation Contract and Test Migration (C1, C2, N5)
 
 We adopt the universal DSL VM truncation contract (Option A):
 - When a stream ends prematurely in the middle of a frame's payload, the DSL VM attempts to allocate `raw_data_block_bytes` and detects that `bitCount > reader.remainingBits()`.
@@ -89,10 +91,8 @@ We adopt the universal DSL VM truncation contract (Option A):
 - The legacy C++ synthetic warning at `aac_adts_analyzer.cpp:456-467` is superseded by this native VM diagnostic.
 
 **Test Suite Migrations required in Task T18c**:
-- `tests/rules/aac_adts_analyzer_test.cpp:143-170` (frame 0 without CRC): child node count advances from 16 to 18; ordered names list appends `raw_data_block_bytes` and `raw_data_block`.
-- `tests/rules/aac_adts_analyzer_test.cpp:193-220` (frame 1 with CRC): child node count advances from 17 to 19; ordered names list appends `raw_data_block_bytes` and `raw_data_block`.
-- `tests/rules/aac_adts_analyzer_test.cpp:114` (`handlesSingleAdtsFrame`): child node count advances from 16 to 18.
-- `tests/rules/aac_adts_analyzer_test.cpp:210` (`decodesAdtsFrameWithCrc`): child node count advances from 17 to 19.
+- `tests/rules/aac_adts_analyzer_test.cpp:143-170` (Frame 0 in `createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`): `children().size()` at line 144 advances from 16 to 18; `expectedNames0` appends `raw_data_block_bytes` and `raw_data_block`.
+- `tests/rules/aac_adts_analyzer_test.cpp:193-220` (Frame 1 in `createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`): `children().size()` at line 194 advances from 17 to 19; `expectedNames1` appends `raw_data_block_bytes` and `raw_data_block`.
 - `tests/rules/aac_adts_analyzer_test.cpp:321-361` (`handlesPayloadTruncationAtEof`):
   - Line 352: `DiagnosticSeverity::Warning` $	o$ `DiagnosticSeverity::Error`;
   - Line 353: `"ADTS frame payload is truncated at EOF"` $	o$ `"Lazy byte region exceeds the available source range"`;
@@ -104,7 +104,7 @@ We adopt the universal DSL VM truncation contract (Option A):
 1. **ADTS Transport Streams**: Constrained to `AacProfile` (0=Main, 1=LC, 2=SSR, 3=LTP) via `@enum(AacProfile)`. HE-AAC v1/v2 streams transmitted via ADTS carry `profile = 1` (LC) in the ADTS header per broadcast standards, decoding successfully as LC frames with unparsed raw data payloads.
 2. **AudioSpecificConfig (ASC)**: `audio_object_type` values outside General Audio (e.g. SBR=5, PS=29, ELD=39) decode the GA baseline header syntax without syntax failure (`MaterializationState::Materialized`), as established in ADR-0094 §3:315. This is formally accepted as a documented capability boundary until dedicated non-GA payload decoders are introduced in future milestones.
 
-### 6. Bit-by-Bit Acceptance Audit Scope and Coverage Matrix (B1)
+### 6. Bit-by-Bit Acceptance Audit Scope and Coverage Matrix (B1, C1, C3)
 
 Phase 4 Item 5 (`docs/implementation-plan.md:198`) requires bit-by-bit verification across five distinct categories.
 
@@ -118,11 +118,11 @@ StreamView rules do NOT perform CRC-16 polynomial division or arithmetic checksu
 
 | Category | Existing Verified Coverage (`file:line`) | Identified Gaps to be Closed in Task T18e |
 | :--- | :--- | :--- |
-| **1. ADTS Headers** | `tests/rules/aac_adts_analyzer_test.cpp:165-170` (ordered names), `:172-183` (values of indices 0-7, 12-15). | 1. Indices 8–11 (`original_copy`, `home`, `copyright_identification_bit`, `copyright_identification_start`) currently lack value assertions in all tests.<br>2. `logicalRange()`, `bitOffset()`, and `bitLength()` assertions are currently absent across all ADTS tests (0 assertions). |
-| **2. ASC / PCE** | `tests/rules/aac_adts_analyzer_test.cpp:520-1790` (ADR-0094 9 test cases with 113–122 ordered child nodes, bit offsets, and values). | None. 100% complete bit-level coverage established. |
-| **3. Stream Truncation** | `tests/rules/aac_adts_analyzer_test.cpp:321-410` (`handlesPayloadTruncationAtEof`, `handlesHeaderTruncationAtEofWithCrc`, `handlesTrailingGarbageSmallerThanHeader`). | None. Truncation isolation and source ranges fully verified; assertions will be migrated in T18c. |
-| **4. CRC Presence / Errors** | `tests/rules/aac_adts_analyzer_test.cpp:185-227` (`decodesAdtsMultiFrameStream` frame 1), `:204-228` (`decodesAdtsFrameWithCrc`), `:383-410` (`handlesHeaderTruncationAtEofWithCrc`). | Bit-offset check on `crc_check` (bit 56..71) to be explicitly asserted in T18e. |
-| **5. Unsupported Profiles** | `tests/rules/aac_adts_analyzer_test.cpp:106-138` (`decodesSingleAdtsFrame` LC profile value assertion), ADR-0094 §3:315 (ASC non-GA AOT parsing). | Explicit negative test rejecting non-standard ADTS profile values (e.g. profile=4) via `@enum(AacProfile)`. |
+| **1. ADTS Headers** | `tests/rules/aac_adts_analyzer_test.cpp:106-227` (`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`, ordered names list for Frame 0 [:165-170] and Frame 1 [:216-220], field values for indices 0–7 and 12–15 [:172-183], and Frame 1 values [:222-226]). | 1. Indices 8–11 (`original_copy`, `home`, `copyright_identification_bit`, `copyright_identification_start`) lack value assertions across all ADTS tests.<br>2. `logicalRange()`, `bitOffset()`, and `bitLength()` assertions are absent across all ADTS tests (0 assertions). |
+| **2. ASC / PCE** | `tests/rules/aac_adts_analyzer_test.cpp:515-1751` (`decodesAscCase1`..`7`, `rejectsAscCase8NonzeroAlignmentBit`, `rejectsAscCase9PrematureTruncation`, verifying 113–122 ordered child node names, and one `comment_field_bytes` byte offset and value assertion per valid case at :675, :839, :1003, :1173, :1338, :1505, :1675). | All ASC/PCE fields except `comment_field_bytes` lack `logicalRange()` / `bitOffset()` / `bitLength()` assertions. |
+| **3. Stream Truncation** | `tests/rules/aac_adts_analyzer_test.cpp:286-320` (`handlesHeaderTruncationWithCrcPresent`), `:321-361` (`handlesPayloadTruncationAtEof`), `:363-386` (`handlesTrailingGarbageSmallerThanHeader`), `:388-417` (`resynchronizesAcrossCorruptedByteSpan`). | 1. `handlesPayloadTruncationAtEof` assertions will be migrated in T18c.<br>2. No tests assert `logicalRange()` on truncated frame nodes or diagnostics. |
+| **4. CRC Presence / Errors** | `tests/rules/aac_adts_analyzer_test.cpp:185-227` (`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl` Frame 1, asserting `crc_check` name at index 15 and value `0x1234` at line 225), `:286-320` (`handlesHeaderTruncationWithCrcPresent`). | Bit offset assertion for `crc_check` (bit 56..71) is absent across all tests. |
+| **5. Unsupported Profiles** | `tests/rules/aac_adts_analyzer_test.cpp:106-227` (`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`, asserting `profile = 1 (LC)` at line 176), `:515-1751` (ASC cases testing AOT 2, 5, 29, 39 parsing GA header). | Explicit negative tests asserting rejection of non-standard ADTS profile values (e.g. invalid enum index) via `@enum(AacProfile)` are absent. |
 
 ### 7. Phase 4 Task Slicing and Discipline
 
@@ -132,7 +132,7 @@ To uphold strict single-responsibility commits and keep capability changes separ
 - **Task T18b**: Analyzer view mapping update to frame span (`src/rules/aac_adts_analyzer.cpp:346`), runner capability slice without package version bump.
 - **Task T18c**: Rule consumption of `@lazy raw_data_block` in `aac_adts.svfmt`, package version bump to `0.1.3`, test suite updates.
 - **Task T18d**: Profile handling verification & documentation alignment.
-- **Task T18e**: Bit-by-bit audit closing all gaps in Category 1, 4, and 5, Phase 4 checkbox completion (`docs/implementation-plan.md:196-198`), Phase advancement to Phase 5.
+- **Task T18e**: Bit-by-bit audit closing all gaps in Category 1, 2, 3, 4, and 5, Phase 4 checkbox completion (`docs/implementation-plan.md:196-198`), Phase advancement to Phase 5.
 
 ---
 
@@ -153,8 +153,8 @@ clang++ -std=c++20     -Isrc/rules/include -Isrc/core/include     -I/opt/homebre
 | **P4: 15-byte Truncated Frame** | 20-byte declared ADTS frame cut to 15 bytes (120 bits mapping) | `status=1 materialized=0, AdtsHeader state=5 diags=1: code=0 sev=2 msg="Lazy byte region exceeds the available source range"` | Truncated payload triggers VM Error-level TruncatedSource. |
 | **P5: 7-byte Header-only View** | 20-byte ADTS frame evaluated against 56-bit header mapping | `status=1 materialized=0, AdtsHeader state=5 diags=1: code=0 sev=2 msg="Lazy byte region exceeds the available source range"` | Confirms current runner header-only view mapping is a blocker. |
 | **P6: T18b View Mapping No-Op** | Current official `AdtsHeader` (without lazy) against 56-bit, 160-bit, and 120-bit views | All three views output: `status=0 materialized=1` | Expanding view mapping in T18b is a safe no-op on existing rules. |
-| **P7: Duplicate @range Gate (N3)** | `bits<5> aot @range(0, 4) @range(23, 23);` | `compiler diag code=14 msg="@range may appear at most once on a field"` | Disproves multi-range syntax on a single field. |
-| **P8: Multi-arg @range Gate (N3)** | `bits<5> aot @range(2, 5, 29, 39);` | `parser diag code=14 msg="@range requires two integer arguments"` | Confirms `@range` cannot accept non-contiguous sets. |
+| **P7: Duplicate @range Dual Gate (N3)** | `bits<5> aot @range(0, 4) @range(23, 23);` | `diag code=14 msg="@range may appear at most once on a field"` | Disproves multi-range syntax on a single field (`src/rules/dsl.cpp:2534` / `src/rules/dsl_ir.cpp:173`). |
+| **P8: Multi-arg @range Dual Gate (N3)** | `bits<5> aot @range(2, 5, 29, 39);` | `diag code=14 msg="@range requires two integer arguments"` | Confirms `@range` cannot accept non-contiguous sets (`src/rules/dsl.cpp:2560` / `src/rules/dsl_ir.cpp:185`). |
 | **P9: Misspelled Annotation Check (N2)** | `bits<12> syncword @equalss(4095);` on invalid stream (`syncword=255`) | Misspelled: `status=0 materialized=1 diags=0`<br>Correct `@equals`: `status=2 materialized=0 diags=1 msg="Field value violates @equals constraint"` | Demonstrates silent ignore of unknown annotations. |
 
 ---

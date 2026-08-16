@@ -2,7 +2,7 @@
 
 Status: In Progress
 Current Phase: 4
-Last Completed Step: ADR-0095 audit reconciliation and specification hardening (Task T18a-fix)
+Last Completed Step: ADR-0095 test citation hardening and audit gap reconciliation (Task T18a-fix2)
 Next Action: Update AAC ADTS analyzer runner view mapping to frame span (Task T18b)
 Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31930252331 (Ubuntu job 95123835282, macOS job 95123835271, Windows job 95123835269) passed 100%
 Blockers: None
@@ -1641,4 +1641,18 @@ Blockers: None
      - 探针直接证明 `@range` 无法表达非连续集合（重复 `@range` 被编译器拒绝，多参数 `@range` 被语法分析器拒绝；N3）；
      - 实测并正式记录「未识别注解被静默忽略导致约束失效」现象（N2），作为未来语言闸门强化的候选事项上报；
      - 补齐 Task T18c 测试套件迁移清单（`aac_adts_analyzer_test.cpp:143-170`, `:193-220`, `:114`, `:210`, `:321-361`；N5）。
+  Next Action 指向 Task T18b（更新 AAC ADTS 分析器执行器视图映射至帧跨度）。
+- 2026-08-16：完成 ADR-0095 测试用例引用整改与审计缺口核实（任务 T18a-fix2）。
+  1. 测试名称与行号精准对齐（C1, C2）：
+     - 彻底清除所有编造测试名，全面替换为 `tests/rules/aac_adts_analyzer_test.cpp` 中 21 个真实用例的规范名称与行号；
+     - 澄清 ADTS 头部解码覆盖全部来自 `createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`（:106-227）单一用例的多帧断言；
+     - 清理 §4 迁移清单中 `:114` 与 `:210` 两处非断言行，严格保留 `:143-170`、`:193-220` 及 `:321-361` 三处真实断言点。
+  2. 审计覆盖与缺口清单严格核实（C3）：
+     - Category 2（ASC / PCE）：修正为 `:515-1751`，确认既有覆盖为 113–122 个有序子节点名称与各例 1 处 `comment_field_bytes` 偏移/值断言（:675, :839, :1003, :1173, :1338, :1505, :1675），其余字段无 `logicalRange` / `bitOffset` 断言列为缺口；
+     - Category 3（截断）：列出 `:286-320`（`handlesHeaderTruncationWithCrcPresent`）、`:321-361`（`handlesPayloadTruncationAtEof`）、`:363-386`、`:388-417` 四个真实用例区间，并把无 `logicalRange` 断言如实列为缺口；
+     - Category 4（CRC）：修正为 `createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`（帧 1 `crc_check` 值断言在 :225）与 `handlesHeaderTruncationWithCrcPresent`（:286-320），缺口为 `crc_check` 无 bitOffset 断言。
+  3. 条款号出处与双闸门规范标注（C4, 两个小项）：
+     - §1 明确标注条款号 `4.5.2.1` 与表 `1.A.5` 为未经规范正文核实，确认的最小范围为 Subpart 1 Annex 1.A 与 Subpart 4；
+     - 修正 `dsl_ir.cpp:185` 行号引用；
+     - 验证矩阵 P7/P8 标注为「parser 与 compiler 双闸门」。
   Next Action 指向 Task T18b（更新 AAC ADTS 分析器执行器视图映射至帧跨度）。
