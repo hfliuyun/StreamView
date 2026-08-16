@@ -19,7 +19,7 @@
    ```
    error: Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type
    ```
-   此外，从独立子结构引用外部结构体字段会被编译器支配分析拦截（`src/rules/dsl.cpp:3394` 与 `src/rules/dsl_ir.cpp:1557-1561`）：
+   此外，从独立子结构引用外部结构体字段会被编译器支配分析拦截（`src/rules/dsl.cpp:3395` 与 `src/rules/dsl_ir.cpp:1564-1569`）：
    ```
    error: Computed dependency is not guaranteed on the current branch
    ```

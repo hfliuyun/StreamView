@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: T13-R / T18-R implementation audit correction
+Last Completed Step: P5b-R / P5b-R2 review remediation — annotation compile gate and explicit unsupported syntax (ADR-0098), plus UnsupportedSyntax severity alignment to non-fatal Warning
 Next Action: Task P5c — ISOBMFF container language primitives probing & ADR-0097
-Last Verification: T13-R/T18-R local dev/ci/sanitize 36/36 passing with zero sanitizer warnings; all bundled H.264/AAC sources pass `svtool rule check`. Latest hosted baseline remains run 31944036393 (Ubuntu job 95157275757, macOS job 95157275636, Windows job 95157275621), predating these working-tree corrections
+Last Verification: P5b-R2 local dev/ci/sanitize 36/36 passing with zero sanitizer warnings (dev 50.16s, ci 16.49s, sanitize 131.35s); targeted suites dsl 87 / dsl_ir 88 / AAC 31 / H.264 174; all three bundled H.264/AAC .svfmt sources pass `svtool rule check`. Latest hosted baseline: P5b-R run 31965623068 (macOS job 95210238754, Windows job 95210238781, Ubuntu job 95210238826) on commit 2624276; P5b-R2 hosted run pending after push
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
