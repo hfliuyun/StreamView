@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 4
-Last Completed Step: AAC ADTS analyzer runner view mapping expansion to frame span (Task T18b)
-Next Action: Consume lazy raw data block in official AAC rule package and bump to 0.1.3 (Task T18c)
-Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31934776263 (Ubuntu job 95134873874, macOS job 95134873797, Windows job 95134873867) passed 100%
+Last Completed Step: Official AAC rule package consumes lazy raw data block (Task T18c)
+Next Action: Remove unreachable legacy warning code in AAC ADTS analyzer (Task T18c-2)
+Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31936367969 (Ubuntu job 95138832621, macOS job 95138832586, Windows job 95138832588) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1666,3 +1666,17 @@ Blockers: None
      - 本地全量测试 35/35 在 dev/ci/sanitize 三套构建下全部通过（零 sanitizer 告警，AAC analyzer 23/23，H.264 analyzer 174/174）；
      - hosted CI run `31934776263` 在 Ubuntu 24.04 / Qt 6.11.1（job `95134873874`）、macOS 15 / Qt 6.11.1（job `95134873797`）、Windows 2022 / Qt 6.10.1（job `95134873867`）全部 100% 成功通过。
   Next Action 指向 Task T18c（官方 AAC 规则包消费 `@lazy raw_data_block`、升级至 0.1.3 并同步迁移测试断言）。
+- 2026-08-16：完成官方 AAC 规则包消费 `@lazy raw_data_block` 与版本升级至 0.1.3（任务 T18c / commit `c5ab86c`）。
+  1. 官方规则包规则消费与版本升级（`src/rules/official/org.streamview.aac/`）：
+     - `src/aac_adts.svfmt`：在 `AdtsHeader` 中复用 `minimum_frame_length` 追加 `computed<u64> raw_data_block_bytes = aac_frame_length - minimum_frame_length;` 与 `@lazy(raw_data_block_bytes) bytes raw_data_block`（标注 Subpart 4 子条款 `4.5.2.1`）；
+     - `rule.toml`：发布版本升级至 `0.1.3`。
+  2. 测试套件断言迁移与截断契约对齐（`tests/rules/aac_adts_analyzer_test.cpp`）：
+     - `createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`：帧 0 子节点数推进至 18（追加 `raw_data_block_bytes` 与 `raw_data_block`）；帧 1 子节点数推进至 19；
+     - `handlesPayloadTruncationAtEof`：对齐全库 DSL VM 截断契约，断言严重性由 Warning 迁移至 Error，诊断消息迁移至 `"Lazy byte region exceeds the available source range"`，`header1->state()` 迁移至 `Invalid`；
+     - `resolvesAscEntryPointFromBundledRulePackage`：版本断言同步迁移至 `"0.1.3"`（G1）；
+     - 实测确认完整帧 20 字节 `raw_data_block` 正确物化（无 CRC 时 bitOffset=56 bitLength=104，含 CRC 时 bitOffset=72 bitLength=88，状态为 `MaterializationState::Lazy`）。
+  3. 遗留事项处理与切片拆分（G3）：
+     - 确认 `aac_adts_analyzer.cpp:456-467` 现已完全不可达，排定专属切片 Task T18c-2 完成代码清理；
+     - 本地全量测试 35/35 在 dev/ci/sanitize 三套构建下全部通过（零 sanitizer 告警，AAC analyzer 23/23，H.264 analyzer 174/174）；
+     - hosted CI run `31936367969` 在 Ubuntu 24.04 / Qt 6.11.1（job `95138832621`）、macOS 15 / Qt 6.11.1（job `95138832586`）、Windows 2022 / Qt 6.10.1（job `95138832588`）全部 100% 成功通过。
+  Next Action 指向 Task T18c-2（清理 AAC ADTS 分析器中已不可达的载荷截断 Warning 遗留代码）。
