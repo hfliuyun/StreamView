@@ -2,8 +2,8 @@
 
 Status: In Progress
 Current Phase: 4
-Last Completed Step: ADR body subclause and version reconciliation (Task T17e)
-Next Action: AAC raw data block & channel stream element decoding exploration (Task T18)
+Last Completed Step: AAC raw data block and profile handling exploration & bilingual ADR-0095 (Task T18a)
+Next Action: Update AAC ADTS analyzer runner view mapping to frame span (Task T18b)
 Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31930252331 (Ubuntu job 95123835282, macOS job 95123835271, Windows job 95123835269) passed 100%
 Blockers: None
 
@@ -1556,7 +1556,7 @@ Blockers: None
 
 - 2026-08-16：阶段 4 任务 T16 审计记录更正（任务 T16 补正）。
   - 更正说明：
-    1. **标准条款引用更正**：上一条记录提及「依据 ISO/IEC 13818-7:2006 §8.2 与 ISO/IEC 14496-3:2009 §1.A.1」，`src/rules/official/org.streamview.aac/src/aac_adts.svfmt` 与 ADR-0093 实际采用 `docs/standards.md:10` 固定的 ISO/IEC 14496-3:2019 Edition 5 subclause 1.6.2.1（固定头）与 1.6.2.2（可变头）；
+    1. **标准条款引用更正**：上一条记录提及「依据 ISO/IEC 13818-7:2006 §8.2 与 ISO/IEC 14496-3:2009 §1.A.1」，`src/rules/official/org.streamview.aac/src/aac_adts.svfmt` 与 ADR-0093 实际采用 `docs/standards.md:10` 固定的 ISO/IEC 14496-3:2019 Edition 5 subclause 1.6.2.1（固定头）与 1.6.2.2（可变头）（注：该 1.6.2.1/1.6.2.2 引用在后续任务 T17d 中被进一步澄清并更正为 Subpart 1 Annex 1.A 的 1.A.1 与 1.A.2）；
     2. **入口点深度值更正**：上一条记录提及「深度 `structural`」，`src/rules/official/org.streamview.aac/rule.toml` 实际声明为 `depth = "adts-frame"`（严格对齐 ADR-0092 §4.1）。
   Next Action 指向 Task T17（AudioSpecificConfig、GASpecificConfig 与 Program Config Element 架构探索、双语 ADR-0094 与规则落地）。
 
@@ -1615,3 +1615,15 @@ Blockers: None
      - §2 引导句更正为跨三个子条款的准确表述（1.6.2.1 `AudioSpecificConfig` / 4.4.1 `GASpecificConfig` / 4.4.1.1 `program_config_element`）；
      - §Context 第 7 行与 References 更正：MP4 `esds` box 规范基线严格对齐 `docs/standards.md:11` 的 ISO/IEC 14496-1:2010（Systems 描述符）与 ISO/IEC 14496-14。
   Next Action 指向 Task T18（AAC raw data block 与 channel stream element 解码架构探索）。
+- 2026-08-16：完成 AAC raw_data_block 压缩载荷与 Profile 处理的探测与双语 ADR-0095（任务 T18a）。
+  1. 架构规范与双语 ADR-0095（`docs/adr/0095-aac-raw-data-block-compressed-payload-and-profile-handling.md` 与 `docs/zh-CN/adr/0095-aac-raw-data-block-compressed-payload-and-profile-handling.md`）：
+     - 依据 ISO/IEC 14496-3:2019 定义 `raw_data_block` 在 ADTS 中的编排归属（Subpart 1 Annex 1.A subclause 1.A.1 / Table 1.A.5）与句法定义归属（Subpart 4 subclause 4.5.2.1）；
+     - 确定在 `AdtsHeader` 末尾追加 `header_bytes`、`raw_data_block_bytes` 计算字段及 `@lazy(raw_data_block_bytes) bytes raw_data_block` 规则语法，经实测无需新 DSL 语言能力；
+     - 确立阶段 4 收尾任务拆分纪律：T18b（执行器视图映射改帧跨度，能力切片）、T18c（规则消费 `@lazy raw_data_block`，版本 0.1.3）、T18d（Profile 处理验证）、T18e（逐 bit 验收审计与阶段 4 闭环）。
+  2. 探测实测结论与截断契约决策：
+     - 实测确认执行器视图映射为阻塞项：`src/rules/aac_adts_analyzer.cpp:346` 需由 `headerSpan` 改为 `frameSpan`（T18b）；
+     - 采纳方案 A 统一 DSL VM 截断语义：载荷截断时由 VM 发出 Error 级 `TruncatedSource`（`Lazy byte region exceeds the available source range`），取代原 C++ 合成 Warning 诊断，并计划更新现存测试断言；
+     - 探针全面验证 DSL 侧不支持 Profile 的能力现状：`@enum` 违规为致命错误，`@range` 仅支持单段连续区间，ADTS 2-bit profile 无法表示 AOT 5/29/39；正式确认 ASC 非 GA AOT 解析 GA 基础头为已知且受控的已记录能力边界。
+  3. 文档引用同步维护：
+     - 同步修正 `docs/adr/0093-*.md` 与 `docs/zh-CN/adr/0093-*.md` 第 17 行 `raw_data_block` 条款号归属并在文末更正小节追加说明。
+  Next Action 指向 Task T18b（更新 AAC ADTS 分析器执行器视图映射至帧跨度）。

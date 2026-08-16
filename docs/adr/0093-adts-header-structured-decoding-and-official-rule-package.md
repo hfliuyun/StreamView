@@ -14,7 +14,7 @@ According to ISO/IEC 14496-3:2019 (Edition 5), Audio Data Transport Stream (ADTS
 1. `adts_fixed_header` (28 bits, subclause 1.A.1): Bitstream syncword, MPEG audio version, layer, CRC protection flag, profile, sampling frequency index, private bit, channel configuration, original/copy, and home.
 2. `adts_variable_header` (28 bits, subclause 1.A.1): Copyright identification bits, total frame length (`aac_frame_length`), buffer fullness (`adts_buffer_fullness`), and number of raw data blocks minus 1 (`number_of_raw_data_blocks_in_frame`).
 3. `adts_error_check` (16 bits, subclause 1.A.2): Present conditionally when `protection_absent == 0`.
-4. `adts_raw_data_block` (subclauses 1.A.1 / 4.5.2.1.1): Audio payload containing syntactical elements (SCE, CPE, LFE, DSE, PCE, FIL, TERM).
+4. `adts_raw_data_block` (Subpart 1 Annex 1.A / Subpart 4 subclause 4.5.2.1): Audio payload containing syntactical elements (SCE, CPE, LFE, DSE, PCE, FIL, TERM).
 
 ## Decision
 
@@ -177,5 +177,6 @@ Rule OK: scratch/probe_t16_adts.svfmt
 Subsequent specification auditing (Task T17d) clarified the subclause structure in ISO/IEC 14496-3:2019 (Edition 5):
 1. `adts_fixed_header` and `adts_variable_header` are defined in Subpart 1 Annex 1.A subclause **1.A.1** (*Fixed and variable header of ADTS*), rather than subclause 1.6.2.1 (which defines `AudioSpecificConfig`).
 2. `adts_error_check` (`crc_check`) is defined in Subpart 1 Annex 1.A subclause **1.A.2** (*Error detection*).
+3. `adts_raw_data_block` is sequenced in Subpart 1 Annex 1.A (ADTS transport) and defined in Subpart 4 subclause **4.5.2.1** (*raw_data_block* / *Syntactic elements*).
 
 The body text citations and References have been synchronized accordingly.
