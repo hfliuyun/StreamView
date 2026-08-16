@@ -340,10 +340,10 @@ bool AacAdtsAnalyzer::publishRecord(const AacAdtsRecord& record,
             batch.frameNodes.push_back(*frameNode);
             return false;
         }
-        const core::LogicalViewId headerViewId(nextViewId_);
+        const core::LogicalViewId frameViewId(nextViewId_);
         nextViewId_ = nextViewId_ == std::numeric_limits<quint64>::max() ? 0 : nextViewId_ + 1;
 
-        const auto mapping = core::SourceMapping::create(headerViewId, {*record.headerSpan});
+        const auto mapping = core::SourceMapping::create(frameViewId, {*record.frameSpan});
         if (!mapping) {
             *errorMessage = QStringLiteral("Unable to create ADTS header mapping");
             *failureStatus = AacAdtsAnalysisStatus::ResourceLimit;
