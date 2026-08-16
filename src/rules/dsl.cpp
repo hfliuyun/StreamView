@@ -1785,7 +1785,8 @@ private:
     }
 
     void recoverField() {
-        while (!at(DslTokenKind::EndOfFile) && !match(DslTokenKind::Semicolon)) {
+        while (!at(DslTokenKind::EndOfFile) && !at(DslTokenKind::RightBrace) &&
+               !match(DslTokenKind::Semicolon)) {
             consume();
         }
     }

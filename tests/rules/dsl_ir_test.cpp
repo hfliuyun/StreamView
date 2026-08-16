@@ -3558,6 +3558,26 @@ private slots:
         QCOMPARE(compiled.program->entry.kind, DslEntryKind::Sequence);
         QCOMPARE(compiled.program->entry.targetIndex, quint32(0));
     }
+
+    void deduplicatesUnsupportedDiagnosticsInsideRepeats() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct S {
+                bits<4> count;
+                repeat (count, 3) {
+                    bits<4> elem;
+                    unsupported("test reason") at count;
+                }
+            }
+            entry S;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(!compiled.succeeded());
+        QCOMPARE(compiled.diagnostics.size(), std::size_t(1));
+        QCOMPARE(compiled.diagnostics.front().code, DslDiagnosticCode::InvalidCondition);
+        QCOMPARE(compiled.diagnostics.front().message,
+                 QStringLiteral("Unsupported statements cannot be repeat-local items"));
+    }
 };
 
 QTEST_GUILESS_MAIN(DslIrTest)

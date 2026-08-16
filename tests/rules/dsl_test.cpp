@@ -2238,6 +2238,18 @@ private slots:
         QVERIFY(!entryBogus.succeeded());
         QVERIFY(hasDiagnostic(entryBogus, DslDiagnosticCode::InvalidAnnotation));
     }
+
+    void recoversFieldSyntaxErrorWithoutDroppingClosingBrace() {
+        const auto result = DslParser::parse(QStringLiteral(
+            "struct S {\n"
+            "    bits<4> a;\n"
+            "    bits<4> @bogus b\n"
+            "}\n"
+            "entry S;\n"));
+        QVERIFY(!result.succeeded());
+        QCOMPARE(result.diagnostics.size(), std::size_t(1));
+        QCOMPARE(result.diagnostics.front().code, DslDiagnosticCode::MissingToken);
+    }
 };
 
 QTEST_GUILESS_MAIN(DslTest)

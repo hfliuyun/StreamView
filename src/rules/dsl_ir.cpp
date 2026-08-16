@@ -29,7 +29,14 @@ void addDiagnostic(std::vector<DslDiagnostic>& diagnostics,
                    DslDiagnosticCode code,
                    const QString& message,
                    const DslSourceRange& range) {
-    diagnostics.push_back({code, message, range});
+    const auto it = std::find_if(diagnostics.begin(), diagnostics.end(), [&](const DslDiagnostic& d) {
+        return d.code == code && d.message == message &&
+               d.range.start.offset == range.start.offset &&
+               d.range.end.offset == range.end.offset;
+    });
+    if (it == diagnostics.end()) {
+        diagnostics.push_back({code, message, range});
+    }
 }
 
 void collectFields(const std::vector<DslStructItem>& items,
