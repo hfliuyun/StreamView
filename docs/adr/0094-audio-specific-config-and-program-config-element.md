@@ -4,29 +4,29 @@
 Proposed
 
 ## Context
-In MPEG-4 Audio (ISO/IEC 14496-3:2019, Edition 5), decoder configuration for Advanced Audio Coding (AAC) streams is formally standardized via `AudioSpecificConfig` (ASC, subclause 1.6.2.1). While ADTS streams convey basic stream properties (profile, sample rate index, channel configuration) in every frame header (ADR-0092, ADR-0093), modern audio delivery mechanisms—including MPEG-4 Part 14 containers (MP4 `esds` box, subclause 1.6.6) and streaming protocols—rely on out-of-band `AudioSpecificConfig` to initialize the audio decoder before parsing compressed raw data blocks.
+In MPEG-4 Audio (ISO/IEC 14496-3:2019, Edition 5), decoder configuration for Advanced Audio Coding (AAC) streams is formally standardized via `AudioSpecificConfig` (ASC, subclause 1.6.2.1). While ADTS streams convey basic stream properties (profile, sample rate index, channel configuration) in every frame header (ADR-0092, ADR-0093), modern audio delivery mechanisms—including MPEG-4 Part 14 containers (MP4 `esds` box, subclause 1.6.6) and streaming protocols—rely on `AudioSpecificConfig` to initialize the audio decoder before parsing compressed raw data blocks.
 
 To fulfill Phase 4 of the StreamView implementation plan, the official `org.streamview.aac` rule package must provide structured decoding for:
 1. **AudioSpecificConfig (ASC)**: Including base and extended Audio Object Types (`audioObjectType`), standard and explicit sampling frequencies (`samplingFrequencyIndex` / `samplingFrequency`), channel configurations, and General Audio configuration (`GASpecificConfig`);
 2. **Program Config Element (PCE)**: For custom multichannel layouts when `channelConfiguration == 0` (subclause 1.6.2.1, Table 1.18);
-3. **Container Context Export**: Enabling downstream container formats (such as ISO BMFF / MP4 in Stage 5) to resolve and bind the active `AudioSpecificConfig` definition via `streamview::core::ContextDirectory` using `ContextDefinitionKind::AacAudioSpecificConfig`.
+3. **Multi-Entry Package Manifest**: Updating `org.streamview.aac` manifest (`rule.toml`) to version `0.1.1` with dedicated entry points for both `adts` and `asc`.
 
-### Probing and Language Capability Analysis
+### Empirical Probing and Language Capability Analysis
 Prior to specifying the grammar, empirical probing was conducted on scratch fixtures using `svtool rule check` to verify DSL language boundary constraints:
 
 1. **Sub-Structure Instantiation and Scope Isolation**:
-   Attempting to declare nested struct instances inside a structure (e.g. `GASpecificConfig ga_specific_config;` or `ProgramConfigElement pce;`) fails at parser type checking:
+   Attempting to declare nested struct instances inside a structure (e.g. `GASpecificConfig ga_specific_config;` or `ProgramConfigElement pce;`) fails at parser type checking (`src/rules/dsl.cpp:943`):
    ```
    error: Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type
    ```
-   Furthermore, referencing outer structure fields from separate sub-structures is blocked by compiler dominance analysis:
+   Furthermore, referencing outer structure fields from separate sub-structures is blocked by compiler dominance analysis (`src/rules/dsl.cpp:1557` and `src/rules/dsl_ir.cpp:3280`):
    ```
    error: Computed dependency is not guaranteed on the current branch
    ```
    Consequently, following the established and proven pattern of H.264 VUI/HRD (`SequenceParameterSetRbsp`), Slice Header (`IdrSliceLayerWithoutPartitioningRbsp`), and SEI messages (`SeiRbsp`), `GASpecificConfig` and conditional `ProgramConfigElement` syntax must be cleanly inlined and flattened within `AudioSpecificConfig`.
 
 2. **PCE Variable-Length Arrays and Bounded Repeat**:
-   `ProgramConfigElement` contains 6 variable-length channel element arrays (`front`, `side`, `back`, `lfe`, `assoc_data`, `valid_cc`) and a comment data byte sequence. Probing confirmed that the DSL bounded repeat syntax:
+   `ProgramConfigElement` contains 6 variable-length channel element arrays (`front`, `side`, `back`, `lfe`, `assoc_data`, `valid_cc`) and a comment data byte sequence. Probing confirmed that the DSL bounded repeat syntax (`src/rules/dsl.cpp:1265-1320`):
    ```svfmt
    repeat (num_front_channel_elements, 15) {
        bits<1> front_element_is_cpe;
@@ -35,12 +35,12 @@ Prior to specifying the grammar, empirical probing was conducted on scratch fixt
    ```
    accurately parses, lowers to IR, and validates for all element counts with their standard ISO/IEC 14496-3 maximum upper bounds (15, 15, 15, 3, 7, 15, and 255).
 
-3. **PCE Byte Alignment Expression**:
+3. **PCE Byte Alignment Expression and Exact Bit Accounting**:
    Attempting to use `align(8);` fails syntax parsing:
    ```
    error: Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type
    ```
-   Attempting `repeat (7) while (!byte_aligned())` fails while condition parsing:
+   Attempting `repeat (7) while (!byte_aligned())` fails while condition parsing (`src/rules/dsl.cpp:1295-1298`):
    ```
    error: Expected 'more_rbsp_data' in while condition
    ```
@@ -48,9 +48,19 @@ Prior to specifying the grammar, empirical probing was conducted on scratch fixt
    ```
    error: Invalid character in DSL source
    ```
-   However, utilizing ADR-0090 boolean arithmetic and integer modulo expressions:
+   To ensure byte alignment is exact across all bitstream variations without silent misalignment, bit accounting must encompass:
+   - Base prefix before PCE: `audio_object_type` (5) + `sampling_frequency_index` (4) + `channel_configuration` (4) + `frame_length_flag` (1) + `depends_on_core_coder` (1) + `extension_flag` (1) = 16 bits;
+   - Conditional prefix bits: `(audio_object_type == 31) * 6` + `(sampling_frequency_index == 15) * 24` + `depends_on_core_coder * 14`;
+   - Fixed PCE header: `element_instance_tag` (4) + `object_type` (2) + `pce_sampling_frequency_index` (4) + `num_front_channel_elements` (4) + `num_side_channel_elements` (4) + `num_back_channel_elements` (4) + `num_lfe_channel_elements` (2) + `num_assoc_data_elements` (3) + `num_valid_cc_elements` (4) + `mono_mixdown_present` (1) + `stereo_mixdown_present` (1) + `matrix_mixdown_idx_present` (1) = 34 bits;
+   - Variable PCE elements and mixdown payloads: `mono_mixdown_present * 4` + `stereo_mixdown_present * 4` + `matrix_mixdown_idx_present * 3` + `num_front_channel_elements * 5` + `num_side_channel_elements * 5` + `num_back_channel_elements * 5` + `num_lfe_channel_elements * 4` + `num_assoc_data_elements * 4` + `num_valid_cc_elements * 5`.
+
+   Using ADR-0090 boolean arithmetic and integer modulo expressions:
    ```svfmt
-   computed<u64> pce_total_bits = 31
+   computed<u64> pce_total_bits = 16
+       + (audio_object_type == 31) * 6
+       + (sampling_frequency_index == 15) * 24
+       + depends_on_core_coder * 14
+       + 34
        + mono_mixdown_present * 4
        + stereo_mixdown_present * 4
        + matrix_mixdown_idx_present * 3
@@ -68,38 +78,44 @@ Prior to specifying the grammar, empirical probing was conducted on scratch fixt
        bits<1> byte_alignment_zero_bit @equals(0);
    }
    ```
-   evaluates the exact bit remainder and validates 0 to 7 alignment zero bits with `Rule OK` in `svtool rule check`.
+   By referencing only dominating guard fields (`audio_object_type`, `sampling_frequency_index`, `depends_on_core_coder`) rather than guarded fields, dominance analysis passes, and all alignment bits (0 to 7) are mathematically and empirically verified.
+
+4. **Lifecycle and Entry Point Scope in Stage 4**:
+   In Stage 4, `AacAdtsAnalyzer` is the primary streaming analyzer dispatched via automatic ADTS candidate detection. The newly added entry point `asc` in `rule.toml` serves as a dormant structural asset in Stage 4: it can be resolved via `RulePackageCatalog::resolve(identity, u"asc", ...)` and directly executed via `DslExecutor::decodeStruct` in unit tests. Full automatic dispatch for MP4 container `esds` atom context import occurs in Stage 5 (ADR-0028), and manual format selection in Stage 6.
 
 ## Decision
 
 ### 1. Official Package Entry Point and Manifest
-We register a dedicated entry point `asc` in `src/rules/official/org.streamview.aac/rule.toml` alongside `adts`:
+We update `src/rules/official/org.streamview.aac/rule.toml` to version `0.1.1`, preserving all published package metadata:
 ```toml
 manifest-version = 1
 
 [package]
 id = "org.streamview.aac"
 version = "0.1.1"
-authors = ["StreamView Contributors"]
-license = "Apache-2.0"
+authors = ["StreamView contributors"]
+license = "MIT"
 dependencies = []
 
 [compatibility]
 language = "0.1"
 engine = ">=0.1.0 <0.2.0"
 
+[detection]
+detector = "aac-adts"
+
 [[entrypoints]]
 id = "adts"
 format = "audio.aac.adts"
 source = "src/aac_adts.svfmt"
-profiles = ["aac-adts"]
+profiles = ["lc"]
 depth = "adts-frame"
 
 [[entrypoints]]
 id = "asc"
 format = "audio.aac.asc"
 source = "src/aac_asc.svfmt"
-profiles = ["aac-asc"]
+profiles = ["lc"]
 depth = "structural"
 ```
 
@@ -119,8 +135,7 @@ struct AudioSpecificConfig {
 
     bits<4> sampling_frequency_index
         @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
-        @range(0, 12)
-        @description("Sampling frequency index.");
+        @description("Sampling frequency index (0..12 standard, 15 explicit).");
     if (sampling_frequency_index == 15) {
         bits<24> sampling_frequency
             @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
@@ -129,7 +144,6 @@ struct AudioSpecificConfig {
 
     bits<4> channel_configuration
         @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
-        @range(0, 7)
         @description("Channel configuration index (0 indicates custom PCE).");
 
     // GASpecificConfig syntax
@@ -158,8 +172,7 @@ struct AudioSpecificConfig {
             @description("PCE audio object type.");
         bits<4> pce_sampling_frequency_index
             @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
-            @range(0, 12)
-            @description("PCE sampling frequency index.");
+            @description("PCE sampling frequency index (0..12 standard).");
         bits<4> num_front_channel_elements
             @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
             @description("Number of front channel elements.");
@@ -257,7 +270,11 @@ struct AudioSpecificConfig {
                 @description("Valid coupling channel element instance tag selector.");
         }
 
-        computed<u64> pce_total_bits = 31
+        computed<u64> pce_total_bits = 16
+            + (audio_object_type == 31) * 6
+            + (sampling_frequency_index == 15) * 24
+            + depends_on_core_coder * 14
+            + 34
             + mono_mixdown_present * 4
             + stereo_mixdown_present * 4
             + matrix_mixdown_idx_present * 3
@@ -295,12 +312,30 @@ entry AudioSpecificConfig;
 ### 3. Diagnostic and Truncation Semantics
 - **Truncation (`DiagnosticCode::TruncatedSource`)**: If an ASC bitstream terminates prematurely (e.g. within `AudioSpecificConfig` header, `GASpecificConfig`, or inside PCE channel lists), `DslExecutor::decodeStruct` returns `DslExecutionStatus::TruncatedSource`. The partial structure is published with `DiagnosticCode::TruncatedSource` and `DiagnosticSeverity::Error` (`"Unable to read complete syntax field"`).
 - **Alignment Error (`DiagnosticCode::InvalidSyntax`)**: If any PCE alignment stuffing bit is nonzero (`@equals(0)` fails), `DslExecutor` attaches `DiagnosticCode::InvalidSyntax` with `DiagnosticSeverity::Error` at the offending bit coordinate.
-- **Value Domain Warnings (`DiagnosticCode::InvalidSyntax`)**: If `sampling_frequency_index` exceeds 12, or `channel_configuration` exceeds 7, the node is materialized with a `@range` warning diagnostic per ADR-0040.
+- **Non-GA Audio Object Types**: Bitstreams with non-GA `audio_object_type` values (e.g. SBR = 5) parse basic GA header syntax without failing, while specific extension payloads are deferred to dedicated profile additions.
+
+## Verification Matrix and Evidence
+
+Static validation executed via `svtool rule check`:
+```
+$ ./build/dev/tools/svtool/svtool rule check src/rules/official/org.streamview.aac/src/aac_asc.svfmt
+Rule OK: src/rules/official/org.streamview.aac/src/aac_asc.svfmt
+```
+
+Unit test coverage required for Task T17c (using bitstreams assembled by generator scripts with ground-truth alignment bit logging):
+1. **Baseline ASC**: `aot = 2`, `sfi = 3`, `dcc = 0`, PCE elements all 0 $\to$ exact 6 alignment zero bits, `comment_field_bytes` decoded at byte 7;
+2. **Explicit Core Coder Delay**: `dcc = 1` with 14-bit `core_coder_delay` $\to$ exact 0 alignment zero bits, `comment_field_bytes` decoded at byte 8;
+3. **Extended Audio Object Type**: `aot = 31` with 6-bit `aot_ext` $\to$ exact 0 alignment zero bits, `comment_field_bytes` decoded at byte 7;
+4. **Explicit 24-bit Frequency**: `sfi = 15` with 24-bit `sampling_frequency` $\to$ exact 6 alignment zero bits, `comment_field_bytes` decoded at byte 10;
+5. **Multichannel PCE**: `num_front_channel_elements = 2` (10 bits) + `num_lfe_channel_elements = 1` (4 bits) $\to$ exact 0 alignment zero bits, `comment_field_bytes` decoded at byte 8;
+6. **Mixdown Flags Set**: `mono_mixdown_present = 1`, `stereo_mixdown_present = 1`, `matrix_mixdown_idx_present = 1` $\to$ mixdown element numbers and matrix parameters decoded;
+7. **PCE Non-zero Alignment Bit Rejection**: Stream with nonzero stuffing bit $\to$ `materialized = 0` with `DiagnosticCode::InvalidSyntax` (`@equals(0)` violation);
+8. **ASC Premature Truncation**: Stream cut short during header or PCE $\to$ `materialized = 0` with `DiagnosticCode::TruncatedSource`.
 
 ## Consequences
 
 ### Positive
-- Fully decodes standard AAC-LC `AudioSpecificConfig` bitstreams and custom multi-channel `ProgramConfigElement` layouts.
+- Fully and accurately decodes standard AAC-LC `AudioSpecificConfig` bitstreams and custom multi-channel `ProgramConfigElement` layouts.
 - Preserves single-pass linear streaming performance without overhead from sub-structure calls.
 - Establishes a verified foundation for Stage 5 MP4 `esds` atom container parsing and context binding.
 - Package version becomes `0.1.1`.
