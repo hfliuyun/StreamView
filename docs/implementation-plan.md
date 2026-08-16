@@ -2,7 +2,7 @@
 
 Status: In Progress
 Current Phase: 4
-Last Completed Step: Specification reference corrections and Task T17d audit reconciliation (Task T17d / commit 6afa22c)
+Last Completed Step: ADR body subclause and version reconciliation (Task T17e)
 Next Action: AAC raw data block & channel stream element decoding exploration (Task T18)
 Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31930252331 (Ubuntu job 95123835282, macOS job 95123835271, Windows job 95123835269) passed 100%
 Blockers: None
@@ -1602,4 +1602,16 @@ Blockers: None
   3. 阶段 4 实施计划勾选：
      - 勾选「解析 AudioSpecificConfig、GASpecificConfig 和 Program Config Element」复选框，关联 ADR-0094 9 项测试矩阵与 hosted run 31928187049 验收证据；
      - hosted run 31930252331 在 Ubuntu 24.04 / Qt 6.11.1（job 95123835282）、macOS 15 / Qt 6.11.1（job 95123835271）、Windows 2022 / Qt 6.10.1（job 95123835269）全部成功通过。
+  Next Action 指向 Task T18（AAC raw data block 与 channel stream element 解码架构探索）。
+- 2026-08-16：完成 ADR 正文条款号与版本号收尾（任务 T17e）。
+  1. ADR 正文与参考资料条款号对齐（消除内部矛盾）：
+     - `docs/adr/0092-*.md` 与 `docs/zh-CN/adr/0092-*.md`：更正背景第 9 行（Annex 1.A）、`aac_frame_length` 规范引用（1.A.1）、正文条款枚举（1.A.1, 1.A.2）、`sampling_frequency_index` 超范围引用（1.A.1）及 References 引用（1.A.1, 1.A.2）；
+     - `docs/adr/0093-*.md` 与 `docs/zh-CN/adr/0093-*.md`：更正 `sampling_frequency_index` 超范围引用（1.A.1），并在 Amendment 中声明正文与参考资料已同步更正；
+     - 经过 grep "1.6.2" 全面审计，ADR-0092 与 ADR-0093 中唯一保留的 "1.6.2.1" 仅存在于文末更正说明（用于明确辨析 1.6.2.1 属于 AudioSpecificConfig 而非 ADTS）。
+  2. ADR-0094 版本号全面推进至 0.1.2：
+     - `docs/adr/0094-*.md` 与 `docs/zh-CN/adr/0094-*.md`：§Context 第 3 条、§1 引导句、§1 清单代码块、§Positive 全部更新为 `0.1.2`；
+     - §Verification Matrix 中的 `RulePackage::fromFiles` 输出块经独立 C++ 探针实测更新为真实 loader 输出原文：`id=org.streamview.aac version=0.1.2 license=MIT`。
+  3. ADR-0094 过时措辞修正：
+     - §2 引导句更正为跨三个子条款的准确表述（1.6.2.1 `AudioSpecificConfig` / 4.4.1 `GASpecificConfig` / 4.4.1.1 `program_config_element`）；
+     - §Context 第 7 行与 References 更正：MP4 `esds` box 规范基线严格对齐 `docs/standards.md:11` 的 ISO/IEC 14496-1:2010（Systems 描述符）与 ISO/IEC 14496-14。
   Next Action 指向 Task T18（AAC raw data block 与 channel stream element 解码架构探索）。

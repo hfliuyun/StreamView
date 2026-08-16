@@ -143,7 +143,7 @@ Following the ADR-0040 dichotomy and per-frame error isolation contracts:
        The header structure node is materialized normally, and the enclosing frame region node is marked using `tree_.markPartial(frameNode, core::MaterializationState::Invalid, diagnostic)` with `diagnostic = core::ParseDiagnostic{core::DiagnosticCode::TruncatedSource, core::DiagnosticSeverity::Warning, QStringLiteral("ADTS frame payload is truncated at EOF"), ...}`.
      - In both truncation cases, the frame node is published into `batch.frameNodes`, and the analyzer returns `true` (enabling partial inspection while isolating truncated trailing frames).
 4. **Value-Domain Non-Fatal Classifications**:
-   - `sampling_frequency_index`: Constrained with `@range(0, 12)` (ISO/IEC 14496-3 Table 1.16). Values 13, 14, and 15 (escape value forbidden in ADTS per subclause 1.6.2.1) produce non-fatal diagnostic warnings without stopping frame decoding.
+   - `sampling_frequency_index`: Constrained with `@range(0, 12)` (ISO/IEC 14496-3 Table 1.16). Values 13, 14, and 15 (escape value forbidden in ADTS per subclause 1.A.1) produce non-fatal diagnostic warnings without stopping frame decoding.
    - `profile`: Declared with 4-value enumeration `enum AacProfile` (`0` Main, `1` LC, `2` SSR, `3` LTP). Note: profile `3` (LTP) is reserved in MPEG-2 AAC (`id == 1`).
    - `channel_configuration`: Full 8-value enumeration `enum AacChannelConfiguration` (`0` Custom/PCE, `1` Mono, `2` Stereo, `3` 3-channel, `4` 4-channel, `5` 5-channel, `6` 5.1, `7` 7.1). `channel_configuration == 0` indicates a Program Config Element (PCE) in the raw data block (supported in Task T18).
    - `adts_buffer_fullness`: `0x7FF` is a valid normative indicator denoting variable bit rate (VBR) streams.
@@ -177,3 +177,5 @@ Rule OK: scratch/probe_t16_adts.svfmt
 Subsequent specification auditing (Task T17d) clarified the subclause structure in ISO/IEC 14496-3:2019 (Edition 5):
 1. `adts_fixed_header` and `adts_variable_header` are defined in Subpart 1 Annex 1.A subclause **1.A.1** (*Fixed and variable header of ADTS*), rather than subclause 1.6.2.1 (which defines `AudioSpecificConfig`).
 2. `adts_error_check` (`crc_check`) is defined in Subpart 1 Annex 1.A subclause **1.A.2** (*Error detection*).
+
+The body text citations and References have been synchronized accordingly.

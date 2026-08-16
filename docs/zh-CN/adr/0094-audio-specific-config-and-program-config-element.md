@@ -9,7 +9,7 @@
 为完成 StreamView 实施计划的阶段 4，官方 `org.streamview.aac` 规则包必须提供以下内容的结构化解码：
 1. **AudioSpecificConfig (ASC)**：包括基础及扩展音频对象类型（`audioObjectType`）、标准及显式采样率（`samplingFrequencyIndex` / `samplingFrequency`）、声道配置以及通用音频配置（`GASpecificConfig`，子条款 4.4.1）；
 2. **Program Config Element (PCE)**：当 `channelConfiguration == 0` 时用于自定义多声道布局（条款 1.6.2.1，表 1.18）；
-3. **多入口包清单**：更新 `org.streamview.aac` 包清单（`rule.toml`）至版本 `0.1.1`，同时包含 `adts` 与 `asc` 独立入口点。
+3. **多入口包清单**：更新 `org.streamview.aac` 包清单（`rule.toml`）至版本 `0.1.2`，同时包含 `adts` 与 `asc` 独立入口点。
 
 ### 探测与语言能力分析
 在制定语法规范前，已在 scratch 副本中通过 `svtool rule check` 进行实测探测，验证 DSL 语言边界约束：
@@ -86,13 +86,13 @@
 ## 决策
 
 ### 1. 官方包入口点与清单
-我们在 `src/rules/official/org.streamview.aac/rule.toml` 中升级包版本至 `0.1.1`，将 `detector = "aac-adts"` 放置在 `adts` 入口点块内并严格保留全部已发布元数据：
+我们在 `src/rules/official/org.streamview.aac/rule.toml` 中升级包版本至 `0.1.2`，将 `detector = "aac-adts"` 放置在 `adts` 入口点块内并严格保留全部已发布元数据：
 ```toml
 manifest-version = 1
 
 [package]
 id = "org.streamview.aac"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["StreamView contributors"]
 license = "MIT"
 dependencies = []
@@ -325,7 +325,7 @@ Rule OK: /Users/yun/.gemini/antigravity-cli/brain/12458dc0-7cd4-40c3-b0af-86d27d
 经由 `RulePackage::fromFiles` 执行的清单加载实测输出：
 ```
 fromFiles succeeded=1
-  id=org.streamview.aac version=0.1.1 license=MIT
+  id=org.streamview.aac version=0.1.2 license=MIT
   entry id=adts format=audio.aac.adts depth=adts-frame detector=aac-adts
   entry id=asc format=audio.aac.asc depth=structural detector=<none>
 ```
@@ -347,7 +347,7 @@ fromFiles succeeded=1
 - 完整精确解码标准 AAC-LC `AudioSpecificConfig` 码流及自定义多声道 `ProgramConfigElement` 布局。
 - 保持单遍线性流式解析性能，无子结构调用的额外开销。
 - 为阶段 5 MP4 `esds` box 容器解析与上下文绑定建立形式化基础。
-- 包版本升级为 `0.1.1`。
+- 包版本升级为 `0.1.2`。
 
 ### 负面影响
 - SBR/PS 向后兼容同步扩展（`syncExtensionType == 0x2b7`）及非通用音频对象类型暂不在此切片中展开，留待专用扩展处理。
@@ -359,9 +359,10 @@ fromFiles succeeded=1
 - [ADR-0092：AAC ADTS 分帧枚举与规则包架构](0092-aac-adts-frame-enumeration-and-rule-package.md)
 - [ADR-0093：ADTS 头结构化解码与官方规则包](0093-adts-header-structured-decoding-and-official-rule-package.md)
 
-## 条款引用更正
+## 条款引用与版本号更正
 
-后续规范审查（任务 T17d）厘清了 ISO/IEC 14496-3:2019（第 5 版）各结构的独立子条款归属：
+后续规范审查（任务 T17d 与 T17e）厘清了 ISO/IEC 14496-3:2019（第 5 版）各结构的独立子条款归属：
 1. **AudioSpecificConfig**：第 1 部分子条款 **1.6.2.1**（*AudioSpecificConfig*）；
 2. **GASpecificConfig**：第 4 部分子条款 **4.4.1**（*GASpecificConfig* / *General Audio specific configuration*）；
-3. **program_config_element**（PCE）：第 4 部分子条款 **4.4.1.1**（*Program config element (PCE)*）。
+3. **program_config_element**（PCE）：第 4 部分子条款 **4.4.1.1**（*Program config element (PCE)*）；
+4. **包版本升级**：因 `@spec` 条款引用修正引起 `.svfmt` 内容哈希变化，`org.streamview.aac` 官方包版本推进至 `0.1.2`。

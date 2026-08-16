@@ -6,13 +6,13 @@ Accepted
 
 ## Context
 
-Phase 4 of the StreamView implementation plan introduces formal structural support for AAC-LC audio (ISO/IEC 14496-3:2019, Edition 5). The primary transport format for raw AAC audio streams is the Audio Data Transport Stream (ADTS), specified in ISO/IEC 14496-3 subclause 1.6.2.
+Phase 4 of the StreamView implementation plan introduces formal structural support for AAC-LC audio (ISO/IEC 14496-3:2019, Edition 5). The primary transport format for raw AAC audio streams is the Audio Data Transport Stream (ADTS), specified in ISO/IEC 14496-3 Subpart 1 Annex 1.A.
 
 An initial probe of the format rules language and execution pipeline revealed a critical architectural gate:
 1. **DSL Scanner Closed Set**: In `src/rules/dsl.cpp:3453-3457` and `src/rules/dsl_ir.cpp:3568-3574`, sequence scan statements (`sequence<T> seq = scan(scanner_name)`) strictly permit only `scanner_name == "h264_start_code"`, rejecting any other scanner with `DslDiagnosticCode::UnsupportedScanner: "Only h264_start_code is supported"`.
 2. **Framing Paradigm Divergence**:
    - **H.264 Annex B**: Delimited by 3-byte or 4-byte start codes (`0x000001` / `0x00000001`). Because NAL unit lengths are not declared in headers, NAL unit boundaries are discovered strictly via forward linear search for the subsequent start code.
-   - **AAC ADTS**: Delimited by a 12-bit synchronization word `0xFFF` (byte 0: `0xFF`, byte 1 high nibble: `0xF0`). Crucially, the 7-byte (or 9-byte if CRC is present) ADTS header carries an explicit 13-bit `aac_frame_length` field (ISO/IEC 14496-3 subclause 1.6.2.1), declaring the exact total byte length $L \in [7, 8192]$ of the entire frame (headers, CRC check, and raw data blocks).
+   - **AAC ADTS**: Delimited by a 12-bit synchronization word `0xFFF` (byte 0: `0xFF`, byte 1 high nibble: `0xF0`). Crucially, the 7-byte (or 9-byte if CRC is present) ADTS header carries an explicit 13-bit `aac_frame_length` field (ISO/IEC 14496-3 subclause 1.A.1), declaring the exact total byte length $L \in [7, 8192]$ of the entire frame (headers, CRC check, and raw data blocks).
 3. **Session & Runner Coupling**:
    `streamview::app::AnalysisSession` (`src/app/analysis_session.cpp:138-144`) is currently hardcoded to invoke `rules::detectH264AnnexBCandidate` and instantiate `rules::H264AnnexBAnalyzer`. Supporting AAC ADTS requires generalized format candidate detection, rule catalog selection, and an ADTS analyzer runner.
 
@@ -98,15 +98,15 @@ ADTS stream parsing employs a hybrid length-chain stepping and resynchronization
    - Table 1.11 — `AacProfile` (MPEG-4 Audio Object Types minus 1: `0` Main, `1` LC, `2` SSR, `3` LTP / reserved in MPEG-2 AAC)
    - Table 1.16 — `AacSamplingFrequencyIndex` (`0` 96000 Hz .. `12` 7350 Hz, `15` explicit)
    - Table 1.17 — `AacChannelConfiguration` (`0` Custom/PCE, `1` Mono, `2` Stereo, `3` 3-channel, `4` 4-channel, `5` 5-channel, `6` 5.1, `7` 7.1)
-   - Subclause 1.6.2.1 — `adts_fixed_header`, `adts_variable_header`
-   - Subclause 1.6.2.2 — `adts_error_check` (`crc_check`)
+   - Subclause 1.A.1 — `adts_fixed_header`, `adts_variable_header`
+   - Subclause 1.A.2 — `adts_error_check` (`crc_check`)
 
 ### 5. Boundary Contracts & Value Domain Classification
 
 1. **Single Raw Data Block**: `number_of_raw_data_blocks_in_frame == 0` (1 raw data block per frame). Multiple raw data blocks with inter-block 16-bit CRC headers (`raw_data_block_position`) are explicitly postponed.
 2. **Value Domain Classification & Diagnostic Strategy**:
    Following the ADR-0040 dichotomy (non-layout-affecting fields emit non-fatal warnings rather than breaking decoding, while avoiding fatal `@enum` rejection per ADR-0059):
-   - `sampling_frequency_index`: Declared with `@range(0, 12)`. Non-standard values 13, 14, and escape value 15 (forbidden in ADTS per ISO/IEC 14496-3 subclause 1.6.2.1) emit non-fatal out-of-range diagnostics without terminating frame decoding.
+   - `sampling_frequency_index`: Declared with `@range(0, 12)`. Non-standard values 13, 14, and escape value 15 (forbidden in ADTS per ISO/IEC 14496-3 subclause 1.A.1) emit non-fatal out-of-range diagnostics without terminating frame decoding.
    - `profile`: Declared with 4-value enumeration `enum AacProfile { main = 0; lc = 1; ssr = 2; ltp = 3; }`, noting that profile `3` (LTP) is reserved in MPEG-2 AAC (`id == 1`).
    - `channel_configuration`: Full 8-value enumeration `enum AacChannelConfiguration` (`0` Custom/PCE .. `7` 7.1) retained. `channel_configuration == 0` indicates a Program Config Element (PCE) in the raw data block (supported in Task T18).
    - `adts_buffer_fullness`: `0x7FF` is a valid normative special value indicating a variable bit rate (VBR) stream.
@@ -131,7 +131,7 @@ ADTS stream parsing employs a hybrid length-chain stepping and resynchronization
 
 ## References
 
-- ISO/IEC 14496-3:2019, Edition 5, Subclauses 1.6.2.1, 1.6.2.2, Tables 1.11, 1.16, 1.17
+- ISO/IEC 14496-3:2019, Edition 5, Subclauses 1.A.1, 1.A.2, Tables 1.11, 1.16, 1.17
 - ADR-0010: C-Style Declarative Format Description Language
 - ADR-0016: TOML Manifest And ZIP Rule Packages
 - ADR-0027: Resume Cancelled Progressive H.264 Indexes In Place
@@ -146,3 +146,5 @@ ADTS stream parsing employs a hybrid length-chain stepping and resynchronization
 Subsequent specification auditing (Task T17d) clarified the subclause structure in ISO/IEC 14496-3:2019 (Edition 5):
 1. `adts_fixed_header` and `adts_variable_header` are defined in Subpart 1 Annex 1.A subclause **1.A.1** (*Fixed and variable header of ADTS*), rather than subclause 1.6.2.1 (which defines `AudioSpecificConfig`).
 2. `adts_error_check` (`crc_check`) is defined in Subpart 1 Annex 1.A subclause **1.A.2** (*Error detection*).
+
+The body text citations and References have been synchronized accordingly.

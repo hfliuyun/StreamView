@@ -4,12 +4,12 @@
 Proposed
 
 ## Context
-In MPEG-4 Audio (ISO/IEC 14496-3:2019, Edition 5), decoder configuration for Advanced Audio Coding (AAC) streams is formally standardized via `AudioSpecificConfig` (ASC, subclause 1.6.2.1). While ADTS streams convey basic stream properties (profile, sample rate index, channel configuration) in every frame header (ADR-0092, ADR-0093), modern audio delivery mechanisms—including MPEG-4 Part 14 containers (MP4 `esds` box, subclause 1.6.6) and streaming protocols—rely on `AudioSpecificConfig` to initialize the audio decoder before parsing compressed raw data blocks.
+In MPEG-4 Audio (ISO/IEC 14496-3:2019, Edition 5), decoder configuration for Advanced Audio Coding (AAC) streams is formally standardized via `AudioSpecificConfig` (ASC, subclause 1.6.2.1). While ADTS streams convey basic stream properties (profile, sample rate index, channel configuration) in every frame header (ADR-0092, ADR-0093), modern audio delivery mechanisms—including MPEG-4 Systems descriptors (MP4 `esds` box per ISO/IEC 14496-1:2010 and ISO/IEC 14496-14) and streaming protocols—rely on `AudioSpecificConfig` to initialize the audio decoder before parsing compressed raw data blocks.
 
 To fulfill Phase 4 of the StreamView implementation plan, the official `org.streamview.aac` rule package must provide structured decoding for:
 1. **AudioSpecificConfig (ASC)**: Including base and extended Audio Object Types (`audioObjectType`), standard and explicit sampling frequencies (`samplingFrequencyIndex` / `samplingFrequency`), channel configurations, and General Audio configuration (`GASpecificConfig`, subclause 4.4.1);
 2. **Program Config Element (PCE)**: For custom multichannel layouts when `channelConfiguration == 0` (subclause 4.4.1.1, Table 4.2);
-3. **Multi-Entry Package Manifest**: Updating `org.streamview.aac` manifest (`rule.toml`) to version `0.1.1` with dedicated entry points for both `adts` and `asc`.
+3. **Multi-Entry Package Manifest**: Updating `org.streamview.aac` manifest (`rule.toml`) to version `0.1.2` with dedicated entry points for both `adts` and `asc`.
 
 ### Empirical Probing and Language Capability Analysis
 Prior to specifying the grammar, empirical probing was conducted on scratch fixtures using `svtool rule check` to verify DSL language boundary constraints:
@@ -86,13 +86,13 @@ Prior to specifying the grammar, empirical probing was conducted on scratch fixt
 ## Decision
 
 ### 1. Official Package Entry Point and Manifest
-We update `src/rules/official/org.streamview.aac/rule.toml` to version `0.1.1`, placing `detector = "aac-adts"` within the `adts` entry point table and preserving all published package metadata:
+We update `src/rules/official/org.streamview.aac/rule.toml` to version `0.1.2`, placing `detector = "aac-adts"` within the `adts` entry point table and preserving all published package metadata:
 ```toml
 manifest-version = 1
 
 [package]
 id = "org.streamview.aac"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["StreamView contributors"]
 license = "MIT"
 dependencies = []
@@ -118,7 +118,7 @@ depth = "structural"
 ```
 
 ### 2. AudioSpecificConfig DSL Syntax Specification
-We specify `src/rules/official/org.streamview.aac/src/aac_asc.svfmt` with standard ISO/IEC 14496-3:2019 subclause 1.6.2.1 syntax:
+We specify `src/rules/official/org.streamview.aac/src/aac_asc.svfmt` covering syntax defined in ISO/IEC 14496-3:2019 subclauses 1.6.2.1 (`AudioSpecificConfig`), 4.4.1 (`GASpecificConfig`), and 4.4.1.1 (`program_config_element`):
 
 ```svfmt
 struct AudioSpecificConfig {
@@ -325,7 +325,7 @@ Rule OK: /Users/yun/.gemini/antigravity-cli/brain/12458dc0-7cd4-40c3-b0af-86d27d
 Manifest loader verification executed via `RulePackage::fromFiles`:
 ```
 fromFiles succeeded=1
-  id=org.streamview.aac version=0.1.1 license=MIT
+  id=org.streamview.aac version=0.1.2 license=MIT
   entry id=adts format=audio.aac.adts depth=adts-frame detector=aac-adts
   entry id=asc format=audio.aac.asc depth=structural detector=<none>
 ```
@@ -347,21 +347,23 @@ Unit test coverage required for Task T17c (using bitstreams assembled by generat
 - Fully and accurately decodes standard AAC-LC `AudioSpecificConfig` bitstreams and custom multi-channel `ProgramConfigElement` layouts.
 - Preserves single-pass linear streaming performance without overhead from sub-structure calls.
 - Establishes a verified foundation for Stage 5 MP4 `esds` atom container parsing and context binding.
-- Package version becomes `0.1.1`.
+- Package version becomes `0.1.2`.
 
 ### Negative
 - SBR/PS backward-compatible sync extension (`syncExtensionType == 0x2b7`) and non-GA audio object types are unparsed in this slice and deferred to dedicated extensions.
 
 ## References
-- ISO/IEC 14496-3:2019, Information technology — Coding of audio-visual objects — Part 3: Audio (subclauses 1.6.2.1, 4.4.1, 4.4.1.1, 1.6.6).
+- ISO/IEC 14496-3:2019, Information technology — Coding of audio-visual objects — Part 3: Audio (subclauses 1.6.2.1, 4.4.1, 4.4.1.1).
+- ISO/IEC 14496-1:2010, Information technology — Coding of audio-visual objects — Part 1: Systems (subclause 7.2.6.5, Elementary Stream Descriptor).
 - [ADR-0040: Non-Fatal Syntax Warnings and Range Annotations](0040-non-fatal-syntax-warnings-and-range-annotations.md)
 - [ADR-0090: Boolean Arithmetic and Logical Expressions in DSL](0090-boolean-arithmetic-and-logical-expressions-in-dsl.md)
 - [ADR-0092: AAC ADTS Frame Enumeration and Rule Package Architecture](0092-aac-adts-frame-enumeration-and-rule-package.md)
 - [ADR-0093: ADTS Header Structured Decoding and Official Rule Package](0093-adts-header-structured-decoding-and-official-rule-package.md)
 
-## Amendment: Subclause Reference Correction
+## Amendment: Subclause Reference and Version Correction
 
-Subsequent specification auditing (Task T17d) clarified the distinct subclause citations under ISO/IEC 14496-3:2019 (Edition 5):
+Subsequent specification auditing (Tasks T17d and T17e) clarified the distinct subclause citations under ISO/IEC 14496-3:2019 (Edition 5):
 1. **AudioSpecificConfig**: Subpart 1 subclause **1.6.2.1** (*AudioSpecificConfig*).
 2. **GASpecificConfig**: Subpart 4 subclause **4.4.1** (*GASpecificConfig* / *General Audio specific configuration*).
 3. **program_config_element** (PCE): Subpart 4 subclause **4.4.1.1** (*Program config element (PCE)*).
+4. **Package Version Bump**: Due to `.svfmt` content hash changes resulting from `@spec` citation corrections, the official `org.streamview.aac` package version is advanced to `0.1.2`.

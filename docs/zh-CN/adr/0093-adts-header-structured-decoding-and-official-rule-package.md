@@ -143,7 +143,7 @@ entry frames;
        头部结构节点正常物化，外层帧区域节点通过 `tree_.markPartial(frameNode, core::MaterializationState::Invalid, diagnostic)` 标记，其中 `diagnostic = core::ParseDiagnostic{core::DiagnosticCode::TruncatedSource, core::DiagnosticSeverity::Warning, QStringLiteral("ADTS frame payload is truncated at EOF"), ...}`；
      - 两种截断形态下，帧节点均发布至 `batch.frameNodes` 中，分析器均返回 `true`（使末尾截断帧可被部分可视化并完成隔离）。
 4. **值域级非致命字段定级**：
-   - `sampling_frequency_index`：采用 `@range(0, 12)` 约束（ISO/IEC 14496-3 表 1.16）。13、14 与转义值 15（在 ADTS 中依据条款 1.6.2.1 被禁用）产生非致命诊断告警，不中断帧解码。
+   - `sampling_frequency_index`：采用 `@range(0, 12)` 约束（ISO/IEC 14496-3 表 1.16）。13、14 与转义值 15（在 ADTS 中依据条款 1.A.1 被禁用）产生非致命诊断告警，不中断帧解码。
    - `profile`：声明为 4 值枚举 `enum AacProfile`（`0` Main, `1` LC, `2` SSR, `3` LTP）。注明 profile `3` (LTP) 在 MPEG-2 AAC（`id == 1`）中为保留值。
    - `channel_configuration`：保留完整 8 值枚举 `enum AacChannelConfiguration`（`0` Custom/PCE .. `7` 7.1）。`channel_configuration == 0` 表示原始数据块中包含程序配置元素 PCE（在任务 T18 中支持）。
    - `adts_buffer_fullness`：`0x7FF` 为符合规范的标准特殊值，表示可变码率（VBR）码流。
@@ -177,4 +177,6 @@ Rule OK: scratch/probe_t16_adts.svfmt
 后续规范审查（任务 T17d）厘清了 ISO/IEC 14496-3:2019（第 5 版）的子条款归属：
 1. `adts_fixed_header` 与 `adts_variable_header` 规范定义位于第 1 部分附录 1.A 的子条款 **1.A.1**（*Fixed and variable header of ADTS*），而非子条款 1.6.2.1（后者为 `AudioSpecificConfig`）；
 2. `adts_error_check`（`crc_check`）规范定义位于第 1 部分附录 1.A 的子条款 **1.A.2**（*Error detection*）。
+
+正文表述与参考资料已同步更正。
 

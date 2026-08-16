@@ -6,13 +6,13 @@
 
 ## 背景
 
-StreamView 实施计划阶段 4 引入对 AAC-LC 音频（ISO/IEC 14496-3:2019, 第 5 版）的正式结构支持。原始 AAC 音频码流的主要传输封装格式为音频数据传输流（ADTS, Audio Data Transport Stream），规范定义见 ISO/IEC 14496-3 子条款 1.6.2。
+StreamView 实施计划阶段 4 引入对 AAC-LC 音频（ISO/IEC 14496-3:2019, 第 5 版）的正式结构支持。原始 AAC 音频码流的主要传输封装格式为音频数据传输流（ADTS, Audio Data Transport Stream），规范定义见 ISO/IEC 14496-3 第 1 部分附录 1.A（Annex 1.A）。
 
 对格式规则语言与执行管线的首轮探测揭示了关键的架构拦截与范式差异：
 1. **DSL 扫描器闭集拦截**：在 `src/rules/dsl.cpp:3453-3457` 与 `src/rules/dsl_ir.cpp:3568-3574` 中，序列扫描声明（`sequence<T> seq = scan(scanner_name)`）硬编码严格限制 `scanner_name == "h264_start_code"`，任何其他扫描器名称均被拦截并抛出错误 `DslDiagnosticCode::UnsupportedScanner: "Only h264_start_code is supported"`。
 2. **分帧范式核心差异**：
    - **H.264 Annex B**：由 3 字节或 4 字节起始码定界（`0x000001` / `0x00000001`）。由于 NAL 单元头中不声明载荷长度，NAL 单元边界严格依赖向前线性扫描寻找下一个起始码。
-   - **AAC ADTS**：由 12 位同步字 `0xFFF`（字节 0 为 `0xFF`，字节 1 高 4 位为 `0xF0`）定界。至关重要的一点是，7 字节（或存在 CRC 时的 9 字节）ADTS 头部内显式携带 13 位字段 `aac_frame_length`（ISO/IEC 14496-3 子条款 1.6.2.1），明确声明了整帧（包含头部、CRC 校验与原始数据块）的精确字节总长度 $L \in [7, 8192]$。
+   - **AAC ADTS**：由 12 位同步字 `0xFFF`（字节 0 为 `0xFF`，字节 1 高 4 位为 `0xF0`）定界。至关重要的一点是，7 字节（或存在 CRC 时的 9 字节）ADTS 头部内显式携带 13 位字段 `aac_frame_length`（ISO/IEC 14496-3 子条款 1.A.1），明确声明了整帧（包含头部、CRC 校验与原始数据块）的精确字节总长度 $L \in [7, 8192]$。
 3. **会话与分析器耦合**：
    `streamview::app::AnalysisSession`（`src/app/analysis_session.cpp:138-144`）当前直接调用 `rules::detectH264AnnexBCandidate` 并硬编码实例化 `rules::H264AnnexBAnalyzer`。支持 AAC ADTS 需要泛化候选格式检测、规则目录匹配和 ADTS 分析执行入口。
 
@@ -98,15 +98,15 @@ ADTS 码流解析采用“长度链快速推进 + 状态机重同步”的混合
    - 表 1.11 — `AacProfile`（MPEG-4 音频对象类型减 1：`0` Main, `1` LC, `2` SSR, `3` LTP / 在 MPEG-2 AAC 中保留）
    - 表 1.16 — `AacSamplingFrequencyIndex`（`0` 96000 Hz .. `12` 7350 Hz, `15` 显式）
    - 表 1.17 — `AacChannelConfiguration`（`0` 自定义/PCE, `1` 单声道, `2` 立体声, `3` 3声道, `4` 4声道, `5` 5声道, `6` 5.1, `7` 7.1）
-   - 子条款 1.6.2.1 — `adts_fixed_header`, `adts_variable_header`
-   - 子条款 1.6.2.2 — `adts_error_check` (`crc_check`)
+   - 子条款 1.A.1 — `adts_fixed_header`, `adts_variable_header`
+   - 子条款 1.A.2 — `adts_error_check` (`crc_check`)
 
 ### 5. 边界约定与值域定级
 
 1. **单原始数据块限定**：首版限定 `number_of_raw_data_blocks_in_frame == 0`（每帧 1 块）；多块结构及其块间 16 位 CRC 头部（`raw_data_block_position`）显式延期。
 2. **值域定级与诊断策略**：
    遵循 ADR-0040 二分法（不影响头部布局的字段发出非致命警告而非中断解码，同时依据 ADR-0059 先例避免使用致命拦截的闭集 `@enum`）：
-   - `sampling_frequency_index`：声明为 `@range(0, 12)`。非标值 13、14 及转义值 15（在 ADTS 中依据 ISO/IEC 14496-3 子条款 1.6.2.1 属非法值）统一发出非致命超范围诊断，不中断帧解码；
+   - `sampling_frequency_index`：声明为 `@range(0, 12)`。非标值 13、14 及转义值 15（在 ADTS 中依据 ISO/IEC 14496-3 子条款 1.A.1 属非法值）统一发出非致命超范围诊断，不中断帧解码；
    - `profile`：声明为完整 4 值枚举 `enum AacProfile { main = 0; lc = 1; ssr = 2; ltp = 3; }`，注明当 `id == 1`（MPEG-2 AAC）时 `3` 为保留值；
    - `channel_configuration`：保留完整 8 值枚举 `enum AacChannelConfiguration`（`0` 自定义/PCE .. `7` 7.1）。`channel_configuration == 0` 指示载荷内包含程序配置元素（PCE），在任务 T18 实现；
    - `adts_buffer_fullness`：`0x7FF` 为合法规范特殊值，表示可变码率（VBR）码流。
@@ -131,7 +131,7 @@ ADTS 码流解析采用“长度链快速推进 + 状态机重同步”的混合
 
 ## 参考文档
 
-- ISO/IEC 14496-3:2019, Edition 5, Subclauses 1.6.2.1, 1.6.2.2, Tables 1.11, 1.16, 1.17
+- ISO/IEC 14496-3:2019, Edition 5, Subclauses 1.A.1, 1.A.2, Tables 1.11, 1.16, 1.17
 - ADR-0010: C-Style Declarative Format Description Language
 - ADR-0016: TOML Manifest And ZIP Rule Packages
 - ADR-0027: Resume Cancelled Progressive H.264 Indexes In Place
@@ -146,4 +146,6 @@ ADTS 码流解析采用“长度链快速推进 + 状态机重同步”的混合
 后续规范审查（任务 T17d）厘清了 ISO/IEC 14496-3:2019（第 5 版）的子条款归属：
 1. `adts_fixed_header` 与 `adts_variable_header` 规范定义位于第 1 部分附录 1.A 的子条款 **1.A.1**（*Fixed and variable header of ADTS*），而非子条款 1.6.2.1（后者为 `AudioSpecificConfig`）；
 2. `adts_error_check`（`crc_check`）规范定义位于第 1 部分附录 1.A 的子条款 **1.A.2**（*Error detection*）。
+
+正文表述与参考资料已同步更正。
 
