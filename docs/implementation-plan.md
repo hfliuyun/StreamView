@@ -2,8 +2,8 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Bit-by-bit acceptance audit closure across Category 1-5 and Phase 4 completion (Task T18e)
-Next Action: Author Phase 5 ADR and architectural design for MP4/MOV container support
+Last Completed Step: Phase 5 ADR-0096 architecture and design specification (Task P5a)
+Next Action: Task P5b — DSL compiler unrecognized annotation gate hardening
 Last Verification: Local dev/ci/sanitize 36/36 passing with zero sanitizer warnings (AAC analyzer 31/31, H.264 174/174); hosted CI run 31944036393 (Ubuntu job 95157275757, macOS job 95157275636, Windows job 95157275621) passed 100%
 Blockers: None
 
@@ -26,7 +26,8 @@ Blockers: None
 4. struct 名称、条款号、测试名与 file:line 必须逐字核对仓库或规范原文，并附核对证据；
 5. 每个任务经评审后才派发下一个任务；
 6. 新增测试用例默认追加到测试类末尾；若必须中部插入，同一 commit 内修正所有受影响的文档行号引用；
-7. 任何使被引用文件行号发生位移的 commit（含 tests/ 与 docs/ 自身），提交前用 grep -n 全量复核所有引用文档中的行号，发现漂移即修正。
+7. 任何使被引用文件行号发生位移的 commit（含 tests/ 与 docs/ 自身），提交前用 grep -n 全量复核所有引用文档中的行号，发现漂移即修正；
+8. 历史记录中的 `file:line` 为提交时快照，不随后续测试扩展引发的行号位移追改；仅 ADR、语言参考与实施计划当前状态/待办项（Active State & Todo）需保持实时行号精确对齐。
 
 ## 架构与接口
 
@@ -209,6 +210,19 @@ Blockers: None
 
 ## 阶段 5：非分片 MP4/MOV 与跨层导航
 
+### 目标与交付物
+支持标准非分片 MP4/ISOBMFF 容器解析、元数据树物化、超大 `mdat` 惰性封装、样本表索引分页以及 `avcC`/`esds` 到 H.264/AAC 基本流的跨层导航。
+
+### 阶段 5 任务切片与依赖关系
+- **Task P5a**（规范）：双语 ADR-0096 架构设计与边界决策定义（Markdown-only）；
+- **Task P5b**（能力切片）：DSL 编译器加固，严格拦截并报错未识别注解（解决 N2 隐患）；
+- **Task P5c**（规则切片）：官方 MP4 规则包 `org.streamview.mp4` v0.1.0（`rule.toml`、`mp4_box.svfmt`、`mp4_ftyp.svfmt`、`mp4_moov.svfmt`、`mp4_trak.svfmt`、`mp4_mdat.svfmt`）；
+- **Task P5d**（能力与运行器切片）：`Mp4IsobmffAnalyzer` 运行器、探测器注册与顶层 Box 遍历测试；
+- **Task P5e**（规则切片）：样本表与编解码配置 Box 规则（`stsd`、`avc1`、`avcC`、`mp4a`、`esds`、`stts`、`stsc`、`stsz`、`stco`、`co64`）；
+- **Task P5f**（能力切片）：跨层导航会话与视图集成（从 `avcC`/`esds` 区域映射打开 H.264 SPS/PPS 与 AAC ASC 视图）；
+- **Task P5g**（验收与审计切片）：逐 bit 验收、超大 `mdat` 惰性封装验证及阶段 5 复选框闭环。
+
+### 阶段 5 检查清单
 - [ ] 支持普通、64 位、size=0 和未知 box；`mdat` 默认 lazy。
 - [ ] 实现 `ftyp`、movie/track/media 层级、sample descriptions、时间与 sample tables、编辑列表。
 - [ ] 实现 `avcC`、`esds`、AVC/AAC sample entry。
@@ -1787,4 +1801,17 @@ Blockers: None
   4. 测试与 Hosted CI 验证：
      - dev/ci/sanitize 三套构建全部 36/36 全绿，AAC analyzer 31/31，H.264 analyzer 174/174。
   Next Action 指向 Phase 5 ADR 与架构设计编写。
+- 2026-08-16：完成 Task P5a 双语 ADR-0096 架构设计与阶段 5 切片细化（任务 P5a / commit `TBD`）。
+  1. 三项核心边界决策明确（D1/D2/D3）：
+     - **D1（Box 遍历与 `mdat` Lazy 边界）**：核心库（`src/core/` 与 `src/rules/*.cpp`）保持 100% 格式中立，零 FourCC 字符串侵入；所有 Box 头部与层级关系由 DSL 结构表达，超大 `mdat` 载荷通过 `@lazy` 声明实现零堆内存惰性封装；`size == 0` 与 `size == 1`（largesize）通过 DSL 条件语法与剩余计算处理；
+     - **D2（跨层导航引用模型）**：规则包在 v0.1 保持自包含独立，`org.streamview.mp4` 声明 `avcC`/`esds` 解码配置结构并通过注解提供目标格式元数据，会话层通过 `RulePackageStore` 实现跨包入口点链接与坐标映射；
+     - **D3（样本表索引与资源预算）**：样本表元数据完整物化，海量重复索引数据（`stsz`/`stco`/`co64`）通过 `@lazy` 与窗口化批次控制，严格遵守单批次 1000 样本与全局 20,000 物化节点预算。
+  2. 规范与纪律清理：
+     - 新建双语 ADR-0096（`docs/adr/0096-*.md` 与 `docs/zh-CN/adr/0096-*.md`）；
+     - 纪律条款追加第 8 条（历史记录 file:line 快照策略）；
+     - ADR-0095 §7 补齐 Task T18f 条目并清理过期标记；
+     - 细化阶段 5 执行切片（Task P5a..P5g），明确能力切片与规则切片分离。
+  3. 卫生检查与验证：
+     - 本地 `markdown_hygiene` 护栏验证通过；按 ADR-0019 Markdown-only 跳过 hosted CI。
+  Next Action 指向 Task P5b（DSL 编译器未识别注解拦截加固）。
 

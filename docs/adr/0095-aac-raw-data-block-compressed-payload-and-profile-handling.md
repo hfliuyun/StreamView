@@ -147,7 +147,8 @@ To uphold strict single-responsibility commits and keep capability changes separ
 - **Task T18c**: Rule consumption of `@lazy raw_data_block` in `aac_adts.svfmt`, package version bump to `0.1.3`, test suite updates.
 - **Task T18c-2**: Dead code removal in `src/rules/aac_adts_analyzer.cpp:456-467` with reachability rationale (runner capability slice, no version bump).
 - **Task T18d**: Profile handling verification & documentation alignment.
-- **Task T18e** (Completed): Bit-by-bit audit closing all gaps in Category 1, 2, 3, 4, and 5, Phase 4 checkbox completion (`docs/implementation-plan.md:206-208`), Phase advancement to Phase 5.
+- **Task T18e**: Bit-by-bit audit closing all gaps in Category 1, 2, 3, 4, and 5, Phase 4 checkbox completion (`docs/implementation-plan.md:206-208`), Phase advancement to Phase 5.
+- **Task T18f**: Phase 4 wrap-up remediation: markdown hygiene line calculations, Frame 2/3 Lazy state assertions, and PCE unsampled scalar margin declaration.
 
 #### Anti-Recurrence Discipline for Test Citations
 To prevent documentation line citation drift when modifying test suites:

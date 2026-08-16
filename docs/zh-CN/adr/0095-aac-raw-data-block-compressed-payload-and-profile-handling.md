@@ -146,8 +146,9 @@ StreamView 规则不进行 CRC-16 多项式除法或算术校验和计算（正�
 - **任务 T18b**：分析器视图映射扩展至帧跨度（`src/rules/aac_adts_analyzer.cpp:346`），执行器能力切片，不改规则、不升包版本；
 - **任务 T18c**：规则消费 `@lazy raw_data_block`（`aac_adts.svfmt`），包版本升级至 `0.1.3`，测试套件更新；
 - **任务 T18c-2**：清理 `src/rules/aac_adts_analyzer.cpp:456-467` 死代码与可达性论证（执行器能力切片，不升版本）；
-- **任务 T18d**（当前任务）：Profile 处理验证与文档对齐；
-- **任务 T18e**：关闭类别 1、2、3、4、5 全部缺口、阶段 4 复选框全量勾选（`docs/implementation-plan.md:206-208`）、推进阶段至 Phase 5。
+- **任务 T18d**：Profile 处理验证与文档对齐；
+- **任务 T18e**：关闭类别 1、2、3、4、5 全部缺口、阶段 4 复选框全量勾选（`docs/implementation-plan.md:206-208`）、推进阶段至 Phase 5；
+- **任务 T18f**：阶段 4 收尾校正：Markdown 卫生检查分号转义与行号校正、Frame 2/3 Lazy 状态断言补齐及 PCE 未抽样标量余量声明。
 
 #### 测试引用防漂移纪律
 为防止因测试用例增删改导致文档中的测试行号引用漂移失效：
