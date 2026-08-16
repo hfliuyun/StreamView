@@ -994,7 +994,7 @@ private slots:
             QStringLiteral(".audio_object_type")));
         QCOMPARE(result.bitsConsumed, quint64(19));
         QCOMPARE(node->diagnostics().front().severity,
-                 streamview::core::DiagnosticSeverity::Error);
+                 streamview::core::DiagnosticSeverity::Warning);
         QCOMPARE(node->diagnostics().front().message,
                  QStringLiteral("Escaped AAC object types require a profile-specific SpecificConfig"));
         QVERIFY(node->diagnostics().front().location.has_value());
@@ -1898,6 +1898,8 @@ private slots:
         QCOMPARE(node->diagnostics().size(), std::size_t(1));
         QCOMPARE(node->diagnostics().front().code,
                  streamview::core::DiagnosticCode::UnsupportedSyntax);
+        QCOMPARE(node->diagnostics().front().severity,
+                 streamview::core::DiagnosticSeverity::Warning);
         QVERIFY(node->diagnostics().front().fieldPath.endsWith(
             QStringLiteral(".audio_object_type")));
         QCOMPARE(result.bitsConsumed, quint64(13));
@@ -1966,6 +1968,8 @@ private slots:
         QCOMPARE(node->diagnostics().size(), std::size_t(1));
         QCOMPARE(node->diagnostics().front().code,
                  streamview::core::DiagnosticCode::UnsupportedSyntax);
+        QCOMPARE(node->diagnostics().front().severity,
+                 streamview::core::DiagnosticSeverity::Warning);
         QVERIFY(node->diagnostics().front().fieldPath.endsWith(
             QStringLiteral(".audio_object_type")));
         QCOMPARE(result.bitsConsumed, quint64(13));
@@ -2035,6 +2039,8 @@ private slots:
         QCOMPARE(node->diagnostics().size(), std::size_t(1));
         QCOMPARE(node->diagnostics().front().code,
                  streamview::core::DiagnosticCode::UnsupportedSyntax);
+        QCOMPARE(node->diagnostics().front().severity,
+                 streamview::core::DiagnosticSeverity::Warning);
         QVERIFY(node->diagnostics().front().fieldPath.endsWith(
             QStringLiteral(".audio_object_type")));
         QCOMPARE(result.bitsConsumed, quint64(19));
