@@ -15,18 +15,18 @@
 在制定语法规范前，已在 scratch 副本中通过 `svtool rule check` 进行实测探测，验证 DSL 语言边界约束：
 
 1. **子结构实例化与作用域隔离**：
-   在结构体内尝试声明嵌套结构体实例（如 `GASpecificConfig ga_specific_config;` 或 `ProgramConfigElement pce;`）会在解析器类型检查处被拦截（`src/rules/dsl.cpp:943`）：
+   在结构体内尝试声明嵌套结构体实例（如 `GASpecificConfig ga_specific_config;` 或 `ProgramConfigElement pce;`）会在解析器类型检查处被拦截（`src/rules/dsl.cpp:1002`）：
    ```
    error: Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type
    ```
-   此外，从独立子结构引用外部结构体字段会被编译器支配分析拦截（`src/rules/dsl.cpp:1557` 与 `src/rules/dsl_ir.cpp:3280`）：
+   此外，从独立子结构引用外部结构体字段会被编译器支配分析拦截（`src/rules/dsl.cpp:3283` 与 `src/rules/dsl_ir.cpp:1557-1561`）：
    ```
    error: Computed dependency is not guaranteed on the current branch
    ```
    因此，遵循 H.264 VUI/HRD（`SequenceParameterSetRbsp`）、切片头（`IdrSliceLayerWithoutPartitioningRbsp`）与 SEI 消息（`SeiRbsp`）的既有成熟范式，`GASpecificConfig` 与条件性 `ProgramConfigElement` 语法必须在 `AudioSpecificConfig` 内部直接内联并扁平展开。
 
 2. **PCE 变长数组与有界循环**：
-   `ProgramConfigElement` 包含 6 个变长声道元素数组（`front`、`side`、`back`、`lfe`、`assoc_data`、`valid_cc`）与一段注释数据字节序列。探测确认 DSL 有界循环语法（`src/rules/dsl.cpp:1265-1320`）：
+   `ProgramConfigElement` 包含 6 个变长声道元素数组（`front`、`side`、`back`、`lfe`、`assoc_data`、`valid_cc`）与一段注释数据字节序列。探测确认 DSL 有界循环语法（`src/rules/dsl.cpp:1265`）：
    ```svfmt
    repeat (num_front_channel_elements, 15) {
        bits<1> front_element_is_cpe;
@@ -36,7 +36,7 @@
    能够精确解析、降级至 IR，并在 ISO/IEC 14496-3 标准最大上限（15、15、15、3、7、15 与 255）下通过静态校验。
 
 3. **PCE 字节对齐表达式与精确 Bit 位数核算**：
-   尝试使用 `align(8);` 语句无法通过语法解析：
+   尝试使用 `align(8);` 语句无法通过语法解析（`src/rules/dsl.cpp:1002`）：
    ```
    error: Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type
    ```
@@ -44,7 +44,7 @@
    ```
    error: Expected 'more_rbsp_data' in while condition
    ```
-   尝试三元表达式 `(cond ? val1 : val2)` 会被词法解析拦截：
+   尝试三元表达式 `(cond ? val1 : val2)` 会被词法解析拦截（`src/rules/dsl.cpp:293`）：
    ```
    error: Invalid character in DSL source
    ```
@@ -86,7 +86,7 @@
 ## 决策
 
 ### 1. 官方包入口点与清单
-我们在 `src/rules/official/org.streamview.aac/rule.toml` 中升级包版本至 `0.1.1`，严格保留全部已发布元数据：
+我们在 `src/rules/official/org.streamview.aac/rule.toml` 中升级包版本至 `0.1.1`，将 `detector = "aac-adts"` 放置在 `adts` 入口点块内并严格保留全部已发布元数据：
 ```toml
 manifest-version = 1
 
@@ -101,15 +101,13 @@ dependencies = []
 language = "0.1"
 engine = ">=0.1.0 <0.2.0"
 
-[detection]
-detector = "aac-adts"
-
 [[entrypoints]]
 id = "adts"
 format = "audio.aac.adts"
 source = "src/aac_adts.svfmt"
 profiles = ["lc"]
 depth = "adts-frame"
+detector = "aac-adts"
 
 [[entrypoints]]
 id = "asc"
@@ -172,6 +170,7 @@ struct AudioSpecificConfig {
             @description("PCE audio object type.");
         bits<4> pce_sampling_frequency_index
             @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+            @range(0, 12)
             @description("PCE sampling frequency index (0..12 standard).");
         bits<4> num_front_channel_elements
             @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
@@ -312,25 +311,35 @@ entry AudioSpecificConfig;
 ### 3. 诊断与截断语义
 - **截断（`DiagnosticCode::TruncatedSource`）**：若 ASC 码流在解码中途提前结束（如在 `AudioSpecificConfig` 头部、`GASpecificConfig` 或 PCE 声道列表内部），`DslExecutor::decodeStruct` 返回 `DslExecutionStatus::TruncatedSource`。部分物化结构节点附带 `DiagnosticCode::TruncatedSource` 与 `DiagnosticSeverity::Error`（`"Unable to read complete syntax field"`）。
 - **对齐错误（`DiagnosticCode::InvalidSyntax`）**：若 PCE 填充对齐位非零（`@equals(0)` 校验失败），`DslExecutor` 在违规 bit 坐标处产生 `DiagnosticCode::InvalidSyntax` 与 `DiagnosticSeverity::Error` 诊断。
+- **保留值不可表达性边界说明**：在 ASC 中，`sampling_frequency_index` 的合法值为 `{0..12, 15}`（13..14 为保留），`channel_configuration` 的合法值为 `{0..7}`（8..15 为保留）。由于 `{0..12, 15}` 非连续集合，单一 `@range(min, max)` 无法表达；若使用 `@enum` 则会在 VM 层引发致命错误（`src/rules/dsl_vm.cpp:2782-2799`），违反 ADR-0040 中「保留值产生非致命警告而非终止解析」的二分法契约。因此在当前语言能力下，ASC 中的保留值不挂载警告注解，该限制被形式化记录为 DSL 语言表达能力边界。
 - **非 GA 音频对象类型**：非 GA 的 `audio_object_type`（如 SBR = 5）在此切片中解析基础通用音频头部语法而不报错，专用扩展载荷留待后续专用扩展补充。
 
 ## 验证矩阵与证据
 
-经由 `svtool rule check` 执行的静态校验实际输出：
+经由 `svtool rule check` 在 scratch 探针上执行的静态校验实际输出：
 ```
-$ ./build/dev/tools/svtool/svtool rule check src/rules/official/org.streamview.aac/src/aac_asc.svfmt
-Rule OK: src/rules/official/org.streamview.aac/src/aac_asc.svfmt
+$ ./build/dev/tools/svtool/svtool rule check /Users/yun/.gemini/antigravity-cli/brain/12458dc0-7cd4-40c3-b0af-86d27dcb7b62/scratch/probe_asc_complete.svfmt
+Rule OK: /Users/yun/.gemini/antigravity-cli/brain/12458dc0-7cd4-40c3-b0af-86d27dcb7b62/scratch/probe_asc_complete.svfmt
+```
+
+经由 `RulePackage::fromFiles` 执行的清单加载实测输出：
+```
+fromFiles succeeded=1
+  id=org.streamview.aac version=0.1.1 license=MIT
+  entry id=adts format=audio.aac.adts depth=adts-frame detector=aac-adts
+  entry id=asc format=audio.aac.asc depth=structural detector=<none>
 ```
 
 任务 T17c 编码阶段要求的单元测试覆盖矩阵（通过装配脚本生成 fixture 并打印真值对齐位数）：
-1. **基线 ASC**：`aot = 2`, `sfi = 3`, `dcc = 0`, PCE 元素全 0 $\to$ 精确校验 6 个对齐零位，`comment_field_bytes` 在第 7 字节处解析；
-2. **显式 Core Coder 延迟**：`dcc = 1` 携带 14 位 `core_coder_delay` $\to$ 精确校验 0 个对齐零位，`comment_field_bytes` 在第 8 字节处解析；
-3. **扩展音频对象类型**：`aot = 31` 携带 6 位 `aot_ext` $\to$ 精确校验 0 个对齐零位，`comment_field_bytes` 在第 7 字节处解析；
-4. **显式 24 位采样率**：`sfi = 15` 携带 24 位 `sampling_frequency` $\to$ 精确校验 6 个对齐零位，`comment_field_bytes` 在第 10 字节处解析；
-5. **多声道 PCE 组合**：`num_front_channel_elements = 2`（10 bit）+ `num_lfe_channel_elements = 1`（4 bit） $\to$ 精确校验 0 个对齐零位，`comment_field_bytes` 在第 8 字节处解析；
-6. **Mixdown 标志置位**：`mono_mixdown_present = 1`, `stereo_mixdown_present = 1`, `matrix_mixdown_idx_present = 1` $\to$ 完整解析 mixdown 元素编号及 matrix 参数；
-7. **PCE 非零对齐位拒绝**：填充非零 bit 的畸形码流 $\to$ `materialized = 0` 并附 `DiagnosticCode::InvalidSyntax`（`@equals(0)` 违规）；
-8. **ASC 提前截断**：在头部或 PCE 列表截断的数据 $\to$ `materialized = 0` 并附 `DiagnosticCode::TruncatedSource`。
+1. **基线 ASC (用例 1)**：`aot = 2`, `sfi = 3`, `dcc = 0`, PCE 元素全 0 $\to$ 精确校验 6 个对齐零位，`comment_field_bytes` 在第 7 字节处解析；
+2. **显式 Core Coder 延迟 (用例 2)**：`dcc = 1` 携带 14 位 `core_coder_delay` $\to$ 精确校验 0 个对齐零位，`comment_field_bytes` 在第 8 字节处解析；
+3. **扩展音频对象类型 (用例 3)**：`aot = 31` 携带 6 位 `aot_ext` $\to$ 精确校验 0 个对齐零位，`comment_field_bytes` 在第 7 字节处解析；
+4. **显式 24 位采样率 (用例 4)**：`sfi = 15` 携带 24 位 `sampling_frequency` $\to$ 精确校验 6 个对齐零位，`comment_field_bytes` 在第 10 字节处解析；
+5. **多声道 Front/LFE 组合 (用例 5)**：`num_front_channel_elements = 2`（10 bit）+ `num_lfe_channel_elements = 1`（4 bit） $\to$ 精确校验 0 个对齐零位，`comment_field_bytes` 在第 8 字节处解析；
+6. **Mixdown 标志置位 (用例 6)**：`mono_mixdown_present = 1`, `stereo_mixdown_present = 1`, `matrix_mixdown_idx_present = 1` $\to$ 精确校验 3 个对齐零位，`comment_field_bytes` 在第 8 字节处解析；
+7. **多声道 Side/Back/Assoc/CC 组合 (用例 7)**：`num_side_channel_elements = 1`, `num_back_channel_elements = 1`, `num_assoc_data_elements = 1`, `num_valid_cc_elements = 1` $\to$ 精确校验 3 个对齐零位，`comment_field_bytes` 在第 9 字节处解析；
+8. **PCE 非零对齐位拒绝**：填充非零 bit 的畸形码流 $\to$ `materialized = 0` 并附 `DiagnosticCode::InvalidSyntax`（`@equals(0)` 违规）；
+9. **ASC 提前截断**：在头部或 PCE 列表截断的数据 $\to$ `materialized = 0` 并附 `DiagnosticCode::TruncatedSource`。
 
 ## 影响
 
