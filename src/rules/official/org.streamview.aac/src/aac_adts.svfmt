@@ -16,7 +16,7 @@ enum AacChannelConfiguration {
     seven_one = 7;
 }
 
-@spec("ISO/IEC 14496-3:2019", "1.6.2.1")
+@spec("ISO/IEC 14496-3:2019", "1.6.2.2")
 @description("Audio Data Transport Stream (ADTS) fixed and variable header.")
 struct AdtsHeader {
     bits<12> syncword @equals(4095)

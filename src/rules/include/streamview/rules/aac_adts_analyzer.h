@@ -36,6 +36,8 @@ struct AacAdtsAnalysisBatch final {
     }
 };
 
+[[nodiscard]] RulePackageLoadResult loadAacAdtsRulePackage();
+
 class AacAdtsAnalyzer final {
 public:
     [[nodiscard]] static std::optional<AacAdtsAnalyzer>

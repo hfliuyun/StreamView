@@ -87,5 +87,7 @@ qt_add_resources(
     FILES
         official/org.streamview.aac/rule.toml
         official/org.streamview.aac/src/aac_adts.svfmt
+        official/org.streamview.aac/src/aac_asc.svfmt
 )
+
 

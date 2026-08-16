@@ -1,5 +1,11 @@
 #include <streamview/rules/aac_adts_analyzer.h>
 
+#include <streamview/core/analysis_model.h>
+#include <streamview/core/bit_reader.h>
+#include <streamview/core/coordinates.h>
+#include <streamview/rules/dsl.h>
+#include <streamview/rules/dsl_executor.h>
+
 #include <streamview/core/cancellation.h>
 #include <streamview/core/source.h>
 #include <streamview/core/version.h>
@@ -14,6 +20,17 @@
 #include <vector>
 
 namespace {
+
+[[nodiscard]] std::optional<streamview::core::SourceMapping> mappingForBytes(quint64 byteCount) {
+    const auto span = streamview::core::SourceSpan::create(
+        streamview::core::SourceBitAddress(0), byteCount * 8U);
+    if (!span) {
+        return std::nullopt;
+    }
+    return streamview::core::SourceMapping::create(
+        streamview::core::LogicalViewId(1), {*span});
+}
+
 
 class MemorySource final : public streamview::core::RandomAccessSource {
 public:
@@ -462,6 +479,1317 @@ private slots:
         const auto b2 = analyzer->analyzeBatch(10, 0);
         QCOMPARE(b2.status, streamview::rules::AacAdtsAnalysisStatus::InvalidBatchSize);
     }
+
+    void resolvesAscEntryPointFromBundledRulePackage() {
+        const auto loaded = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(loaded.succeeded());
+        QVERIFY(loaded.package.has_value());
+        QCOMPARE(loaded.package->identity().packageId(), QStringLiteral("org.streamview.aac"));
+        QCOMPARE(loaded.package->identity().packageVersion(), QStringLiteral("0.1.1"));
+
+        streamview::rules::RulePackageCatalog catalog;
+        const auto reg = catalog.registerPackage(streamview::rules::RulePackage(*loaded.package));
+        QVERIFY(reg.succeeded());
+
+        const auto resolvedAsc = catalog.resolve(
+            loaded.package->identity(),
+            QStringLiteral("asc"),
+            streamview::rules::languageVersion(),
+            streamview::core::version());
+        QVERIFY2(resolvedAsc.succeeded(), qPrintable(resolvedAsc.errorMessage));
+        QVERIFY(resolvedAsc.entryPoint.has_value());
+        QCOMPARE(resolvedAsc.entryPoint->id, QStringLiteral("asc"));
+        QCOMPARE(resolvedAsc.entryPoint->format, QStringLiteral("audio.aac.asc"));
+        QCOMPARE(resolvedAsc.entryPoint->depth, QStringLiteral("structural"));
+        QCOMPARE(resolvedAsc.entryPoint->sourcePath, QStringLiteral("src/aac_asc.svfmt"));
+        QVERIFY(!resolvedAsc.entryPoint->detector.has_value());
+
+        const auto* ascSource = loaded.package->fileContents(QStringLiteral("src/aac_asc.svfmt"));
+        QVERIFY(ascSource != nullptr);
+        const auto parsed = streamview::rules::DslParser::parse(QString::fromUtf8(*ascSource));
+        QVERIFY2(parsed.succeeded(), parsed.diagnostics.empty() ? "" : qPrintable(parsed.diagnostics.front().message));
+        const auto compiled = streamview::rules::DslCompiler::compile(parsed.program);
+        QVERIFY2(compiled.succeeded(), compiled.diagnostics.empty() ? "" : qPrintable(compiled.diagnostics.front().message));
+    }
+
+    void decodesAscCase1Baseline() {
+        const auto loaded = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(loaded.succeeded());
+        const auto* ascSource = loaded.package->fileContents(QStringLiteral("src/aac_asc.svfmt"));
+        QVERIFY(ascSource != nullptr);
+        const auto parsed = streamview::rules::DslParser::parse(QString::fromUtf8(*ascSource));
+        const auto compiled = streamview::rules::DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const std::vector<std::byte> raw = {std::byte{0x11}, std::byte{0x80}, std::byte{0x00}, std::byte{0xC0}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x5A}, std::byte{0x00}, std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}, std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}, std::byte{0x09}, std::byte{0x0A}, std::byte{0x0B}, std::byte{0x0C}, std::byte{0x0D}, std::byte{0x0E}, std::byte{0x0F}, std::byte{0x10}, std::byte{0x11}, std::byte{0x12}, std::byte{0x13}, std::byte{0x14}, std::byte{0x15}, std::byte{0x16}, std::byte{0x17}, std::byte{0x18}, std::byte{0x19}, std::byte{0x1A}, std::byte{0x1B}, std::byte{0x1C}, std::byte{0x1D}, std::byte{0x1E}, std::byte{0x1F}, std::byte{0x20}, std::byte{0x21}, std::byte{0x22}, std::byte{0x23}, std::byte{0x24}, std::byte{0x25}, std::byte{0x26}, std::byte{0x27}, std::byte{0x28}, std::byte{0x29}, std::byte{0x2A}, std::byte{0x2B}, std::byte{0x2C}, std::byte{0x2D}, std::byte{0x2E}, std::byte{0x2F}, std::byte{0x30}, std::byte{0x31}, std::byte{0x32}, std::byte{0x33}, std::byte{0x34}, std::byte{0x35}, std::byte{0x36}, std::byte{0x37}, std::byte{0x38}, std::byte{0x39}, std::byte{0x3A}, std::byte{0x3B}, std::byte{0x3C}, std::byte{0x3D}, std::byte{0x3E}, std::byte{0x3F}, std::byte{0x40}, std::byte{0x41}, std::byte{0x42}, std::byte{0x43}, std::byte{0x44}, std::byte{0x45}, std::byte{0x46}, std::byte{0x47}, std::byte{0x48}, std::byte{0x49}, std::byte{0x4A}, std::byte{0x4B}, std::byte{0x4C}, std::byte{0x4D}, std::byte{0x4E}, std::byte{0x4F}, std::byte{0x50}, std::byte{0x51}, std::byte{0x52}, std::byte{0x53}, std::byte{0x54}, std::byte{0x55}, std::byte{0x56}, std::byte{0x57}, std::byte{0x58}, std::byte{0x59}};
+        const MemorySource source(raw);
+        auto tree = streamview::core::AnalysisTree::create(QStringLiteral("Root"));
+        QVERIFY(tree.has_value());
+        const auto mapping = mappingForBytes(source.sizeBytes());
+        QVERIFY(mapping.has_value());
+        streamview::core::BitReader reader(source, *mapping);
+
+        const auto result = streamview::rules::DslExecutor::decodeStruct(
+            *compiled.program,
+            QStringLiteral("AudioSpecificConfig"),
+            reader,
+            *mapping,
+            0,
+            *tree,
+            tree->rootId());
+        QCOMPARE(result.status, streamview::rules::DslExecutionStatus::Materialized);
+        QVERIFY(result.structureNode.has_value());
+
+        const auto node = tree->node(*result.structureNode);
+        QVERIFY(node.has_value());
+        QCOMPARE(node->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(node->diagnostics().empty());
+
+        const std::vector<QString> expectedNames = {
+            QStringLiteral("audio_object_type"),
+            QStringLiteral("sampling_frequency_index"),
+            QStringLiteral("channel_configuration"),
+            QStringLiteral("frame_length_flag"),
+            QStringLiteral("depends_on_core_coder"),
+            QStringLiteral("extension_flag"),
+            QStringLiteral("element_instance_tag"),
+            QStringLiteral("object_type"),
+            QStringLiteral("pce_sampling_frequency_index"),
+            QStringLiteral("num_front_channel_elements"),
+            QStringLiteral("num_side_channel_elements"),
+            QStringLiteral("num_back_channel_elements"),
+            QStringLiteral("num_lfe_channel_elements"),
+            QStringLiteral("num_assoc_data_elements"),
+            QStringLiteral("num_valid_cc_elements"),
+            QStringLiteral("mono_mixdown_present"),
+            QStringLiteral("stereo_mixdown_present"),
+            QStringLiteral("matrix_mixdown_idx_present"),
+            QStringLiteral("pce_total_bits"),
+            QStringLiteral("pce_rem"),
+            QStringLiteral("pce_alignment_bits"),
+            QStringLiteral("byte_alignment_zero_bit[0]"),
+            QStringLiteral("byte_alignment_zero_bit[1]"),
+            QStringLiteral("byte_alignment_zero_bit[2]"),
+            QStringLiteral("byte_alignment_zero_bit[3]"),
+            QStringLiteral("byte_alignment_zero_bit[4]"),
+            QStringLiteral("byte_alignment_zero_bit[5]"),
+            QStringLiteral("comment_field_bytes"),
+            QStringLiteral("comment_field_data[0]"),
+            QStringLiteral("comment_field_data[1]"),
+            QStringLiteral("comment_field_data[2]"),
+            QStringLiteral("comment_field_data[3]"),
+            QStringLiteral("comment_field_data[4]"),
+            QStringLiteral("comment_field_data[5]"),
+            QStringLiteral("comment_field_data[6]"),
+            QStringLiteral("comment_field_data[7]"),
+            QStringLiteral("comment_field_data[8]"),
+            QStringLiteral("comment_field_data[9]"),
+            QStringLiteral("comment_field_data[10]"),
+            QStringLiteral("comment_field_data[11]"),
+            QStringLiteral("comment_field_data[12]"),
+            QStringLiteral("comment_field_data[13]"),
+            QStringLiteral("comment_field_data[14]"),
+            QStringLiteral("comment_field_data[15]"),
+            QStringLiteral("comment_field_data[16]"),
+            QStringLiteral("comment_field_data[17]"),
+            QStringLiteral("comment_field_data[18]"),
+            QStringLiteral("comment_field_data[19]"),
+            QStringLiteral("comment_field_data[20]"),
+            QStringLiteral("comment_field_data[21]"),
+            QStringLiteral("comment_field_data[22]"),
+            QStringLiteral("comment_field_data[23]"),
+            QStringLiteral("comment_field_data[24]"),
+            QStringLiteral("comment_field_data[25]"),
+            QStringLiteral("comment_field_data[26]"),
+            QStringLiteral("comment_field_data[27]"),
+            QStringLiteral("comment_field_data[28]"),
+            QStringLiteral("comment_field_data[29]"),
+            QStringLiteral("comment_field_data[30]"),
+            QStringLiteral("comment_field_data[31]"),
+            QStringLiteral("comment_field_data[32]"),
+            QStringLiteral("comment_field_data[33]"),
+            QStringLiteral("comment_field_data[34]"),
+            QStringLiteral("comment_field_data[35]"),
+            QStringLiteral("comment_field_data[36]"),
+            QStringLiteral("comment_field_data[37]"),
+            QStringLiteral("comment_field_data[38]"),
+            QStringLiteral("comment_field_data[39]"),
+            QStringLiteral("comment_field_data[40]"),
+            QStringLiteral("comment_field_data[41]"),
+            QStringLiteral("comment_field_data[42]"),
+            QStringLiteral("comment_field_data[43]"),
+            QStringLiteral("comment_field_data[44]"),
+            QStringLiteral("comment_field_data[45]"),
+            QStringLiteral("comment_field_data[46]"),
+            QStringLiteral("comment_field_data[47]"),
+            QStringLiteral("comment_field_data[48]"),
+            QStringLiteral("comment_field_data[49]"),
+            QStringLiteral("comment_field_data[50]"),
+            QStringLiteral("comment_field_data[51]"),
+            QStringLiteral("comment_field_data[52]"),
+            QStringLiteral("comment_field_data[53]"),
+            QStringLiteral("comment_field_data[54]"),
+            QStringLiteral("comment_field_data[55]"),
+            QStringLiteral("comment_field_data[56]"),
+            QStringLiteral("comment_field_data[57]"),
+            QStringLiteral("comment_field_data[58]"),
+            QStringLiteral("comment_field_data[59]"),
+            QStringLiteral("comment_field_data[60]"),
+            QStringLiteral("comment_field_data[61]"),
+            QStringLiteral("comment_field_data[62]"),
+            QStringLiteral("comment_field_data[63]"),
+            QStringLiteral("comment_field_data[64]"),
+            QStringLiteral("comment_field_data[65]"),
+            QStringLiteral("comment_field_data[66]"),
+            QStringLiteral("comment_field_data[67]"),
+            QStringLiteral("comment_field_data[68]"),
+            QStringLiteral("comment_field_data[69]"),
+            QStringLiteral("comment_field_data[70]"),
+            QStringLiteral("comment_field_data[71]"),
+            QStringLiteral("comment_field_data[72]"),
+            QStringLiteral("comment_field_data[73]"),
+            QStringLiteral("comment_field_data[74]"),
+            QStringLiteral("comment_field_data[75]"),
+            QStringLiteral("comment_field_data[76]"),
+            QStringLiteral("comment_field_data[77]"),
+            QStringLiteral("comment_field_data[78]"),
+            QStringLiteral("comment_field_data[79]"),
+            QStringLiteral("comment_field_data[80]"),
+            QStringLiteral("comment_field_data[81]"),
+            QStringLiteral("comment_field_data[82]"),
+            QStringLiteral("comment_field_data[83]"),
+            QStringLiteral("comment_field_data[84]"),
+            QStringLiteral("comment_field_data[85]"),
+            QStringLiteral("comment_field_data[86]"),
+            QStringLiteral("comment_field_data[87]"),
+            QStringLiteral("comment_field_data[88]"),
+            QStringLiteral("comment_field_data[89]"),
+        };
+        QCOMPARE(node->children().size(), expectedNames.size());
+        for (std::size_t i = 0; i < expectedNames.size(); ++i) {
+            const auto child = tree->node(node->children()[i]);
+            QVERIFY(child.has_value());
+            QCOMPARE(child->name(), expectedNames[i]);
+            if (child->name() == QStringLiteral("comment_field_bytes")) {
+                QVERIFY(child->location().has_value());
+                QCOMPARE(child->location()->logicalRange().start().bitOffset() / 8, quint64(7));
+                QCOMPARE(child->value().toULongLong(), quint64(90));
+            }
+        }
+    }
+
+    void decodesAscCase2CoreCoderDelay() {
+        const auto loaded = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(loaded.succeeded());
+        const auto* ascSource = loaded.package->fileContents(QStringLiteral("src/aac_asc.svfmt"));
+        QVERIFY(ascSource != nullptr);
+        const auto parsed = streamview::rules::DslParser::parse(QString::fromUtf8(*ascSource));
+        const auto compiled = streamview::rules::DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const std::vector<std::byte> raw = {std::byte{0x11}, std::byte{0x82}, std::byte{0xD5}, std::byte{0xE0}, std::byte{0x03}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x5A}, std::byte{0x00}, std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}, std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}, std::byte{0x09}, std::byte{0x0A}, std::byte{0x0B}, std::byte{0x0C}, std::byte{0x0D}, std::byte{0x0E}, std::byte{0x0F}, std::byte{0x10}, std::byte{0x11}, std::byte{0x12}, std::byte{0x13}, std::byte{0x14}, std::byte{0x15}, std::byte{0x16}, std::byte{0x17}, std::byte{0x18}, std::byte{0x19}, std::byte{0x1A}, std::byte{0x1B}, std::byte{0x1C}, std::byte{0x1D}, std::byte{0x1E}, std::byte{0x1F}, std::byte{0x20}, std::byte{0x21}, std::byte{0x22}, std::byte{0x23}, std::byte{0x24}, std::byte{0x25}, std::byte{0x26}, std::byte{0x27}, std::byte{0x28}, std::byte{0x29}, std::byte{0x2A}, std::byte{0x2B}, std::byte{0x2C}, std::byte{0x2D}, std::byte{0x2E}, std::byte{0x2F}, std::byte{0x30}, std::byte{0x31}, std::byte{0x32}, std::byte{0x33}, std::byte{0x34}, std::byte{0x35}, std::byte{0x36}, std::byte{0x37}, std::byte{0x38}, std::byte{0x39}, std::byte{0x3A}, std::byte{0x3B}, std::byte{0x3C}, std::byte{0x3D}, std::byte{0x3E}, std::byte{0x3F}, std::byte{0x40}, std::byte{0x41}, std::byte{0x42}, std::byte{0x43}, std::byte{0x44}, std::byte{0x45}, std::byte{0x46}, std::byte{0x47}, std::byte{0x48}, std::byte{0x49}, std::byte{0x4A}, std::byte{0x4B}, std::byte{0x4C}, std::byte{0x4D}, std::byte{0x4E}, std::byte{0x4F}, std::byte{0x50}, std::byte{0x51}, std::byte{0x52}, std::byte{0x53}, std::byte{0x54}, std::byte{0x55}, std::byte{0x56}, std::byte{0x57}, std::byte{0x58}, std::byte{0x59}};
+        const MemorySource source(raw);
+        auto tree = streamview::core::AnalysisTree::create(QStringLiteral("Root"));
+        QVERIFY(tree.has_value());
+        const auto mapping = mappingForBytes(source.sizeBytes());
+        QVERIFY(mapping.has_value());
+        streamview::core::BitReader reader(source, *mapping);
+
+        const auto result = streamview::rules::DslExecutor::decodeStruct(
+            *compiled.program,
+            QStringLiteral("AudioSpecificConfig"),
+            reader,
+            *mapping,
+            0,
+            *tree,
+            tree->rootId());
+        QCOMPARE(result.status, streamview::rules::DslExecutionStatus::Materialized);
+        QVERIFY(result.structureNode.has_value());
+
+        const auto node = tree->node(*result.structureNode);
+        QVERIFY(node.has_value());
+        QCOMPARE(node->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(node->diagnostics().empty());
+
+        const std::vector<QString> expectedNames = {
+            QStringLiteral("audio_object_type"),
+            QStringLiteral("sampling_frequency_index"),
+            QStringLiteral("channel_configuration"),
+            QStringLiteral("frame_length_flag"),
+            QStringLiteral("depends_on_core_coder"),
+            QStringLiteral("core_coder_delay"),
+            QStringLiteral("extension_flag"),
+            QStringLiteral("element_instance_tag"),
+            QStringLiteral("object_type"),
+            QStringLiteral("pce_sampling_frequency_index"),
+            QStringLiteral("num_front_channel_elements"),
+            QStringLiteral("num_side_channel_elements"),
+            QStringLiteral("num_back_channel_elements"),
+            QStringLiteral("num_lfe_channel_elements"),
+            QStringLiteral("num_assoc_data_elements"),
+            QStringLiteral("num_valid_cc_elements"),
+            QStringLiteral("mono_mixdown_present"),
+            QStringLiteral("stereo_mixdown_present"),
+            QStringLiteral("matrix_mixdown_idx_present"),
+            QStringLiteral("pce_total_bits"),
+            QStringLiteral("pce_rem"),
+            QStringLiteral("pce_alignment_bits"),
+            QStringLiteral("comment_field_bytes"),
+            QStringLiteral("comment_field_data[0]"),
+            QStringLiteral("comment_field_data[1]"),
+            QStringLiteral("comment_field_data[2]"),
+            QStringLiteral("comment_field_data[3]"),
+            QStringLiteral("comment_field_data[4]"),
+            QStringLiteral("comment_field_data[5]"),
+            QStringLiteral("comment_field_data[6]"),
+            QStringLiteral("comment_field_data[7]"),
+            QStringLiteral("comment_field_data[8]"),
+            QStringLiteral("comment_field_data[9]"),
+            QStringLiteral("comment_field_data[10]"),
+            QStringLiteral("comment_field_data[11]"),
+            QStringLiteral("comment_field_data[12]"),
+            QStringLiteral("comment_field_data[13]"),
+            QStringLiteral("comment_field_data[14]"),
+            QStringLiteral("comment_field_data[15]"),
+            QStringLiteral("comment_field_data[16]"),
+            QStringLiteral("comment_field_data[17]"),
+            QStringLiteral("comment_field_data[18]"),
+            QStringLiteral("comment_field_data[19]"),
+            QStringLiteral("comment_field_data[20]"),
+            QStringLiteral("comment_field_data[21]"),
+            QStringLiteral("comment_field_data[22]"),
+            QStringLiteral("comment_field_data[23]"),
+            QStringLiteral("comment_field_data[24]"),
+            QStringLiteral("comment_field_data[25]"),
+            QStringLiteral("comment_field_data[26]"),
+            QStringLiteral("comment_field_data[27]"),
+            QStringLiteral("comment_field_data[28]"),
+            QStringLiteral("comment_field_data[29]"),
+            QStringLiteral("comment_field_data[30]"),
+            QStringLiteral("comment_field_data[31]"),
+            QStringLiteral("comment_field_data[32]"),
+            QStringLiteral("comment_field_data[33]"),
+            QStringLiteral("comment_field_data[34]"),
+            QStringLiteral("comment_field_data[35]"),
+            QStringLiteral("comment_field_data[36]"),
+            QStringLiteral("comment_field_data[37]"),
+            QStringLiteral("comment_field_data[38]"),
+            QStringLiteral("comment_field_data[39]"),
+            QStringLiteral("comment_field_data[40]"),
+            QStringLiteral("comment_field_data[41]"),
+            QStringLiteral("comment_field_data[42]"),
+            QStringLiteral("comment_field_data[43]"),
+            QStringLiteral("comment_field_data[44]"),
+            QStringLiteral("comment_field_data[45]"),
+            QStringLiteral("comment_field_data[46]"),
+            QStringLiteral("comment_field_data[47]"),
+            QStringLiteral("comment_field_data[48]"),
+            QStringLiteral("comment_field_data[49]"),
+            QStringLiteral("comment_field_data[50]"),
+            QStringLiteral("comment_field_data[51]"),
+            QStringLiteral("comment_field_data[52]"),
+            QStringLiteral("comment_field_data[53]"),
+            QStringLiteral("comment_field_data[54]"),
+            QStringLiteral("comment_field_data[55]"),
+            QStringLiteral("comment_field_data[56]"),
+            QStringLiteral("comment_field_data[57]"),
+            QStringLiteral("comment_field_data[58]"),
+            QStringLiteral("comment_field_data[59]"),
+            QStringLiteral("comment_field_data[60]"),
+            QStringLiteral("comment_field_data[61]"),
+            QStringLiteral("comment_field_data[62]"),
+            QStringLiteral("comment_field_data[63]"),
+            QStringLiteral("comment_field_data[64]"),
+            QStringLiteral("comment_field_data[65]"),
+            QStringLiteral("comment_field_data[66]"),
+            QStringLiteral("comment_field_data[67]"),
+            QStringLiteral("comment_field_data[68]"),
+            QStringLiteral("comment_field_data[69]"),
+            QStringLiteral("comment_field_data[70]"),
+            QStringLiteral("comment_field_data[71]"),
+            QStringLiteral("comment_field_data[72]"),
+            QStringLiteral("comment_field_data[73]"),
+            QStringLiteral("comment_field_data[74]"),
+            QStringLiteral("comment_field_data[75]"),
+            QStringLiteral("comment_field_data[76]"),
+            QStringLiteral("comment_field_data[77]"),
+            QStringLiteral("comment_field_data[78]"),
+            QStringLiteral("comment_field_data[79]"),
+            QStringLiteral("comment_field_data[80]"),
+            QStringLiteral("comment_field_data[81]"),
+            QStringLiteral("comment_field_data[82]"),
+            QStringLiteral("comment_field_data[83]"),
+            QStringLiteral("comment_field_data[84]"),
+            QStringLiteral("comment_field_data[85]"),
+            QStringLiteral("comment_field_data[86]"),
+            QStringLiteral("comment_field_data[87]"),
+            QStringLiteral("comment_field_data[88]"),
+            QStringLiteral("comment_field_data[89]"),
+        };
+        QCOMPARE(node->children().size(), expectedNames.size());
+        for (std::size_t i = 0; i < expectedNames.size(); ++i) {
+            const auto child = tree->node(node->children()[i]);
+            QVERIFY(child.has_value());
+            QCOMPARE(child->name(), expectedNames[i]);
+            if (child->name() == QStringLiteral("core_coder_delay")) {
+                QCOMPARE(child->value().toULongLong(), quint64(0x1ABC));
+            }
+            if (child->name() == QStringLiteral("comment_field_bytes")) {
+                QVERIFY(child->location().has_value());
+                QCOMPARE(child->location()->logicalRange().start().bitOffset() / 8, quint64(8));
+                QCOMPARE(child->value().toULongLong(), quint64(90));
+            }
+        }
+    }
+
+    void decodesAscCase3ExtendedAudioObjectType() {
+        const auto loaded = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(loaded.succeeded());
+        const auto* ascSource = loaded.package->fileContents(QStringLiteral("src/aac_asc.svfmt"));
+        QVERIFY(ascSource != nullptr);
+        const auto parsed = streamview::rules::DslParser::parse(QString::fromUtf8(*ascSource));
+        const auto compiled = streamview::rules::DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const std::vector<std::byte> raw = {std::byte{0xF8}, std::byte{0x46}, std::byte{0x00}, std::byte{0x03}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x5A}, std::byte{0x00}, std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}, std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}, std::byte{0x09}, std::byte{0x0A}, std::byte{0x0B}, std::byte{0x0C}, std::byte{0x0D}, std::byte{0x0E}, std::byte{0x0F}, std::byte{0x10}, std::byte{0x11}, std::byte{0x12}, std::byte{0x13}, std::byte{0x14}, std::byte{0x15}, std::byte{0x16}, std::byte{0x17}, std::byte{0x18}, std::byte{0x19}, std::byte{0x1A}, std::byte{0x1B}, std::byte{0x1C}, std::byte{0x1D}, std::byte{0x1E}, std::byte{0x1F}, std::byte{0x20}, std::byte{0x21}, std::byte{0x22}, std::byte{0x23}, std::byte{0x24}, std::byte{0x25}, std::byte{0x26}, std::byte{0x27}, std::byte{0x28}, std::byte{0x29}, std::byte{0x2A}, std::byte{0x2B}, std::byte{0x2C}, std::byte{0x2D}, std::byte{0x2E}, std::byte{0x2F}, std::byte{0x30}, std::byte{0x31}, std::byte{0x32}, std::byte{0x33}, std::byte{0x34}, std::byte{0x35}, std::byte{0x36}, std::byte{0x37}, std::byte{0x38}, std::byte{0x39}, std::byte{0x3A}, std::byte{0x3B}, std::byte{0x3C}, std::byte{0x3D}, std::byte{0x3E}, std::byte{0x3F}, std::byte{0x40}, std::byte{0x41}, std::byte{0x42}, std::byte{0x43}, std::byte{0x44}, std::byte{0x45}, std::byte{0x46}, std::byte{0x47}, std::byte{0x48}, std::byte{0x49}, std::byte{0x4A}, std::byte{0x4B}, std::byte{0x4C}, std::byte{0x4D}, std::byte{0x4E}, std::byte{0x4F}, std::byte{0x50}, std::byte{0x51}, std::byte{0x52}, std::byte{0x53}, std::byte{0x54}, std::byte{0x55}, std::byte{0x56}, std::byte{0x57}, std::byte{0x58}, std::byte{0x59}};
+        const MemorySource source(raw);
+        auto tree = streamview::core::AnalysisTree::create(QStringLiteral("Root"));
+        QVERIFY(tree.has_value());
+        const auto mapping = mappingForBytes(source.sizeBytes());
+        QVERIFY(mapping.has_value());
+        streamview::core::BitReader reader(source, *mapping);
+
+        const auto result = streamview::rules::DslExecutor::decodeStruct(
+            *compiled.program,
+            QStringLiteral("AudioSpecificConfig"),
+            reader,
+            *mapping,
+            0,
+            *tree,
+            tree->rootId());
+        QCOMPARE(result.status, streamview::rules::DslExecutionStatus::Materialized);
+        QVERIFY(result.structureNode.has_value());
+
+        const auto node = tree->node(*result.structureNode);
+        QVERIFY(node.has_value());
+        QCOMPARE(node->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(node->diagnostics().empty());
+
+        const std::vector<QString> expectedNames = {
+            QStringLiteral("audio_object_type"),
+            QStringLiteral("audio_object_type_ext"),
+            QStringLiteral("sampling_frequency_index"),
+            QStringLiteral("channel_configuration"),
+            QStringLiteral("frame_length_flag"),
+            QStringLiteral("depends_on_core_coder"),
+            QStringLiteral("extension_flag"),
+            QStringLiteral("element_instance_tag"),
+            QStringLiteral("object_type"),
+            QStringLiteral("pce_sampling_frequency_index"),
+            QStringLiteral("num_front_channel_elements"),
+            QStringLiteral("num_side_channel_elements"),
+            QStringLiteral("num_back_channel_elements"),
+            QStringLiteral("num_lfe_channel_elements"),
+            QStringLiteral("num_assoc_data_elements"),
+            QStringLiteral("num_valid_cc_elements"),
+            QStringLiteral("mono_mixdown_present"),
+            QStringLiteral("stereo_mixdown_present"),
+            QStringLiteral("matrix_mixdown_idx_present"),
+            QStringLiteral("pce_total_bits"),
+            QStringLiteral("pce_rem"),
+            QStringLiteral("pce_alignment_bits"),
+            QStringLiteral("comment_field_bytes"),
+            QStringLiteral("comment_field_data[0]"),
+            QStringLiteral("comment_field_data[1]"),
+            QStringLiteral("comment_field_data[2]"),
+            QStringLiteral("comment_field_data[3]"),
+            QStringLiteral("comment_field_data[4]"),
+            QStringLiteral("comment_field_data[5]"),
+            QStringLiteral("comment_field_data[6]"),
+            QStringLiteral("comment_field_data[7]"),
+            QStringLiteral("comment_field_data[8]"),
+            QStringLiteral("comment_field_data[9]"),
+            QStringLiteral("comment_field_data[10]"),
+            QStringLiteral("comment_field_data[11]"),
+            QStringLiteral("comment_field_data[12]"),
+            QStringLiteral("comment_field_data[13]"),
+            QStringLiteral("comment_field_data[14]"),
+            QStringLiteral("comment_field_data[15]"),
+            QStringLiteral("comment_field_data[16]"),
+            QStringLiteral("comment_field_data[17]"),
+            QStringLiteral("comment_field_data[18]"),
+            QStringLiteral("comment_field_data[19]"),
+            QStringLiteral("comment_field_data[20]"),
+            QStringLiteral("comment_field_data[21]"),
+            QStringLiteral("comment_field_data[22]"),
+            QStringLiteral("comment_field_data[23]"),
+            QStringLiteral("comment_field_data[24]"),
+            QStringLiteral("comment_field_data[25]"),
+            QStringLiteral("comment_field_data[26]"),
+            QStringLiteral("comment_field_data[27]"),
+            QStringLiteral("comment_field_data[28]"),
+            QStringLiteral("comment_field_data[29]"),
+            QStringLiteral("comment_field_data[30]"),
+            QStringLiteral("comment_field_data[31]"),
+            QStringLiteral("comment_field_data[32]"),
+            QStringLiteral("comment_field_data[33]"),
+            QStringLiteral("comment_field_data[34]"),
+            QStringLiteral("comment_field_data[35]"),
+            QStringLiteral("comment_field_data[36]"),
+            QStringLiteral("comment_field_data[37]"),
+            QStringLiteral("comment_field_data[38]"),
+            QStringLiteral("comment_field_data[39]"),
+            QStringLiteral("comment_field_data[40]"),
+            QStringLiteral("comment_field_data[41]"),
+            QStringLiteral("comment_field_data[42]"),
+            QStringLiteral("comment_field_data[43]"),
+            QStringLiteral("comment_field_data[44]"),
+            QStringLiteral("comment_field_data[45]"),
+            QStringLiteral("comment_field_data[46]"),
+            QStringLiteral("comment_field_data[47]"),
+            QStringLiteral("comment_field_data[48]"),
+            QStringLiteral("comment_field_data[49]"),
+            QStringLiteral("comment_field_data[50]"),
+            QStringLiteral("comment_field_data[51]"),
+            QStringLiteral("comment_field_data[52]"),
+            QStringLiteral("comment_field_data[53]"),
+            QStringLiteral("comment_field_data[54]"),
+            QStringLiteral("comment_field_data[55]"),
+            QStringLiteral("comment_field_data[56]"),
+            QStringLiteral("comment_field_data[57]"),
+            QStringLiteral("comment_field_data[58]"),
+            QStringLiteral("comment_field_data[59]"),
+            QStringLiteral("comment_field_data[60]"),
+            QStringLiteral("comment_field_data[61]"),
+            QStringLiteral("comment_field_data[62]"),
+            QStringLiteral("comment_field_data[63]"),
+            QStringLiteral("comment_field_data[64]"),
+            QStringLiteral("comment_field_data[65]"),
+            QStringLiteral("comment_field_data[66]"),
+            QStringLiteral("comment_field_data[67]"),
+            QStringLiteral("comment_field_data[68]"),
+            QStringLiteral("comment_field_data[69]"),
+            QStringLiteral("comment_field_data[70]"),
+            QStringLiteral("comment_field_data[71]"),
+            QStringLiteral("comment_field_data[72]"),
+            QStringLiteral("comment_field_data[73]"),
+            QStringLiteral("comment_field_data[74]"),
+            QStringLiteral("comment_field_data[75]"),
+            QStringLiteral("comment_field_data[76]"),
+            QStringLiteral("comment_field_data[77]"),
+            QStringLiteral("comment_field_data[78]"),
+            QStringLiteral("comment_field_data[79]"),
+            QStringLiteral("comment_field_data[80]"),
+            QStringLiteral("comment_field_data[81]"),
+            QStringLiteral("comment_field_data[82]"),
+            QStringLiteral("comment_field_data[83]"),
+            QStringLiteral("comment_field_data[84]"),
+            QStringLiteral("comment_field_data[85]"),
+            QStringLiteral("comment_field_data[86]"),
+            QStringLiteral("comment_field_data[87]"),
+            QStringLiteral("comment_field_data[88]"),
+            QStringLiteral("comment_field_data[89]"),
+        };
+        QCOMPARE(node->children().size(), expectedNames.size());
+        for (std::size_t i = 0; i < expectedNames.size(); ++i) {
+            const auto child = tree->node(node->children()[i]);
+            QVERIFY(child.has_value());
+            QCOMPARE(child->name(), expectedNames[i]);
+            if (child->name() == QStringLiteral("audio_object_type_ext")) {
+                QCOMPARE(child->value().toULongLong(), quint64(2));
+            }
+            if (child->name() == QStringLiteral("comment_field_bytes")) {
+                QVERIFY(child->location().has_value());
+                QCOMPARE(child->location()->logicalRange().start().bitOffset() / 8, quint64(7));
+                QCOMPARE(child->value().toULongLong(), quint64(90));
+            }
+        }
+    }
+
+    void decodesAscCase4ExplicitSamplingFrequency() {
+        const auto loaded = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(loaded.succeeded());
+        const auto* ascSource = loaded.package->fileContents(QStringLiteral("src/aac_asc.svfmt"));
+        QVERIFY(ascSource != nullptr);
+        const auto parsed = streamview::rules::DslParser::parse(QString::fromUtf8(*ascSource));
+        const auto compiled = streamview::rules::DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const std::vector<std::byte> raw = {std::byte{0x17}, std::byte{0x80}, std::byte{0x56}, std::byte{0x22}, std::byte{0x00}, std::byte{0x00}, std::byte{0xC0}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x5A}, std::byte{0x00}, std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}, std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}, std::byte{0x09}, std::byte{0x0A}, std::byte{0x0B}, std::byte{0x0C}, std::byte{0x0D}, std::byte{0x0E}, std::byte{0x0F}, std::byte{0x10}, std::byte{0x11}, std::byte{0x12}, std::byte{0x13}, std::byte{0x14}, std::byte{0x15}, std::byte{0x16}, std::byte{0x17}, std::byte{0x18}, std::byte{0x19}, std::byte{0x1A}, std::byte{0x1B}, std::byte{0x1C}, std::byte{0x1D}, std::byte{0x1E}, std::byte{0x1F}, std::byte{0x20}, std::byte{0x21}, std::byte{0x22}, std::byte{0x23}, std::byte{0x24}, std::byte{0x25}, std::byte{0x26}, std::byte{0x27}, std::byte{0x28}, std::byte{0x29}, std::byte{0x2A}, std::byte{0x2B}, std::byte{0x2C}, std::byte{0x2D}, std::byte{0x2E}, std::byte{0x2F}, std::byte{0x30}, std::byte{0x31}, std::byte{0x32}, std::byte{0x33}, std::byte{0x34}, std::byte{0x35}, std::byte{0x36}, std::byte{0x37}, std::byte{0x38}, std::byte{0x39}, std::byte{0x3A}, std::byte{0x3B}, std::byte{0x3C}, std::byte{0x3D}, std::byte{0x3E}, std::byte{0x3F}, std::byte{0x40}, std::byte{0x41}, std::byte{0x42}, std::byte{0x43}, std::byte{0x44}, std::byte{0x45}, std::byte{0x46}, std::byte{0x47}, std::byte{0x48}, std::byte{0x49}, std::byte{0x4A}, std::byte{0x4B}, std::byte{0x4C}, std::byte{0x4D}, std::byte{0x4E}, std::byte{0x4F}, std::byte{0x50}, std::byte{0x51}, std::byte{0x52}, std::byte{0x53}, std::byte{0x54}, std::byte{0x55}, std::byte{0x56}, std::byte{0x57}, std::byte{0x58}, std::byte{0x59}};
+        const MemorySource source(raw);
+        auto tree = streamview::core::AnalysisTree::create(QStringLiteral("Root"));
+        QVERIFY(tree.has_value());
+        const auto mapping = mappingForBytes(source.sizeBytes());
+        QVERIFY(mapping.has_value());
+        streamview::core::BitReader reader(source, *mapping);
+
+        const auto result = streamview::rules::DslExecutor::decodeStruct(
+            *compiled.program,
+            QStringLiteral("AudioSpecificConfig"),
+            reader,
+            *mapping,
+            0,
+            *tree,
+            tree->rootId());
+        QCOMPARE(result.status, streamview::rules::DslExecutionStatus::Materialized);
+        QVERIFY(result.structureNode.has_value());
+
+        const auto node = tree->node(*result.structureNode);
+        QVERIFY(node.has_value());
+        QCOMPARE(node->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(node->diagnostics().empty());
+
+        const std::vector<QString> expectedNames = {
+            QStringLiteral("audio_object_type"),
+            QStringLiteral("sampling_frequency_index"),
+            QStringLiteral("sampling_frequency"),
+            QStringLiteral("channel_configuration"),
+            QStringLiteral("frame_length_flag"),
+            QStringLiteral("depends_on_core_coder"),
+            QStringLiteral("extension_flag"),
+            QStringLiteral("element_instance_tag"),
+            QStringLiteral("object_type"),
+            QStringLiteral("pce_sampling_frequency_index"),
+            QStringLiteral("num_front_channel_elements"),
+            QStringLiteral("num_side_channel_elements"),
+            QStringLiteral("num_back_channel_elements"),
+            QStringLiteral("num_lfe_channel_elements"),
+            QStringLiteral("num_assoc_data_elements"),
+            QStringLiteral("num_valid_cc_elements"),
+            QStringLiteral("mono_mixdown_present"),
+            QStringLiteral("stereo_mixdown_present"),
+            QStringLiteral("matrix_mixdown_idx_present"),
+            QStringLiteral("pce_total_bits"),
+            QStringLiteral("pce_rem"),
+            QStringLiteral("pce_alignment_bits"),
+            QStringLiteral("byte_alignment_zero_bit[0]"),
+            QStringLiteral("byte_alignment_zero_bit[1]"),
+            QStringLiteral("byte_alignment_zero_bit[2]"),
+            QStringLiteral("byte_alignment_zero_bit[3]"),
+            QStringLiteral("byte_alignment_zero_bit[4]"),
+            QStringLiteral("byte_alignment_zero_bit[5]"),
+            QStringLiteral("comment_field_bytes"),
+            QStringLiteral("comment_field_data[0]"),
+            QStringLiteral("comment_field_data[1]"),
+            QStringLiteral("comment_field_data[2]"),
+            QStringLiteral("comment_field_data[3]"),
+            QStringLiteral("comment_field_data[4]"),
+            QStringLiteral("comment_field_data[5]"),
+            QStringLiteral("comment_field_data[6]"),
+            QStringLiteral("comment_field_data[7]"),
+            QStringLiteral("comment_field_data[8]"),
+            QStringLiteral("comment_field_data[9]"),
+            QStringLiteral("comment_field_data[10]"),
+            QStringLiteral("comment_field_data[11]"),
+            QStringLiteral("comment_field_data[12]"),
+            QStringLiteral("comment_field_data[13]"),
+            QStringLiteral("comment_field_data[14]"),
+            QStringLiteral("comment_field_data[15]"),
+            QStringLiteral("comment_field_data[16]"),
+            QStringLiteral("comment_field_data[17]"),
+            QStringLiteral("comment_field_data[18]"),
+            QStringLiteral("comment_field_data[19]"),
+            QStringLiteral("comment_field_data[20]"),
+            QStringLiteral("comment_field_data[21]"),
+            QStringLiteral("comment_field_data[22]"),
+            QStringLiteral("comment_field_data[23]"),
+            QStringLiteral("comment_field_data[24]"),
+            QStringLiteral("comment_field_data[25]"),
+            QStringLiteral("comment_field_data[26]"),
+            QStringLiteral("comment_field_data[27]"),
+            QStringLiteral("comment_field_data[28]"),
+            QStringLiteral("comment_field_data[29]"),
+            QStringLiteral("comment_field_data[30]"),
+            QStringLiteral("comment_field_data[31]"),
+            QStringLiteral("comment_field_data[32]"),
+            QStringLiteral("comment_field_data[33]"),
+            QStringLiteral("comment_field_data[34]"),
+            QStringLiteral("comment_field_data[35]"),
+            QStringLiteral("comment_field_data[36]"),
+            QStringLiteral("comment_field_data[37]"),
+            QStringLiteral("comment_field_data[38]"),
+            QStringLiteral("comment_field_data[39]"),
+            QStringLiteral("comment_field_data[40]"),
+            QStringLiteral("comment_field_data[41]"),
+            QStringLiteral("comment_field_data[42]"),
+            QStringLiteral("comment_field_data[43]"),
+            QStringLiteral("comment_field_data[44]"),
+            QStringLiteral("comment_field_data[45]"),
+            QStringLiteral("comment_field_data[46]"),
+            QStringLiteral("comment_field_data[47]"),
+            QStringLiteral("comment_field_data[48]"),
+            QStringLiteral("comment_field_data[49]"),
+            QStringLiteral("comment_field_data[50]"),
+            QStringLiteral("comment_field_data[51]"),
+            QStringLiteral("comment_field_data[52]"),
+            QStringLiteral("comment_field_data[53]"),
+            QStringLiteral("comment_field_data[54]"),
+            QStringLiteral("comment_field_data[55]"),
+            QStringLiteral("comment_field_data[56]"),
+            QStringLiteral("comment_field_data[57]"),
+            QStringLiteral("comment_field_data[58]"),
+            QStringLiteral("comment_field_data[59]"),
+            QStringLiteral("comment_field_data[60]"),
+            QStringLiteral("comment_field_data[61]"),
+            QStringLiteral("comment_field_data[62]"),
+            QStringLiteral("comment_field_data[63]"),
+            QStringLiteral("comment_field_data[64]"),
+            QStringLiteral("comment_field_data[65]"),
+            QStringLiteral("comment_field_data[66]"),
+            QStringLiteral("comment_field_data[67]"),
+            QStringLiteral("comment_field_data[68]"),
+            QStringLiteral("comment_field_data[69]"),
+            QStringLiteral("comment_field_data[70]"),
+            QStringLiteral("comment_field_data[71]"),
+            QStringLiteral("comment_field_data[72]"),
+            QStringLiteral("comment_field_data[73]"),
+            QStringLiteral("comment_field_data[74]"),
+            QStringLiteral("comment_field_data[75]"),
+            QStringLiteral("comment_field_data[76]"),
+            QStringLiteral("comment_field_data[77]"),
+            QStringLiteral("comment_field_data[78]"),
+            QStringLiteral("comment_field_data[79]"),
+            QStringLiteral("comment_field_data[80]"),
+            QStringLiteral("comment_field_data[81]"),
+            QStringLiteral("comment_field_data[82]"),
+            QStringLiteral("comment_field_data[83]"),
+            QStringLiteral("comment_field_data[84]"),
+            QStringLiteral("comment_field_data[85]"),
+            QStringLiteral("comment_field_data[86]"),
+            QStringLiteral("comment_field_data[87]"),
+            QStringLiteral("comment_field_data[88]"),
+            QStringLiteral("comment_field_data[89]"),
+        };
+        QCOMPARE(node->children().size(), expectedNames.size());
+        for (std::size_t i = 0; i < expectedNames.size(); ++i) {
+            const auto child = tree->node(node->children()[i]);
+            QVERIFY(child.has_value());
+            QCOMPARE(child->name(), expectedNames[i]);
+            if (child->name() == QStringLiteral("sampling_frequency")) {
+                QCOMPARE(child->value().toULongLong(), quint64(44100));
+            }
+            if (child->name() == QStringLiteral("comment_field_bytes")) {
+                QVERIFY(child->location().has_value());
+                QCOMPARE(child->location()->logicalRange().start().bitOffset() / 8, quint64(10));
+                QCOMPARE(child->value().toULongLong(), quint64(90));
+            }
+        }
+    }
+
+    void decodesAscCase5MultichannelFrontAndLfe() {
+        const auto loaded = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(loaded.succeeded());
+        const auto* ascSource = loaded.package->fileContents(QStringLiteral("src/aac_asc.svfmt"));
+        QVERIFY(ascSource != nullptr);
+        const auto parsed = streamview::rules::DslParser::parse(QString::fromUtf8(*ascSource));
+        const auto compiled = streamview::rules::DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const std::vector<std::byte> raw = {std::byte{0x11}, std::byte{0x80}, std::byte{0x00}, std::byte{0xC8}, std::byte{0x01}, std::byte{0x00}, std::byte{0x20}, std::byte{0x10}, std::byte{0x5A}, std::byte{0x00}, std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}, std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}, std::byte{0x09}, std::byte{0x0A}, std::byte{0x0B}, std::byte{0x0C}, std::byte{0x0D}, std::byte{0x0E}, std::byte{0x0F}, std::byte{0x10}, std::byte{0x11}, std::byte{0x12}, std::byte{0x13}, std::byte{0x14}, std::byte{0x15}, std::byte{0x16}, std::byte{0x17}, std::byte{0x18}, std::byte{0x19}, std::byte{0x1A}, std::byte{0x1B}, std::byte{0x1C}, std::byte{0x1D}, std::byte{0x1E}, std::byte{0x1F}, std::byte{0x20}, std::byte{0x21}, std::byte{0x22}, std::byte{0x23}, std::byte{0x24}, std::byte{0x25}, std::byte{0x26}, std::byte{0x27}, std::byte{0x28}, std::byte{0x29}, std::byte{0x2A}, std::byte{0x2B}, std::byte{0x2C}, std::byte{0x2D}, std::byte{0x2E}, std::byte{0x2F}, std::byte{0x30}, std::byte{0x31}, std::byte{0x32}, std::byte{0x33}, std::byte{0x34}, std::byte{0x35}, std::byte{0x36}, std::byte{0x37}, std::byte{0x38}, std::byte{0x39}, std::byte{0x3A}, std::byte{0x3B}, std::byte{0x3C}, std::byte{0x3D}, std::byte{0x3E}, std::byte{0x3F}, std::byte{0x40}, std::byte{0x41}, std::byte{0x42}, std::byte{0x43}, std::byte{0x44}, std::byte{0x45}, std::byte{0x46}, std::byte{0x47}, std::byte{0x48}, std::byte{0x49}, std::byte{0x4A}, std::byte{0x4B}, std::byte{0x4C}, std::byte{0x4D}, std::byte{0x4E}, std::byte{0x4F}, std::byte{0x50}, std::byte{0x51}, std::byte{0x52}, std::byte{0x53}, std::byte{0x54}, std::byte{0x55}, std::byte{0x56}, std::byte{0x57}, std::byte{0x58}, std::byte{0x59}};
+        const MemorySource source(raw);
+        auto tree = streamview::core::AnalysisTree::create(QStringLiteral("Root"));
+        QVERIFY(tree.has_value());
+        const auto mapping = mappingForBytes(source.sizeBytes());
+        QVERIFY(mapping.has_value());
+        streamview::core::BitReader reader(source, *mapping);
+
+        const auto result = streamview::rules::DslExecutor::decodeStruct(
+            *compiled.program,
+            QStringLiteral("AudioSpecificConfig"),
+            reader,
+            *mapping,
+            0,
+            *tree,
+            tree->rootId());
+        QCOMPARE(result.status, streamview::rules::DslExecutionStatus::Materialized);
+        QVERIFY(result.structureNode.has_value());
+
+        const auto node = tree->node(*result.structureNode);
+        QVERIFY(node.has_value());
+        QCOMPARE(node->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(node->diagnostics().empty());
+
+        const std::vector<QString> expectedNames = {
+            QStringLiteral("audio_object_type"),
+            QStringLiteral("sampling_frequency_index"),
+            QStringLiteral("channel_configuration"),
+            QStringLiteral("frame_length_flag"),
+            QStringLiteral("depends_on_core_coder"),
+            QStringLiteral("extension_flag"),
+            QStringLiteral("element_instance_tag"),
+            QStringLiteral("object_type"),
+            QStringLiteral("pce_sampling_frequency_index"),
+            QStringLiteral("num_front_channel_elements"),
+            QStringLiteral("num_side_channel_elements"),
+            QStringLiteral("num_back_channel_elements"),
+            QStringLiteral("num_lfe_channel_elements"),
+            QStringLiteral("num_assoc_data_elements"),
+            QStringLiteral("num_valid_cc_elements"),
+            QStringLiteral("mono_mixdown_present"),
+            QStringLiteral("stereo_mixdown_present"),
+            QStringLiteral("matrix_mixdown_idx_present"),
+            QStringLiteral("front_element_is_cpe[0]"),
+            QStringLiteral("front_element_tag_select[0]"),
+            QStringLiteral("front_element_is_cpe[1]"),
+            QStringLiteral("front_element_tag_select[1]"),
+            QStringLiteral("lfe_element_tag_select[0]"),
+            QStringLiteral("pce_total_bits"),
+            QStringLiteral("pce_rem"),
+            QStringLiteral("pce_alignment_bits"),
+            QStringLiteral("comment_field_bytes"),
+            QStringLiteral("comment_field_data[0]"),
+            QStringLiteral("comment_field_data[1]"),
+            QStringLiteral("comment_field_data[2]"),
+            QStringLiteral("comment_field_data[3]"),
+            QStringLiteral("comment_field_data[4]"),
+            QStringLiteral("comment_field_data[5]"),
+            QStringLiteral("comment_field_data[6]"),
+            QStringLiteral("comment_field_data[7]"),
+            QStringLiteral("comment_field_data[8]"),
+            QStringLiteral("comment_field_data[9]"),
+            QStringLiteral("comment_field_data[10]"),
+            QStringLiteral("comment_field_data[11]"),
+            QStringLiteral("comment_field_data[12]"),
+            QStringLiteral("comment_field_data[13]"),
+            QStringLiteral("comment_field_data[14]"),
+            QStringLiteral("comment_field_data[15]"),
+            QStringLiteral("comment_field_data[16]"),
+            QStringLiteral("comment_field_data[17]"),
+            QStringLiteral("comment_field_data[18]"),
+            QStringLiteral("comment_field_data[19]"),
+            QStringLiteral("comment_field_data[20]"),
+            QStringLiteral("comment_field_data[21]"),
+            QStringLiteral("comment_field_data[22]"),
+            QStringLiteral("comment_field_data[23]"),
+            QStringLiteral("comment_field_data[24]"),
+            QStringLiteral("comment_field_data[25]"),
+            QStringLiteral("comment_field_data[26]"),
+            QStringLiteral("comment_field_data[27]"),
+            QStringLiteral("comment_field_data[28]"),
+            QStringLiteral("comment_field_data[29]"),
+            QStringLiteral("comment_field_data[30]"),
+            QStringLiteral("comment_field_data[31]"),
+            QStringLiteral("comment_field_data[32]"),
+            QStringLiteral("comment_field_data[33]"),
+            QStringLiteral("comment_field_data[34]"),
+            QStringLiteral("comment_field_data[35]"),
+            QStringLiteral("comment_field_data[36]"),
+            QStringLiteral("comment_field_data[37]"),
+            QStringLiteral("comment_field_data[38]"),
+            QStringLiteral("comment_field_data[39]"),
+            QStringLiteral("comment_field_data[40]"),
+            QStringLiteral("comment_field_data[41]"),
+            QStringLiteral("comment_field_data[42]"),
+            QStringLiteral("comment_field_data[43]"),
+            QStringLiteral("comment_field_data[44]"),
+            QStringLiteral("comment_field_data[45]"),
+            QStringLiteral("comment_field_data[46]"),
+            QStringLiteral("comment_field_data[47]"),
+            QStringLiteral("comment_field_data[48]"),
+            QStringLiteral("comment_field_data[49]"),
+            QStringLiteral("comment_field_data[50]"),
+            QStringLiteral("comment_field_data[51]"),
+            QStringLiteral("comment_field_data[52]"),
+            QStringLiteral("comment_field_data[53]"),
+            QStringLiteral("comment_field_data[54]"),
+            QStringLiteral("comment_field_data[55]"),
+            QStringLiteral("comment_field_data[56]"),
+            QStringLiteral("comment_field_data[57]"),
+            QStringLiteral("comment_field_data[58]"),
+            QStringLiteral("comment_field_data[59]"),
+            QStringLiteral("comment_field_data[60]"),
+            QStringLiteral("comment_field_data[61]"),
+            QStringLiteral("comment_field_data[62]"),
+            QStringLiteral("comment_field_data[63]"),
+            QStringLiteral("comment_field_data[64]"),
+            QStringLiteral("comment_field_data[65]"),
+            QStringLiteral("comment_field_data[66]"),
+            QStringLiteral("comment_field_data[67]"),
+            QStringLiteral("comment_field_data[68]"),
+            QStringLiteral("comment_field_data[69]"),
+            QStringLiteral("comment_field_data[70]"),
+            QStringLiteral("comment_field_data[71]"),
+            QStringLiteral("comment_field_data[72]"),
+            QStringLiteral("comment_field_data[73]"),
+            QStringLiteral("comment_field_data[74]"),
+            QStringLiteral("comment_field_data[75]"),
+            QStringLiteral("comment_field_data[76]"),
+            QStringLiteral("comment_field_data[77]"),
+            QStringLiteral("comment_field_data[78]"),
+            QStringLiteral("comment_field_data[79]"),
+            QStringLiteral("comment_field_data[80]"),
+            QStringLiteral("comment_field_data[81]"),
+            QStringLiteral("comment_field_data[82]"),
+            QStringLiteral("comment_field_data[83]"),
+            QStringLiteral("comment_field_data[84]"),
+            QStringLiteral("comment_field_data[85]"),
+            QStringLiteral("comment_field_data[86]"),
+            QStringLiteral("comment_field_data[87]"),
+            QStringLiteral("comment_field_data[88]"),
+            QStringLiteral("comment_field_data[89]"),
+        };
+        QCOMPARE(node->children().size(), expectedNames.size());
+        for (std::size_t i = 0; i < expectedNames.size(); ++i) {
+            const auto child = tree->node(node->children()[i]);
+            QVERIFY(child.has_value());
+            QCOMPARE(child->name(), expectedNames[i]);
+            if (child->name() == QStringLiteral("comment_field_bytes")) {
+                QVERIFY(child->location().has_value());
+                QCOMPARE(child->location()->logicalRange().start().bitOffset() / 8, quint64(8));
+                QCOMPARE(child->value().toULongLong(), quint64(90));
+            }
+        }
+    }
+
+    void decodesAscCase6AllMixdownPresent() {
+        const auto loaded = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(loaded.succeeded());
+        const auto* ascSource = loaded.package->fileContents(QStringLiteral("src/aac_asc.svfmt"));
+        QVERIFY(ascSource != nullptr);
+        const auto parsed = streamview::rules::DslParser::parse(QString::fromUtf8(*ascSource));
+        const auto compiled = streamview::rules::DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const std::vector<std::byte> raw = {std::byte{0x11}, std::byte{0x80}, std::byte{0x00}, std::byte{0xC0}, std::byte{0x00}, std::byte{0x01}, std::byte{0x19}, std::byte{0x58}, std::byte{0x5A}, std::byte{0x00}, std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}, std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}, std::byte{0x09}, std::byte{0x0A}, std::byte{0x0B}, std::byte{0x0C}, std::byte{0x0D}, std::byte{0x0E}, std::byte{0x0F}, std::byte{0x10}, std::byte{0x11}, std::byte{0x12}, std::byte{0x13}, std::byte{0x14}, std::byte{0x15}, std::byte{0x16}, std::byte{0x17}, std::byte{0x18}, std::byte{0x19}, std::byte{0x1A}, std::byte{0x1B}, std::byte{0x1C}, std::byte{0x1D}, std::byte{0x1E}, std::byte{0x1F}, std::byte{0x20}, std::byte{0x21}, std::byte{0x22}, std::byte{0x23}, std::byte{0x24}, std::byte{0x25}, std::byte{0x26}, std::byte{0x27}, std::byte{0x28}, std::byte{0x29}, std::byte{0x2A}, std::byte{0x2B}, std::byte{0x2C}, std::byte{0x2D}, std::byte{0x2E}, std::byte{0x2F}, std::byte{0x30}, std::byte{0x31}, std::byte{0x32}, std::byte{0x33}, std::byte{0x34}, std::byte{0x35}, std::byte{0x36}, std::byte{0x37}, std::byte{0x38}, std::byte{0x39}, std::byte{0x3A}, std::byte{0x3B}, std::byte{0x3C}, std::byte{0x3D}, std::byte{0x3E}, std::byte{0x3F}, std::byte{0x40}, std::byte{0x41}, std::byte{0x42}, std::byte{0x43}, std::byte{0x44}, std::byte{0x45}, std::byte{0x46}, std::byte{0x47}, std::byte{0x48}, std::byte{0x49}, std::byte{0x4A}, std::byte{0x4B}, std::byte{0x4C}, std::byte{0x4D}, std::byte{0x4E}, std::byte{0x4F}, std::byte{0x50}, std::byte{0x51}, std::byte{0x52}, std::byte{0x53}, std::byte{0x54}, std::byte{0x55}, std::byte{0x56}, std::byte{0x57}, std::byte{0x58}, std::byte{0x59}};
+        const MemorySource source(raw);
+        auto tree = streamview::core::AnalysisTree::create(QStringLiteral("Root"));
+        QVERIFY(tree.has_value());
+        const auto mapping = mappingForBytes(source.sizeBytes());
+        QVERIFY(mapping.has_value());
+        streamview::core::BitReader reader(source, *mapping);
+
+        const auto result = streamview::rules::DslExecutor::decodeStruct(
+            *compiled.program,
+            QStringLiteral("AudioSpecificConfig"),
+            reader,
+            *mapping,
+            0,
+            *tree,
+            tree->rootId());
+        QCOMPARE(result.status, streamview::rules::DslExecutionStatus::Materialized);
+        QVERIFY(result.structureNode.has_value());
+
+        const auto node = tree->node(*result.structureNode);
+        QVERIFY(node.has_value());
+        QCOMPARE(node->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(node->diagnostics().empty());
+
+        const std::vector<QString> expectedNames = {
+            QStringLiteral("audio_object_type"),
+            QStringLiteral("sampling_frequency_index"),
+            QStringLiteral("channel_configuration"),
+            QStringLiteral("frame_length_flag"),
+            QStringLiteral("depends_on_core_coder"),
+            QStringLiteral("extension_flag"),
+            QStringLiteral("element_instance_tag"),
+            QStringLiteral("object_type"),
+            QStringLiteral("pce_sampling_frequency_index"),
+            QStringLiteral("num_front_channel_elements"),
+            QStringLiteral("num_side_channel_elements"),
+            QStringLiteral("num_back_channel_elements"),
+            QStringLiteral("num_lfe_channel_elements"),
+            QStringLiteral("num_assoc_data_elements"),
+            QStringLiteral("num_valid_cc_elements"),
+            QStringLiteral("mono_mixdown_present"),
+            QStringLiteral("mono_mixdown_element_number"),
+            QStringLiteral("stereo_mixdown_present"),
+            QStringLiteral("stereo_mixdown_element_number"),
+            QStringLiteral("matrix_mixdown_idx_present"),
+            QStringLiteral("matrix_mixdown_idx"),
+            QStringLiteral("pseudo_surround_enable"),
+            QStringLiteral("pce_total_bits"),
+            QStringLiteral("pce_rem"),
+            QStringLiteral("pce_alignment_bits"),
+            QStringLiteral("byte_alignment_zero_bit[0]"),
+            QStringLiteral("byte_alignment_zero_bit[1]"),
+            QStringLiteral("byte_alignment_zero_bit[2]"),
+            QStringLiteral("comment_field_bytes"),
+            QStringLiteral("comment_field_data[0]"),
+            QStringLiteral("comment_field_data[1]"),
+            QStringLiteral("comment_field_data[2]"),
+            QStringLiteral("comment_field_data[3]"),
+            QStringLiteral("comment_field_data[4]"),
+            QStringLiteral("comment_field_data[5]"),
+            QStringLiteral("comment_field_data[6]"),
+            QStringLiteral("comment_field_data[7]"),
+            QStringLiteral("comment_field_data[8]"),
+            QStringLiteral("comment_field_data[9]"),
+            QStringLiteral("comment_field_data[10]"),
+            QStringLiteral("comment_field_data[11]"),
+            QStringLiteral("comment_field_data[12]"),
+            QStringLiteral("comment_field_data[13]"),
+            QStringLiteral("comment_field_data[14]"),
+            QStringLiteral("comment_field_data[15]"),
+            QStringLiteral("comment_field_data[16]"),
+            QStringLiteral("comment_field_data[17]"),
+            QStringLiteral("comment_field_data[18]"),
+            QStringLiteral("comment_field_data[19]"),
+            QStringLiteral("comment_field_data[20]"),
+            QStringLiteral("comment_field_data[21]"),
+            QStringLiteral("comment_field_data[22]"),
+            QStringLiteral("comment_field_data[23]"),
+            QStringLiteral("comment_field_data[24]"),
+            QStringLiteral("comment_field_data[25]"),
+            QStringLiteral("comment_field_data[26]"),
+            QStringLiteral("comment_field_data[27]"),
+            QStringLiteral("comment_field_data[28]"),
+            QStringLiteral("comment_field_data[29]"),
+            QStringLiteral("comment_field_data[30]"),
+            QStringLiteral("comment_field_data[31]"),
+            QStringLiteral("comment_field_data[32]"),
+            QStringLiteral("comment_field_data[33]"),
+            QStringLiteral("comment_field_data[34]"),
+            QStringLiteral("comment_field_data[35]"),
+            QStringLiteral("comment_field_data[36]"),
+            QStringLiteral("comment_field_data[37]"),
+            QStringLiteral("comment_field_data[38]"),
+            QStringLiteral("comment_field_data[39]"),
+            QStringLiteral("comment_field_data[40]"),
+            QStringLiteral("comment_field_data[41]"),
+            QStringLiteral("comment_field_data[42]"),
+            QStringLiteral("comment_field_data[43]"),
+            QStringLiteral("comment_field_data[44]"),
+            QStringLiteral("comment_field_data[45]"),
+            QStringLiteral("comment_field_data[46]"),
+            QStringLiteral("comment_field_data[47]"),
+            QStringLiteral("comment_field_data[48]"),
+            QStringLiteral("comment_field_data[49]"),
+            QStringLiteral("comment_field_data[50]"),
+            QStringLiteral("comment_field_data[51]"),
+            QStringLiteral("comment_field_data[52]"),
+            QStringLiteral("comment_field_data[53]"),
+            QStringLiteral("comment_field_data[54]"),
+            QStringLiteral("comment_field_data[55]"),
+            QStringLiteral("comment_field_data[56]"),
+            QStringLiteral("comment_field_data[57]"),
+            QStringLiteral("comment_field_data[58]"),
+            QStringLiteral("comment_field_data[59]"),
+            QStringLiteral("comment_field_data[60]"),
+            QStringLiteral("comment_field_data[61]"),
+            QStringLiteral("comment_field_data[62]"),
+            QStringLiteral("comment_field_data[63]"),
+            QStringLiteral("comment_field_data[64]"),
+            QStringLiteral("comment_field_data[65]"),
+            QStringLiteral("comment_field_data[66]"),
+            QStringLiteral("comment_field_data[67]"),
+            QStringLiteral("comment_field_data[68]"),
+            QStringLiteral("comment_field_data[69]"),
+            QStringLiteral("comment_field_data[70]"),
+            QStringLiteral("comment_field_data[71]"),
+            QStringLiteral("comment_field_data[72]"),
+            QStringLiteral("comment_field_data[73]"),
+            QStringLiteral("comment_field_data[74]"),
+            QStringLiteral("comment_field_data[75]"),
+            QStringLiteral("comment_field_data[76]"),
+            QStringLiteral("comment_field_data[77]"),
+            QStringLiteral("comment_field_data[78]"),
+            QStringLiteral("comment_field_data[79]"),
+            QStringLiteral("comment_field_data[80]"),
+            QStringLiteral("comment_field_data[81]"),
+            QStringLiteral("comment_field_data[82]"),
+            QStringLiteral("comment_field_data[83]"),
+            QStringLiteral("comment_field_data[84]"),
+            QStringLiteral("comment_field_data[85]"),
+            QStringLiteral("comment_field_data[86]"),
+            QStringLiteral("comment_field_data[87]"),
+            QStringLiteral("comment_field_data[88]"),
+            QStringLiteral("comment_field_data[89]"),
+        };
+        QCOMPARE(node->children().size(), expectedNames.size());
+        for (std::size_t i = 0; i < expectedNames.size(); ++i) {
+            const auto child = tree->node(node->children()[i]);
+            QVERIFY(child.has_value());
+            QCOMPARE(child->name(), expectedNames[i]);
+            if (child->name() == QStringLiteral("comment_field_bytes")) {
+                QVERIFY(child->location().has_value());
+                QCOMPARE(child->location()->logicalRange().start().bitOffset() / 8, quint64(8));
+                QCOMPARE(child->value().toULongLong(), quint64(90));
+            }
+        }
+    }
+
+    void decodesAscCase7MultichannelSideBackAssocCc() {
+        const auto loaded = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(loaded.succeeded());
+        const auto* ascSource = loaded.package->fileContents(QStringLiteral("src/aac_asc.svfmt"));
+        QVERIFY(ascSource != nullptr);
+        const auto parsed = streamview::rules::DslParser::parse(QString::fromUtf8(*ascSource));
+        const auto compiled = streamview::rules::DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const std::vector<std::byte> raw = {std::byte{0x11}, std::byte{0x80}, std::byte{0x00}, std::byte{0xC0}, std::byte{0x44}, std::byte{0x22}, std::byte{0x21}, std::byte{0x00}, std::byte{0x00}, std::byte{0x5A}, std::byte{0x00}, std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}, std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}, std::byte{0x09}, std::byte{0x0A}, std::byte{0x0B}, std::byte{0x0C}, std::byte{0x0D}, std::byte{0x0E}, std::byte{0x0F}, std::byte{0x10}, std::byte{0x11}, std::byte{0x12}, std::byte{0x13}, std::byte{0x14}, std::byte{0x15}, std::byte{0x16}, std::byte{0x17}, std::byte{0x18}, std::byte{0x19}, std::byte{0x1A}, std::byte{0x1B}, std::byte{0x1C}, std::byte{0x1D}, std::byte{0x1E}, std::byte{0x1F}, std::byte{0x20}, std::byte{0x21}, std::byte{0x22}, std::byte{0x23}, std::byte{0x24}, std::byte{0x25}, std::byte{0x26}, std::byte{0x27}, std::byte{0x28}, std::byte{0x29}, std::byte{0x2A}, std::byte{0x2B}, std::byte{0x2C}, std::byte{0x2D}, std::byte{0x2E}, std::byte{0x2F}, std::byte{0x30}, std::byte{0x31}, std::byte{0x32}, std::byte{0x33}, std::byte{0x34}, std::byte{0x35}, std::byte{0x36}, std::byte{0x37}, std::byte{0x38}, std::byte{0x39}, std::byte{0x3A}, std::byte{0x3B}, std::byte{0x3C}, std::byte{0x3D}, std::byte{0x3E}, std::byte{0x3F}, std::byte{0x40}, std::byte{0x41}, std::byte{0x42}, std::byte{0x43}, std::byte{0x44}, std::byte{0x45}, std::byte{0x46}, std::byte{0x47}, std::byte{0x48}, std::byte{0x49}, std::byte{0x4A}, std::byte{0x4B}, std::byte{0x4C}, std::byte{0x4D}, std::byte{0x4E}, std::byte{0x4F}, std::byte{0x50}, std::byte{0x51}, std::byte{0x52}, std::byte{0x53}, std::byte{0x54}, std::byte{0x55}, std::byte{0x56}, std::byte{0x57}, std::byte{0x58}, std::byte{0x59}};
+        const MemorySource source(raw);
+        auto tree = streamview::core::AnalysisTree::create(QStringLiteral("Root"));
+        QVERIFY(tree.has_value());
+        const auto mapping = mappingForBytes(source.sizeBytes());
+        QVERIFY(mapping.has_value());
+        streamview::core::BitReader reader(source, *mapping);
+
+        const auto result = streamview::rules::DslExecutor::decodeStruct(
+            *compiled.program,
+            QStringLiteral("AudioSpecificConfig"),
+            reader,
+            *mapping,
+            0,
+            *tree,
+            tree->rootId());
+        QCOMPARE(result.status, streamview::rules::DslExecutionStatus::Materialized);
+        QVERIFY(result.structureNode.has_value());
+
+        const auto node = tree->node(*result.structureNode);
+        QVERIFY(node.has_value());
+        QCOMPARE(node->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(node->diagnostics().empty());
+
+        const std::vector<QString> expectedNames = {
+            QStringLiteral("audio_object_type"),
+            QStringLiteral("sampling_frequency_index"),
+            QStringLiteral("channel_configuration"),
+            QStringLiteral("frame_length_flag"),
+            QStringLiteral("depends_on_core_coder"),
+            QStringLiteral("extension_flag"),
+            QStringLiteral("element_instance_tag"),
+            QStringLiteral("object_type"),
+            QStringLiteral("pce_sampling_frequency_index"),
+            QStringLiteral("num_front_channel_elements"),
+            QStringLiteral("num_side_channel_elements"),
+            QStringLiteral("num_back_channel_elements"),
+            QStringLiteral("num_lfe_channel_elements"),
+            QStringLiteral("num_assoc_data_elements"),
+            QStringLiteral("num_valid_cc_elements"),
+            QStringLiteral("mono_mixdown_present"),
+            QStringLiteral("stereo_mixdown_present"),
+            QStringLiteral("matrix_mixdown_idx_present"),
+            QStringLiteral("side_element_is_cpe[0]"),
+            QStringLiteral("side_element_tag_select[0]"),
+            QStringLiteral("back_element_is_cpe[0]"),
+            QStringLiteral("back_element_tag_select[0]"),
+            QStringLiteral("assoc_data_element_tag_select[0]"),
+            QStringLiteral("cc_element_is_ind_sw[0]"),
+            QStringLiteral("valid_cc_element_tag_select[0]"),
+            QStringLiteral("pce_total_bits"),
+            QStringLiteral("pce_rem"),
+            QStringLiteral("pce_alignment_bits"),
+            QStringLiteral("byte_alignment_zero_bit[0]"),
+            QStringLiteral("byte_alignment_zero_bit[1]"),
+            QStringLiteral("byte_alignment_zero_bit[2]"),
+            QStringLiteral("comment_field_bytes"),
+            QStringLiteral("comment_field_data[0]"),
+            QStringLiteral("comment_field_data[1]"),
+            QStringLiteral("comment_field_data[2]"),
+            QStringLiteral("comment_field_data[3]"),
+            QStringLiteral("comment_field_data[4]"),
+            QStringLiteral("comment_field_data[5]"),
+            QStringLiteral("comment_field_data[6]"),
+            QStringLiteral("comment_field_data[7]"),
+            QStringLiteral("comment_field_data[8]"),
+            QStringLiteral("comment_field_data[9]"),
+            QStringLiteral("comment_field_data[10]"),
+            QStringLiteral("comment_field_data[11]"),
+            QStringLiteral("comment_field_data[12]"),
+            QStringLiteral("comment_field_data[13]"),
+            QStringLiteral("comment_field_data[14]"),
+            QStringLiteral("comment_field_data[15]"),
+            QStringLiteral("comment_field_data[16]"),
+            QStringLiteral("comment_field_data[17]"),
+            QStringLiteral("comment_field_data[18]"),
+            QStringLiteral("comment_field_data[19]"),
+            QStringLiteral("comment_field_data[20]"),
+            QStringLiteral("comment_field_data[21]"),
+            QStringLiteral("comment_field_data[22]"),
+            QStringLiteral("comment_field_data[23]"),
+            QStringLiteral("comment_field_data[24]"),
+            QStringLiteral("comment_field_data[25]"),
+            QStringLiteral("comment_field_data[26]"),
+            QStringLiteral("comment_field_data[27]"),
+            QStringLiteral("comment_field_data[28]"),
+            QStringLiteral("comment_field_data[29]"),
+            QStringLiteral("comment_field_data[30]"),
+            QStringLiteral("comment_field_data[31]"),
+            QStringLiteral("comment_field_data[32]"),
+            QStringLiteral("comment_field_data[33]"),
+            QStringLiteral("comment_field_data[34]"),
+            QStringLiteral("comment_field_data[35]"),
+            QStringLiteral("comment_field_data[36]"),
+            QStringLiteral("comment_field_data[37]"),
+            QStringLiteral("comment_field_data[38]"),
+            QStringLiteral("comment_field_data[39]"),
+            QStringLiteral("comment_field_data[40]"),
+            QStringLiteral("comment_field_data[41]"),
+            QStringLiteral("comment_field_data[42]"),
+            QStringLiteral("comment_field_data[43]"),
+            QStringLiteral("comment_field_data[44]"),
+            QStringLiteral("comment_field_data[45]"),
+            QStringLiteral("comment_field_data[46]"),
+            QStringLiteral("comment_field_data[47]"),
+            QStringLiteral("comment_field_data[48]"),
+            QStringLiteral("comment_field_data[49]"),
+            QStringLiteral("comment_field_data[50]"),
+            QStringLiteral("comment_field_data[51]"),
+            QStringLiteral("comment_field_data[52]"),
+            QStringLiteral("comment_field_data[53]"),
+            QStringLiteral("comment_field_data[54]"),
+            QStringLiteral("comment_field_data[55]"),
+            QStringLiteral("comment_field_data[56]"),
+            QStringLiteral("comment_field_data[57]"),
+            QStringLiteral("comment_field_data[58]"),
+            QStringLiteral("comment_field_data[59]"),
+            QStringLiteral("comment_field_data[60]"),
+            QStringLiteral("comment_field_data[61]"),
+            QStringLiteral("comment_field_data[62]"),
+            QStringLiteral("comment_field_data[63]"),
+            QStringLiteral("comment_field_data[64]"),
+            QStringLiteral("comment_field_data[65]"),
+            QStringLiteral("comment_field_data[66]"),
+            QStringLiteral("comment_field_data[67]"),
+            QStringLiteral("comment_field_data[68]"),
+            QStringLiteral("comment_field_data[69]"),
+            QStringLiteral("comment_field_data[70]"),
+            QStringLiteral("comment_field_data[71]"),
+            QStringLiteral("comment_field_data[72]"),
+            QStringLiteral("comment_field_data[73]"),
+            QStringLiteral("comment_field_data[74]"),
+            QStringLiteral("comment_field_data[75]"),
+            QStringLiteral("comment_field_data[76]"),
+            QStringLiteral("comment_field_data[77]"),
+            QStringLiteral("comment_field_data[78]"),
+            QStringLiteral("comment_field_data[79]"),
+            QStringLiteral("comment_field_data[80]"),
+            QStringLiteral("comment_field_data[81]"),
+            QStringLiteral("comment_field_data[82]"),
+            QStringLiteral("comment_field_data[83]"),
+            QStringLiteral("comment_field_data[84]"),
+            QStringLiteral("comment_field_data[85]"),
+            QStringLiteral("comment_field_data[86]"),
+            QStringLiteral("comment_field_data[87]"),
+            QStringLiteral("comment_field_data[88]"),
+            QStringLiteral("comment_field_data[89]"),
+        };
+        QCOMPARE(node->children().size(), expectedNames.size());
+        for (std::size_t i = 0; i < expectedNames.size(); ++i) {
+            const auto child = tree->node(node->children()[i]);
+            QVERIFY(child.has_value());
+            QCOMPARE(child->name(), expectedNames[i]);
+            if (child->name() == QStringLiteral("comment_field_bytes")) {
+                QVERIFY(child->location().has_value());
+                QCOMPARE(child->location()->logicalRange().start().bitOffset() / 8, quint64(9));
+                QCOMPARE(child->value().toULongLong(), quint64(90));
+            }
+        }
+    }
+
+    void rejectsAscCase8NonzeroAlignmentBit() {
+        const auto loaded = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(loaded.succeeded());
+        const auto* ascSource = loaded.package->fileContents(QStringLiteral("src/aac_asc.svfmt"));
+        QVERIFY(ascSource != nullptr);
+        const auto parsed = streamview::rules::DslParser::parse(QString::fromUtf8(*ascSource));
+        const auto compiled = streamview::rules::DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const std::vector<std::byte> raw = {std::byte{0x11}, std::byte{0x80}, std::byte{0x00}, std::byte{0xC0}, std::byte{0x00}, std::byte{0x00}, std::byte{0x20}, std::byte{0x5A}, std::byte{0x00}, std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}, std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}, std::byte{0x09}, std::byte{0x0A}, std::byte{0x0B}, std::byte{0x0C}, std::byte{0x0D}, std::byte{0x0E}, std::byte{0x0F}, std::byte{0x10}, std::byte{0x11}, std::byte{0x12}, std::byte{0x13}, std::byte{0x14}, std::byte{0x15}, std::byte{0x16}, std::byte{0x17}, std::byte{0x18}, std::byte{0x19}, std::byte{0x1A}, std::byte{0x1B}, std::byte{0x1C}, std::byte{0x1D}, std::byte{0x1E}, std::byte{0x1F}, std::byte{0x20}, std::byte{0x21}, std::byte{0x22}, std::byte{0x23}, std::byte{0x24}, std::byte{0x25}, std::byte{0x26}, std::byte{0x27}, std::byte{0x28}, std::byte{0x29}, std::byte{0x2A}, std::byte{0x2B}, std::byte{0x2C}, std::byte{0x2D}, std::byte{0x2E}, std::byte{0x2F}, std::byte{0x30}, std::byte{0x31}, std::byte{0x32}, std::byte{0x33}, std::byte{0x34}, std::byte{0x35}, std::byte{0x36}, std::byte{0x37}, std::byte{0x38}, std::byte{0x39}, std::byte{0x3A}, std::byte{0x3B}, std::byte{0x3C}, std::byte{0x3D}, std::byte{0x3E}, std::byte{0x3F}, std::byte{0x40}, std::byte{0x41}, std::byte{0x42}, std::byte{0x43}, std::byte{0x44}, std::byte{0x45}, std::byte{0x46}, std::byte{0x47}, std::byte{0x48}, std::byte{0x49}, std::byte{0x4A}, std::byte{0x4B}, std::byte{0x4C}, std::byte{0x4D}, std::byte{0x4E}, std::byte{0x4F}, std::byte{0x50}, std::byte{0x51}, std::byte{0x52}, std::byte{0x53}, std::byte{0x54}, std::byte{0x55}, std::byte{0x56}, std::byte{0x57}, std::byte{0x58}, std::byte{0x59}};
+        const MemorySource source(raw);
+        auto tree = streamview::core::AnalysisTree::create(QStringLiteral("Root"));
+        QVERIFY(tree.has_value());
+        const auto mapping = mappingForBytes(source.sizeBytes());
+        QVERIFY(mapping.has_value());
+        streamview::core::BitReader reader(source, *mapping);
+
+        const auto result = streamview::rules::DslExecutor::decodeStruct(
+            *compiled.program,
+            QStringLiteral("AudioSpecificConfig"),
+            reader,
+            *mapping,
+            0,
+            *tree,
+            tree->rootId());
+        QCOMPARE(result.status, streamview::rules::DslExecutionStatus::InvalidSyntax);
+        QVERIFY(result.structureNode.has_value());
+
+        const auto node = tree->node(*result.structureNode);
+        QVERIFY(node.has_value());
+        QCOMPARE(node->state(), streamview::core::MaterializationState::Invalid);
+        QCOMPARE(node->diagnostics().size(), std::size_t(1));
+        QCOMPARE(node->diagnostics()[0].code, streamview::core::DiagnosticCode::InvalidSyntax);
+        QCOMPARE(node->diagnostics()[0].message, QStringLiteral("Field value violates @equals constraint"));
+    }
+
+    void rejectsAscCase9PrematureTruncation() {
+        const auto loaded = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(loaded.succeeded());
+        const auto* ascSource = loaded.package->fileContents(QStringLiteral("src/aac_asc.svfmt"));
+        QVERIFY(ascSource != nullptr);
+        const auto parsed = streamview::rules::DslParser::parse(QString::fromUtf8(*ascSource));
+        const auto compiled = streamview::rules::DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const std::vector<std::byte> raw = {std::byte{0x11}, std::byte{0x80}, std::byte{0x00}};
+        const MemorySource source(raw);
+        auto tree = streamview::core::AnalysisTree::create(QStringLiteral("Root"));
+        QVERIFY(tree.has_value());
+        const auto mapping = mappingForBytes(source.sizeBytes());
+        QVERIFY(mapping.has_value());
+        streamview::core::BitReader reader(source, *mapping);
+
+        const auto result = streamview::rules::DslExecutor::decodeStruct(
+            *compiled.program,
+            QStringLiteral("AudioSpecificConfig"),
+            reader,
+            *mapping,
+            0,
+            *tree,
+            tree->rootId());
+        QCOMPARE(result.status, streamview::rules::DslExecutionStatus::TruncatedSource);
+        QVERIFY(result.structureNode.has_value());
+
+        const auto node = tree->node(*result.structureNode);
+        QVERIFY(node.has_value());
+        QCOMPARE(node->state(), streamview::core::MaterializationState::Invalid);
+        QCOMPARE(node->diagnostics().size(), std::size_t(1));
+        QCOMPARE(node->diagnostics()[0].code, streamview::core::DiagnosticCode::TruncatedSource);
+        QCOMPARE(node->diagnostics()[0].message, QStringLiteral("Unable to read complete syntax field"));
+    }
+
+    void bundledAacAdtsRuleResolvesAdtsWithoutRegression() {
+        const auto loaded = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(loaded.succeeded());
+        QVERIFY(loaded.package.has_value());
+
+        streamview::rules::RulePackageCatalog catalog;
+        const auto reg = catalog.registerPackage(streamview::rules::RulePackage(*loaded.package));
+        QVERIFY(reg.succeeded());
+
+        const auto resolvedAdts = catalog.resolve(
+            loaded.package->identity(),
+            QStringLiteral("adts"),
+            streamview::rules::languageVersion(),
+            streamview::core::version());
+        QVERIFY2(resolvedAdts.succeeded(), qPrintable(resolvedAdts.errorMessage));
+        QVERIFY(resolvedAdts.entryPoint.has_value());
+        QCOMPARE(resolvedAdts.entryPoint->id, QStringLiteral("adts"));
+        QCOMPARE(resolvedAdts.entryPoint->format, QStringLiteral("audio.aac.adts"));
+        QCOMPARE(resolvedAdts.entryPoint->depth, QStringLiteral("adts-frame"));
+        QVERIFY(resolvedAdts.entryPoint->detector.has_value());
+        QCOMPARE(*resolvedAdts.entryPoint->detector, QStringLiteral("aac-adts"));
+
+        std::vector<std::byte> stream;
+        const auto f1 = makeAdtsFrame(100, true);
+        const auto f2 = makeAdtsFrame(100, true);
+        const auto f3 = makeAdtsFrame(100, true);
+        stream.insert(stream.end(), f1.begin(), f1.end());
+        stream.insert(stream.end(), f2.begin(), f2.end());
+        stream.insert(stream.end(), f3.begin(), f3.end());
+
+        const MemorySource source(std::move(stream));
+        QString error;
+        auto analyzer = streamview::rules::AacAdtsAnalyzer::create(source, &error);
+        QVERIFY2(analyzer.has_value(), qPrintable(error));
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, streamview::rules::AacAdtsAnalysisStatus::Complete);
+        QCOMPARE(batch.frameNodes.size(), std::size_t(3));
+        QVERIFY(analyzer->finished());
+    }
+
 };
 
 QTEST_MAIN(AacAdtsAnalyzerTest)

@@ -2,7 +2,7 @@ manifest-version = 1
 
 [package]
 id = "org.streamview.aac"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["StreamView contributors"]
 license = "MIT"
 dependencies = []
@@ -18,3 +18,10 @@ source = "src/aac_adts.svfmt"
 profiles = ["lc"]
 depth = "adts-frame"
 detector = "aac-adts"
+
+[[entrypoints]]
+id = "asc"
+format = "audio.aac.asc"
+source = "src/aac_asc.svfmt"
+profiles = ["lc"]
+depth = "structural"

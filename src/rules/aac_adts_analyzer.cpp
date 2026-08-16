@@ -77,19 +77,24 @@ namespace {
     return contents;
 }
 
+} // namespace
+
 RulePackageLoadResult loadAacAdtsRulePackage() {
     initializeStreamViewOfficialAacRules();
     QString errorMessage;
     const QString root = QStringLiteral(":/streamview/rules/org.streamview.aac/");
     auto manifest = readBundledPackageFile(root + QStringLiteral("rule.toml"), &errorMessage);
-    auto source = readBundledPackageFile(root + QStringLiteral("src/aac_adts.svfmt"),
-                                         &errorMessage);
-    if (!manifest || !source) {
+    auto sourceAdts = readBundledPackageFile(root + QStringLiteral("src/aac_adts.svfmt"),
+                                             &errorMessage);
+    auto sourceAsc = readBundledPackageFile(root + QStringLiteral("src/aac_asc.svfmt"),
+                                            &errorMessage);
+    if (!manifest || !sourceAdts || !sourceAsc) {
         return {RulePackageLoadStatus::InvalidTree, std::nullopt, std::move(errorMessage)};
     }
     RulePackageLoadResult loaded = RulePackage::fromFiles({
         {QStringLiteral("rule.toml"), std::move(*manifest)},
-        {QStringLiteral("src/aac_adts.svfmt"), std::move(*source)},
+        {QStringLiteral("src/aac_adts.svfmt"), std::move(*sourceAdts)},
+        {QStringLiteral("src/aac_asc.svfmt"), std::move(*sourceAsc)},
     });
     if (!loaded.succeeded()) {
         loaded.errorMessage = QStringLiteral("Bundled AAC package is invalid: %1")
@@ -97,6 +102,8 @@ RulePackageLoadResult loadAacAdtsRulePackage() {
     }
     return loaded;
 }
+
+namespace {
 
 struct BundledAacRule final {
     RuleCatalogLookupResult resolved;
