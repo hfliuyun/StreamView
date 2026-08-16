@@ -1801,7 +1801,7 @@ Blockers: None
   4. 测试与 Hosted CI 验证：
      - dev/ci/sanitize 三套构建全部 36/36 全绿，AAC analyzer 31/31，H.264 analyzer 174/174。
   Next Action 指向 Phase 5 ADR 与架构设计编写。
-- 2026-08-16：完成 Task P5a 双语 ADR-0096 架构设计与阶段 5 切片细化（任务 P5a / commit `TBD`）。
+- 2026-08-16：完成 Task P5a 双语 ADR-0096 架构设计与阶段 5 切片细化（任务 P5a / commit `f056e2f`）。
   1. 三项核心边界决策明确（D1/D2/D3）：
      - **D1（Box 遍历与 `mdat` Lazy 边界）**：核心库（`src/core/` 与 `src/rules/*.cpp`）保持 100% 格式中立，零 FourCC 字符串侵入；所有 Box 头部与层级关系由 DSL 结构表达，超大 `mdat` 载荷通过 `@lazy` 声明实现零堆内存惰性封装；`size == 0` 与 `size == 1`（largesize）通过 DSL 条件语法与剩余计算处理；
      - **D2（跨层导航引用模型）**：规则包在 v0.1 保持自包含独立，`org.streamview.mp4` 声明 `avcC`/`esds` 解码配置结构并通过注解提供目标格式元数据，会话层通过 `RulePackageStore` 实现跨包入口点链接与坐标映射；
