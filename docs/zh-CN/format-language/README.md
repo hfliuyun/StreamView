@@ -353,7 +353,7 @@ primary       := integer | "true" | "false" | identifier
   seek 到末尾。不按 byte 对齐、multi-span 和空 range 都合法。item 不产生 scalar value，
   不能作为 controller、expression dependency 或 context value。
 - `assert(condition) at anchor;` 是不接受 annotation 的 structure item。它可以是无条件顶层
-  item，也可以位于 bounded 或 sentinel repeat 内部，包括该 repeat 中嵌套的 conditional 或
+  item，也可以位于 bounded 或 sentinel repeat 内部，包括该 repeat中嵌套的 conditional 或
   switch body；不在 repeat 中的 conditional/switch 仍拒绝 assertion，也不能把它写在 terminal
   item 之后。`condition` 必须为 `bool`，沿用完整的 bounded expression 与 pure-function
   合同，并且可以包含上文定义的 exact imported `context_value` leaf、
@@ -498,12 +498,9 @@ primary       := integer | "true" | "false" | identifier
   `0..2^64 - 2`。enum 字段仍解码为无符号整数，enum 为该数值提供名称与致命有效值检查。
   固定 `bits` 或 `ue` 字段可以同时带 `@enum`、`@equals` 与 `@range`：先执行致命
   membership 与 equality 检查，再执行非致命 range bound。动态 `bits` 在这三种注解中只
-  接受 `@range`；`se` 只接受 `@range`，拒绝 `@equals` 与 `@enum`。`@description("text")` 提供项目编写的
-  展示说明，`@spec("standard", "clause")` 提供规范引用。字段默认继承所属结构的规范
-  引用，也可以用自己的注解覆盖。数组声明解析出的类型、注解、metadata 和约束会分别
-  应用到每个展开元素。计算字段可在声明前或表达式后使用 `@description` 和 `@spec`，但
-  拒绝 `@equals`、`@enum` 和数组后缀。lazy byte region 只在 name 之后接受这两个展示
-  annotation。
+  接受 `@range`；`se` 只接受 `@range`，拒绝 `@equals` 与 `@enum`。
+  `@description("text")` 提供项目编写的展示说明，`@spec("standard", "clause")` 提供规范引用。字段默认继承所属结构的规范引用，也可以用自己的注解覆盖。数组声明解析出的类型、注解、metadata 和约束会分别应用到每个展开元素。计算字段可在声明前或表达式后使用 `@description`、`@spec` 与 `@context_export`，但拒绝 `@equals`、`@enum` 和数组后缀。lazy byte region 只在 name 之后接受 `@description` 与 `@spec`。compressed payload 仅接受 `@description` 与 `@spec`。sequence 扫描声明接受 `@index(progressive)`、`@spec` 与 `@description`。结构体声明接受 `@spec`、`@description`、`@context`、`@context_import` 与 `@context_dependency`。enum 声明接受 `@spec` 与 `@description`。payload 派发声明接受 `@spec` 与 `@description`。纯函数（`pure`）与 entry 入口声明（`entry`）不接受任何注解。
+- 所有注解在编译期通过统一注册表进行校验。任何未注册或未识别的注解（例如 `@equalss(4095)`）均会在编译期报错 `DslDiagnosticCode::InvalidAnnotation`（报错信息 `"Unknown annotation '@<name>'"`）。将注解放置于不支持的声明宿主上同样会被严格拦截并发出 `DslDiagnosticCode::InvalidAnnotation`。`@target_format(...)` 注解已为后续跨层格式委托（任务 P5h）预留注册，当前其 `allowedTargets = 0`（在所有宿主上均不可用）。
 - 出现词法或静态诊断时，source 不会生成可执行规则；parser 仍返回部分 IR 以及带行列范围的全部诊断，便于编辑器一次报告多个错误。
 
 `enum`、`big`、`little`、`ue`、`se`、`pure`、`return`、`bool`、`u64`、

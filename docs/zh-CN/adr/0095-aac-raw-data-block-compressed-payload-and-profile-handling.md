@@ -118,7 +118,7 @@ StreamView 实施计划阶段 4 规定了对 AAC-LC 音频（ISO/IEC 14496-3:201
 1. **ADTS 传输流**：通过 `@enum(AacProfile)` 约束于 `AacProfile`（0=Main, 1=LC, 2=SSR, 3=LTP）。在 ADTS 中传输的 HE-AAC v1/v2 码流依据广播规范在 ADTS 头中均携带 `profile = 1` (LC)，作为 LC 帧正常解码，其 raw data 载荷保持未解析状态。
 2. **AudioSpecificConfig (ASC)**：先解码 ASC 公共前缀。AOT 5（SBR）、AOT 29（Parametric Stereo）以及外层 AOT 31 的转义编码（包括 AOT 39）随后执行 `unsupported("reason") at audio_object_type;`。结构保留前缀，转为 `MaterializationState::Unsupported`，产生 `DiagnosticCode::UnsupportedSyntax`，并在解释任何 GA/PCE 后缀之前停止。
 3. **未声明载荷区域的 ADTS 规则**：匹配 `audio.aac.adts` 格式但仅声明头部字段、未声明 `@lazy` 载荷区域的规则包无法获得载荷截断上报。载荷截断的尾帧将呈现为有效物化且零诊断，其比特长度被 clamp 至实际可用字节数。未来若要通用化区域级截断探测，必须通过格式中立的核心机制（例如在 scanner 标记截断时，将容器 region 节点置为部分物化并携带通用截断诊断）而非在 C++ 中合成格式专属文案。
-4. **阶段 4 第 4 项正式闭环判定**：格式中立的 DSL/IR/VM 现已提供 `unsupported("reason") at field;` 及对应执行/会话状态。AAC analyzer 将其作为内容层结果，发布 Unsupported 子树并可继续扫描后续 ADTS 帧。官方 AAC 包版本为 `0.1.4`；SBR、PS 与 ELD 的专属 SpecificConfig 解码仍不在声明子集内。
+4. **阶段 4 第 4 项正式闭环判定**：格式中立的 DSL/IR/VM 现已提供 `unsupported("reason") at field;` 及对应执行/会话状态。AAC analyzer 将其作为内容层结果，发布 Unsupported 子树并可继续扫描后续 ADTS 帧。官方 AAC 包版本为 `0.1.4`；SBR、PS 与 ELD 的专属 SpecificConfig 解码仍不在声明子集内。在官方 AAC 规则包（`profiles = ["lc"]`）中，声明 `audio_object_type == 31`（转义 AOT）的码流在 `audio_object_type` 处一律无条件发出 `unsupported("Escaped Audio Object Types (AOT >= 31) are not supported")`；所有转义 AOT 取值（AOT 32, 34, 40, 41, 42 等）均统一判定为 Unsupported，不进行逐值分支细分解码。
 
 ### 6. 逐 bit 验收审计范围与覆盖矩阵（B1, C1, C3）
 

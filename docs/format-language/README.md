@@ -661,9 +661,23 @@ The static rules for this subset are:
   inherit their structure's specification unless they provide their own. An
   array declaration applies its resolved type, annotations, metadata, and
   constraints independently to every expanded element. A computed field accepts
-  `@description` and `@spec`, before the declaration or after its expression,
-  but rejects `@equals`, `@enum`, and an array suffix. A lazy byte region accepts
-  those two presentation annotations only after its name.
+  `@description`, `@spec`, and `@context_export`, before the declaration or
+  after its expression, but rejects `@equals`, `@enum`, and an array suffix. A
+  lazy byte region accepts `@description` and `@spec` only after its name.
+  Compressed payloads accept `@description` and `@spec` only. Sequence scan
+  declarations accept `@index(progressive)`, `@spec`, and `@description`.
+  Structure declarations accept `@spec`, `@description`, `@context`,
+  `@context_import`, and `@context_dependency`. Enum declarations accept
+  `@spec` and `@description`. Payload dispatches accept `@spec` and
+  `@description`. Pure functions (`pure`) and entry declarations (`entry`) do
+  not accept any annotations.
+- All annotations are validated at compile time against a unified registry. Any
+  unregistered or unrecognized annotation (e.g. `@equalss(4095)`) fails
+  compilation with `DslDiagnosticCode::InvalidAnnotation` (`"Unknown annotation '@<name>'"`).
+  Annotations placed on unsupported declaration hosts are strictly rejected with
+  `DslDiagnosticCode::InvalidAnnotation`. The `@target_format(...)` annotation
+  is reserved for future cross-layer format delegation (Task P5h) and is currently
+  registered with `allowedTargets = 0` (rejected on all hosts).
 - A source with lexical or static diagnostics produces no executable rule. The
   parser still returns its partial IR and all diagnostics with line/column
   ranges so an editor can report more than the first error.

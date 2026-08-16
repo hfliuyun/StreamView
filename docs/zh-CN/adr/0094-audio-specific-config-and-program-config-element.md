@@ -19,7 +19,7 @@
    ```
    error: Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type
    ```
-   此外，从独立子结构引用外部结构体字段会被编译器支配分析拦截（`src/rules/dsl.cpp:3283` 与 `src/rules/dsl_ir.cpp:1557-1561`）：
+   此外，从独立子结构引用外部结构体字段会被编译器支配分析拦截（`src/rules/dsl.cpp:3394` 与 `src/rules/dsl_ir.cpp:1557-1561`）：
    ```
    error: Computed dependency is not guaranteed on the current branch
    ```
@@ -366,3 +366,7 @@ fromFiles succeeded=1
 2. **GASpecificConfig**：第 4 部分子条款 **4.4.1**（*GASpecificConfig* / *General Audio specific configuration*）；
 3. **program_config_element**（PCE）：第 4 部分子条款 **4.4.1.1**（*Program config element (PCE)*）；
 4. **包版本升级**：因 `@spec` 条款引用修正引起 `.svfmt` 内容哈希变化，`org.streamview.aac` 官方包版本推进至 `0.1.2`。
+
+## 非 GA 音频对象类型 Unsupported 诊断更正
+
+第 3 节中曾提及非 GA 的 `audio_object_type` 解析基础通用音频头部语法而不报错。随着显式 `unsupported` 语句的实现（ADR-0098）及 AAC Profile 边界的统一收口（ADR-0095 §5.2），非 GA 的 `audio_object_type` 取值（如 SBR = 5、PS = 29）与转义 AOT 配置（`audio_object_type == 31`）在完成公共前缀解码后会立即停止并发出 `DiagnosticCode::UnsupportedSyntax`（Severity: Warning，`MaterializationState::Unsupported`），精准将未支持的 Profile 标记为 Unsupported 内容，不再向下误解码 GA 字段。

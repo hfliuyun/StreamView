@@ -19,7 +19,7 @@ Prior to specifying the grammar, empirical probing was conducted on scratch fixt
    ```
    error: Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type
    ```
-   Furthermore, referencing outer structure fields from separate sub-structures is blocked by compiler dominance analysis (`src/rules/dsl.cpp:3283` and `src/rules/dsl_ir.cpp:1557-1561`):
+   Furthermore, referencing outer structure fields from separate sub-structures is blocked by compiler dominance analysis (`src/rules/dsl.cpp:3394` and `src/rules/dsl_ir.cpp:1557-1561`):
    ```
    error: Computed dependency is not guaranteed on the current branch
    ```
@@ -367,3 +367,7 @@ Subsequent specification auditing (Tasks T17d and T17e) clarified the distinct s
 2. **GASpecificConfig**: Subpart 4 subclause **4.4.1** (*GASpecificConfig* / *General Audio specific configuration*).
 3. **program_config_element** (PCE): Subpart 4 subclause **4.4.1.1** (*Program config element (PCE)*).
 4. **Package Version Bump**: Due to `.svfmt` content hash changes resulting from `@spec` citation corrections, the official `org.streamview.aac` package version is advanced to `0.1.2`.
+
+## Amendment: Non-GA Audio Object Type Unsupported Diagnostics
+
+Section 3 previously noted that non-GA `audio_object_type` values parse basic GA header syntax without failing. Following the implementation of explicit `unsupported` statements (ADR-0098) and AAC profile boundary harmonization (ADR-0095 §5.2), non-GA `audio_object_type` values (e.g. SBR = 5, PS = 29) and escaped AOT configurations (`audio_object_type == 31`) now immediately stop decoding after their common prefix and emit `DiagnosticCode::UnsupportedSyntax` (Severity: Warning, `MaterializationState::Unsupported`), precisely marking unsupported profiles as invalid/unsupported content rather than parsing downstream GA fields.

@@ -1817,7 +1817,7 @@ Blockers: None
   3. 卫生检查与验证：
      - 本地 `markdown_hygiene` 护栏验证通过；按 ADR-0019 Markdown-only 跳过 hosted CI。
   Next Action 指向 Task P5b（DSL 编译器未识别注解拦截加固）。
-- 2026-08-16：完成 Task P5b-§0 ADR-0096 整改与阶段 5 切片序列重排（任务 P5b-§0 / commit `TBD`）。
+- 2026-08-16：完成 Task P5b-§0 ADR-0096 整改与阶段 5 切片序列重排（任务 P5b-§0 / commit `de7e5da`）。
   1. 引用与限制修正：
      - 将入口点解析引用更正为 `src/rules/include/streamview/rules/rule_catalog.h:52` 中的 `RulePackageCatalog::resolve`；
      - 明确区分编译期展开上限 `maximumExpandedFieldsPerStructure = 99'999`（`dsl_ir.cpp:13`）与运行期节点预算 `defaultMaximumMaterializedNodes() = 100'000`（`dsl_vm.h:36-38`）；
@@ -1859,7 +1859,7 @@ Blockers: None
      - 命中分支时保留已解码前缀，在指定字段位置产生 `UnsupportedSyntax`，结构状态为 `Unsupported`，且不读取或解释后续字段；未选分支保持正常 Materialized。
   2. AAC profile 行为修正：
      - 官方 AAC 包由 `0.1.3` 升级至 `0.1.4`；
-     - AOT 5、29 与外层转义 AOT 31（包括 AOT 39）在公共 ASC 前缀后明确 Unsupported，不再把 profile 专属 SpecificConfig 位误解码成 GA/PCE；
+     - AOT 5、29 与外层转义 AOT 31（包括 AOT 39）在公共 ASC 前缀后明确 Unsupported，不再把 profile 专属 SpecificConfig 位误解码成 GA/PCE；转义 AOT（`audio_object_type == 31`）整体判定为 Unsupported，不进行逐值细分；
      - 四个回归用例断言前缀字段值/位范围/状态、精确诊断锚点与后缀节点缺失，并删除原 `return` 后不可达的巨型旧断言块。
   3. 逐 bit 验收与 CRC 纠偏：
      - `decodesAscAndPceFieldsBitByBit` 使用紧凑 160-bit 向量覆盖全部可达 ASC/GASpecificConfig/PCE 源字段的值、逻辑范围、状态与空诊断；计算字段只验证值/状态；
