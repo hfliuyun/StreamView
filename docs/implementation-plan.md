@@ -215,12 +215,15 @@ Blockers: None
 
 ### 阶段 5 任务切片与依赖关系
 - **Task P5a**（规范）：双语 ADR-0096 架构设计与边界决策定义（Markdown-only）；
-- **Task P5b**（能力切片）：DSL 编译器加固，严格拦截并报错未识别注解（解决 N2 隐患）；
-- **Task P5c**（规则切片）：官方 MP4 规则包 `org.streamview.mp4` v0.1.0（`rule.toml`、`mp4_box.svfmt`、`mp4_ftyp.svfmt`、`mp4_moov.svfmt`、`mp4_trak.svfmt`、`mp4_mdat.svfmt`）；
-- **Task P5d**（能力与运行器切片）：`Mp4IsobmffAnalyzer` 运行器、探测器注册与顶层 Box 遍历测试；
-- **Task P5e**（规则切片）：样本表与编解码配置 Box 规则（`stsd`、`avc1`、`avcC`、`mp4a`、`esds`、`stts`、`stsc`、`stsz`、`stco`、`co64`）；
-- **Task P5f**（能力切片）：跨层导航会话与视图集成（从 `avcC`/`esds` 区域映射打开 H.264 SPS/PPS 与 AAC ASC 视图）；
-- **Task P5g**（验收与审计切片）：逐 bit 验收、超大 `mdat` 惰性封装验证及阶段 5 复选框闭环。
+- **Task P5b**（能力切片）：DSL 编译器未识别注解编译闸门（加固消除 N2 隐患，严格报错非法注解）；
+- **Task P5c**（规范切片）：ISOBMFF 容器语言原语探测与 ADR-0097（`size==0` 尾部跨度、`@target_format` 宿主位置、Box 序列作用域）；
+- **Task P5d**（能力切片）：容器语言能力实现（运行器与解析器原语）；
+- **Task P5e**（规则切片）：官方 MP4 规则包 `org.streamview.mp4` v0.1.0（顶层 Box 遍历、`ftyp`、`mdat` lazy 封装）；
+- **Task P5f**（规则切片）：`moov` 容器层级规则 v0.1.1（`moov`、`trak`、`mdia`、`minf`、`stbl`）；
+- **Task P5g**（规则切片）：样本表索引分页规则 v0.1.2（`stts`、`stsc`、`stsz`、`stco`、`co64`）；
+- **Task P5h**（规则切片）：编解码配置 Box 规则 v0.1.3（`stsd`、`avc1`、`avcC`、`mp4a`、`esds` + `@target_format`）；
+- **Task P5i**（能力切片）：跨层导航会话与坐标视图集成；
+- **Task P5j**（验收与审计切片）：逐 bit 验收审计、超大 `mdat` 惰性验证与阶段 5 里程碑关闭。
 
 ### 阶段 5 检查清单
 - [ ] 支持普通、64 位、size=0 和未知 box；`mdat` 默认 lazy。
@@ -1814,4 +1817,15 @@ Blockers: None
   3. 卫生检查与验证：
      - 本地 `markdown_hygiene` 护栏验证通过；按 ADR-0019 Markdown-only 跳过 hosted CI。
   Next Action 指向 Task P5b（DSL 编译器未识别注解拦截加固）。
+- 2026-08-16：完成 Task P5b-§0 ADR-0096 整改与阶段 5 切片序列重排（任务 P5b-§0 / commit `TBD`）。
+  1. 引用与限制修正：
+     - 将入口点解析引用更正为 `src/rules/include/streamview/rules/rule_catalog.h:52` 中的 `RulePackageCatalog::resolve`；
+     - 明确区分编译期展开上限 `maximumExpandedFieldsPerStructure = 99'999`（`dsl_ir.cpp:13`）与运行期节点预算 `defaultMaximumMaterializedNodes() = 100'000`（`dsl_vm.h:36-38`）；
+     - 将资源预算标注为设计目标，待 P5j 实测校准；
+     - 更新 DSL 语法片段为实测可编译形式，并显式标注 `size == 0` 延伸至 EOF 为 P5c/ADR-0097 待决语言缺口。
+  2. 切片重排：
+     - 将阶段 5 任务切片由 P5a..P5g 展开细化为 P5b..P5j，前置语言能力探测与原语支持。
+  3. 卫生检查与验证：
+     - 本地 `markdown_hygiene` 护栏验证通过；按 ADR-0019 Markdown-only 跳过 hosted CI。
+  Next Action 指向 Task P5b 主体（DSL 编译器未识别注解编译闸门实现）。
 
