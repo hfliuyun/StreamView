@@ -2,8 +2,8 @@
 
 Status: In Progress
 Current Phase: 4
-Last Completed Step: AAC official rule package and ADTS header structured decoding (Task T16 / commit f0df4e8)
-Next Action: AAC raw data block & AudioSpecificConfig exploration (Task T17)
+Last Completed Step: AudioSpecificConfig and Program Config Element structured decoding (Task T17c / commit d32d606)
+Next Action: AAC raw data block & channel stream element decoding exploration (Task T18)
 Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31900233536 (Ubuntu job 95049723785, macOS job 95049723689, Windows job 95049723728) passed 100%
 Blockers: None
 
@@ -1559,3 +1559,29 @@ Blockers: None
     1. **标准条款引用更正**：上一条记录提及「依据 ISO/IEC 13818-7:2006 §8.2 与 ISO/IEC 14496-3:2009 §1.A.1」，`src/rules/official/org.streamview.aac/src/aac_adts.svfmt` 与 ADR-0093 实际采用 `docs/standards.md:10` 固定的 ISO/IEC 14496-3:2019 Edition 5 subclause 1.6.2.1（固定头）与 1.6.2.2（可变头）；
     2. **入口点深度值更正**：上一条记录提及「深度 `structural`」，`src/rules/official/org.streamview.aac/rule.toml` 实际声明为 `depth = "adts-frame"`（严格对齐 ADR-0092 §4.1）。
   Next Action 指向 Task T17（AudioSpecificConfig、GASpecificConfig 与 Program Config Element 架构探索、双语 ADR-0094 与规则落地）。
+
+- 2026-08-16：完成 AudioSpecificConfig 与 Program Config Element 规则消费落地（任务 T17c / commit `d32d606`）。
+  1. 架构规范与双语 ADR-0094（`docs/adr/0094-audio-specific-config-and-program-config-element.md` 与 `docs/zh-CN/adr/0094-audio-specific-config-and-program-config-element.md`）：
+     - 依据 ISO/IEC 14496-3:2019 subclause 1.6.2.1 与 4.4.1 规范定义 `AudioSpecificConfig`、`GASpecificConfig` 与 `program_config_element`（PCE）结构化语法；
+     - 严格推导并形式化验证 PCE 字节对齐补零位精确计算公式：`pce_total_bits = 16 + (audio_object_type == 31) * 6 + (sampling_frequency_index == 15) * 24 + depends_on_core_coder * 14 + 34 + mono_mixdown_present * 4 + stereo_mixdown_present * 4 + matrix_mixdown_idx_present * 3 + num_front_channel_elements * 5 + num_side_channel_elements * 5 + num_back_channel_elements * 5 + num_lfe_channel_elements * 4 + num_assoc_data_elements * 4 + num_valid_cc_elements * 5`，`pce_rem = pce_total_bits % 8`，`pce_alignment_bits = (8 - pce_rem) % 8`；
+     - 纠正 `src/rules/official/org.streamview.aac/src/aac_adts.svfmt:19` 结构条款号引用为 `1.6.2.2`。
+  2. 官方规则包与资源注册（`src/rules/official/org.streamview.aac/`）：
+     - `rule.toml`：发布版本 `0.1.1`，新增 `asc` 入口点（`id = "asc"`, `format = "audio.aac.asc"`, `source = "src/aac_asc.svfmt"`, `depth = "structural"`），并将 `detector = "aac-adts"` 固化于 `adts` 入口点块内；
+     - `src/aac_asc.svfmt`：实现 ASC / PCE 完整规则源码（184 行），`svtool rule check` 实测 `Rule OK`；
+     - `src/rules/CMakeLists.txt`：将 `official/org.streamview.aac/src/aac_asc.svfmt` 纳入 `streamview_official_rules_aac` Qt 资源编译；
+     - `src/rules/aac_adts_analyzer.cpp`：`loadAacAdtsRulePackage` 读取并注册 `src/aac_asc.svfmt`。
+  3. 测试套件与验证矩阵（`tests/rules/aac_adts_analyzer_test.cpp`）：
+     - `resolvesAscEntryPointFromBundledRulePackage`：验证 `org.streamview.aac` 0.1.1 内置包成功加载，`RulePackageCatalog::resolve` 成功解析 `asc` 入口点且元数据（format, depth, sourcePath）完全匹配；
+     - `decodesAscCase1Baseline`：基线 ASC（AOT=2, SFI=3, CC=0, DCC=0），对齐 6 bit，`comment_field_bytes` 偏移 7 字节，完整 118 个有序子节点名称与值断言通过；
+     - `decodesAscCase2CoreCoderDelay`：DCC=1（14-bit core_coder_delay=0x1ABC），对齐 0 bit，`comment_field_bytes` 偏移 8 字节，完整 113 个有序子节点断言通过；
+     - `decodesAscCase3ExtendedAudioObjectType`：AOT=31（6-bit AOT_ext=2），对齐 0 bit，`comment_field_bytes` 偏移 7 字节，完整 113 个有序子节点断言通过；
+     - `decodesAscCase4ExplicitSamplingFrequency`：SFI=15（24-bit sampling_frequency=44100），对齐 6 bit，`comment_field_bytes` 偏移 10 字节，完整 119 个有序子节点断言通过；
+     - `decodesAscCase5MultichannelFrontAndLfe`：多声道 Front=2 + LFE=1，对齐 0 bit，`comment_field_bytes` 偏移 8 字节，完整 118 个有序子节点断言通过；
+     - `decodesAscCase6AllMixdownPresent`：Mono/Stereo/Matrix 全部 mixdown 存在，对齐 3 bit，`comment_field_bytes` 偏移 8 字节，完整 119 个有序子节点断言通过；
+     - `decodesAscCase7MultichannelSideBackAssocCc`：Side/Back/Assoc/CC 全部存在，对齐 3 bit，`comment_field_bytes` 偏移 9 字节，完整 122 个有序子节点断言通过；
+     - `rejectsAscCase8NonzeroAlignmentBit`：填充位违规断言触发（`DiagnosticCode::InvalidSyntax`，`Field value violates @equals constraint`）；
+     - `rejectsAscCase9PrematureTruncation`：截断源错误断言触发（`DiagnosticCode::TruncatedSource`，`Unable to read complete syntax field`）；
+     - `bundledAacAdtsRuleResolvesAdtsWithoutRegression`：验证 `adts` 入口点解析与 ADTS 分析无回归；
+     - Red 验证：实测在旧版基数 31 错误公式下，Case 1 与 Case 4 对齐位数算错导致 `comment_field_bytes` 数值由 90 严重错位为 2，证实新测试为强有效信号；
+     - 本地 dev / ci / sanitize 三套构建全量 35/35 测试全部通过（ASan/UBSan 零告警，AAC analyzer 23/23，H.264 analyzer 174/174）。
+  Next Action 指向 Task T18（AAC raw data block 与 channel stream element 解码架构探索）。
