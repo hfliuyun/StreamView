@@ -485,7 +485,7 @@ private slots:
         QVERIFY(loaded.succeeded());
         QVERIFY(loaded.package.has_value());
         QCOMPARE(loaded.package->identity().packageId(), QStringLiteral("org.streamview.aac"));
-        QCOMPARE(loaded.package->identity().packageVersion(), QStringLiteral("0.1.1"));
+        QCOMPARE(loaded.package->identity().packageVersion(), QStringLiteral("0.1.2"));
 
         streamview::rules::RulePackageCatalog catalog;
         const auto reg = catalog.registerPackage(streamview::rules::RulePackage(*loaded.package));

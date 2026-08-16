@@ -16,7 +16,7 @@ enum AacChannelConfiguration {
     seven_one = 7;
 }
 
-@spec("ISO/IEC 14496-3:2019", "1.6.2.2")
+@spec("ISO/IEC 14496-3:2019", "1.A.1")
 @description("Audio Data Transport Stream (ADTS) fixed and variable header.")
 struct AdtsHeader {
     bits<12> syncword @equals(4095)
@@ -51,7 +51,7 @@ struct AdtsHeader {
         @description("Number of raw data blocks minus 1; 0 denotes single raw data block.");
     if (protection_absent == 0) {
         bits<16> crc_check
-            @spec("ISO/IEC 14496-3:2019", "1.6.2.2")
+            @spec("ISO/IEC 14496-3:2019", "1.A.2")
             @description("16-bit CRC error check word.");
     }
     computed<u64> minimum_frame_length =
