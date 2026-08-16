@@ -46,7 +46,7 @@ StreamView 实施计划阶段 4 规定了对 AAC-LC 音频（ISO/IEC 14496-3:201
 5. **DSL 体系中 Profile 报告能力的边界**：
    对 `src/rules/` 全仓审计确认，DSL 体系内目前不存在发出 `MaterializationState::Unsupported` 或 `DiagnosticCode::UnsupportedSyntax` 的机制：
    - `@enum` 违规是致命的（`DiagnosticCode::InvalidSyntax`，Severity: Error，`src/rules/dsl_vm.cpp:2782-2790`），会导致帧解码完全被拒绝而非非致命地报告不支持能力；
-   - 非连续取值集合（例如 AOT 2, 5, 29, 39）无法通过 `@range` 表达：`@range` 语法要求恰好两个整数参数（`src/rules/dsl.cpp:2560` / `src/rules/dsl_ir.cpp:185`），且单个字段上的重复 `@range` 注解会被拦截（`src/rules/dsl.cpp:2534` / `src/rules/dsl_ir.cpp:173`，`@range may appear at most once on a field`）；
+   - 非连续取值集合（例如 AOT 2, 5, 29, 39）无法通过 `@range` 表达：`@range` 语法要求恰好两个整数参数（`src/rules/dsl.cpp:2660` / `src/rules/dsl_ir.cpp:185`），且单个字段上的重复 `@range` 注解会被拦截（`src/rules/dsl.cpp:2634` / `src/rules/dsl_ir.cpp:173`，`@range may appear at most once on a field`）；
    - 在 ADTS 头中，2 位的 `profile` 字段（ISO/IEC 14496-3 表 1.A.1）仅能编码 0..3（Main, LC, SSR, LTP），无法直接编码 AOT 5 (SBR)、29 (PS) 或 39 (ELD)。标准广播码流中，ADTS 内传输的 HE-AAC 码流在 ADTS 头中一律声明 `profile = 1` (LC)，并在 `raw_data_block` 内部携带 SBR/PS 扩展。
 
 6. **未识别注解被静默忽略（N2）**：
@@ -174,8 +174,8 @@ clang++ -std=c++20     -Isrc/rules/include -Isrc/core/include     -I/opt/homebre
 | **P4: 15 字节截断帧映射** | 声明 20 字节但在 15 字节处截断（120 位映射） | `status=1 materialized=0, AdtsHeader state=5 diags=1: code=0 sev=2 msg="Lazy byte region exceeds the available source range"` | 载荷截断触发 VM 原生 Error 级 TruncatedSource。 |
 | **P5: 7 字节仅头部视图** | 20 字节 ADTS 帧在 56 位头部映射下执行 | `status=1 materialized=0, AdtsHeader state=5 diags=1: code=0 sev=2 msg="Lazy byte region exceeds the available source range"` | 证实当前执行器仅头部映射是真实阻塞项。 |
 | **P6: T18b 视图映射 No-Op 验证** | 现有官方 `AdtsHeader`（无 lazy）分别在 56 位、160 位与 120 位视图下执行 | 三种视图输出完全一致：`status=0 materialized=1` | 证实 T18b 单独修改视图映射对既有规则输出完全无影响。 |
-| **P7: 重复 @range 双闸门验证（N3）** | `bits<5> aot @range(0, 4) @range(23, 23);` | `diag code=14 msg="@range may appear at most once on a field"` | 证实单个字段不可并列多个 @range（`src/rules/dsl.cpp:2534` / `src/rules/dsl_ir.cpp:173`）。 |
-| **P8: 多参数 @range 双闸门验证（N3）** | `bits<5> aot @range(2, 5, 29, 39);` | `diag code=14 msg="@range requires two integer arguments"` | 证实 @range 无法接收非连续离散值（`src/rules/dsl.cpp:2560` / `src/rules/dsl_ir.cpp:185`）。 |
+| **P7: 重复 @range 双闸门验证（N3）** | `bits<5> aot @range(0, 4) @range(23, 23);` | `diag code=14 msg="@range may appear at most once on a field"` | 证实单个字段不可并列多个 @range（`src/rules/dsl.cpp:2634` / `src/rules/dsl_ir.cpp:173`）。 |
+| **P8: 多参数 @range 双闸门验证（N3）** | `bits<5> aot @range(2, 5, 29, 39);` | `diag code=14 msg="@range requires two integer arguments"` | 证实 @range 无法接收非连续离散值（`src/rules/dsl.cpp:2660` / `src/rules/dsl_ir.cpp:185`）。 |
 | **P9: 拼写错误注解验证（N2）** | `bits<12> syncword @equalss(4095);` 作用于错误码流（`syncword=255`） | 错拼：`status=0 materialized=1 diags=0`<br>正拼 `@equals`：`status=2 materialized=0 diags=1 msg="Field value violates @equals constraint"` | 证实未识别注解被静默忽略。 |
 
 ---

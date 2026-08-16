@@ -1677,6 +1677,7 @@ private:
         const DslSourcePosition start = consume().range.start;
         DslPayloadDispatch dispatch;
         dispatch.annotations = annotations;
+        validateAnnotations(dispatch.annotations, DslAnnotationTarget::PayloadDispatch);
         expect(DslTokenKind::Less, QStringLiteral("'<' after payload"));
         expectIdentifier(&dispatch.viewKind, QStringLiteral("payload view kind"));
         expect(DslTokenKind::Greater, QStringLiteral("'>' after payload view kind"));
@@ -1714,6 +1715,12 @@ private:
 
     void parseEntry(const std::vector<DslAnnotation>& annotations) {
         const DslSourcePosition start = consume().range.start;
+        if (!annotations.empty()) {
+            result_.diagnostics.push_back(
+                {DslDiagnosticCode::InvalidAnnotation,
+                 QStringLiteral("Entry declarations do not accept annotations"),
+                 annotations.front().range});
+        }
         DslEntry entry;
         entry.annotations = annotations;
         expectIdentifier(&entry.targetName, QStringLiteral("entry target"));
@@ -1736,8 +1743,7 @@ private:
     }
 
     void recoverField() {
-        while (!at(DslTokenKind::EndOfFile) && !at(DslTokenKind::RightBrace) &&
-               !match(DslTokenKind::Semicolon)) {
+        while (!at(DslTokenKind::EndOfFile) && !match(DslTokenKind::Semicolon)) {
             consume();
         }
     }
@@ -1766,15 +1772,109 @@ private:
         match(DslTokenKind::RightParen);
     }
 
-    void validatePresentationAnnotations(const std::vector<DslAnnotation>& annotations) {
+    enum class DslAnnotationTarget : quint32 {
+        BitField          = 1U << 0,
+        ComputedField     = 1U << 1,
+        LazyRegion        = 1U << 2,
+        CompressedPayload = 1U << 3,
+        Struct            = 1U << 4,
+        Enum              = 1U << 5,
+        Scan              = 1U << 6,
+        PayloadDispatch   = 1U << 7,
+    };
+
+    struct DslAnnotationDescriptor {
+        QStringView name;
+        quint32 allowedTargets;
+    };
+
+    static constexpr DslAnnotationDescriptor knownAnnotations[] = {
+        {u"spec",
+         static_cast<quint32>(DslAnnotationTarget::BitField) |
+             static_cast<quint32>(DslAnnotationTarget::ComputedField) |
+             static_cast<quint32>(DslAnnotationTarget::LazyRegion) |
+             static_cast<quint32>(DslAnnotationTarget::CompressedPayload) |
+             static_cast<quint32>(DslAnnotationTarget::Struct) |
+             static_cast<quint32>(DslAnnotationTarget::Enum) |
+             static_cast<quint32>(DslAnnotationTarget::Scan) |
+             static_cast<quint32>(DslAnnotationTarget::PayloadDispatch)},
+        {u"description",
+         static_cast<quint32>(DslAnnotationTarget::BitField) |
+             static_cast<quint32>(DslAnnotationTarget::ComputedField) |
+             static_cast<quint32>(DslAnnotationTarget::LazyRegion) |
+             static_cast<quint32>(DslAnnotationTarget::CompressedPayload) |
+             static_cast<quint32>(DslAnnotationTarget::Struct) |
+             static_cast<quint32>(DslAnnotationTarget::Enum) |
+             static_cast<quint32>(DslAnnotationTarget::Scan) |
+             static_cast<quint32>(DslAnnotationTarget::PayloadDispatch)},
+        {u"equals", static_cast<quint32>(DslAnnotationTarget::BitField)},
+        {u"range", static_cast<quint32>(DslAnnotationTarget::BitField)},
+        {u"enum", static_cast<quint32>(DslAnnotationTarget::BitField)},
+        {u"lazy", 0U}, // @lazy is a dedicated field introducer, not a general annotation
+        {u"index", static_cast<quint32>(DslAnnotationTarget::Scan)},
+        {u"context", static_cast<quint32>(DslAnnotationTarget::Struct)},
+        {u"context_export",
+         static_cast<quint32>(DslAnnotationTarget::BitField) |
+             static_cast<quint32>(DslAnnotationTarget::ComputedField)},
+        {u"context_import", static_cast<quint32>(DslAnnotationTarget::Struct)},
+        {u"context_dependency", static_cast<quint32>(DslAnnotationTarget::Struct)},
+        // Reserved for Task P5h: @target_format on LazyRegion.
+        {u"target_format", 0U},
+    };
+
+    void validateAnnotations(const std::vector<DslAnnotation>& annotations,
+                             DslAnnotationTarget host) {
         for (const DslAnnotation& annotation : annotations) {
+            const auto it = std::find_if(
+                std::begin(knownAnnotations),
+                std::end(knownAnnotations),
+                [&](const DslAnnotationDescriptor& desc) {
+                    return desc.name == annotation.name;
+                });
+            if (it == std::end(knownAnnotations)) {
+                result_.diagnostics.push_back(
+                    {DslDiagnosticCode::InvalidAnnotation,
+                     QStringLiteral("Unknown annotation '@%1'").arg(annotation.name),
+                     annotation.range});
+                continue;
+            }
+            const bool isAllowed = (it->allowedTargets & static_cast<quint32>(host)) != 0;
+            if (!isAllowed) {
+                if (host == DslAnnotationTarget::ComputedField) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidAnnotation,
+                         QStringLiteral(
+                             "Computed fields accept only @description, @spec, and @context_export"),
+                         annotation.range});
+                } else if (host == DslAnnotationTarget::LazyRegion) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidAnnotation,
+                         QStringLiteral("Lazy byte regions accept only @description and @spec"),
+                         annotation.range});
+                } else if (host == DslAnnotationTarget::CompressedPayload) {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidAnnotation,
+                         QStringLiteral(
+                             "Compressed payloads accept only @description and @spec"),
+                         annotation.range});
+                } else {
+                    result_.diagnostics.push_back(
+                        {DslDiagnosticCode::InvalidAnnotation,
+                         QStringLiteral("@%1 is not supported on this declaration")
+                             .arg(annotation.name),
+                         annotation.range});
+                }
+                continue;
+            }
+
             if (annotation.name == QStringLiteral("spec") &&
                 (annotation.arguments.size() != 2 ||
                  annotation.arguments.at(0).kind != DslAnnotationValueKind::String ||
                  annotation.arguments.at(1).kind != DslAnnotationValueKind::String)) {
                 result_.diagnostics.push_back(
                     {DslDiagnosticCode::InvalidAnnotation,
-                     QStringLiteral("@spec requires two string arguments"), annotation.range});
+                     QStringLiteral("@spec requires two string arguments"),
+                     annotation.range});
             }
             if (annotation.name == QStringLiteral("description") &&
                 (annotation.arguments.size() != 1 ||
@@ -2212,7 +2312,7 @@ private:
 
         for (std::size_t index = 0; index < result_.program.enums.size(); ++index) {
             const DslEnum& enumeration = result_.program.enums.at(index);
-            validatePresentationAnnotations(enumeration.annotations);
+            validateAnnotations(enumeration.annotations, DslAnnotationTarget::Enum);
             for (std::size_t previous = 0; previous < index; ++previous) {
                 if (enumeration.name == result_.program.enums.at(previous).name) {
                     result_.diagnostics.push_back({DslDiagnosticCode::DuplicateName,
@@ -2255,7 +2355,7 @@ private:
 
         for (std::size_t index = 0; index < result_.program.structs.size(); ++index) {
             const DslStruct& structure = result_.program.structs.at(index);
-            validatePresentationAnnotations(structure.annotations);
+            validateAnnotations(structure.annotations, DslAnnotationTarget::Struct);
             for (std::size_t previous = 0; previous < index; ++previous) {
                 if (structure.name == result_.program.structs.at(previous).name) {
                     result_.diagnostics.push_back({DslDiagnosticCode::DuplicateName,
@@ -2455,7 +2555,7 @@ private:
                 }
             };
             const auto validateFieldAnnotations = [&](const DslBitField& field) {
-                validatePresentationAnnotations(field.annotations);
+                validateAnnotations(field.annotations, DslAnnotationTarget::BitField);
                 bool equalsSeen = false;
                 bool rangeSeen = false;
                 bool enumSeen = false;
@@ -2657,45 +2757,14 @@ private:
             };
             const auto validateComputedAnnotations =
                 [&](const DslComputedField& field) {
-                    validatePresentationAnnotations(field.annotations);
-                    for (const DslAnnotation& annotation : field.annotations) {
-                        if (annotation.name != QStringLiteral("description") &&
-                            annotation.name != QStringLiteral("spec") &&
-                            annotation.name != QStringLiteral("context_export")) {
-                            result_.diagnostics.push_back(
-                                {DslDiagnosticCode::InvalidAnnotation,
-                                 QStringLiteral(
-                                     "Computed fields accept only @description, @spec, and "
-                                     "@context_export"),
-                                 annotation.range});
-                        }
-                    }
+                    validateAnnotations(field.annotations, DslAnnotationTarget::ComputedField);
                 };
             const auto validateLazyAnnotations = [&](const DslLazyRegion& region) {
-                validatePresentationAnnotations(region.annotations);
-                for (const DslAnnotation& annotation : region.annotations) {
-                    if (annotation.name != QStringLiteral("description") &&
-                        annotation.name != QStringLiteral("spec")) {
-                        result_.diagnostics.push_back(
-                            {DslDiagnosticCode::InvalidAnnotation,
-                             QStringLiteral("Lazy byte regions accept only @description and @spec"),
-                             annotation.range});
-                    }
-                }
+                validateAnnotations(region.annotations, DslAnnotationTarget::LazyRegion);
             };
             const auto validateCompressedPayloadAnnotations =
                 [&](const DslCompressedPayload& payload) {
-                    validatePresentationAnnotations(payload.annotations);
-                    for (const DslAnnotation& annotation : payload.annotations) {
-                        if (annotation.name != QStringLiteral("description") &&
-                            annotation.name != QStringLiteral("spec")) {
-                            result_.diagnostics.push_back(
-                                {DslDiagnosticCode::InvalidAnnotation,
-                                 QStringLiteral(
-                                     "Compressed payloads accept only @description and @spec"),
-                                 annotation.range});
-                        }
-                    }
+                    validateAnnotations(payload.annotations, DslAnnotationTarget::CompressedPayload);
                 };
             const auto containsField = [](const auto& self,
                                           const std::vector<DslStructItem>& items) -> bool {
@@ -3456,6 +3525,7 @@ private:
                                                QStringLiteral("Only h264_start_code and adts_frame are supported"),
                                                scan.range});
             }
+            validateAnnotations(scan.annotations, DslAnnotationTarget::Scan);
             bool progressive = false;
             for (const DslAnnotation& annotation : scan.annotations) {
                 if (annotation.name != QStringLiteral("index")) {

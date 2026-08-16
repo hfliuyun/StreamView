@@ -2167,6 +2167,77 @@ private slots:
         QVERIFY(!result.succeeded());
         QVERIFY(hasDiagnostic(result, DslDiagnosticCode::InvalidRbspTrailingBits));
     }
+
+    void rejectsUnrecognizedAnnotationsAndEnforcesHostWhitelist() {
+        // N2 bug fix verification:
+        const auto misspelledEquals = DslParser::parse(QStringLiteral(
+            "struct S { bits<12> syncword @equalss(4095); } entry S;"));
+        QVERIFY(!misspelledEquals.succeeded());
+        QVERIFY(hasDiagnostic(misspelledEquals, DslDiagnosticCode::InvalidAnnotation));
+
+        // 1. Leading scalar field annotation
+        const auto leadingFieldBogus = DslParser::parse(QStringLiteral(
+            "struct S { @bogus(1) bits<8> f; } entry S;"));
+        QVERIFY(!leadingFieldBogus.succeeded());
+        QVERIFY(hasDiagnostic(leadingFieldBogus, DslDiagnosticCode::InvalidAnnotation));
+
+        // 2. Trailing scalar field annotation
+        const auto trailingFieldBogus = DslParser::parse(QStringLiteral(
+            "struct S { bits<8> f @bogus(1); } entry S;"));
+        QVERIFY(!trailingFieldBogus.succeeded());
+        QVERIFY(hasDiagnostic(trailingFieldBogus, DslDiagnosticCode::InvalidAnnotation));
+
+        // 3. Struct declaration annotation
+        const auto structBogus = DslParser::parse(QStringLiteral(
+            "@bogus(1) struct S { bits<8> f; } entry S;"));
+        QVERIFY(!structBogus.succeeded());
+        QVERIFY(hasDiagnostic(structBogus, DslDiagnosticCode::InvalidAnnotation));
+
+        // 4. Enum declaration annotation
+        const auto enumBogus = DslParser::parse(QStringLiteral(
+            "@bogus(1) enum E { A = 0; } struct S { bits<8> f; } entry S;"));
+        QVERIFY(!enumBogus.succeeded());
+        QVERIFY(hasDiagnostic(enumBogus, DslDiagnosticCode::InvalidAnnotation));
+
+        // 5. Sequence declaration annotation
+        const auto sequenceBogus = DslParser::parse(QStringLiteral(
+            "@bogus(1) @index(progressive) sequence<S> stream = scan(h264_start_code); "
+            "struct S { bits<8> f; } entry stream;"));
+        QVERIFY(!sequenceBogus.succeeded());
+        QVERIFY(hasDiagnostic(sequenceBogus, DslDiagnosticCode::InvalidAnnotation));
+    }
+
+    void verifiesExistingWhitelistedHostsPreserveAllowedSetsAndDiagnostics() {
+        // Computed field rejects non-whitelisted annotations
+        const auto computedBogus = DslParser::parse(QStringLiteral(
+            "struct S { computed<u64> f = 1 @range(0, 10); } entry S;"));
+        QVERIFY(!computedBogus.succeeded());
+        QVERIFY(hasDiagnostic(computedBogus, DslDiagnosticCode::InvalidAnnotation));
+
+        // Lazy byte region rejects non-whitelisted annotations
+        const auto lazyBogus = DslParser::parse(QStringLiteral(
+            "struct S { @lazy(10) bytes b @range(0, 10); } entry S;"));
+        QVERIFY(!lazyBogus.succeeded());
+        QVERIFY(hasDiagnostic(lazyBogus, DslDiagnosticCode::InvalidAnnotation));
+
+        // Compressed payload rejects non-whitelisted annotations
+        const auto payloadBogus = DslParser::parse(QStringLiteral(
+            "struct S { compressed_payload p @range(0, 10); } entry S;"));
+        QVERIFY(!payloadBogus.succeeded());
+        QVERIFY(hasDiagnostic(payloadBogus, DslDiagnosticCode::InvalidAnnotation));
+
+        // Pure function rejects annotations
+        const auto pureBogus = DslParser::parse(QStringLiteral(
+            "@bogus(1) pure function u64 foo() { return 1; } struct S { bits<8> f; } entry S;"));
+        QVERIFY(!pureBogus.succeeded());
+        QVERIFY(hasDiagnostic(pureBogus, DslDiagnosticCode::InvalidAnnotation));
+
+        // Entry declaration rejects annotations
+        const auto entryBogus = DslParser::parse(QStringLiteral(
+            "@bogus(1) entry S; struct S { bits<8> f; }"));
+        QVERIFY(!entryBogus.succeeded());
+        QVERIFY(hasDiagnostic(entryBogus, DslDiagnosticCode::InvalidAnnotation));
+    }
 };
 
 QTEST_GUILESS_MAIN(DslTest)

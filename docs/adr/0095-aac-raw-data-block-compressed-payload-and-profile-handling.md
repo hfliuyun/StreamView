@@ -46,7 +46,7 @@ To establish deterministic facts prior to code modifications, the following tech
 5. **Profile Reporting Constraints in Current DSL**:
    Auditing `src/rules/` confirms that no mechanism currently exists in the DSL to emit `MaterializationState::Unsupported` or `DiagnosticCode::UnsupportedSyntax`:
    - `@enum` violation is fatal (`DiagnosticCode::InvalidSyntax`, Severity: Error, `src/rules/dsl_vm.cpp:2782-2790`), which would reject frame decoding rather than non-fatally reporting unsupported capability.
-   - Non-contiguous value sets (e.g. AOT 2, 5, 29, 39) cannot be expressed via `@range`: `@range` requires exactly two integer arguments (`src/rules/dsl.cpp:2560` / `src/rules/dsl_ir.cpp:185`) and duplicate `@range` annotations on a single field are rejected (`src/rules/dsl.cpp:2534` / `src/rules/dsl_ir.cpp:173`, `@range may appear at most once on a field`).
+   - Non-contiguous value sets (e.g. AOT 2, 5, 29, 39) cannot be expressed via `@range`: `@range` requires exactly two integer arguments (`src/rules/dsl.cpp:2660` / `src/rules/dsl_ir.cpp:185`) and duplicate `@range` annotations on a single field are rejected (`src/rules/dsl.cpp:2634` / `src/rules/dsl_ir.cpp:173`, `@range may appear at most once on a field`).
    - In ADTS headers, the 2-bit `profile` field (ISO/IEC 14496-3 Table 1.A.1) only encodes 0..3 (Main, LC, SSR, LTP); it cannot represent AOT 5 (SBR), 29 (PS), or 39 (ELD). In standard broadcast streams, HE-AAC streams in ADTS declare `profile = 1` (LC) in the ADTS header and convey SBR/PS extensions in-band inside `raw_data_block`.
 
 6. **Silent Ignorance of Unrecognized Annotations (N2)**:
@@ -174,8 +174,8 @@ clang++ -std=c++20     -Isrc/rules/include -Isrc/core/include     -I/opt/homebre
 | **P4: 15-byte Truncated Frame** | 20-byte declared ADTS frame cut to 15 bytes (120 bits mapping) | `status=1 materialized=0, AdtsHeader state=5 diags=1: code=0 sev=2 msg="Lazy byte region exceeds the available source range"` | Truncated payload triggers VM Error-level TruncatedSource. |
 | **P5: 7-byte Header-only View** | 20-byte ADTS frame evaluated against 56-bit header mapping | `status=1 materialized=0, AdtsHeader state=5 diags=1: code=0 sev=2 msg="Lazy byte region exceeds the available source range"` | Confirms current runner header-only view mapping is a blocker. |
 | **P6: T18b View Mapping No-Op** | Current official `AdtsHeader` (without lazy) against 56-bit, 160-bit, and 120-bit views | All three views output: `status=0 materialized=1` | Expanding view mapping in T18b is a safe no-op on existing rules. |
-| **P7: Duplicate @range Dual Gate (N3)** | `bits<5> aot @range(0, 4) @range(23, 23);` | `diag code=14 msg="@range may appear at most once on a field"` | Disproves multi-range syntax on a single field (`src/rules/dsl.cpp:2534` / `src/rules/dsl_ir.cpp:173`). |
-| **P8: Multi-arg @range Dual Gate (N3)** | `bits<5> aot @range(2, 5, 29, 39);` | `diag code=14 msg="@range requires two integer arguments"` | Confirms `@range` cannot accept non-contiguous sets (`src/rules/dsl.cpp:2560` / `src/rules/dsl_ir.cpp:185`). |
+| **P7: Duplicate @range Dual Gate (N3)** | `bits<5> aot @range(0, 4) @range(23, 23);` | `diag code=14 msg="@range may appear at most once on a field"` | Disproves multi-range syntax on a single field (`src/rules/dsl.cpp:2634` / `src/rules/dsl_ir.cpp:173`). |
+| **P8: Multi-arg @range Dual Gate (N3)** | `bits<5> aot @range(2, 5, 29, 39);` | `diag code=14 msg="@range requires two integer arguments"` | Confirms `@range` cannot accept non-contiguous sets (`src/rules/dsl.cpp:2660` / `src/rules/dsl_ir.cpp:185`). |
 | **P9: Misspelled Annotation Check (N2)** | `bits<12> syncword @equalss(4095);` on invalid stream (`syncword=255`) | Misspelled: `status=0 materialized=1 diags=0`<br>Correct `@equals`: `status=2 materialized=0 diags=1 msg="Field value violates @equals constraint"` | Demonstrates silent ignore of unknown annotations. |
 
 ---
