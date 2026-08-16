@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 4
 Last Completed Step: AudioSpecificConfig and Program Config Element structured decoding (Task T17c / commit d32d606)
 Next Action: AAC raw data block & channel stream element decoding exploration (Task T18)
-Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31900233536 (Ubuntu job 95049723785, macOS job 95049723689, Windows job 95049723728) passed 100%
+Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31928187049 (Ubuntu job 95118891822, macOS job 95118891810, Windows job 95118891801) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1583,5 +1583,6 @@ Blockers: None
      - `rejectsAscCase9PrematureTruncation`：截断源错误断言触发（`DiagnosticCode::TruncatedSource`，`Unable to read complete syntax field`）；
      - `bundledAacAdtsRuleResolvesAdtsWithoutRegression`：验证 `adts` 入口点解析与 ADTS 分析无回归；
      - Red 验证：实测在旧版基数 31 错误公式下，Case 1 与 Case 4 对齐位数算错导致 `comment_field_bytes` 数值由 90 严重错位为 2，证实新测试为强有效信号；
-     - 本地 dev / ci / sanitize 三套构建全量 35/35 测试全部通过（ASan/UBSan 零告警，AAC analyzer 23/23，H.264 analyzer 174/174）。
+     - 本地 dev / ci / sanitize 三套构建全量 35/35 测试全部通过（ASan/UBSan 零告警，AAC analyzer 23/23，H.264 analyzer 174/174）；
+     - hosted run 31928187049 在 Ubuntu 24.04 / Qt 6.11.1（job 95118891822）、macOS 15 / Qt 6.11.1（job 95118891810）、Windows 2022 / Qt 6.10.1（job 95118891801）全部成功通过。
   Next Action 指向 Task T18（AAC raw data block 与 channel stream element 解码架构探索）。
