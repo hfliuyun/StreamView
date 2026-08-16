@@ -1,24 +1,40 @@
 # cmake/check_markdown_hygiene.cmake
 # Markdown hygiene check script executed by CTest.
-# Validates that all repository markdown files contain no literal tab characters
+# Validates that all git-tracked markdown files contain no literal tab characters
 # and end with a trailing newline.
 
 if(NOT DEFINED PROJECT_SOURCE_DIR)
     message(FATAL_ERROR "PROJECT_SOURCE_DIR must be defined.")
 endif()
 
-file(GLOB_RECURSE MD_DOCS_FILES
-    LIST_DIRECTORIES false
-    "${PROJECT_SOURCE_DIR}/docs/*.md"
-    "${PROJECT_SOURCE_DIR}/*.md"
+execute_process(
+    COMMAND git ls-files "*.md"
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    OUTPUT_VARIABLE GIT_MD_OUTPUT
+    RESULT_VARIABLE GIT_RES
+    ERROR_QUIET
+    OUTPUT_STRIP_TRAILING_WHITESPACE
 )
+
+if(NOT GIT_RES EQUAL 0)
+    message(STATUS "git not available or repository not a git tree; skipping markdown hygiene check.")
+    return()
+endif()
+
+string(REPLACE ";" "\\[semicolon\\]" GIT_MD_OUTPUT_SAFE "${GIT_MD_OUTPUT}")
+string(REGEX REPLACE "\r?\n" ";" MD_FILES_LIST "${GIT_MD_OUTPUT_SAFE}")
 
 set(ERROR_COUNT 0)
 set(TAB_CHAR "\t")
 
-foreach(MD_FILE ${MD_DOCS_FILES})
-    # Skip build directories or external subtrees if matched
-    if(MD_FILE MATCHES "/build/" OR MD_FILE MATCHES "/\.git/")
+foreach(MD_REL_PATH ${MD_FILES_LIST})
+    string(REPLACE "\\[semicolon\\]" ";" MD_REL_PATH "${MD_REL_PATH}")
+    if(MD_REL_PATH STREQUAL "" OR MD_REL_PATH MATCHES "^third_party/")
+        continue()
+    endif()
+
+    set(MD_FILE "${PROJECT_SOURCE_DIR}/${MD_REL_PATH}")
+    if(NOT EXISTS "${MD_FILE}")
         continue()
     endif()
 
@@ -26,19 +42,18 @@ foreach(MD_FILE ${MD_DOCS_FILES})
 
     # 1. Check trailing newline
     if(NOT FILE_CONTENT MATCHES "\n$")
-        file(RELATIVE_PATH REL_PATH "${PROJECT_SOURCE_DIR}" "${MD_FILE}")
-        message(SEND_ERROR "${REL_PATH}: missing trailing newline at EOF")
+        message(SEND_ERROR "${MD_REL_PATH}: missing trailing newline at EOF")
         math(EXPR ERROR_COUNT "${ERROR_COUNT} + 1")
     endif()
 
-    # 2. Check literal tab characters line by line
-    string(REGEX REPLACE "\r?\n" ";" LINES "${FILE_CONTENT}")
+    # 2. Check literal tab characters line by line without semicolon list-splitting
+    string(REPLACE ";" "\\[semicolon\\]" FILE_CONTENT_SAFE "${FILE_CONTENT}")
+    string(REGEX REPLACE "\r?\n" ";" LINES "${FILE_CONTENT_SAFE}")
     set(LINE_NUM 1)
     foreach(LINE IN LISTS LINES)
         string(FIND "${LINE}" "${TAB_CHAR}" TAB_POS)
         if(NOT TAB_POS EQUAL -1)
-            file(RELATIVE_PATH REL_PATH "${PROJECT_SOURCE_DIR}" "${MD_FILE}")
-            message(SEND_ERROR "${REL_PATH}:${LINE_NUM}: contains literal tab character")
+            message(SEND_ERROR "${MD_REL_PATH}:${LINE_NUM}: contains literal tab character")
             math(EXPR ERROR_COUNT "${ERROR_COUNT} + 1")
         endif()
         math(EXPR LINE_NUM "${LINE_NUM} + 1")
