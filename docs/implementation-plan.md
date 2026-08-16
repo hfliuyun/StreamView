@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 5
 Last Completed Step: Bit-by-bit acceptance audit closure across Category 1-5 and Phase 4 completion (Task T18e)
 Next Action: Author Phase 5 ADR and architectural design for MP4/MOV container support
-Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings (AAC analyzer 28/28, H.264 174/174); hosted CI run 31941684357 (Ubuntu job 95151697094, macOS job 95151697041, Windows job 95151697136) passed 100%
+Last Verification: Local dev/ci/sanitize 36/36 passing with zero sanitizer warnings (AAC analyzer 31/31, H.264 174/174); hosted CI run 31942876801 (Ubuntu job 95154475938, macOS job 95154475965, Windows job 95154475927) passed 100%
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1757,7 +1757,7 @@ Blockers: None
      - 本地 dev/ci/sanitize 35/35 全绿（AAC 28/28，H.264 174/174）；
      - hosted CI run `31941684357` 在 Ubuntu 24.04 / Qt 6.11.1（job `95151697094`）、macOS 15 / Qt 6.11.1（job `95151697041`）、Windows 2022 / Qt 6.10.1（job `95151697136`）全部 100% 成功通过。
   Next Action 指向 Task T18e 主体（阶段 4 逐 bit 验收审计收尾与阶段推进）。
-- 2026-08-16：完成 T18e 主体逐 bit 验收审计收尾与阶段 4 闭环（任务 T18e / commit `TBD`）。
+- 2026-08-16：完成 T18e 主体逐 bit 验收审计收尾与阶段 4 闭环（任务 T18e / commit `1b5a161`）。
   1. ADR-0095 §6 五类缺口全量关闭：
      - **类别 1（ADTS 头部）**：通过 `decodesAdtsHeaderBitByBitRangesAndZeroLengthPayload`（`:2473-2600`）补齐全部 18/19 个字段值（含下标 8–11 `original_copy`、`home`、`copyright_identification_bit`、`copyright_identification_start`）、bit 偏移与长度断言，以及零长度载荷帧（`raw_data_block` 状态为 Materialized、长度 0、零诊断）覆盖；
      - **类别 2（ASC/PCE）**：通过 `decodesAscFieldRangesRepresentativeSampling`（`:2606-2677`）以抽样方式覆盖 ASC 头部（`audio_object_type`、`sampling_frequency_index`、`channel_configuration`）、GASpecificConfig（`frame_length_flag`、`depends_on_core_coder`、`extension_flag`）与 PCE（`element_instance_tag`、`object_type`、`comment_field_bytes`）的位置与长度断言；
