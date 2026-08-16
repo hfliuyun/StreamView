@@ -1093,7 +1093,9 @@ DslExecutionResult DslVirtualMachine::execute(
         result.errorMessage = message;
         core::ParseDiagnostic diagnostic;
         diagnostic.code = diagnosticForStatus(status);
-        diagnostic.severity = core::DiagnosticSeverity::Error;
+        diagnostic.severity = status == DslExecutionStatus::Unsupported
+                                  ? core::DiagnosticSeverity::Warning
+                                  : core::DiagnosticSeverity::Error;
         diagnostic.message = message;
         diagnostic.fieldPath = structure.name;
         quint64 requestedBits = 0;
