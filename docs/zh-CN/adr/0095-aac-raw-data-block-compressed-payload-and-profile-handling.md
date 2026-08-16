@@ -7,7 +7,7 @@
 
 ## 背景
 
-StreamView 实施计划阶段 4 规定了对 AAC-LC 音频（ISO/IEC 14496-3:2019, 第 5 版）的完整结构支持。在完成 ADTS 头结构化解码（ADR-0093，任务 T16）与 AudioSpecificConfig / Program Config Element 解码（ADR-0094，任务 T17c）之后，阶段 4 需完成最后三项目标（`docs/implementation-plan.md:196-198`）：
+StreamView 实施计划阶段 4 规定了对 AAC-LC 音频（ISO/IEC 14496-3:2019, 第 5 版）的完整结构支持。在完成 ADTS 头结构化解码（ADR-0093，任务 T16）与 AudioSpecificConfig / Program Config Element 解码（ADR-0094，任务 T17c）之后，阶段 4 需完成最后三项目标（`docs/implementation-plan.md:206-208`）：
 1. 将 `raw_data_block` 整体标记为压缩载荷区域，不隐藏实现 Huffman 解码；
 2. 形式化处理并报告 HE-AAC、ELD 及其他 AAC profile；
 3. 针对 ADTS 头部、ASC/PCE、截断码流、CRC 错误/存在性以及 profile 约束进行逐 bit 验收审计。
@@ -120,7 +120,7 @@ StreamView 实施计划阶段 4 规定了对 AAC-LC 音频（ISO/IEC 14496-3:201
 
 ### 6. 逐 bit 验收审计范围与覆盖矩阵（B1, C1, C3）
 
-实施计划阶段 4 第 5 项（`docs/implementation-plan.md:198`）要求针对五大类进行逐 bit 验收。
+实施计划阶段 4 第 5 项（`docs/implementation-plan.md:208`）要求针对五大类进行逐 bit 验收。
 
 #### 「CRC 错误/存在性」验收边界定死
 StreamView 规则不进行 CRC-16 多项式除法或算术校验和计算（正如在 DSL 中不做 Huffman 解码）。CRC 存在性/错误的验收标准定死为：
@@ -136,7 +136,7 @@ StreamView 规则不进行 CRC-16 多项式除法或算术校验和计算（正�
 | **2. ASC / PCE** | `tests/rules/aac_adts_analyzer_test.cpp:629-1865`（`decodesAscCase1`..`7`, `rejectsAscCase8NonzeroAlignmentBit`, `rejectsAscCase9PrematureTruncation`，覆盖 113–122 个有序子节点名称，以及有效用例中各 1 处 `comment_field_bytes` 的字节偏移与值断言 [:789, :953, :1117, :1287, :1452, :1619, :1789]）。 | 除 `comment_field_bytes` 外，所有 ASC/PCE 字段均缺失 `logicalRange()` / `bitOffset()` / `bitLength()` 断言。 |
 | **3. 码流截断** | `tests/rules/aac_adts_analyzer_test.cpp:290-323`（`handlesHeaderTruncationWithCrcPresent`）、`:325-365`（`handlesPayloadTruncationAtEof`）、`:379-475`（`materializesTruncatedTrailingFrameWhenRuleLacksPayloadDeclaration`）、`:477-500`（`handlesTrailingGarbageSmallerThanHeader`）、`:502-530`（`resynchronizesAcrossCorruptedByteSpan`）。 | 1. `handlesPayloadTruncationAtEof` 相关断言已在 T18c 中完成迁移。<br>2. 截断节点与诊断位置目前无 `logicalRange()` 显式断言。 |
 | **4. CRC 存在性/错误** | `tests/rules/aac_adts_analyzer_test.cpp:189-230`（`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl` 帧 1，包含 `crc_check` 字段名与值 `0x1234` 断言 [:229]）、`:290-323`（`handlesHeaderTruncationWithCrcPresent`）。 | `crc_check` 的 bit 偏移（bit 56..71）在当前全部测试中无显式断言。 |
-| **5. 不支持 Profile** | `tests/rules/aac_adts_analyzer_test.cpp:106-231`（`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`，验证 `profile = 1 (LC)` [:178]），`:629-1865`（ASC 各用例验证 AOT 2, 5, 29, 39 解析 GA 头部），`:1914-1958`（`decodesAllStandardAdtsProfilesMainLcSsrLtp`，验证 4 个标准 ADTS profile 0..3 均正常物化）。 | ADTS 负向测试在 2 bit 语法层不可构造（`bits<2>` 值域 0..3 完全被 `enum AacProfile` 覆盖）。ASC 非 GA AOT 正常物化基线头语法（见 §5 第 4 条闭环说明）。 |
+| **5. 不支持 Profile** | `tests/rules/aac_adts_analyzer_test.cpp:106-231`（`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`，验证 `profile = 1 (LC)` [:178]），`:1916-1958`（`decodesAllStandardAdtsProfilesMainLcSsrLtp`，验证 4 个标准 ADTS profile 0..3 均正常物化），`:1960-2128`（`decodesAscNonGaAot5Sbr`，AOT 5），`:2130-2298`（`decodesAscNonGaAot29ParametricStereo`，AOT 29），`:2300-2467`（`decodesAscNonGaAot39EnhancedLowDelay`，AOT 39）。 | ADTS 负向测试在 2 bit 语法层不可构造（`bits<2>` 值域 0..3 完全被 `enum AacProfile` 覆盖）。ASC 非 GA AOT 能够正常物化基线 GA 头部语法，因为 `aac_asc.svfmt:2` 无约束且 GA 字段无条件解析（AOT 5/29 布局与 AOT 2 逐 bit 相同；见 §5 第 4 条闭环说明）。 |
 
 ### 7. 阶段 4 任务切片与纪律规划
 
@@ -147,12 +147,12 @@ StreamView 规则不进行 CRC-16 多项式除法或算术校验和计算（正�
 - **任务 T18c**：规则消费 `@lazy raw_data_block`（`aac_adts.svfmt`），包版本升级至 `0.1.3`，测试套件更新；
 - **任务 T18c-2**：清理 `src/rules/aac_adts_analyzer.cpp:456-467` 死代码与可达性论证（执行器能力切片，不升版本）；
 - **任务 T18d**（当前任务）：Profile 处理验证与文档对齐；
-- **任务 T18e**：关闭类别 1、2、3、4、5 全部缺口、阶段 4 复选框全量勾选（`docs/implementation-plan.md:196-198`）、推进阶段至 Phase 5。
+- **任务 T18e**：关闭类别 1、2、3、4、5 全部缺口、阶段 4 复选框全量勾选（`docs/implementation-plan.md:206-208`）、推进阶段至 Phase 5。
 
 #### 测试引用防漂移纪律
 为防止因测试用例增删改导致文档中的测试行号引用漂移失效：
 1. **默认尾部追加**：新增测试用例默认一律追加至测试类的最末尾（已有用例的最后一个之后）。若有极充分理由必须在测试类中部插入，则必须在同一 commit 内全局检索并修正所有受影响文档中的行号引用。
-2. **同 Commit 行号复核**：任何修改或新增 `tests/` 中用例的 commit，必须在提交前使用 `grep -n` 全量核验所有引用该测试文件的文档行号，发现漂移即刻就地修正。
+2. **同 Commit 行号复核**：任何使被引用文件行号发生位移的 commit（含 `tests/` 与 `docs/` 自身），必须在提交前使用 `grep -n` 全量核验所有引用文档中的行号，发现漂移即刻就地修正。
 
 ---
 

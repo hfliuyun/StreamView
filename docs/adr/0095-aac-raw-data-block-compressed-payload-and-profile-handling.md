@@ -7,7 +7,7 @@
 
 ## Context
 
-Phase 4 of the StreamView implementation plan specifies full structural support for AAC-LC audio (ISO/IEC 14496-3:2019, Edition 5). Following the completion of ADTS header structured decoding (ADR-0093, Task T16) and AudioSpecificConfig / Program Config Element decoding (ADR-0094, Task T17c), Phase 4 requires completing three final milestones (`docs/implementation-plan.md:196-198`):
+Phase 4 of the StreamView implementation plan specifies full structural support for AAC-LC audio (ISO/IEC 14496-3:2019, Edition 5). Following the completion of ADTS header structured decoding (ADR-0093, Task T16) and AudioSpecificConfig / Program Config Element decoding (ADR-0094, Task T17c), Phase 4 requires completing three final milestones (`docs/implementation-plan.md:206-208`):
 1. Marking `raw_data_block` as a compressed payload region without performing Huffman decoding;
 2. Formally handling and reporting HE-AAC, ELD, and other AAC profiles;
 3. Conducting a bit-by-bit acceptance audit across ADTS headers, ASC/PCE, truncated streams, CRC error/presence, and profile constraints.
@@ -120,7 +120,7 @@ In `src/rules/aac_adts_analyzer.cpp`, the legacy synthetic warning branch for pa
 
 ### 6. Bit-by-Bit Acceptance Audit Scope and Coverage Matrix (B1, C1, C3)
 
-Phase 4 Item 5 (`docs/implementation-plan.md:198`) requires bit-by-bit verification across five distinct categories.
+Phase 4 Item 5 (`docs/implementation-plan.md:208`) requires bit-by-bit verification across five distinct categories.
 
 #### Definition of "CRC Error / Presence" Acceptance Boundary
 StreamView rules do NOT perform CRC-16 polynomial division or arithmetic checksum calculation (just as Huffman decoding is not performed in DSL). The acceptance criteria for CRC error / presence are bounded to:
@@ -136,7 +136,7 @@ StreamView rules do NOT perform CRC-16 polynomial division or arithmetic checksu
 | **2. ASC / PCE** | `tests/rules/aac_adts_analyzer_test.cpp:629-1865` (`decodesAscCase1`..`7`, `rejectsAscCase8NonzeroAlignmentBit`, `rejectsAscCase9PrematureTruncation`, verifying 113–122 ordered child node names, and one `comment_field_bytes` byte offset and value assertion per valid case at :789, :953, :1117, :1287, :1452, :1619, :1789). | All ASC/PCE fields except `comment_field_bytes` lack `logicalRange()` / `bitOffset()` / `bitLength()` assertions. |
 | **3. Stream Truncation** | `tests/rules/aac_adts_analyzer_test.cpp:290-323` (`handlesHeaderTruncationWithCrcPresent`), `:325-365` (`handlesPayloadTruncationAtEof`), `:379-475` (`materializesTruncatedTrailingFrameWhenRuleLacksPayloadDeclaration`), `:477-500` (`handlesTrailingGarbageSmallerThanHeader`), `:502-530` (`resynchronizesAcrossCorruptedByteSpan`). | 1. `handlesPayloadTruncationAtEof` assertions migrated in T18c.<br>2. No tests assert `logicalRange()` on truncated frame nodes or diagnostics. |
 | **4. CRC Presence / Errors** | `tests/rules/aac_adts_analyzer_test.cpp:189-230` (`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl` Frame 1, asserting `crc_check` name at index 15 and value `0x1234` at line 229), `:290-323` (`handlesHeaderTruncationWithCrcPresent`). | Bit offset assertion for `crc_check` (bit 56..71) is absent across all tests. |
-| **5. Unsupported Profiles** | `tests/rules/aac_adts_analyzer_test.cpp:106-231` (`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`, asserting `profile = 1 (LC)` at line 178), `:629-1865` (ASC cases testing AOT 2, 5, 29, 39 parsing GA header), `:1914-1958` (`decodesAllStandardAdtsProfilesMainLcSsrLtp`, verifying clean AST materialization across all 4 standard ADTS profiles 0..3). | Out-of-range negative tests are unconstructible in 2-bit ADTS syntax because `bits<2>` domain ($0..3$) is fully covered by `enum AacProfile`. Non-GA AOTs in ASC parse baseline headers cleanly (closed via §5 Item 4). |
+| **5. Unsupported Profiles** | `tests/rules/aac_adts_analyzer_test.cpp:106-231` (`createsAnalyzerFromBundledPackageAndDecodesFieldsViaDsl`, asserting `profile = 1 (LC)` at line 178), `:1916-1958` (`decodesAllStandardAdtsProfilesMainLcSsrLtp`, verifying clean AST materialization across all 4 standard ADTS profiles 0..3), `:1960-2128` (`decodesAscNonGaAot5Sbr`, AOT 5), `:2130-2298` (`decodesAscNonGaAot29ParametricStereo`, AOT 29), `:2300-2467` (`decodesAscNonGaAot39EnhancedLowDelay`, AOT 39). | Out-of-range negative tests are unconstructible in 2-bit ADTS syntax because `bits<2>` domain ($0..3$) is fully covered by `enum AacProfile`. Non-GA AOTs in ASC parse baseline GA headers cleanly because `aac_asc.svfmt:2` is unconstrained and GA fields parse unconditionally (AOT 5 and 29 bit layout is identical to AOT 2; closed via §5 Item 4). |
 
 ### 7. Phase 4 Task Slicing and Discipline
 
@@ -147,12 +147,12 @@ To uphold strict single-responsibility commits and keep capability changes separ
 - **Task T18c**: Rule consumption of `@lazy raw_data_block` in `aac_adts.svfmt`, package version bump to `0.1.3`, test suite updates.
 - **Task T18c-2**: Dead code removal in `src/rules/aac_adts_analyzer.cpp:456-467` with reachability rationale (runner capability slice, no version bump).
 - **Task T18d** (Current): Profile handling verification & documentation alignment.
-- **Task T18e**: Bit-by-bit audit closing all gaps in Category 1, 2, 3, 4, and 5, Phase 4 checkbox completion (`docs/implementation-plan.md:196-198`), Phase advancement to Phase 5.
+- **Task T18e**: Bit-by-bit audit closing all gaps in Category 1, 2, 3, 4, and 5, Phase 4 checkbox completion (`docs/implementation-plan.md:206-208`), Phase advancement to Phase 5.
 
 #### Anti-Recurrence Discipline for Test Citations
 To prevent documentation line citation drift when modifying test suites:
 1. **Append-by-Default**: New test methods must be appended to the end of the test class by default (after the last existing test case). If middle insertion is strictly required, all affected downstream document line number citations across all ADRs and implementation plans must be audited and updated within the same commit.
-2. **Same-Commit Line Audit**: Any commit modifying or adding test cases in `tests/` must run `grep -n` against all documentation referencing that test file and reconcile any drifted line numbers in the same commit.
+2. **Same-Commit Line Audit**: Any commit causing line number displacement in referenced files (including `tests/` and `docs/` themselves) must run `grep -n` against all documentation citations and reconcile all drifted line numbers in the same commit.
 
 ---
 

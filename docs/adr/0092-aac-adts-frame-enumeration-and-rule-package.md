@@ -127,7 +127,7 @@ ADTS stream parsing employs a hybrid length-chain stepping and resynchronization
 - **Task T15b**: ADTS analyzer runner and application integration slice (`AacAdtsAnalyzer`, `detectAacAdtsCandidate`, `AnalysisSession` polymorphic format selection, tests covering H.264 zero regression / AAC source correct selection / unknown source behavior unchanged / `resolvedRule` dual paths).
 - **Task T16**: Rule package creation (`org.streamview.aac` v0.1.0) and ADTS header structured decoding (ADR-0093).
 - **Task T17**: AudioSpecificConfig (ASC) and GASpecificConfig structured decoding (v0.1.1, ADR-0094).
-- **Task T18**: Program Config Element (PCE) and unsupported profile diagnostics (v0.1.2, ADR-0095).
+- **Task T18**: Raw data block payload encapsulation and profile capability boundary closure (v0.1.3, ADR-0095; superseded original scope, see Amendment).
 
 ## References
 

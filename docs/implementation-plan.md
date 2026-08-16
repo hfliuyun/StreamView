@@ -26,7 +26,7 @@ Blockers: None
 4. struct 名称、条款号、测试名与 file:line 必须逐字核对仓库或规范原文，并附核对证据；
 5. 每个任务经评审后才派发下一个任务；
 6. 新增测试用例默认追加到测试类末尾；若必须中部插入，同一 commit 内修正所有受影响的文档行号引用；
-7. 任何改动 tests/ 的 commit，提交前用 grep -n 全量复核该文件在文档中的行号引用，发现漂移即修正。
+7. 任何使被引用文件行号发生位移的 commit（含 tests/ 与 docs/ 自身），提交前用 grep -n 全量复核所有引用文档中的行号，发现漂移即修正。
 
 ## 架构与接口
 
@@ -204,7 +204,7 @@ Blockers: None
 - [x] 解析 ADTS fixed/variable header、frame length、buffer fullness、raw block count 和 CRC。
 - [x] 解析 AudioSpecificConfig、GASpecificConfig 和 Program Config Element。（验收：ADR-0094 9 项测试矩阵 + resolvesAscEntryPointFromBundledRulePackage，本地 dev/ci/sanitize 35/35，hosted run 31928187049 全平台通过）
 - [ ] 将 `raw_data_block` 整体标记为压缩载荷，不隐藏实现 Huffman 解码。
-- [x] 对 HE-AAC、ELD 和其他 profile 明确报告部分识别或不支持。（验收：ADR-0095 §5 明确能力边界闭环，ADTS 0..3 与 ASC 5/29/39 实测钉住，未来非致命上报机制顺延至独立能力切片）
+- [x] 对 HE-AAC、ELD 和其他 profile 明确报告部分识别或不支持。（验收：ADR-0095 §5 明确能力边界闭环；ADTS 0..3 经 tests/rules/aac_adts_analyzer_test.cpp:1916-1958 实测钉住；ASC AOT 5/29/39 分别经 :1960-2128、:2130-2298、:2300-2467 实测钉住；未来非致命上报机制顺延至独立能力切片）
 - [ ] 验证 ADTS、ASC、截断、CRC 错误和不支持 profile 的逐 bit 结果。
 
 ## 阶段 5：非分片 MP4/MOV 与跨层导航
@@ -1728,7 +1728,7 @@ Blockers: None
   Next Action 指向 Task T18d（Profile 处理验证与全库路线图文档对齐）。
 - 2026-08-16：完成 Profile 处理验证、Phase 4 第 4 项能力边界闭环、路线图对齐与纪律条款集中归拢（任务 T18d / commit `835a5c3`）。
   1. Profile 处理现状实测与能力边界闭环（Phase 4 第 4 项勾选）：
-     - 验证 ADTS 2-bit profile 字段（0=Main, 1=LC, 2=SSR, 3=LTP）全部合法物化（新增用例 `decodesAllStandardAdtsProfilesMainLcSsrLtp`，`tests/rules/aac_adts_analyzer_test.cpp:1914-1958`）；
+     - 验证 ADTS 2-bit profile 字段（0=Main, 1=LC, 2=SSR, 3=LTP）全部合法物化（新增用例 `decodesAllStandardAdtsProfilesMainLcSsrLtp`，`tests/rules/aac_adts_analyzer_test.cpp:1916-1958`）；
      - 明确 ADTS 负向测试在 2-bit 语法层不可构造（`bits<2>` 值域 0..3 恰好被 `enum AacProfile` 全覆盖）；
      - 明确 ASC 非 GA AOT（HE-AAC SBR=5, PS=29 及 AAC-ELD=39）正常物化 GA 基线头部语法；
      - 明确判定 StreamView v0.1 不提供非致命 profile 不支持上报机制，Phase 4 第 4 项在此以「能力边界已记录且有测试钉住」正式闭环，未来非致命不支持诊断机制顺延至独立语言/内核切片。
@@ -1738,6 +1738,6 @@ Blockers: None
      - 在实施计划头部「## 执行规则」下建立「### 纪律条款」小节，集中归拢 7 条全局执行规范；
      - 修正 T18c-2-fix2 记录中占位符，替换为真实 commit `4b8dd2c`。
   4. 测试与验证：
-     - 新增测试用例按纪律第 6 条追加至类末尾（`:1914-1958`），前序所有 24 个用例行号零位移；
+     - 新增测试用例按纪律第 6 条追加至类末尾（`:1916-1958`），前序所有 24 个用例行号零位移；
      - 本地 dev/ci/sanitize 35/35 全绿，AAC analyzer 25/25，H.264 analyzer 174/174。
   Next Action 指向 Task T18e（阶段 4 逐 bit 验收审计收尾与阶段推进）。

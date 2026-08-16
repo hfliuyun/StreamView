@@ -127,7 +127,7 @@ ADTS 码流解析采用“长度链快速推进 + 状态机重同步”的混合
 - **任务 T15b**：ADTS 分析执行器与应用集成切片（`AacAdtsAnalyzer`、`detectAacAdtsCandidate`、`AnalysisSession` 多态选择，测试覆盖 H.264 零回归 / AAC 源正确选择 / 未知源行为不变 / `resolvedRule` 双路径）。
 - **任务 T16**：规则包创建（`org.streamview.aac` v0.1.0）与 ADTS 头部结构化解码（ADR-0093）。
 - **任务 T17**：AudioSpecificConfig (ASC) 与 GASpecificConfig 结构化解码（v0.1.1, ADR-0094）。
-- **任务 T18**：Program Config Element (PCE) 与非 LC Profile 诊断（v0.1.2, ADR-0095）。
+- **任务 T18**：raw_data_block 压缩载荷封装与 Profile 能力边界闭环（v0.1.3，ADR-0095；已取代原规划，见附录修订）。
 
 ## 参考文档
 
