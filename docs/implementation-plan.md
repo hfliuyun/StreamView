@@ -2,7 +2,7 @@
 
 Status: In Progress
 Current Phase: 4
-Last Completed Step: AAC raw data block and profile handling exploration & bilingual ADR-0095 (Task T18a)
+Last Completed Step: ADR-0095 audit reconciliation and specification hardening (Task T18a-fix)
 Next Action: Update AAC ADTS analyzer runner view mapping to frame span (Task T18b)
 Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings; hosted CI run 31930252331 (Ubuntu job 95123835282, macOS job 95123835271, Windows job 95123835269) passed 100%
 Blockers: None
@@ -1626,4 +1626,19 @@ Blockers: None
      - 探针全面验证 DSL 侧不支持 Profile 的能力现状：`@enum` 违规为致命错误，`@range` 仅支持单段连续区间，ADTS 2-bit profile 无法表示 AOT 5/29/39；正式确认 ASC 非 GA AOT 解析 GA 基础头为已知且受控的已记录能力边界。
   3. 文档引用同步维护：
      - 同步修正 `docs/adr/0093-*.md` 与 `docs/zh-CN/adr/0093-*.md` 第 17 行 `raw_data_block` 条款号归属并在文末更正小节追加说明。
+  Next Action 指向 Task T18b（更新 AAC ADTS 分析器执行器视图映射至帧跨度）。
+- 2026-08-16：完成 ADR-0095 审计整改与规范强化（任务 T18a-fix）。
+  1. ADR-0095 逐 bit 验收审计独立小节落盘（B1）：
+     - 在双语 ADR-0095 中正式建立「逐 bit 验收审计范围与覆盖矩阵」独立小节，将 5 大类别（ADTS 头、ASC-PCE、截断、CRC 存在性、Profile）的既有覆盖与缺口清单逐条精确引用至 `file:line`；
+     - 纠正 ADTS 头部覆盖误述：明确指出 ADTS 头部目前尚无 `logicalRange()` / `bitOffset()` 断言，且下标 8–11 字段（`original_copy`、`home`、`copyright_identification_bit`、`copyright_identification_start`）缺失数值断言，将其列为 T18e 明确补齐项；
+     - 定死 CRC 存在性与错误的验收语义边界：明确 DSL 不做 CRC-16 多项式除法计算，验收边界严格限定为 `protection_absent == 0` 时物化 bit 56..71 的 `crc_check` 字段、`== 1` 时省略、以及不足 9 字节时报 `TruncatedSource`。
+  2. 规则字段精简与条款号自洽（B2, N1, N4）：
+     - 消除冗余计算字段：复用既有 `minimum_frame_length` 表达式，直接计算 `raw_data_block_bytes = aac_frame_length - minimum_frame_length`，消除 `header_bytes`，子节点数精简至 18（无 CRC）/ 19（含 CRC）；
+     - 条款号自洽：`raw_data_block` 标注严格对齐 Subpart 4 子条款 `@spec("ISO/IEC 14496-3:2019", "4.5.2.1")`，与定义固定/可变头的 `1.A.1` 彻底解耦；ADR-0093 更正小节同步澄清此前 4.5.2.1.1 笔误。
+  3. 未识别注解行为记录与复现指令规范（B3, B4, N2, N3, N5）：
+     - 修正中文版 `docs/zh-CN/format-language/README.md:443-445` 行号引用；
+     - 验证矩阵提供基于独立 C++ 探针的完整复现编译命令与代码构造说明（B4 方案 b）；
+     - 探针直接证明 `@range` 无法表达非连续集合（重复 `@range` 被编译器拒绝，多参数 `@range` 被语法分析器拒绝；N3）；
+     - 实测并正式记录「未识别注解被静默忽略导致约束失效」现象（N2），作为未来语言闸门强化的候选事项上报；
+     - 补齐 Task T18c 测试套件迁移清单（`aac_adts_analyzer_test.cpp:143-170`, `:193-220`, `:114`, `:210`, `:321-361`；N5）。
   Next Action 指向 Task T18b（更新 AAC ADTS 分析器执行器视图映射至帧跨度）。

@@ -177,7 +177,7 @@ Rule OK: scratch/probe_t16_adts.svfmt
 后续规范审查（任务 T17d）厘清了 ISO/IEC 14496-3:2019（第 5 版）的子条款归属：
 1. `adts_fixed_header` 与 `adts_variable_header` 规范定义位于第 1 部分附录 1.A 的子条款 **1.A.1**（*Fixed and variable header of ADTS*），而非子条款 1.6.2.1（后者为 `AudioSpecificConfig`）；
 2. `adts_error_check`（`crc_check`）规范定义位于第 1 部分附录 1.A 的子条款 **1.A.2**（*Error detection*）。
-3. `adts_raw_data_block` 编排归属于第 1 部分附录 1.A（ADTS 传输），语法定义归属于第 4 部分子条款 **4.5.2.1**（*raw_data_block* / *Syntactic elements*）。
+3. `adts_raw_data_block` 编排归属于第 1 部分附录 1.A（ADTS 传输），语法定义归属于第 4 部分子条款 **4.5.2.1**（*raw_data_block* / *Syntactic elements*）；此前修订草案曾误记 4.5.2.1.1，现澄清为子条款 4.5.2.1。
 
 正文表述与参考资料已同步更正。
 

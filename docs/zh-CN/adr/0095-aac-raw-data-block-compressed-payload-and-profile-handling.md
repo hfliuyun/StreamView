@@ -14,57 +14,64 @@ StreamView 实施计划阶段 4 规定了对 AAC-LC 音频（ISO/IEC 14496-3:201
 
 ### 探测实测结论
 
-为确保严密的架构设计，通过独立探针建立了以下技术事实：
+为在修改代码前确立确定性事实，通过独立探针验证了以下技术观察：
 
-1. **DSL 语法表达能力（无需新增语言能力）**：
-   在 `src/rules/official/org.streamview.aac/src/aac_adts.svfmt` 的 `AdtsHeader` 末尾追加：
+1. **DSL 语法表达能力与最小字段足迹（N1）**：
+   在 `src/rules/official/org.streamview.aac/src/aac_adts.svfmt` 中，`AdtsHeader` 已声明：
    ```dsl
-   computed<u64> header_bytes = (protection_absent == 1) * 7 + (protection_absent == 0) * 9;
-   computed<u64> raw_data_block_bytes = aac_frame_length - header_bytes;
+   computed<u64> minimum_frame_length = (protection_absent == 1) * 7 + (protection_absent == 0) * 9;
+   assert(aac_frame_length >= minimum_frame_length) at aac_frame_length;
+   ```
+   直接复用 `minimum_frame_length` 追加 lazy 字节区域：
+   ```dsl
+   computed<u64> raw_data_block_bytes = aac_frame_length - minimum_frame_length;
    @lazy(raw_data_block_bytes) bytes raw_data_block
-       @spec("ISO/IEC 14496-3:2019", "1.A.1")
+       @spec("ISO/IEC 14496-3:2019", "4.5.2.1")
        @description("Raw audio data payload block.");
    ```
-   经 `svtool rule check` 实测通过（`Rule OK`，rc=0）。条件 `crc_check` 为 16 位，严格保持字节对齐；且 `@lazy` 区域位于 `AdtsHeader` 结构末尾、其后无字段，不触发保守对齐拒绝规则（`docs/zh-CN/format-language/README.md:578-582`）。
+   经 `svtool rule check` 实测通过（`Rule OK`，rc=0）。复用 `minimum_frame_length` 避免了引入冗余的 `header_bytes` 计算节点，且避免了 7/9 头部大小公式的双重维护。条件 `crc_check`（16 位）严格保持字节对齐，且 `@lazy` 位于结构末尾，完全符合 `docs/zh-CN/format-language/README.md:443-445` 中的字节边界对齐规则。
 
-2. **分析器视图映射为真实阻塞项**：
+2. **分析器视图映射为真实阻塞项与 T18b 独立性**：
    `src/rules/aac_adts_analyzer.cpp:346` 当前构造的 `SourceMapping` 仅覆盖 `*record.headerSpan`（7 或 9 字节）。当 `AdtsHeader` 包含 `@lazy(raw_data_block_bytes)` 时，以 20 字节真实 ADTS 帧在 7 字节头部视图下执行，会在 `src/rules/dsl_vm.cpp:3143` 失败并报 `DslExecutionStatus::TruncatedSource` 与诊断 `Lazy byte region exceeds the available source range`。
-   当源映射扩展至完整帧跨度（`*record.frameSpan`，20 字节）时，DSL VM 成功物化该帧，`raw_data_block` 处于 `MaterializationState::Lazy` 状态（比特偏移 56，比特长度 104）。
+   当源映射扩展至完整帧跨度（`*record.frameSpan`，20 字节）时，DSL VM 成功物化该帧，`raw_data_block` 处于 `MaterializationState::Lazy` 状态（无 CRC 时比特偏移 56，长度 104；有 CRC 时比特偏移 72，长度 88）。
+   至关重要的是，将执行器源映射扩展为 `*record.frameSpan` 对当前官方规则包（未包含 lazy 载荷的 `org.streamview.aac` 0.1.2）是严格的 no-op：7 字节头视图、20 字节整帧视图与 15 字节截断视图均完全一致地产出 `status=0 materialized=1`。
 
-3. **截断语义契约转移**：
+3. **截断语义契约转移与统一**：
    当 ADTS 帧在文件尾发生截断（例如声明 20 字节但在文件中仅有 15 字节）时，DSL VM 在注册 lazy 区域时命中 `bitCount > reader.remainingBits()`（`src/rules/dsl_vm.cpp:3140-3149`），发出 Error 级别的 `DslExecutionStatus::TruncatedSource`。
-   该行为将取代原先在 C++ 层面合成的 Warning 级诊断（`ADTS frame payload is truncated at EOF`，`src/rules/aac_adts_analyzer.cpp:456-467`），需同步更新 `tests/rules/aac_adts_analyzer_test.cpp:321-361` 中的测试断言。
+   该行为将取代原先在 C++ 层面合成的 Warning 级诊断（`ADTS frame payload is truncated at EOF`，`src/rules/aac_adts_analyzer.cpp:456-467`），使 ADTS 截断契约与全库统一的 DSL VM 截断契约（ADR-0092 §1.3）彻底对齐。
 
 4. **下溢防御机制**：
    若损坏帧声明 `aac_frame_length < 7`（或含 CRC 时 `< 9`），既有断言 `assert(aac_frame_length >= minimum_frame_length)` 会在 lazy 载荷求值前被执行，以 `InvalidSyntax`（`Assertion condition is false`）终止，防止发生负数/下溢的 lazy 字节分配。
 
-5. **DSL 侧不支持 Profile 的报告机制现状**：
+5. **DSL 体系中 Profile 报告能力的边界**：
    对 `src/rules/` 全仓审计确认，DSL 体系内目前不存在发出 `MaterializationState::Unsupported` 或 `DiagnosticCode::UnsupportedSyntax` 的机制：
-   - `@enum` 违规是致命的（`DiagnosticCode::InvalidSyntax`，Severity: Error），会导致帧解码完全被拒绝；
-   - `@range(min, max)` 仅支持单段连续区间，无法表达非连续 profile ID（例如 AOT 2, 5, 29, 39）；
-   - 在 ADTS 中，2 位的 `profile` 字段（表 1.A.1）仅能编码 0..3（Main, LC, SSR, LTP），无法直接编码 AOT 5 (SBR)、29 (PS) 或 39 (ELD)。实际广播码流中，ADTS 内传输的 HE-AAC 码流在 ADTS 头中一律声明 `profile = 1` (LC)，并在 `raw_data_block` 内部携带 SBR/PS 扩展。
+   - `@enum` 违规是致命的（`DiagnosticCode::InvalidSyntax`，Severity: Error，`src/rules/dsl_vm.cpp:2782-2799`），会导致帧解码完全被拒绝而非非致命地报告不支持能力；
+   - 非连续取值集合（例如 AOT 2, 5, 29, 39）无法通过 `@range` 表达：`@range` 语法要求恰好两个整数参数（`src/rules/dsl.cpp:2560` / `src/rules/dsl_ir.cpp:183`），且单个字段上的重复 `@range` 注解会被编译器拦截（`src/rules/dsl.cpp:2534` / `src/rules/dsl_ir.cpp:173`，`@range may appear at most once on a field`）；
+   - 在 ADTS 头中，2 位的 `profile` 字段（ISO/IEC 14496-3 表 1.A.1）仅能编码 0..3（Main, LC, SSR, LTP），无法直接编码 AOT 5 (SBR)、29 (PS) 或 39 (ELD)。标准广播码流中，ADTS 内传输的 HE-AAC 码流在 ADTS 头中一律声明 `profile = 1` (LC)，并在 `raw_data_block` 内部携带 SBR/PS 扩展。
+
+6. **未识别注解被静默忽略（N2）**：
+   探测发现 `DslCompiler`（`src/rules/dsl_ir.cpp`）校验了已知注解（`@equals`, `@range`, `@enum`, `@spec`, `@description`, `@context_export`），但在已声明 bit 字段上会静默忽略未识别注解。例如 `bits<12> syncword @equalss(4095);` 可正常通过 `Rule OK` 编译，且对错误码流（`syncword=255`）执行产出 `status=Materialized`、`materialized=1`、`diags=0`；而拼写正确的 `@equals(4095)` 正确发出 `InvalidSyntax` / `Field value violates @equals constraint`。该行为在此如实记录并作为语言闸门强化的候选事项上报。
 
 ---
 
 ## 决策
 
-### 1. `raw_data_block` 规范条款号归属
+### 1. `raw_data_block` 规范条款号归属（B2, N4）
 
 依据 ISO/IEC 14496-3:2019（第 5 版）：
-- **ADTS 载荷编排归属**：第 1 部分附录 1.A 子条款 **1.A.1**（*Fixed and variable header of ADTS*）及表 1.A.5（`adts_frame()`）；
-- **Raw Data Block 语法定义**：第 4 部分（General Audio）子条款 **4.5.2.1**（*raw_data_block* / *Syntactic elements*）。
+- **ADTS 载荷编排归属**：第 1 部分附录 1.A 子条款 **1.A.1**（*Fixed and variable header of ADTS*）及表 1.A.5（`adts_frame()`），其中 `adts_frame()` 依次编排 `adts_fixed_header()`、`adts_variable_header()`、可选 `adts_error_check()` 以及 `raw_data_block()`；
+- **Raw Data Block 语法定义**：第 4 部分（General Audio）子条款 **4.5.2.1**（*raw_data_block* / *Syntactic elements*），定义了 `raw_data_block()` 的语法元素组成（SCE、CPE、LFE、DSE、PCE、FIL、TERM）。
 
-在 `aac_adts.svfmt` 规则中，`@lazy(raw_data_block_bytes) bytes raw_data_block` 标注为子条款 `1.A.1`。
+为保持严格的标准准确性，`raw_data_block` 字段分配 `@spec("ISO/IEC 14496-3:2019", "4.5.2.1")`，以清晰区分载荷自身的语法定义与 `1.A.1` 固定/可变头条款。
 
-### 2. `raw_data_block` DSL 规则定义
+### 2. `raw_data_block` DSL 规则定义（N1）
 
 在 `src/rules/official/org.streamview.aac/src/aac_adts.svfmt` 的 `AdtsHeader` 结构末尾追加以下字段定义：
 
 ```dsl
-    computed<u64> header_bytes = (protection_absent == 1) * 7 + (protection_absent == 0) * 9;
-    computed<u64> raw_data_block_bytes = aac_frame_length - header_bytes;
+    computed<u64> raw_data_block_bytes = aac_frame_length - minimum_frame_length;
     @lazy(raw_data_block_bytes) bytes raw_data_block
-        @spec("ISO/IEC 14496-3:2019", "1.A.1")
+        @spec("ISO/IEC 14496-3:2019", "4.5.2.1")
         @description("Raw audio data payload block.");
 ```
 
@@ -73,41 +80,82 @@ StreamView 实施计划阶段 4 规定了对 AAC-LC 音频（ISO/IEC 14496-3:201
 在 `src/rules/aac_adts_analyzer.cpp:346` 中，将逻辑视图构造由 `{*record.headerSpan}` 调整为 `{*record.frameSpan}`。
 扫描器（`src/rules/aac_adts_scanner.cpp:134-148`）已将 `record.frameSpan` 约束于 `availableBytes`。映射整帧跨度使得 DSL VM 能够在解析头部字段后立即将 lazy 载荷区域注册在实际帧载荷字节上。
 
-### 4. 统一截断契约决策（方案 A）
+### 4. 统一截断契约决策与测试迁移（N5）
 
-我们采纳**方案 A**（统一 DSL VM 截断语义）：
+采纳全库通用的 DSL VM 截断契约（方案 A）：
 - 当码流在帧载荷中间意外结束时，DSL VM 尝试分配 `raw_data_block_bytes` 并检测到 `bitCount > reader.remainingBits()`；
 - DSL VM 发出 Error 级 `DslExecutionStatus::TruncatedSource`，诊断消息为 `Lazy byte region exceeds the available source range`；
 - 帧节点被标记为 `Invalid`，但保留已解码的头部子字段及其源码锚定位置；
-- `aac_adts_analyzer.cpp:456-467` 处的 C++ 合成 Warning 诊断被 VM 原生诊断取代；
-- `tests/rules/aac_adts_analyzer_test.cpp:321-361`（`handlesPayloadTruncationAtEof`）迁移为断言 `DiagnosticSeverity::Error`、消息 `Lazy byte region exceeds the available source range` 以及 `header1->state() == MaterializationState::Invalid`。
+- `aac_adts_analyzer.cpp:456-467` 处的 C++ 合成 Warning 诊断被 VM 原生诊断取代。
+
+**任务 T18c 需同步迁移的测试套件清单**：
+- `tests/rules/aac_adts_analyzer_test.cpp:143-170`（帧 0 无 CRC）：子节点数由 16 推进至 18；有序名称列表追加 `raw_data_block_bytes` 与 `raw_data_block`；
+- `tests/rules/aac_adts_analyzer_test.cpp:193-220`（帧 1 含 CRC）：子节点数由 17 推进至 19；有序名称列表追加 `raw_data_block_bytes` 与 `raw_data_block`；
+- `tests/rules/aac_adts_analyzer_test.cpp:114`（`handlesSingleAdtsFrame`）：子节点数由 16 推进至 18；
+- `tests/rules/aac_adts_analyzer_test.cpp:210`（`decodesAdtsFrameWithCrc`）：子节点数由 17 推进至 19；
+- `tests/rules/aac_adts_analyzer_test.cpp:321-361`（`handlesPayloadTruncationAtEof`）：
+  - 第 352 行：`DiagnosticSeverity::Warning` $	o$ `DiagnosticSeverity::Error`；
+  - 第 353 行：`"ADTS frame payload is truncated at EOF"` $	o$ `"Lazy byte region exceeds the available source range"`；
+  - 第 360 行：`header1->state() == MaterializationState::Materialized` $	o$ `header1->state() == MaterializationState::Invalid`；
+  - 第 356 行：`node1->children().size() == 1` 保持不变。
 
 ### 5. Profile 处理与明确能力边界
 
 1. **ADTS 传输流**：通过 `@enum(AacProfile)` 约束于 `AacProfile`（0=Main, 1=LC, 2=SSR, 3=LTP）。在 ADTS 中传输的 HE-AAC v1/v2 码流依据广播规范在 ADTS 头中均携带 `profile = 1` (LC)，作为 LC 帧正常解码，其 raw data 载荷保持未解析状态。
 2. **AudioSpecificConfig (ASC)**：非 GA 音频对象类型（例如 SBR=5, PS=29, ELD=39）能够成功解析 GA 基础头语法且不报错（`MaterializationState::Materialized`），正如 ADR-0094 §3:315 所记录。在未来里程碑引入专属非 GA 载荷解析器之前，这被正式确认为已知且受控的已记录能力边界。
 
-### 6. 阶段 4 任务切片与纪律规划
+### 6. 逐 bit 验收审计范围与覆盖矩阵（B1）
+
+实施计划阶段 4 第 5 项（`docs/implementation-plan.md:198`）要求针对五大类进行逐 bit 验收。
+
+#### 「CRC 错误/存在性」验收边界定死
+StreamView 规则不进行 CRC-16 多项式除法或算术校验和计算（正如在 DSL 中不做 Huffman 解码）。CRC 存在性/错误的验收标准定死为：
+1. `protection_absent == 0`：16 位 `crc_check` 字段精确物化于 bit 偏移 56..71（字节 7..8）；
+2. `protection_absent == 1`：`crc_check` 字段省略；`raw_data_block` 载荷自 bit 偏移 56（字节 7）起始；
+3. `protection_absent == 0` 且帧长不足 9 字节：发出 `TruncatedSource` 诊断且不崩溃。
+
+#### 覆盖与缺口清单
+
+| 类别 | 既有已验证覆盖（`file:line`） | 待在任务 T18e 补齐的缺口项 |
+| :--- | :--- | :--- |
+| **1. ADTS 头部** | `tests/rules/aac_adts_analyzer_test.cpp:165-170`（有序名称列表），`:172-183`（下标 0–7 与 12–15 字段值断言）。 | 1. 下标 8–11 字段（`original_copy`、`home`、`copyright_identification_bit`、`copyright_identification_start`）在当前全部 ADTS 用例中均缺失数值断言。<br>2. 全部 ADTS 测试中当前 `logicalRange()` / `bitOffset()` / `bitLength()` 断言数为 0。 |
+| **2. ASC / PCE** | `tests/rules/aac_adts_analyzer_test.cpp:520-1790`（ADR-0094 9 项测试用例，覆盖 113–122 个有序子节点、bit 偏移与数值）。 | 无缺口。已建立 100% 逐 bit 级完整覆盖。 |
+| **3. 码流截断** | `tests/rules/aac_adts_analyzer_test.cpp:321-410`（`handlesPayloadTruncationAtEof`、`handlesHeaderTruncationAtEofWithCrc`、`handlesTrailingGarbageSmallerThanHeader`）。 | 无缺口。截断隔离与源码范围已全量验证；相关断言将在 T18c 中完成迁移。 |
+| **4. CRC 存在性/错误** | `tests/rules/aac_adts_analyzer_test.cpp:185-227`（`decodesAdtsMultiFrameStream` 帧 1）、`:204-228`（`decodesAdtsFrameWithCrc`）、`:383-410`（`handlesHeaderTruncationAtEofWithCrc`）。 | `crc_check` 的 bit 偏移检查（bit 56..71）待在 T18e 中显式断言。 |
+| **5. 不支持 Profile** | `tests/rules/aac_adts_analyzer_test.cpp:106-138`（`decodesSingleAdtsFrame` LC profile 字段值断言），ADR-0094 §3:315（ASC 非 GA AOT 解析）。 | 补充显式拒绝非标 ADTS profile（如 profile=4）的负向测试。 |
+
+### 7. 阶段 4 任务切片与纪律规划
 
 为保持严格的单职责提交与能力/规则解耦：
 
 - **任务 T18a**（当前任务）：探测结论、双语 ADR-0095、实施计划记录（Markdown-only）；
-- **任务 T18b**：分析器视图映射扩展至帧跨度（`src/rules/aac_adts_analyzer.cpp:346`），执行器能力切片，不升包版本；
+- **任务 T18b**：分析器视图映射扩展至帧跨度（`src/rules/aac_adts_analyzer.cpp:346`），执行器能力切片，不改规则、不升包版本；
 - **任务 T18c**：规则消费 `@lazy raw_data_block`（`aac_adts.svfmt`），包版本升级至 `0.1.3`，测试套件更新；
 - **任务 T18d**：Profile 处理验证与文档对齐；
-- **任务 T18e**：5 类逐 bit 验收审计、阶段 4 复选框全量勾选（`docs/implementation-plan.md:196-198`）、推进阶段至 Phase 5。
+- **任务 T18e**：关闭类别 1、4、5 全部缺口、阶段 4 复选框全量勾选（`docs/implementation-plan.md:196-198`）、推进阶段至 Phase 5。
 
 ---
 
-## 验证矩阵
+## 验证矩阵与复现步骤（B4）
 
-| 探针 / 验证项 | 目标文件 / 命令 | 实测输出与确认结论 |
-| :--- | :--- | :--- |
-| **P1: DSL 语法检查** | `svtool rule check scratch/probe_adts_lazy.svfmt` | `Rule OK` (rc=0) |
-| **P2: 20 字节帧整帧映射** | `scratch/probe_lazy_raw_data_block` (Test A) | `status=0 materialized=1 AdtsHeader state=6 children=19 child=raw_data_block state=0 bitOffset=56 bitLength=104` |
-| **P3: 15 字节截断帧映射** | `scratch/probe_lazy_raw_data_block` (Test B) | `status=1 materialized=0 AdtsHeader state=5 diag code=0 sev=2 msg="Lazy byte region exceeds the available source range"` |
-| **P4: 7 字节仅头部映射** | `scratch/probe_lazy_raw_data_block` (Test C) | `status=1 materialized=0 AdtsHeader state=5 diag code=0 sev=2 msg="Lazy byte region exceeds the available source range"` |
-| **P5: @range 非连续参数检查** | `scratch/probe_unsupported` (Probe 3) | `Parse succeeded=0 diag code=14 msg="@range requires two integer arguments"` |
+以下验证证据均通过自包含独立 C++ 探针在 `dev` 构建静态库上编译生成。
+
+**复现命令模板**：
+```bash
+clang++ -std=c++20     -Isrc/rules/include -Isrc/core/include     -I/opt/homebrew/lib/QtCore.framework/Headers     -iframework /opt/homebrew/lib -F/opt/homebrew/lib -framework QtCore     build/dev/src/rules/libstreamview_rules.a build/dev/src/core/libstreamview_core.a     <probe_source.cpp> -o /tmp/probe_bin && /tmp/probe_bin
+```
+
+| 探针 / 验证项 | 输入源码与码流构造 | 实测输出 | 结论 |
+| :--- | :--- | :--- | :--- |
+| **P1: DSL 语法检查** | 复用 `minimum_frame_length` 追加 `@lazy` 载荷的完整 grammar | `Rule OK` (rc=0) | 语法有效；无需修改 DSL 编译器。 |
+| **P2: 20 字节帧整帧映射（无 CRC）** | 20 字节 ADTS 帧（7 字节头 + 13 字节载荷），160 位映射 | `status=0 materialized=1, AdtsHeader state=6 children=18, child=raw_data_block state=0 bitOffset=56 bitLength=104` | 整帧视图解析出 18 个子节点，lazy 载荷位于 bit 56。 |
+| **P3: 20 字节帧整帧映射（含 CRC）** | 20 字节 ADTS 帧（9 字节头 + 11 字节载荷），160 位映射 | `status=0 materialized=1, AdtsHeader state=6 children=19, child=crc_check state=6 bitOffset=56 bitLength=16, child=raw_data_block state=0 bitOffset=72 bitLength=88` | 含 CRC 帧解析出 19 个子节点，lazy 载荷位于 bit 72。 |
+| **P4: 15 字节截断帧映射** | 声明 20 字节但在 15 字节处截断（120 位映射） | `status=1 materialized=0, AdtsHeader state=5 diags=1: code=0 sev=2 msg="Lazy byte region exceeds the available source range"` | 载荷截断触发 VM 原生 Error 级 TruncatedSource。 |
+| **P5: 7 字节仅头部视图** | 20 字节 ADTS 帧在 56 位头部映射下执行 | `status=1 materialized=0, AdtsHeader state=5 diags=1: code=0 sev=2 msg="Lazy byte region exceeds the available source range"` | 证实当前执行器仅头部映射是真实阻塞项。 |
+| **P6: T18b 视图映射 No-Op 验证** | 现有官方 `AdtsHeader`（无 lazy）分别在 56 位、160 位与 120 位视图下执行 | 三种视图输出完全一致：`status=0 materialized=1` | 证实 T18b 单独修改视图映射对既有规则输出完全无影响。 |
+| **P7: 重复 @range 闸门验证（N3）** | `bits<5> aot @range(0, 4) @range(23, 23);` | `compiler diag code=14 msg="@range may appear at most once on a field"` | 证实单个字段不可并列多个 @range。 |
+| **P8: 多参数 @range 闸门验证（N3）** | `bits<5> aot @range(2, 5, 29, 39);` | `parser diag code=14 msg="@range requires two integer arguments"` | 证实 @range 无法接收非连续离散值。 |
+| **P9: 拼写错误注解验证（N2）** | `bits<12> syncword @equalss(4095);` 作用于错误码流（`syncword=255`） | 错拼：`status=0 materialized=1 diags=0`<br>正拼 `@equals`：`status=2 materialized=0 diags=1 msg="Field value violates @equals constraint"` | 证实未识别注解被静默忽略。 |
 
 ---
 
