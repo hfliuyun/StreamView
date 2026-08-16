@@ -173,7 +173,7 @@ parameter     := scalar_type identifier
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { struct_item } "}" [ ";" ]
-struct_item   := field | computed | lazy_region | assertion
+struct_item   := field | computed | lazy_region | assertion | unsupported
                | rbsp_trailing_bits
                | compressed_payload
                | conditional | switch | repeat
@@ -185,6 +185,7 @@ computed      := { annotation } "computed" "<" scalar_type ">" identifier
 lazy_region   := "@" "lazy" "(" expression ")" "bytes" identifier
                  { presentation_annotation } ";"
 assertion     := "assert" "(" expression ")" "at" identifier ";"
+unsupported   := "unsupported" "(" string ")" "at" identifier ";"
 rbsp_trailing_bits := "rbsp_trailing_bits" ";"
 compressed_payload := "compressed_payload" identifier
                       { presentation_annotation } ";"
@@ -366,6 +367,10 @@ primary       := integer | "true" | "false" | identifier
   generated item 与 region item 不可以。assertion 不是字段，不引入 name 或 scalar value，不改变 static
   alignment，也不计入 99,999-field projection；它不能作为 controller 或 context value。一个
   structure 最多声明 1,024 条 assertion。
+- `unsupported("reason") at anchor;` 是不接受 annotation 的 structure item，可以位于顶层、
+  conditional 或 switch 中，但不能位于 repeat 中。非空 reason 是 runtime diagnostic message；
+  anchor 遵守 assertion anchor 的 source-backed scalar 与路径可用性规则。它不增加 field、scalar
+  value 或 alignment 变化。一个 structure 最多声明 1,024 条 unsupported statement。
 - 等值条件 controller 必须是此前声明、且在到达该条件的每条路径上都保证已经物化的
   scalar `bits`、enum、`ue` 或 `computed<u64>` 字段。数组、`se`、`computed<bool>`、
   未来或未知字段，以及离开所属保证分支后使用的 branch-local 字段都会被拒绝。整数字面量
@@ -503,7 +508,7 @@ primary       := integer | "true" | "false" | identifier
 
 `enum`、`big`、`little`、`ue`、`se`、`pure`、`return`、`bool`、`u64`、
 `computed`、`lazy`、`bytes`、`true`、`false`、`if`、`else`、`switch`、`case`、
-`default`、`repeat`、`until`、`assert`、`at`、`payload`、`empty`、
+`default`、`repeat`、`until`、`assert`、`unsupported`、`at`、`payload`、`empty`、
 `rbsp_trailing_bits` 和 `compressed_payload` 只在上述语法位置作为上下文关键字，其他位置仍可
 作为普通 identifier。既有 scalar 声明保持不变，`bits<N>` 仍与
 `bits<N, big>` 完全等价；本切片不弃用任何已接受的 0.1 语法。
@@ -515,7 +520,7 @@ sequence 和 entry 引用解析成 typed program，保留声明顺序，并确�
 `register-compressed-payload`、
 `read-rbsp-trailing-bits`、`assert-equals`、`assert-range-minimum`、
 `assert-range-maximum`、`assert-repeat-count`、`assert-sentinel-terminated`、
-`assert-expression` 和 `end-structure` bytecode。每个 field opcode
+`assert-expression`、`mark-unsupported` 和 `end-structure` bytecode。每个 field opcode
 必须与字段类型匹配。Exp-Golomb typed field 的静态 bit width 为零并使用默认 bit order；
 unsigned Exp-Golomb 字段也可以携带已解析 enum reference，而 signed 字段不可以。无符号字段
 保留可选 equality 与 range constraint；有符号字段不带这两类
@@ -571,6 +576,13 @@ operand、immediate 固定为零，并在该 statement position 执行。同一�
 顺序；positioned operation 重合时，bytecode 固定先完成 sentinel assertion，再执行 expression
 assertion、repeat-count assertion，最后读取下一字段。包含 expression assertion 的 structure 在
 source access 前会完整验证三类 descriptor stream、operand、immediate、position 与顺序。
+
+`unsupported("reason") at field;` 会降低成一条带 guard 的 typed descriptor，以及位于其
+declaration-order position 的 `mark-unsupported` instruction。anchor 必须是当前 branch 可用、
+此前声明的 source-backed scalar，reason 不得为空。guard 被选中时，execution 保留此前已经
+解码的全部字段，不消费 profile-specific suffix，把 structure 标记为 `Unsupported`，并在
+anchor 的精确 source range 报告 `unsupported-syntax`。这是 content result，不是 invalid rule
+definition，因此 stream analyzer 可以隔离当前记录并继续后续记录。
 
 compiler 会独立 type-check 每个纯函数，再把每个 pure call 展开到使用它的计算字段中。
 得到的 typed expression 只包含字面量、此前 typed-field index，以及一元或二元 operator；
@@ -777,7 +789,8 @@ header，因此 direct header 之后的字节仍保持 uninterpreted，不会传
 这些字段由它的终结 `rbsp_trailing_bits;` item 生成。type `10` 与 `11` 声明为 `empty`，要求 RBSP 长度为零。因此一字节的 access unit delimiter
 可以完整解码；只有 header 的 access unit delimiter 是 `truncated-source`；只有 header 的
 end of sequence 或 end of stream 是物化；而这两种 type 一旦携带 RBSP 字节即为
-`invalid-syntax`。type `7` 解码 8-bit Baseline/Main/Extended SPS 核心，以及受限的 High 子集：
+`invalid-syntax`。type `7` 解码 Baseline/Main 重叠语法（包括共享的 Extended SPS 核心语法），
+以及受限的 High 子集：
 4:2:0 chroma、eight-bit luma/chroma、关闭 transform bypass、无 scaling matrix，并覆盖三个
 已声明的 picture-order-count 语法分支。type 0 读取
 `log2_max_pic_order_cnt_lsb_minus4`；type 1 读取
@@ -817,6 +830,53 @@ materialized 只表示精确消费了被选中的已声明分支，不表示完�
 `max_num_reorder_frames`、`max_dec_frame_buffering` 与 SPS-derived decoder limit 的关系仍不
 检查。SPS/VUI/HRD core 精确消费完整 RBSP 后会发布 SPS context generation，但不表示已经
 解码后续 SEI timing consumer。
+
+bundled package 只声明 `baseline`、`main` 和 `high`。它的
+`baseline-main-high-slice-header` depth 是有界结构解析器，不是 profile conformant-bitstream
+判定器。Extended profile 的 SP/SI slice、NAL data partition type 2/3/4、flexible macroblock
+ordering、scaling list，以及 macroblock/residual 解码均不属于这个 package version。
+
+direct NAL 与 access-unit-delimiter 字段含义如下：
+
+| 字段 | 本切片中的含义 |
+| --- | --- |
+| `forbidden_zero_bit` | 每个 conforming NAL unit 都必须为零。 |
+| `nal_ref_idc` | 携带 NAL reference priority，并控制 reference-picture marking 语法。 |
+| `nal_unit_type` | 选择已声明的 RBSP payload dispatch。 |
+| `primary_pic_type` | 约束后续 primary coded picture 中出现的 slice type。 |
+
+source-backed SPS core 字段含义如下：
+
+| 字段 | 本切片中的含义 |
+| --- | --- |
+| `profile_idc` | 选择 Baseline、Main、共享的 Extended core 语法或有界 High 分支。 |
+| `constraint_set0_flag` ... `constraint_set5_flag` | 携带六个 profile constraint indication；不检查跨 profile 的组合合法性。 |
+| `reserved_zero_2bits` | 必须为零。 |
+| `level_idc` | 标识声明的 H.264 level；level-derived limit 留待后续。 |
+| `seq_parameter_set_id` | 标识并发布这个 SPS generation。 |
+| `chroma_format_idc` | 仅 High 子集存在；必须选择 4:2:0（`1`）。 |
+| `bit_depth_luma_minus8` | 仅 High 子集存在；eight-bit luma 要求为零。 |
+| `bit_depth_chroma_minus8` | 仅 High 子集存在；eight-bit chroma 要求为零。 |
+| `qpprime_y_zero_transform_bypass_flag` | 仅 High 子集存在；transform bypass 必须关闭。 |
+| `seq_scaling_matrix_present_flag` | 仅 High 子集存在；scaling matrix 必须缺席。 |
+| `log2_max_frame_num_minus4` | 设置 frame-number width，并限制为 `0..12`。 |
+| `pic_order_cnt_type` | 选择 POC syntax type 0、1 或 2。 |
+| `log2_max_pic_order_cnt_lsb_minus4` | 仅 type 0 存在；设置 POC-LSB width，并限制为 `0..12`。 |
+| `delta_pic_order_always_zero_flag` | 仅 type 1 存在；置一时省略 slice POC delta。 |
+| `offset_for_non_ref_pic` | type 1 non-reference picture 的 signed offset。 |
+| `offset_for_top_to_bottom_field` | type 1 top-to-bottom-field signed offset。 |
+| `num_ref_frames_in_pic_order_cnt_cycle` | type 1 cycle length，最多投影 255 个 entry。 |
+| `offset_for_ref_frame[i]` | 一个 signed type-1 cycle offset。 |
+| `max_num_ref_frames` | 发布 slice marking 检查使用的 reference-frame bound。 |
+| `gaps_in_frame_num_value_allowed_flag` | 表示是否允许 frame-number gap。 |
+| `pic_width_in_mbs_minus1` | coded picture width in macroblocks minus one。 |
+| `pic_height_in_map_units_minus1` | coded picture height in map units minus one。 |
+| `frame_mbs_only_flag` | 选择 frame-only coding，并控制 field-picture 语法。 |
+| `mb_adaptive_frame_field_flag` | field coding 可用时允许 macroblock-adaptive frame/field coding。 |
+| `direct_8x8_inference_flag` | 表示 direct 8x8 motion-vector inference。 |
+| `frame_cropping_flag` | 表示存在四个可选 crop offset。 |
+| `frame_crop_left_offset` ... `frame_crop_bottom_offset` | 携带 decoded-frame crop rectangle offset。 |
+| `vui_parameters_present_flag` | 选择下面的 VUI/HRD 字段。 |
 
 已声明 VUI 字段具有以下有界含义：
 

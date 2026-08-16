@@ -38,7 +38,7 @@ ADTS stream parsing employs a hybrid length-chain stepping and resynchronization
      - Upon confirmation, lock synchronization and resume length-chain stepping.
 3. **Truncation & Error Isolation**:
    - If $P + L > \text{source\_size}$, the frame is materialized as a partial/truncated frame with a source-anchored diagnostic.
-   - CRC errors (when `protection_absent == 0`) and out-of-range field values are published as non-fatal diagnostics without breaking length-chain progression.
+   - When `protection_absent == 0`, the scanner accounts for the two-byte CRC field while preserving length-chain progression. CRC arithmetic validation is outside this ADR; field constraints remain isolated to the current frame.
 
 ### 2. Language & IR Extensions
 
@@ -154,3 +154,7 @@ The body text citations and References have been synchronized accordingly.
 During phase implementation, task scoping and rule package versioning evolved as follows:
 1. **Task T17 (ADR-0094)**: ASC, GASpecificConfig, and Program Config Element (PCE) were integrated cohesively into `org.streamview.aac` **v0.1.2** (advancing from v0.1.0).
 2. **Task T18 (ADR-0095)**: Bounded `@lazy raw_data_block` payload encapsulation, package version advancement to **v0.1.3**, runner frame-span view mapping, and profile capability boundary closure.
+
+## Amendment: T18-R Unsupported Semantics and Version Alignment
+
+Task T18-R adds the format-neutral `unsupported("reason") at field;` contract and updates the official AAC package to **v0.1.4**. AOT 5, 29, and escaped outer AOT 31 now stop after the common ASC prefix with an Unsupported diagnostic instead of interpreting profile-specific bits as GA/PCE syntax. CRC acceptance remains limited to field layout and truncation; this ADR does not define arithmetic checksum validation.

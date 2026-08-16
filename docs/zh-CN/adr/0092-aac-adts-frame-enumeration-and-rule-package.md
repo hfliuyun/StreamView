@@ -38,7 +38,7 @@ ADTS 码流解析采用“长度链快速推进 + 状态机重同步”的混合
      - 连续确认有效后，锁定同步状态并恢复长度链步进。
 3. **截断与错误隔离**：
    - 若 $P + L > \text{source\_size}$，该帧作为部分/截断帧物化，并附带源定位诊断；
-   - CRC 校验不匹配（当 `protection_absent == 0` 时）及字段超值域异常均作为非致命诊断发布，不中断长度链推进。
+   - 当 `protection_absent == 0` 时，扫描器在帧长度中计入两字节 CRC 字段并保持长度链推进。本 ADR 不包含 CRC 算术校验；字段约束错误仍只隔离当前帧。
 
 ### 2. 语言与 IR 扩展
 
@@ -154,3 +154,7 @@ ADTS 码流解析采用“长度链快速推进 + 状态机重同步”的混合
 在阶段实施过程中，任务范围与规则包版本号演进对齐如下：
 1. **任务 T17（ADR-0094）**：AudioSpecificConfig (ASC)、GASpecificConfig 与 Program Config Element (PCE) 在官方包 `org.streamview.aac` **v0.1.2** 中统一交付（自 v0.1.0 推进）。
 2. **任务 T18（ADR-0095）**：`@lazy raw_data_block` 压缩载荷封装、官方规则包版本升级至 **v0.1.3**、分析器帧跨度视图映射及 Profile 能力边界闭环。
+
+## 附录修订：T18-R Unsupported 语义与版本对齐
+
+任务 T18-R 新增格式中立的 `unsupported("reason") at field;` 契约，并将官方 AAC 包升级至 **v0.1.4**。AOT 5、29 以及外层转义 AOT 31 现在会在 ASC 公共前缀后以 Unsupported 诊断停止，不再把 profile 专属位解释成 GA/PCE 语法。CRC 验收仍只覆盖字段布局与截断；本 ADR 不定义算术校验和验证。

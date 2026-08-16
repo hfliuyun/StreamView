@@ -213,7 +213,7 @@ parameter     := scalar_type identifier
 enum          := "enum" identifier "{" { enum_member } "}" [ ";" ]
 enum_member   := identifier "=" integer ";"
 struct        := "struct" identifier "{" { struct_item } "}" [ ";" ]
-struct_item   := field | computed | lazy_region | assertion
+struct_item   := field | computed | lazy_region | assertion | unsupported
                | rbsp_trailing_bits
                | compressed_payload
                | conditional | switch | repeat
@@ -225,6 +225,7 @@ computed      := { annotation } "computed" "<" scalar_type ">" identifier
 lazy_region   := "@" "lazy" "(" expression ")" "bytes" identifier
                  { presentation_annotation } ";"
 assertion     := "assert" "(" expression ")" "at" identifier ";"
+unsupported   := "unsupported" "(" string ")" "at" identifier ";"
 rbsp_trailing_bits := "rbsp_trailing_bits" ";"
 compressed_payload := "compressed_payload" identifier
                       { presentation_annotation } ";"
@@ -465,6 +466,12 @@ The static rules for this subset are:
   region items cannot. An assertion is not a field, introduces no name or scalar value, does
   not affect static alignment or the 99,999-field projection, and cannot be a
   controller or context value. One structure declares at most 1,024 assertions.
+- `unsupported("reason") at anchor;` is an unannotated structure item allowed
+  at top level or inside a conditional or switch, but not in a repeat. The
+  non-empty reason is the runtime diagnostic message. Its anchor follows the
+  assertion-anchor source-backed scalar and path-availability rules. It adds no
+  field, scalar value, or alignment change. One structure declares at most
+  1,024 unsupported statements.
 - An equality-conditional controller must name an earlier scalar `bits`, enum,
   `ue`, or `computed<u64>` field guaranteed to have been materialized on every
   path reaching that condition. Arrays, `se`, `computed<bool>`, future or
@@ -663,7 +670,7 @@ The static rules for this subset are:
 
 `enum`, `big`, `little`, `ue`, `se`, `pure`, `return`, `bool`, `u64`,
 `computed`, `lazy`, `bytes`, `true`, `false`, `if`, `else`, `switch`, `case`,
-`default`, `repeat`, `until`, `assert`, `at`, `payload`, `empty`,
+`default`, `repeat`, `until`, `assert`, `unsupported`, `at`, `payload`, `empty`,
 `rbsp_trailing_bits`, and `compressed_payload` are contextual words in the
 positions shown by the grammar and remain ordinary identifiers elsewhere.
 Existing scalar declarations are unchanged, and `bits<N>` remains exactly
@@ -676,7 +683,7 @@ deterministic bytecode using `begin-structure`, `read-unsigned-bits`,
 `read-unsigned-exp-golomb`, `read-signed-exp-golomb`, `evaluate-computed`,
 `register-lazy-bytes`, `register-compressed-payload`, `read-rbsp-trailing-bits`, `assert-equals`,
 `assert-range-minimum`, `assert-range-maximum`, `assert-repeat-count`,
-`assert-sentinel-terminated`, `assert-expression`, and
+`assert-sentinel-terminated`, `assert-expression`, `mark-unsupported`, and
 `end-structure` operations. Each field opcode must match the resolved field type.
 The fixed-width read carries the resolved enum and byte-order information.
 Exp-Golomb types have zero static bit width and default bit order; unsigned
@@ -756,6 +763,16 @@ bytecode order is sentinel completion, expression assertion, repeat-count
 assertion, then the next field. The VM validates all three descriptor streams,
 operands, immediates, positions, and ordering before source access for a
 structure containing expression assertions.
+
+An `unsupported("reason") at field;` statement lowers to a guarded typed
+descriptor and one `mark-unsupported` instruction at its declaration-order
+position. The anchor must be an earlier source-backed scalar available on the
+current branch, and the reason must be non-empty. When its guard is selected,
+execution retains every already decoded field, consumes no profile-specific
+suffix, marks the structure `Unsupported`, and reports `unsupported-syntax` at
+the anchor's exact source range. This is a content result rather than an invalid
+rule definition, so stream analyzers may isolate it and continue with later
+records.
 
 The compiler type-checks every pure function independently, then expands each
 pure call into the computed field that uses it. The resulting typed expression
@@ -1054,7 +1071,8 @@ and require a zero-length RBSP. A one-byte access unit delimiter is therefore
 fully decoded, a header-only access unit delimiter is `truncated-source`, a
 header-only end of sequence or end of stream is materialized, and either of
 those types carrying RBSP bytes is `invalid-syntax`. Type `7` decodes the
-8-bit Baseline/Main/Extended SPS core and the constrained High subset with 4:2:0 chroma,
+8-bit Baseline/Main overlap (including the shared Extended SPS core syntax) and
+the constrained High subset with 4:2:0 chroma,
 eight-bit luma/chroma, transform bypass disabled, no scaling matrix, and all
 three declared picture-order-count syntax branches. Type 0 reads
 `log2_max_pic_order_cnt_lsb_minus4`. Type 1 reads
@@ -1108,6 +1126,54 @@ limits remain unchecked where the stable DSL lacks the required fixed-width or
 relational constraint. A materialized SPS/VUI/HRD core publishes an SPS context
 generation after exact RBSP consumption; it does not imply that later SEI timing
 consumers have been decoded.
+
+The bundled package advertises only `baseline`, `main`, and `high`. Its
+`baseline-main-high-slice-header` depth is a bounded structural parser, not a
+profile-conformance checker. Extended-profile SP/SI slices, NAL data partition
+types 2/3/4, flexible macroblock ordering, scaling lists, and macroblock or
+residual decoding are outside this package version.
+
+The direct NAL and access-unit-delimiter fields have these meanings:
+
+| Field | Meaning in this slice |
+| --- | --- |
+| `forbidden_zero_bit` | Must be zero for every conforming NAL unit. |
+| `nal_ref_idc` | Carries NAL reference priority and controls reference-picture marking syntax. |
+| `nal_unit_type` | Selects the declared RBSP payload dispatch. |
+| `primary_pic_type` | Constrains slice types in the following primary coded picture. |
+
+The source-backed SPS core fields have these bounded meanings:
+
+| Field | Meaning in this slice |
+| --- | --- |
+| `profile_idc` | Selects Baseline, Main, the shared Extended core syntax, or the bounded High branch. |
+| `constraint_set0_flag` ... `constraint_set5_flag` | Carry the six profile-constraint indications; cross-profile combinations are not validated. |
+| `reserved_zero_2bits` | Must be zero. |
+| `level_idc` | Identifies the declared H.264 level; level-derived limits are deferred. |
+| `seq_parameter_set_id` | Identifies and publishes this SPS generation. |
+| `chroma_format_idc` | High subset only; must select 4:2:0 (`1`). |
+| `bit_depth_luma_minus8` | High subset only; must be zero for eight-bit luma. |
+| `bit_depth_chroma_minus8` | High subset only; must be zero for eight-bit chroma. |
+| `qpprime_y_zero_transform_bypass_flag` | High subset only; transform bypass must be disabled. |
+| `seq_scaling_matrix_present_flag` | High subset only; scaling matrices must be absent. |
+| `log2_max_frame_num_minus4` | Sets frame-number width and is constrained to `0..12`. |
+| `pic_order_cnt_type` | Selects POC syntax type 0, 1, or 2. |
+| `log2_max_pic_order_cnt_lsb_minus4` | Type 0 only; sets POC-LSB width and is constrained to `0..12`. |
+| `delta_pic_order_always_zero_flag` | Type 1 only; suppresses slice POC deltas when set. |
+| `offset_for_non_ref_pic` | Type 1 signed offset for non-reference pictures. |
+| `offset_for_top_to_bottom_field` | Type 1 signed top-to-bottom-field offset. |
+| `num_ref_frames_in_pic_order_cnt_cycle` | Type 1 cycle length, bounded to 255 projected entries. |
+| `offset_for_ref_frame[i]` | One signed type-1 cycle offset. |
+| `max_num_ref_frames` | Publishes the reference-frame bound used by slice marking checks. |
+| `gaps_in_frame_num_value_allowed_flag` | Signals whether frame-number gaps are allowed. |
+| `pic_width_in_mbs_minus1` | Coded picture width in macroblocks minus one. |
+| `pic_height_in_map_units_minus1` | Coded picture height in map units minus one. |
+| `frame_mbs_only_flag` | Selects frame-only coding and controls field-picture syntax. |
+| `mb_adaptive_frame_field_flag` | Allows macroblock-adaptive frame/field coding when field coding is available. |
+| `direct_8x8_inference_flag` | Signals direct 8x8 motion-vector inference. |
+| `frame_cropping_flag` | Signals the four optional crop offsets. |
+| `frame_crop_left_offset` ... `frame_crop_bottom_offset` | Carry the decoded-frame crop rectangle offsets. |
+| `vui_parameters_present_flag` | Selects the VUI/HRD fields below. |
 
 The declared VUI fields have the following bounded meanings:
 

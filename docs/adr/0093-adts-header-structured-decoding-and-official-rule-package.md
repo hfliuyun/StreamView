@@ -108,7 +108,7 @@ struct AdtsHeader {
     if (protection_absent == 0) {
         bits<16> crc_check
             @spec("ISO/IEC 14496-3:2019", "1.A.2")
-            @description("16-bit CRC error check word.");
+            @description("16-bit CRC check word carried by the ADTS header.");
     }
     computed<u64> minimum_frame_length =
         (protection_absent == 1) * 7 +

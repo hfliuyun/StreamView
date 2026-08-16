@@ -108,7 +108,7 @@ struct AdtsHeader {
     if (protection_absent == 0) {
         bits<16> crc_check
             @spec("ISO/IEC 14496-3:2019", "1.A.2")
-            @description("16-bit CRC error check word.");
+            @description("16-bit CRC check word carried by the ADTS header.");
     }
     computed<u64> minimum_frame_length =
         (protection_absent == 1) * 7 +
@@ -180,4 +180,3 @@ Rule OK: scratch/probe_t16_adts.svfmt
 3. `adts_raw_data_block` 编排归属于第 1 部分附录 1.A（ADTS 传输），语法定义归属于第 4 部分子条款 **4.5.2.1**（*raw_data_block* / *Syntactic elements*）；此前修订草案曾误记 4.5.2.1.1，现澄清为子条款 4.5.2.1。
 
 正文表述与参考资料已同步更正。
-

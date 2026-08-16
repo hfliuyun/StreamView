@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: DSL compiler unrecognized annotation compile gate (Task P5b)
+Last Completed Step: T13-R / T18-R implementation audit correction
 Next Action: Task P5c — ISOBMFF container language primitives probing & ADR-0097
-Last Verification: Local dev/ci/sanitize 36/36 passing with zero sanitizer warnings (AAC analyzer 31/31, H.264 174/174); hosted CI run 31944036393 (Ubuntu job 95157275757, macOS job 95157275636, Windows job 95157275621) passed 100%
+Last Verification: T13-R/T18-R local dev/ci/sanitize 36/36 passing with zero sanitizer warnings; all bundled H.264/AAC sources pass `svtool rule check`. Latest hosted baseline remains run 31944036393 (Ubuntu job 95157275757, macOS job 95157275636, Windows job 95157275621), predating these working-tree corrections
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -139,7 +139,7 @@ Blockers: None
 依赖：M4 的映射/上下文和 M5 的规则资产管理。每个格式按“规则、fixture、诊断、双语字段文档、source-span 断言”独立验收。
 
 - [x] H.264：EBSP/RBSP、trailing bits、SPS/PPS/VUI/HRD、slice header、SEI 与按位置重定义。
-- [ ] AAC-LC：ADTS、AudioSpecificConfig/GASpecificConfig/PCE，压缩 payload 保持 opaque。
+- [x] AAC-LC：ADTS、AudioSpecificConfig/GASpecificConfig/PCE，压缩 payload 保持 opaque。（T18-R 已补齐 Unsupported profile 语义、全字段逐 bit 验收与 CRC 边界说明；本地 dev/ci/sanitize 36/36。）
 - [ ] MP4/MOV：box 层级、sample tables、`avcC`/`esds`、分页 sample index 与跨层导航；对 `moof` 明确 unsupported。
 
 ### M7：安全、性能与发布门禁
@@ -198,15 +198,15 @@ Blockers: None
 - [x] 所有 SEI 解析 payloadType/payloadSize。
 - [x] 深入解析 buffering period、pic timing、用户数据、recovery point、frame packing 和 display orientation。
 - [x] 支持同 ID SPS/PPS 中途重定义和按位置选择。
-- [x] 为声明范围内每个字段建立规范引用、双语说明、合法/非法样例和 source-span 断言。
+- [x] 为声明范围内每个 source-backed 字段建立局部规范引用和双语说明；按 NAL、SPS/VUI/HRD、PPS、slice 与 SEI 语法族提供代表性的合法/非法样例和 source-span 断言。
 
 ## 阶段 4：AAC-LC 正式结构支持
 
-- [x] 解析 ADTS fixed/variable header、frame length、buffer fullness、raw block count 和 CRC。
+- [x] 解析 ADTS fixed/variable header、frame length、buffer fullness、raw block count 和 CRC 字段布局；不包含 CRC-16 算术校验。
 - [x] 解析 AudioSpecificConfig、GASpecificConfig 和 Program Config Element。（验收：ADR-0094 9 项测试矩阵 + resolvesAscEntryPointFromBundledRulePackage，本地 dev/ci/sanitize 35/35，hosted run 31928187049 全平台通过）
-- [x] 将 `raw_data_block` 整体标记为压缩载荷，不隐藏实现 Huffman 解码。（验收：ADR-0095 §2 `@lazy raw_data_block` 规则声明，v0.1.3，tests/rules/aac_adts_analyzer_test.cpp:141-230 帧 0/1 载荷封装及 :2600/:2652 `MaterializationState::Lazy` 状态断言实测通过）
-- [x] 对 HE-AAC、ELD 和其他 profile 明确报告部分识别或不支持。（验收：ADR-0095 §5 明确能力边界闭环；ADTS 0..3 经 tests/rules/aac_adts_analyzer_test.cpp:1916-1958 实测钉住；ASC AOT 5/29/39 分别经 :1960-2128、:2130-2298、:2300-2467 实测钉住；未来非致命上报机制顺延至独立能力切片）
-- [x] 验证 ADTS、ASC、截断、CRC 错误和不支持 profile 的逐 bit 结果。（验收：ADR-0095 §6 5 类验收矩阵全量关闭；测试用例 :2473-2655、:2661-2732、:2737-2795；AAC analyzer 套件 31/31 全量通过）
+- [x] 将 `raw_data_block` 整体标记为压缩载荷，不隐藏实现 Huffman 解码。（验收：ADR-0095 §2 `@lazy raw_data_block` 规则声明，当前包 v0.1.4；`decodesAdtsHeaderBitByBitRangesAndZeroLengthPayload` 验证无/有 CRC 时 payload 从 bit 56/72 起，非零 payload 为 `MaterializationState::Lazy`。）
+- [x] 对 HE-AAC、ELD 和其他 profile 明确报告部分识别或不支持。（T18-R 验收：通用 `unsupported("reason") at field;` 保留已解码前缀并产生 `UnsupportedSyntax`；ASC AOT 5/29/39 分别由 `reportsAscNonGaAot5SbrAsUnsupported`、`reportsAscNonGaAot29ParametricStereoAsUnsupported`、`reportsAscNonGaAot39EnhancedLowDelayAsUnsupported` 锁定，且不再误解码 GA/PCE 后缀。）
+- [x] 验证 ADTS、ASC、截断、CRC 字段存在/位置/截断和不支持 profile 的逐 bit 结果。（T18-R 验收：ADR-0095 §6；`decodesAdtsHeaderBitByBitRangesAndZeroLengthPayload`、`decodesAscAndPceFieldsBitByBit`、`verifiesTruncatedFramesLogicalRangesAndDiagnosticLocations`；CRC 测试值 `0x1234` 仅证明原样解码，不代表校验正确。）
 
 ## 阶段 5：非分片 MP4/MOV 与跨层导航
 
@@ -1842,4 +1842,29 @@ Blockers: None
      - 本地 3 套构建全绿（dev/ci/sanitize 36/36，全量通过且无 sanitizer 告警）；
      - Hosted CI run `31953480299`（Windows `95180435231`、Ubuntu `95180435295`、macOS `95180435300`）三平台全部通过。
   Next Action 指向 Task P5c（ISOBMFF 容器语言原语探测与 ADR-0097 编写）。
-
+- 2026-08-17：完成阶段 3 历史完成声明纠偏（任务 T13-R）。
+  1. H.264 声明范围与 manifest 对齐：
+     - 官方包由 `0.1.38` 升级至 `0.1.39`，入口 profile 只声明实际支持的 `baseline`、`main`、`high`，删除未实现的 `extended`；
+     - `loadsBundledRule` 回归锁定包版本、入口 profile 集合与 `baseline-main-high-slice-header` depth，防止 manifest 再次漂移；
+     - 双语字段文档明确当前为 8-bit 4:2:0 有界子集，SP/SI、data partition、FMO 与 scaling list 仍为 unsupported，不再把“阶段完成”解释为 H.264 全规范覆盖。
+  2. 字段级元数据闭环：
+     - `h264_annex_b.svfmt` 为 NAL/AUD、SPS/VUI/HRD、PPS 与 slice 等全部 source-backed 官方声明补齐局部 `@spec` 与 `@description`；
+     - H.264 analyzer 测试递归遍历实际 AST，要求每个 source-backed 字段自身携带规范引用与说明，避免依赖父 struct 元数据造成虚假覆盖。
+     - 阶段 3 的验收措辞已收窄为“逐字段元数据 + 各语法族代表性合法/非法/span 用例”；现有测试并不声称每个字段各有一组独立正反例与 span 断言。
+  3. 验证：
+     - 官方 H.264 规则 `svtool rule check` 通过；H.264 analyzer 套件通过；本地 dev/ci/sanitize 全量 36/36 通过。
+- 2026-08-17：完成阶段 4 历史完成声明纠偏（任务 T18-R）。
+  1. 通用 Unsupported 语义：
+     - DSL 新增格式中立语句 `unsupported("reason") at field;`，贯通 parser、typed IR、bytecode、VM 与 rule execution session；
+     - 命中分支时保留已解码前缀，在指定字段位置产生 `UnsupportedSyntax`，结构状态为 `Unsupported`，且不读取或解释后续字段；未选分支保持正常 Materialized。
+  2. AAC profile 行为修正：
+     - 官方 AAC 包由 `0.1.3` 升级至 `0.1.4`；
+     - AOT 5、29 与外层转义 AOT 31（包括 AOT 39）在公共 ASC 前缀后明确 Unsupported，不再把 profile 专属 SpecificConfig 位误解码成 GA/PCE；
+     - 四个回归用例断言前缀字段值/位范围/状态、精确诊断锚点与后缀节点缺失，并删除原 `return` 后不可达的巨型旧断言块。
+  3. 逐 bit 验收与 CRC 纠偏：
+     - `decodesAscAndPceFieldsBitByBit` 使用紧凑 160-bit 向量覆盖全部可达 ASC/GASpecificConfig/PCE 源字段的值、逻辑范围、状态与空诊断；计算字段只验证值/状态；
+     - CRC 验收严格限定为单 `raw_data_block` 的字段出现/省略、bit 56..71、载荷 bit 56/72 起点和字段截断。`0x1234` 仅为原样解码值，不代表 CRC 正确；CRC-16 算术与多 raw data block 需要独立 ADR 和格式中立完整性检查 API。
+  4. 验证：
+     - H.264 与 AAC 三份 bundled rule source 均通过 `svtool rule check`；
+     - 本地 dev、ci、sanitize 完整构建与 CTest 均为 36/36，零 ASan/UBSan 报告；本补丁尚无对应 hosted matrix 结果。
+  Next Action 保持 Task P5c（ISOBMFF 容器语言原语探测与 ADR-0097 编写）。
