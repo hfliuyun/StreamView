@@ -21,6 +21,21 @@ struct AudioSpecificConfig {
         @spec("ISO/IEC 14496-3:2019", "1.6.2.1")
         @description("Channel configuration index (0 indicates custom PCE).");
 
+    // Non-GA object types have different SpecificConfig syntax. Preserve the
+    // decoded ASC prefix, then stop before interpreting their payload as GA.
+    if (audio_object_type == 5) {
+        unsupported("AAC SBR SpecificConfig is outside the supported GA subset")
+            at audio_object_type;
+    }
+    if (audio_object_type == 29) {
+        unsupported("AAC Parametric Stereo SpecificConfig is unsupported")
+            at audio_object_type;
+    }
+    if (audio_object_type == 31) {
+        unsupported("Escaped AAC object types require a profile-specific SpecificConfig")
+            at audio_object_type;
+    }
+
     // GASpecificConfig syntax
     bits<1> frame_length_flag
         @spec("ISO/IEC 14496-3:2019", "4.4.1")
