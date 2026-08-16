@@ -2466,6 +2466,279 @@ private slots:
         }
     }
 
+    /**
+     * @brief Verifies bit-by-bit logical ranges, lengths, and values for all ADTS header fields
+     * (including indices 8-11 and CRC at bit 56..71), as well as zero-length payload frames.
+     */
+    void decodesAdtsHeaderBitByBitRangesAndZeroLengthPayload() {
+        const auto loaded = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(loaded.succeeded());
+
+        // Frame 0: 7-byte header (no CRC), frameLength = 7 (zero-length payload)
+        // Frame 1: 9-byte header (with CRC), frameLength = 9 (zero-length payload)
+        // Frame 2: 7-byte header (no CRC), frameLength = 100 (non-zero payload)
+        // Frame 3: 9-byte header (with CRC), frameLength = 100 (non-zero payload)
+        const auto f0 = makeAdtsFrame(7, true, 1, 4, 2, 0x7FF, 0, 0x1234);
+        const auto f1 = makeAdtsFrame(9, false, 1, 4, 2, 0x7FF, 0, 0x1234);
+        const auto f2 = makeAdtsFrame(100, true, 1, 4, 2, 0x7FF, 0, 0x1234);
+        const auto f3 = makeAdtsFrame(100, false, 1, 4, 2, 0x7FF, 0, 0x1234);
+
+        std::vector<std::byte> stream;
+        stream.insert(stream.end(), f0.begin(), f0.end());
+        stream.insert(stream.end(), f1.begin(), f1.end());
+        stream.insert(stream.end(), f2.begin(), f2.end());
+        stream.insert(stream.end(), f3.begin(), f3.end());
+
+        const MemorySource source(std::move(stream));
+        QString error;
+        auto analyzer = streamview::rules::AacAdtsAnalyzer::create(source, &error);
+        QVERIFY2(analyzer.has_value(), qPrintable(error));
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, streamview::rules::AacAdtsAnalysisStatus::Complete);
+        QCOMPARE(batch.frameNodes.size(), std::size_t(4));
+
+        // 1. Frame 0: Zero-length payload without CRC
+        const auto fn0 = analyzer->tree().node(batch.frameNodes[0]);
+        QVERIFY(fn0.has_value());
+        QCOMPARE(fn0->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(fn0->diagnostics().empty());
+        QVERIFY(fn0->location().has_value());
+        QCOMPARE(fn0->location()->logicalRange().start().bitOffset(), quint64(0));
+        QCOMPARE(fn0->location()->logicalRange().bitLength(), quint64(56));
+
+        const auto hn0 = analyzer->tree().node(fn0->children()[0]);
+        QVERIFY(hn0.has_value());
+        QCOMPARE(hn0->children().size(), std::size_t(18));
+        const auto rawPayload0 = analyzer->tree().node(hn0->children()[17]);
+        QVERIFY(rawPayload0.has_value());
+        QCOMPARE(rawPayload0->name(), QStringLiteral("raw_data_block"));
+        QCOMPARE(rawPayload0->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(rawPayload0->location().has_value());
+        QCOMPARE(rawPayload0->location()->logicalRange().start().bitOffset(), quint64(56));
+        QCOMPARE(rawPayload0->location()->logicalRange().bitLength(), quint64(0));
+
+        // 2. Frame 1: Zero-length payload with CRC
+        const auto fn1 = analyzer->tree().node(batch.frameNodes[1]);
+        QVERIFY(fn1.has_value());
+        QCOMPARE(fn1->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(fn1->diagnostics().empty());
+        QVERIFY(fn1->location().has_value());
+        QCOMPARE(fn1->location()->logicalRange().start().bitOffset(), quint64(0));
+        QCOMPARE(fn1->location()->logicalRange().bitLength(), quint64(72));
+
+        const auto hn1 = analyzer->tree().node(fn1->children()[0]);
+        QVERIFY(hn1.has_value());
+        QCOMPARE(hn1->children().size(), std::size_t(19));
+        const auto crcChild1 = analyzer->tree().node(hn1->children()[15]);
+        QVERIFY(crcChild1.has_value());
+        QCOMPARE(crcChild1->name(), QStringLiteral("crc_check"));
+        QCOMPARE(crcChild1->value().toULongLong(), quint64(0x1234));
+        QVERIFY(crcChild1->location().has_value());
+        QCOMPARE(crcChild1->location()->logicalRange().start().bitOffset(), quint64(56));
+        QCOMPARE(crcChild1->location()->logicalRange().bitLength(), quint64(16));
+
+        const auto rawPayload1 = analyzer->tree().node(hn1->children()[18]);
+        QVERIFY(rawPayload1.has_value());
+        QCOMPARE(rawPayload1->name(), QStringLiteral("raw_data_block"));
+        QCOMPARE(rawPayload1->state(), streamview::core::MaterializationState::Materialized);
+        QVERIFY(rawPayload1->location().has_value());
+        QCOMPARE(rawPayload1->location()->logicalRange().start().bitOffset(), quint64(72));
+        QCOMPARE(rawPayload1->location()->logicalRange().bitLength(), quint64(0));
+
+        // 3. Frame 2: Exhaustive bit-by-bit range & value checks for all 18 fields
+        const auto fn2 = analyzer->tree().node(batch.frameNodes[2]);
+        QVERIFY(fn2.has_value());
+        const auto hn2 = analyzer->tree().node(fn2->children()[0]);
+        QVERIFY(hn2.has_value());
+
+        struct ExpectedField {
+            QString name;
+            quint64 bitOffset;
+            quint64 bitLength;
+            quint64 value;
+            bool isComputed;
+        };
+
+        const std::vector<ExpectedField> expectedFields2 = {
+            {QStringLiteral("syncword"), 0, 12, 4095, false},
+            {QStringLiteral("id"), 12, 1, 0, false},
+            {QStringLiteral("layer"), 13, 2, 0, false},
+            {QStringLiteral("protection_absent"), 15, 1, 1, false},
+            {QStringLiteral("profile"), 16, 2, 1, false},
+            {QStringLiteral("sampling_frequency_index"), 18, 4, 4, false},
+            {QStringLiteral("private_bit"), 22, 1, 0, false},
+            {QStringLiteral("channel_configuration"), 23, 3, 2, false},
+            {QStringLiteral("original_copy"), 26, 1, 0, false},
+            {QStringLiteral("home"), 27, 1, 0, false},
+            {QStringLiteral("copyright_identification_bit"), 28, 1, 0, false},
+            {QStringLiteral("copyright_identification_start"), 29, 1, 0, false},
+            {QStringLiteral("aac_frame_length"), 30, 13, 100, false},
+            {QStringLiteral("adts_buffer_fullness"), 43, 11, 2047, false},
+            {QStringLiteral("number_of_raw_data_blocks_in_frame"), 54, 2, 0, false},
+            {QStringLiteral("minimum_frame_length"), 0, 0, 7, true},
+            {QStringLiteral("raw_data_block_bytes"), 0, 0, 93, true},
+            {QStringLiteral("raw_data_block"), 56, 744, 0, false}
+        };
+
+        QCOMPARE(hn2->children().size(), expectedFields2.size());
+        for (std::size_t i = 0; i < expectedFields2.size(); ++i) {
+            const auto c = analyzer->tree().node(hn2->children()[i]);
+            QVERIFY(c.has_value());
+            QCOMPARE(c->name(), expectedFields2[i].name);
+            if (!expectedFields2[i].isComputed && expectedFields2[i].name != QStringLiteral("raw_data_block")) {
+                QCOMPARE(c->value().toULongLong(), expectedFields2[i].value);
+            }
+            if (expectedFields2[i].isComputed) {
+                QCOMPARE(c->value().toULongLong(), expectedFields2[i].value);
+            }
+            if (!expectedFields2[i].isComputed) {
+                QVERIFY(c->location().has_value());
+                QCOMPARE(c->location()->logicalRange().start().bitOffset(), expectedFields2[i].bitOffset);
+                QCOMPARE(c->location()->logicalRange().bitLength(), expectedFields2[i].bitLength);
+            }
+        }
+    }
+
+    /**
+     * @brief Verifies representative bit-by-bit logical ranges across ASC header,
+     * GASpecificConfig, and PCE structures.
+     */
+    void decodesAscFieldRangesRepresentativeSampling() {
+        const auto loaded = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(loaded.succeeded());
+        const auto* ascSource = loaded.package->fileContents(QStringLiteral("src/aac_asc.svfmt"));
+        QVERIFY(ascSource != nullptr);
+        const auto parsed = streamview::rules::DslParser::parse(QString::fromUtf8(*ascSource));
+        const auto compiled = streamview::rules::DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        std::vector<std::byte> raw = {std::byte{0x11}, std::byte{0x80}, std::byte{0x00}, std::byte{0xC0}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x5A}};
+        for (int i = 0; i < 90; ++i) raw.push_back(static_cast<std::byte>(i));
+
+        const MemorySource source(raw);
+        auto tree = streamview::core::AnalysisTree::create(QStringLiteral("Root"));
+        QVERIFY(tree.has_value());
+        const auto mapping = mappingForBytes(source.sizeBytes());
+        QVERIFY(mapping.has_value());
+        streamview::core::BitReader reader(source, *mapping);
+
+        const auto result = streamview::rules::DslExecutor::decodeStruct(
+            *compiled.program,
+            QStringLiteral("AudioSpecificConfig"),
+            reader,
+            *mapping,
+            0,
+            *tree,
+            tree->rootId());
+        QCOMPARE(result.status, streamview::rules::DslExecutionStatus::Materialized);
+        QVERIFY(result.structureNode.has_value());
+
+        const auto node = tree->node(*result.structureNode);
+        QVERIFY(node.has_value());
+
+        // Representative sampling:
+        // 1. ASC header: audio_object_type (bit 0..4, len 5), sampling_frequency_index (bit 5..8, len 4), channel_configuration (bit 9..12, len 4)
+        // 2. GASpecificConfig: frame_length_flag (bit 13, len 1), depends_on_core_coder (bit 14, len 1), extension_flag (bit 15, len 1)
+        // 3. PCE list: element_instance_tag (bit 16..19, len 4), object_type (bit 20..21, len 2), comment_field_bytes (bit 56..63, len 8)
+        struct SampledField {
+            QString name;
+            quint64 bitOffset;
+            quint64 bitLength;
+            quint64 value;
+        };
+
+        const std::vector<SampledField> samples = {
+            {QStringLiteral("audio_object_type"), 0, 5, 2},
+            {QStringLiteral("sampling_frequency_index"), 5, 4, 3},
+            {QStringLiteral("channel_configuration"), 9, 4, 0},
+            {QStringLiteral("frame_length_flag"), 13, 1, 0},
+            {QStringLiteral("depends_on_core_coder"), 14, 1, 0},
+            {QStringLiteral("extension_flag"), 15, 1, 0},
+            {QStringLiteral("element_instance_tag"), 16, 4, 0},
+            {QStringLiteral("object_type"), 20, 2, 0},
+            {QStringLiteral("comment_field_bytes"), 56, 8, 90}
+        };
+
+        for (const auto& sample : samples) {
+            bool found = false;
+            for (auto cid : node->children()) {
+                const auto c = tree->node(cid);
+                if (c.has_value() && c->name() == sample.name) {
+                    found = true;
+                    QCOMPARE(c->value().toULongLong(), sample.value);
+                    QVERIFY(c->location().has_value());
+                    QCOMPARE(c->location()->logicalRange().start().bitOffset(), sample.bitOffset);
+                    QCOMPARE(c->location()->logicalRange().bitLength(), sample.bitLength);
+                    break;
+                }
+            }
+            QVERIFY2(found, qPrintable(sample.name));
+        }
+    }
+
+    /**
+     * @brief Verifies logical ranges and diagnostic location coordinates for truncated frames.
+     */
+    void verifiesTruncatedFramesLogicalRangesAndDiagnosticLocations() {
+        const auto loaded = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(loaded.succeeded());
+
+        // 1. Truncated Payload: 100-byte declared frame truncated to 15 bytes
+        auto fPayloadTrunc = makeAdtsFrame(100, true);
+        fPayloadTrunc.resize(15);
+        {
+            const MemorySource source(fPayloadTrunc);
+            QString error;
+            auto analyzer = streamview::rules::AacAdtsAnalyzer::create(source, &error);
+            QVERIFY2(analyzer.has_value(), qPrintable(error));
+            const auto batch = analyzer->analyzeBatch();
+            QCOMPARE(batch.frameNodes.size(), std::size_t(1));
+
+            const auto fn = analyzer->tree().node(batch.frameNodes[0]);
+            QVERIFY(fn.has_value());
+            QCOMPARE(fn->state(), streamview::core::MaterializationState::Invalid);
+            QVERIFY(fn->location().has_value());
+            QCOMPARE(fn->location()->logicalRange().start().bitOffset(), quint64(0));
+            QCOMPARE(fn->location()->logicalRange().bitLength(), quint64(120)); // 15 bytes * 8 = 120 bits
+
+            QCOMPARE(fn->diagnostics().size(), std::size_t(1));
+            const auto& diag = fn->diagnostics().front();
+            QVERIFY(diag.location.has_value());
+            QCOMPARE(diag.location->logicalRange().start().bitOffset(), quint64(56));
+            QCOMPARE(diag.location->logicalRange().bitLength(), quint64(64)); // [56, 120)
+            QCOMPARE(diag.message, QStringLiteral("Lazy byte region exceeds the available source range"));
+        }
+
+        // 2. Truncated Header: 9-byte header with CRC truncated to 8 bytes (less than 9 required)
+        std::vector<std::byte> streamHeaderTrunc;
+        const auto f0 = makeAdtsFrame(100, true);
+        const auto f1 = makeAdtsFrame(100, false);
+        streamHeaderTrunc.insert(streamHeaderTrunc.end(), f0.begin(), f0.end());
+        streamHeaderTrunc.insert(streamHeaderTrunc.end(), f1.begin(), f1.begin() + 8);
+        {
+            const MemorySource source(streamHeaderTrunc);
+            QString error;
+            auto analyzer = streamview::rules::AacAdtsAnalyzer::create(source, &error);
+            QVERIFY2(analyzer.has_value(), qPrintable(error));
+            const auto batch = analyzer->analyzeBatch();
+            QCOMPARE(batch.frameNodes.size(), std::size_t(2));
+
+            const auto fn1 = analyzer->tree().node(batch.frameNodes[1]);
+            QVERIFY(fn1.has_value());
+            QCOMPARE(fn1->state(), streamview::core::MaterializationState::Invalid);
+            QVERIFY(fn1->location().has_value());
+            QCOMPARE(fn1->location()->logicalRange().start().bitOffset(), quint64(0));
+            QCOMPARE(fn1->location()->logicalRange().bitLength(), quint64(64)); // 8 bytes * 8 = 64 bits
+
+            QCOMPARE(fn1->diagnostics().size(), std::size_t(1));
+            const auto& diag = fn1->diagnostics().front();
+            QVERIFY(diag.location.has_value());
+            QCOMPARE(diag.location->logicalRange().start().bitOffset(), quint64(56));
+            QCOMPARE(diag.location->logicalRange().bitLength(), quint64(8)); // attempted 16-bit CRC with 8 bits remaining
+            QCOMPARE(diag.message, QStringLiteral("Unable to read complete syntax field"));
+        }
+    }
+
 };
 
 QTEST_MAIN(AacAdtsAnalyzerTest)

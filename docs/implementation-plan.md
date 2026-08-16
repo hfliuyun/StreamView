@@ -1,9 +1,9 @@
 # StreamView v0.1 分阶段实施计划
 
 Status: In Progress
-Current Phase: 4
-Last Completed Step: Pre-remediation for ASC non-GA AOT empirical coverage and citation precision (Task T18e-§0)
-Next Action: Close bit-by-bit audit gaps across Category 1-5 and advance to Phase 5 (Task T18e-main)
+Current Phase: 5
+Last Completed Step: Bit-by-bit acceptance audit closure across Category 1-5 and Phase 4 completion (Task T18e)
+Next Action: Author Phase 5 ADR and architectural design for MP4/MOV container support
 Last Verification: Local dev/ci/sanitize 35/35 passing with zero sanitizer warnings (AAC analyzer 28/28, H.264 174/174); hosted CI run 31941684357 (Ubuntu job 95151697094, macOS job 95151697041, Windows job 95151697136) passed 100%
 Blockers: None
 
@@ -203,9 +203,9 @@ Blockers: None
 
 - [x] 解析 ADTS fixed/variable header、frame length、buffer fullness、raw block count 和 CRC。
 - [x] 解析 AudioSpecificConfig、GASpecificConfig 和 Program Config Element。（验收：ADR-0094 9 项测试矩阵 + resolvesAscEntryPointFromBundledRulePackage，本地 dev/ci/sanitize 35/35，hosted run 31928187049 全平台通过）
-- [ ] 将 `raw_data_block` 整体标记为压缩载荷，不隐藏实现 Huffman 解码。
+- [x] 将 `raw_data_block` 整体标记为压缩载荷，不隐藏实现 Huffman 解码。（验收：ADR-0095 §2 `@lazy raw_data_block` 规则声明，v0.1.3，tests/rules/aac_adts_analyzer_test.cpp:141-230 帧 0/1 载荷封装实测通过）
 - [x] 对 HE-AAC、ELD 和其他 profile 明确报告部分识别或不支持。（验收：ADR-0095 §5 明确能力边界闭环；ADTS 0..3 经 tests/rules/aac_adts_analyzer_test.cpp:1916-1958 实测钉住；ASC AOT 5/29/39 分别经 :1960-2128、:2130-2298、:2300-2467 实测钉住；未来非致命上报机制顺延至独立能力切片）
-- [ ] 验证 ADTS、ASC、截断、CRC 错误和不支持 profile 的逐 bit 结果。
+- [x] 验证 ADTS、ASC、截断、CRC 错误和不支持 profile 的逐 bit 结果。（验收：ADR-0095 §6 5 类验收矩阵全量关闭；新增测试用例 :2473-2600、:2606-2677、:2682-2740；AAC analyzer 套件 31/31 全量通过）
 
 ## 阶段 5：非分片 MP4/MOV 与跨层导航
 
@@ -1757,3 +1757,19 @@ Blockers: None
      - 本地 dev/ci/sanitize 35/35 全绿（AAC 28/28，H.264 174/174）；
      - hosted CI run `31941684357` 在 Ubuntu 24.04 / Qt 6.11.1（job `95151697094`）、macOS 15 / Qt 6.11.1（job `95151697041`）、Windows 2022 / Qt 6.10.1（job `95151697136`）全部 100% 成功通过。
   Next Action 指向 Task T18e 主体（阶段 4 逐 bit 验收审计收尾与阶段推进）。
+- 2026-08-16：完成 T18e 主体逐 bit 验收审计收尾与阶段 4 闭环（任务 T18e / commit `TBD`）。
+  1. ADR-0095 §6 五类缺口全量关闭：
+     - **类别 1（ADTS 头部）**：通过 `decodesAdtsHeaderBitByBitRangesAndZeroLengthPayload`（`:2473-2600`）补齐全部 18/19 个字段值（含下标 8–11 `original_copy`、`home`、`copyright_identification_bit`、`copyright_identification_start`）、bit 偏移与长度断言，以及零长度载荷帧（`raw_data_block` 状态为 Materialized、长度 0、零诊断）覆盖；
+     - **类别 2（ASC/PCE）**：通过 `decodesAscFieldRangesRepresentativeSampling`（`:2606-2677`）以抽样方式覆盖 ASC 头部（`audio_object_type`、`sampling_frequency_index`、`channel_configuration`）、GASpecificConfig（`frame_length_flag`、`depends_on_core_coder`、`extension_flag`）与 PCE（`element_instance_tag`、`object_type`、`comment_field_bytes`）的位置与长度断言；
+     - **类别 3（码流截断）**：通过 `verifiesTruncatedFramesLogicalRangesAndDiagnosticLocations`（`:2682-2740`）补齐 15 字节载荷截断与 8 字节含 CRC 头部截断的 `logicalRange()` 及诊断位置区间断言；
+     - **类别 4（CRC 存在性/错误）**：通过 `:2473-2600` 显式断言 `crc_check` 位于 bit 56..71（16 bits，数值 `0x1234`），并通过 `:2682-2740` 验证截断位置；
+     - **类别 5（不支持 Profile）**：已由 T18d / T18e-§0 闭环（`:1916-1958` 与 `:1960-2467`）。
+  2. 阶段 4 验收与阶段推进：
+     - 勾选实施计划 :206（`raw_data_block`）与 :208（逐 bit 验收），阶段 4 全部 5 项完成；
+     - 阶段 4 正式关闭，`Current Phase` 推进至 5；
+     - 阶段 5 第一步任务严格对齐设计规范：先编写 Phase 5 的 ADR 与架构设计，不直接编写 MP4 规则。
+  3. 测试与验证：
+     - 新增测试用例按纪律第 6 条追加至类末尾，AAC analyzer 测试用例数由 28 增至 31，全部 31/31 通过；
+     - CTest 目标数因 §0b 引入 `markdown_hygiene` 目标由 35 增至 36，dev/ci/sanitize 三套构建全部 36/36 全绿。
+  Next Action 指向 Phase 5 ADR 与架构设计编写。
+
