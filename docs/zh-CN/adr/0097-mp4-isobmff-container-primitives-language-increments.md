@@ -8,9 +8,9 @@
 
 ## 背景
 
-阶段 5 要求支持非分片 MP4/ISOBMFF 容器解析（`video/mp4`、`audio/mp4`，ISO/IEC 14496-12 / 14496-14 / 14496-15）。ADR-0096（P5a）已定下架构边界——D1 box 遍历与 `mdat` lazy 封装、D2 跨层导航（`avcC`/`esds` 至 H.264/AAC）、D3 样本表窗口化——但其 D1 的 DSL 片段引用了今天不存在的语言构造。本 ADR（任务 P5c，经 P5c-R、P5c-R2 与 P5c-R3 修正）探测当前 DSL/运行时对 ISOBMFF 容器结构「可/不可表达」的真实边界，并为每一项能力增量锁定**可直接编码与测试的精确合同**，且每一项都映射到工作树中的真实 C++ 类型/函数。本 ADR **不产出任何规则资产**：全部规则消费推迟到 P5d+（「枚举/下钻机制未定 ⇒ 不得提交 MP4 规则资产」闸门）。
+阶段 5 要求支持非分片 MP4/ISOBMFF 容器解析（`video/mp4`、`audio/mp4`，ISO/IEC 14496-12 / 14496-14 / 14496-15）。ADR-0096（P5a）已定下架构边界——D1 box 遍历与 `mdat` lazy 封装、D2 跨层导航（`avcC`/`esds` 至 H.264/AAC）、D3 样本表窗口化——但其 D1 的 DSL 片段引用了今天不存在的语言构造。本 ADR（任务 P5c，经 P5c-R、P5c-R2、P5c-R3 与 P5c-R4 修正）探测当前 DSL/运行时对 ISOBMFF 容器结构「可/不可表达」的真实边界，并为每一项能力增量锁定**可直接编码与测试的精确合同**，且每一项都映射到工作树中的真实 C++ 类型/函数。本 ADR **不产出任何规则资产**：全部规则消费推迟到 P5d+（「枚举/下钻机制未定 => 不得提交 MP4 规则资产」闸门）。
 
-七条容器事实（计划 fact 10–16，主 Agent 已于 2026-08-16 用 `svtool rule check` 实测）作为既知事实纳入，不再重复探测；本轮跑过的探针均现场复确认：
+七条容器事实（计划 fact 10-16，主 Agent 已于 2026-08-16 用 `svtool rule check` 实测）作为既知事实纳入，不再重复探测；本轮跑过的探针均现场复确认：
 
 1. **FourCC 匹配今天已可表达**：`bits<32> box_type @equals(0x66747970)` 可编译（`Rule OK`）。无需新增 `bytes` 值类型。
 2. **`bits<64>` 放行**——`largesize` 可直接读取；字段宽度上限为 64 位（`Bit field width must be in the range 1..64`，`dsl.cpp:1038`）。
@@ -20,9 +20,9 @@
 6. **今天全语言只有「顶层 `sequence` + 单一 `payload<rbsp>` 分派」一种层次机制**（H.264 形态）。嵌套 box 枚举是本 ADR 要解决的硬阻塞。
 7. **`bits<128>` 不可表达**（探针：`error: Bit field width must be in the range 1..64`，`dsl.cpp:1038`）；128 位值声明为两个 `bits<64>` 字段。
 
-本轮全部 18 项探针使用工作树工具二进制 `build/dev/tools/svtool/svtool`（`svtool 0.1.0 (DSL 0.1)`）执行；scratch 源位于仓库之外的会话 scratch 目录。探针源码、命令、stdout/stderr 与 exit code 在任务报告中完整复现（下表列出每条命令与逐字结果）：
+本轮全部 18 项探针使用工作树工具二进制 `build/dev/tools/svtool/svtool`（`svtool 0.1.0 (DSL 0.1)`）执行；scratch 源位于仓库之外的会话 scratch 目录。探针源码、命令、stdout/stderr 与 exit code 在任务报告中完整复现（下表列出每条命令与规范化结果）：
 
-| 探针 | 命令 | 结果（逐字错误 / 状态） | 现场位置 |
+| 探针 | 命令 | 结果（规范化错误 / 状态） | 现场位置 |
 | :--- | :--- | :--- | :--- |
 | P1 `scan(mp4_box)` | `svtool rule check scratch/p5c_p1_scan_mp4_box.svfmt` | `error: Only h264_start_code and adts_frame are supported` | parser `dsl.cpp:3568`、IR `dsl_ir.cpp:3679` |
 | P2a 结构体类型字段 | `svtool rule check scratch/p5c_p2a_struct_typed_field.svfmt` | `error: Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type` | 字段类型解析 |
@@ -39,9 +39,9 @@
 | P8b `bits<128>` 字段 | `svtool rule check scratch/p5c_p8_bits128.svfmt` | `error: Bit field width must be in the range 1..64` | `dsl.cpp:1038` |
 | P8c `@container(Child)` 后置位 | `svtool rule check scratch/p5c_p8_container_annotation.svfmt` | `error: Unknown annotation '@container'`（名称闸门先行；参数 `Child` 解析为 `DslAnnotationValueKind::Identifier`，`dsl.cpp:801`） | `dsl.cpp:1880` |
 | P8d uuid 完整 size 分支（正确线序） | `svtool rule check scratch/p5c_p8d_uuid_full_branches.svfmt` | `Rule OK`（验证正确线序语法与 IR 合法性） | — |
-| P8e uuid `size == 0` 缺口（`available_bytes()`） | `svtool rule check scratch/p5c_p8e_uuid_size0_gap.svfmt` | `error: Pure function is not declared before this call` | `dsl_ir.cpp:772` |
-| P9a `@window(Entry, entry_count)` 后置位 | `svtool rule check scratch/p5c_p9a_window_annotation.svfmt` | `error: Unknown annotation '@window'` | `dsl.cpp:1880` |
-| P9b `@window(123, 456)` 非标识符参数 | `svtool rule check scratch/p5c_p9b_window_token_kind.svfmt` | `error: Unknown annotation '@window'` | `dsl.cpp:1880` |
+| P8e uuid `size == 0` 缺口（`available_bytes()`） | `svtool rule check scratch/p5c_p8e_uuid_size0_gap.svfmt` | `error: Pure function is not declared before this call`（首先暴露 missing available_bytes 内建） | `dsl_ir.cpp:772` |
+| P9a `@window(Entry, entry_count)` 后置位 | `svtool rule check scratch/p5c_p9a_window_annotation.svfmt` | `error: Unknown annotation '@window'`（名称闸门） | `dsl.cpp:1880` |
+| P9b `@window(123, 456)` 非标识符参数 | `svtool rule check scratch/p5c_p9b_window_token_kind.svfmt` | `error: Unknown annotation '@window'`（名称闸门） | `dsl.cpp:1880` |
 
 ---
 
@@ -66,7 +66,7 @@ if remaining < 8:
 read u32 size, u32 type
 
 if size == 0:
-    // 延伸至区域末尾的终结 box
+    // 延伸至区域末尾的终结 box（独立分支，绝不执行 start + box_size）
     span = [start, region_end)
     terminal = true
     truncated = false
@@ -104,14 +104,18 @@ else:
     stop_scanning()
 ```
 
-**字节到比特坐标保护**：
+**字节到比特坐标保护与诊断**：
 在构造位地址前，偏移与长度值均经过保护校验：
-`start <= std::numeric_limits<quint64>::max() / 8` 且 `span_length <= std::numeric_limits<quint64>::max() / 8`。
-若 `core::SourceSpan::create` 因算术越界失败，scanner 产生确定性的错误状态 / `InvalidSourceSpan` 诊断，绝不发出非法位地址。
+`start <= std::numeric_limits<quint64>::max() / 8`、`span_length <= std::numeric_limits<quint64>::max() / 8` 且 `span_length <= (std::numeric_limits<quint64>::max() / 8) - start`。
+若 `core::SourceSpan::create` 因算术越界失败，scanner 产生 `core::DiagnosticCode::SourceError`，`core::DiagnosticSeverity::Error` 诊断，分析节点终态为 `core::MaterializationState::Invalid`。
 
-**截断记录与候选探测器分级**：
-- 截断 box 记录（`truncated = true`）正常发出，以便分析器将残缺 box 头部物化上树并附带 `TruncatedSource` 诊断（`"Lazy byte region exceeds the available source range"`，`dsl_vm.cpp:3249-3252`）。
-- 在候选探测器（`detectMp4Candidate`，P5d-1）中，截断 box **不计入** `Strong` 候选链阈值。`Strong` 必须由 $\ge 3$ 个连续完整、格式良好且未截断的 box 跨度铺满被检前缀；`Probable` = 2；`Weak` = 1。
+**探测器候选分级与截断记录**：
+- 候选探测器（`detectMp4Candidate`，P5d-1）**只对完整、未截断、格式良好的 box 计数**：
+  - `Strong`：>= 3 个完整 box 铺满被检前缀；
+  - `Probable`：2 个完整 box；
+  - `Weak`：1 个完整 box。
+- 截断 box 记录（`truncated = true`）正常发出，以便分析器将残缺 box 头部物化上树并附带 `core::DiagnosticCode::TruncatedSource` 诊断（`dsl_vm.cpp:3249-3252`），但截断记录**绝不计入**任何候选等级。
+- 尾部截断 box 不会降低此前已累积的完整链等级（例如 3 个完整 box + 1 个尾部截断 box 仍评定为 `Strong`；首 box 截断则无候选返回 `std::nullopt`）。
 
 **scanner/DSL 数据合同——span-only，不发布头部值**：
 scanner 输出每个 box 的**跨度**（起始偏移、结束偏移、截断标记）。它**不发布** `size`/`type`/`largesize` 值。runner 将跨度映射为源子视图（`aac_adts_analyzer.cpp:309/:346` 先例），DSL 的 `Box` 结构体在跨度内**从源重新读取** `size`/`type`/`largesize`。
@@ -120,7 +124,7 @@ P5d-1/P5d-2 之后，`sequence<Box> boxes = scan(mp4_box);`（配 `@index(progre
 
 ---
 
-### D2：嵌套下钻——`@container` 注解、Runner 重入与共享执行状态
+### D2：嵌套下钻——`@container` 注解、Runner 重入与共享执行预算
 
 容器 box（`moov`/`trak`/`mdia`/`minf`/`stbl`）需要对其载荷字节区域枚举多个子 box。
 
@@ -142,35 +146,58 @@ P5d-1/P5d-2 之后，`sequence<Box> boxes = scan(mp4_box);`（配 `@index(progre
 
 **类型化 IR**：`DslTypedField`（`dsl_ir.h:108-124`）增加 `std::optional<quint32> containerChildStructIndex`（仅 `type.kind == DslValueTypeKind::LazyBytes` 时有效）。在 `compileLazyRegion`（`dsl_ir.cpp:2462-2540`）中解析绑定。
 
-**`RegisterLazyBytes` 职责与 Runner 重入**：
+**`RegisterLazyBytes` 职责与会话级 Runner**：
 - `DslOpcode::RegisterLazyBytes`（`dsl_vm.cpp:3169-3320`）**仅注册 lazy 节点**并存储元数据（`containerChildStructIndex`），**不立即执行重入**。
-- 子 box 枚举由 runner / 分析会话（`Mp4IsobmffAnalyzer`，P5d-3）在容器字节跨度 `[anchor_start, anchor_end)` 上重入 `Mp4Box` scanner，以指定结构体为元素类型物化子节点并挂载于容器 lazy 节点之下。
+- 子 box 枚举由会话拥有的 `Mp4IsobmffAnalyzer` runner（P5d-3）在容器字节跨度 `[anchor_start, anchor_end)` 上重入 `Mp4Box` scanner，以指定结构体为元素类型物化子节点并挂载于容器 lazy 节点之下。
 
-**Runner 拥有的跨重入共享执行状态追踪器**：
-`DslExecutionLimits`（`dsl_vm.h:30-51`）提供静态上限配置，runner 维护跨所有嵌套重入的运行时状态：
-- `quint64 totalNodesMaterialized`（初值 0，每物化一个节点递增，受 `limits.maximumMaterializedNodes = 100'000` 约束）；
-- `quint32 currentNestingDepth`（初值 0，进入子扫描前递增、返回后递减，受 `limits.maximumNodeDepth = 256` 约束）；
-- 共享的 `cancellationToken` 每 1,024 条指令检查一次；
-- 超过任何上限时将容器区域标记为 `ResourceLimit` 并终止子枚举。
+**状态转移矩阵**（对应 `AnalysisTree::canTransition`，`analysis_model.cpp:218-251`）：
 
-**状态转移矩阵**（`AnalysisTree::canTransition`，`analysis_model.cpp:218-251`）：
-`Lazy` $    o$ `Indexing` $    o$ `Materialized` / `Invalid` / `Cancelled` / `WaitingDependency`。
+| From | To (allowed) | Meaning for a container node |
+| :--- | :--- | :--- |
+| Lazy | Indexing | Child enumeration begins (runner re-entry) |
+| Lazy | WaitingDependency | Re-entry waits on context dependency |
+| Lazy | Cancelled / Unsupported / Invalid / Materialized | Direct terminal transition (empty / error / pre-materialized) |
+| Indexing | WaitingDependency | Mid-enumeration dependency wait |
+| Indexing | Cancelled / Unsupported / Invalid / Materialized | Terminal states after child enumeration |
+| WaitingDependency | Indexing | Dependency resolved; child enumeration resumes |
+| WaitingDependency | Cancelled / Unsupported / Invalid / Materialized | Terminal while waiting |
+| Cancelled | Indexing | resumeCancelled re-enters child enumeration |
+| Unsupported / Invalid / Materialized | — | Terminal; no further transition |
+
+**Runner 拥有的跨重入共享执行预算（`RunnerExecutionBudget`）**：
+Runner 维护跨所有嵌套 VM 重入的共享预算跟踪器：
+
+```cpp
+struct RunnerExecutionBudget {
+    quint64 remainingNodes;         // 初始值为 100'000 (defaultMaximumMaterializedNodes)
+    quint64 remainingInstructions;  // 初始值为 1'000'000 (defaultMaximumInstructions)
+    quint32 currentNestingDepth;    // 初始值为 0；受 defaultMaximumNodeDepth = 256 约束
+    std::shared_ptr<const std::atomic_bool> cancellation;
+};
+```
+
+- 每次调用 VM `execute` 前，将 `DslExecutionOptions` 中的单次上限收窄为共享余额（`limits.maximumMaterializedNodes = budget.remainingNodes`，`limits.maximumInstructions = budget.remainingInstructions`）。
+- 若 `budget.remainingNodes == 0` 或 `budget.remainingInstructions == 0`，操作立即返回 `DslExecutionStatus::ResourceLimit`。
+- VM `execute` 返回后（无论成功、截断或错误），runner 从余额中扣除 `result.nodesCreated` 与 `result.instructionsExecuted`。
+- `maximumViewDepth = 64` 与 `maximumCallDepth = 64` 为单次 VM 调用栈深限制，不计为跨重入累计预算。
+- `currentNestingDepth` 在进入子扫描前递增、返回后递减；超过 `maximumNodeDepth = 256` 时将容器节点标记为 `ResourceLimit`。
 
 **内核/Runner 中立性**：子结构体仅通过 IR 索引引用；**核心与 runner 代码中绝不出现任何 FourCC 字面量**。
 
 ---
 
-### D3：标签匹配——`bits<32>` + `@equals(0x...)`、UUID 线序与三路分支
+### D3：标签匹配——`bits<32>` + `@equals(0x...)`、UUID 线序与下溢诊断语义
 
 Fact 10 成立：`bits<32> box_type @equals(0x66747970)` 可编译；支持十六进制字面量。常用 FourCC 常量表：
 `ftyp` (0x66747970), `moov` (0x6D6F6F76), `mdat` (0x6D646174), `free` (0x66726565), `mvhd` (0x6D766864), `trak` (0x7472616B), `tkhd` (0x746B6864), `edts` (0x65647473), `elst` (0x656C7374), `mdia` (0x6D646961), `mdhd` (0x6D646864), `hdlr` (0x68646C72), `minf` (0x6D696E66), `vmhd` (0x766D6864), `smhd` (0x736D6864), `dinf` (0x64696E66), `dref` (0x64726566), `stbl` (0x7374626C), `stsd` (0x73747364), `stts` (0x73747473), `stss` (0x73747373), `stsc` (0x73747363), `stsz` (0x7374737A), `stco` (0x7374636F), `avc1` (0x61766331), `avcC` (0x61766343), `mp4a` (0x6D703461), `esds` (0x65736473), `pasp` (0x70617370), `btrt` (0x62747274), `mvex` (0x6D766578), `trex` (0x74726578), `moof` (0x6D6F6F66), `mfhd` (0x6D666864), `traf` (0x74726166), `tfhd` (0x74666864), `trun` (0x7472756E), `udta` (0x75647461), `meta` (0x6D657461), `ilst` (0x696C7374)。
 
-**UUID Box 线序与 DSL 结构**：
+**UUID Box 线序与最小尺寸校验**：
 按 ISO/IEC 14496-12：
 - 对 large UUID（`size == 1`），码流上 `largesize`（第 8..15 字节）位于 `usertype`（第 16..31 字节）之前。
 - 对普通 UUID（`size >= 24`）与 EOF UUID（`size == 0`），`usertype` 紧跟 `type`（第 8..23 字节）。
 - `usertype` 绝不能在判断 `size == 1` 之前无条件统一读取。
-- DSL 结构采用三路互斥分支，防止任何无符号减法下溢：
+- 最小载荷尺寸要求：large UUID 要求 `largesize >= 32`（16 字节头 + 16 字节 usertype）；普通 UUID 要求 `size >= 24`（8 字节头 + 16 字节 usertype）。
+- 若畸形流给出 `16 <= largesize < 32` 或 `8 <= size < 24`，`largesize - 32` 或 `size - 24` 触发 VM 的受检无符号减法下溢，产生 `DslExecutionStatus::InvalidSyntax` 与 `"Unsigned subtraction underflow in computed field"` 诊断（锚定于 computed 字段）。
 
 ```svfmt
 struct UuidBox {
@@ -196,7 +223,7 @@ struct UuidBox {
 }
 ```
 
-探针 P8d 证实此正确线序与三路分支语法的语法/IR 合法性（`Rule OK`）。探针 P8e 证实 `available_bytes()` 是当前唯一缺失的内建（`error: Pure function is not declared before this call`，`dsl_ir.cpp:772`）。
+探针 P8d 证实此正确线序与分支语法的语法/IR 合法性（`Rule OK`）。探针 P8e 证实 `available_bytes()` 是编译器首先拦截的缺失内建（`error: Pure function is not declared before this call`，`dsl_ir.cpp:772`）。
 
 ---
 
@@ -264,20 +291,72 @@ struct Box {
 - **宿主**：`DslAnnotationTarget::LazyRegion` 专有。
 - **参数契约**：严格两个参数，均为 `DslAnnotationValueKind::Identifier`（表项结构体类型名，以及所在结构体内声明的计数标量字段名）。
 - **诊断**（P5d-2）：
-  - 未注册名称：`Unknown annotation '@window'`（`dsl.cpp:1880`，探针 P9a/P9b）；
+  - 未注册名称：`Unknown annotation '@window'`（`dsl.cpp:1880`，探针 P9a/P9b 证实名称闸门拦截）；
   - 宿主非 LazyRegion：`@window is not supported on this declaration`；
   - 参数个数 != 2 或非标识符：`InvalidAnnotation`；
   - 表项结构体未声明：`UnknownReference`；
   - 计数字段未声明 / 非标量：`UnknownReference` / `InvalidType`。
-- **类型化 IR**：`DslTypedField` 增加：
-  - `std::optional<quint32> windowEntryStructIndex`；
-  - `std::optional<quint32> windowEntryCountFieldIndex`；
-  - `std::optional<quint64> windowEntrySizeBits`（编译期计算为 `EntryStruct` 全部字段位宽之和）。
-- **节点元数据 / 会话查询**：`AnalysisNodeMetadata` / 会话接口暴露窗口元数据（`windowEntryStructIndex`、`windowEntrySizeBits`、`entryCount`）。UI 与会话调用方直接读取该元数据，无需猜测结构体索引或条目数。
-- **窗口解码器接口**（`src/rules/include/streamview/rules/window_decoder.h`，P5d-3 子项）：
-  - `WindowDecodeRequest { AnalysisNodeId lazyRegionNode; quint32 entryStructIndex; quint64 entryCount; quint64 entrySizeBits; quint64 pageIndex; quint64 pageSize; }`。
-  - `WindowDecodeResult { DslExecutionStatus status; std::vector<AnalysisNodeId> entryNodes; quint64 pageStartIndex; bool nextPageAvailable; }`。
-  - 固定默认 `pageSize = 256` 条目；坐标从 lazy 逻辑范围 + 校验后偏移经 `SourceMapping::locate` 映射。
+
+**固定宽度 `EntryStruct` 约束（v0.1）**：
+- 必须仅包含无条件、源 backing 的静态 `bits<N[, endian]>` 标量字段或静态 `bits<N>` 固定长度数组；
+- 禁止在 `EntryStruct` 中使用：动态位宽字段、`ue`、`se`、`ff_coded`、条件分支（`if`/`else`）、循环（`repeat`/`until`）、`computed` 字段、`@lazy` 区域、`compressed_payload`、`unsupported` 语句、嵌套结构体或除 `@description`/`@spec` 以外的注解；
+- `entrySizeBits` 在编译期计算为 `EntryStruct` 全部字段位宽之和：
+  - 必须严格 `> 0`；
+  - 必须字节对齐（`entrySizeBits % 8 == 0`）；
+  - 累加过程进行 `quint64` 防溢出检查。
+
+**计数字段约束**：
+- `entry_count_field` 必须在所在结构体中先于 lazy 区域声明；
+- 必须为无条件、标量无符号整数字段；
+- `RegisterLazyBytes` 在运行时将解码出的 `entryCount` 快照存入节点窗口元数据。
+
+**类型化 IR**：`DslTypedField` 增加：
+- `std::optional<quint32> windowEntryStructIndex`；
+- `std::optional<quint32> windowEntryCountFieldIndex`；
+- `std::optional<quint64> windowEntrySizeBits`。
+
+**节点元数据 / 会话查询**：`AnalysisNodeMetadata` / 会话接口暴露窗口元数据（`windowEntryStructIndex`、`windowEntrySizeBits`、`entryCount`）。UI 与会话调用方直接读取该元数据，无需猜测结构体索引或条目数。
+
+**`WindowDecoder` 会话级对象（`src/rules/include/streamview/rules/window_decoder.h`，P5d-3）**：
+
+```cpp
+class WindowDecoder {
+public:
+    explicit WindowDecoder(
+        const DslProgram& program,
+        std::shared_ptr<const core::Source> source,
+        core::SourceMapping sourceMapping,
+        std::shared_ptr<core::AnalysisTree> tree,
+        core::AnalysisNodeId containerNodeId,
+        std::shared_ptr<RunnerExecutionBudget> budget);
+
+    WindowDecodeResult decodeWindow(const WindowDecodeRequest& request);
+};
+```
+
+**`DslExecutionStatus` 完整 9 态矩阵与窗口返回子集**：
+`dsl_vm.h:18-28` 定义的完整 9 态：
+1. `Materialized`
+2. `Unsupported`
+3. `TruncatedSource`
+4. `InvalidSyntax`
+5. `DependencyUnavailable`
+6. `SourceError`
+7. `Cancelled`
+8. `ResourceLimit`
+9. `InvalidDefinition`
+
+窗口解码操作返回其子集：
+- `Materialized`：请求页成功解码；
+- `TruncatedSource`：lazy 区域或源短于请求页条目；
+- `ResourceLimit`：共享节点数或指令预算耗尽；
+- `Cancelled`：解码期间触发取消标记；
+- `InvalidDefinition`：结构体索引越界或请求参数非法。
+
+**边界与越界校验**：
+- 受检乘法 `pageIndex * pageSize`（求得 `pageStartIndex`）；
+- 受检乘法 `entryIndex * entrySizeBits`（页内偏移）；
+- Lazy 区域边界校验：若 `(pageStartIndex + pageCount) * (entrySizeBits / 8) > region_byte_length`，仅解码可用条目并返回 `TruncatedSource`。
 
 ---
 
@@ -311,7 +390,7 @@ struct Box {
 ## 影响与结论
 
 ### 正向收益
-- ISOBMFF box 树在 P5d 后完全可表达：顶层分帧（D1）、带共享执行状态的容器重入（D2）、正确 UUID 线序（D3）、无溢出的安全三路分支（D4）、跨格式导航元数据（D5）、专有 `@window` 样本表绑定（D6）以及规范性分片 MP4 处理（D7）。
+- ISOBMFF box 树在 P5d 后完全可表达：顶层分帧（D1）、带共享执行预算的容器重入（D2）、正确 UUID 线序与确定性下溢诊断（D3）、无溢出的安全三路分支（D4）、跨格式导航元数据（D5）、专有 `@window` 样本表绑定（D6）以及规范性分片 MP4 处理（D7）。
 - 核心引擎保持 100% 格式中立（核心无 FourCC）。
 - 所有能力均映射到工作树真实 C++ 类型并具备可直接测试的合同。
 
@@ -325,9 +404,9 @@ struct Box {
 
 ## 验证矩阵与证据
 
-所有 18 项探针均使用 `build/dev/tools/svtool/svtool`（`svtool 0.1.0 (DSL 0.1)`）实跑验证；scratch 源位于会话 scratch 目录。
+所有 18 项探针均使用 `build/dev/tools/svtool/svtool`（`svtool 0.1.0 (DSL 0.1)`) 实跑验证；scratch 源位于会话 scratch 目录。
 
-| # | 探针 | 命令 | 结果 |
+| # | 探针 | 命令 | 规范化结果 |
 | :--- | :--- | :--- | :--- |
 | P1 | `scan(mp4_box)` | `svtool rule check scratch/p5c_p1_scan_mp4_box.svfmt` | `error: Only h264_start_code and adts_frame are supported` (`dsl.cpp:3568`) |
 | P2a | 结构体类型字段 | `svtool rule check scratch/p5c_p2a_struct_typed_field.svfmt` | `error: Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type` |
@@ -342,7 +421,7 @@ struct Box {
 | P7d | box 头字段后 `unsupported` | `svtool rule check scratch/p5c_p7d_unsupported_positive.svfmt` | `Rule OK` |
 | P8a | uuid 标记，两个 `bits<64>` | `svtool rule check scratch/p5c_p8_uuid_marker.svfmt` | `Rule OK` |
 | P8b | `bits<128>` 字段 | `svtool rule check scratch/p5c_p8_bits128.svfmt` | `error: Bit field width must be in the range 1..64` (`dsl.cpp:1038`) |
-| P8c | `@container(Child)` 后置位 | `svtool rule check scratch/p5c_p8_container_annotation.svfmt` | `error: Unknown annotation '@container'`（名称闸门先行；`Child` 解析为 Identifier，`dsl.cpp:801`） |
+| P8c | `@container(Child)` 后置位 | `svtool rule check scratch/p5c_p8_container_annotation.svfmt` | `error: Unknown annotation '@container'` (名称闸门先行；`Child` 解析为 Identifier，`dsl.cpp:801`) |
 | P8d | uuid 完整 size 分支（正确线序） | `svtool rule check scratch/p5c_p8d_uuid_full_branches.svfmt` | `Rule OK` |
 | P8e | uuid `size == 0` 缺口（`available_bytes()`） | `svtool rule check scratch/p5c_p8e_uuid_size0_gap.svfmt` | `error: Pure function is not declared before this call` (`dsl_ir.cpp:772`) |
 | P9a | `@window(Entry, entry_count)` 后置位 | `svtool rule check scratch/p5c_p9a_window_annotation.svfmt` | `error: Unknown annotation '@window'` (`dsl.cpp:1880`) |
@@ -352,12 +431,12 @@ struct Box {
 
 - 普通 fixture：
   `ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc=duration=0.2:size=64x48:rate=10 -f lavfi -i sine=frequency=440:duration=0.2 -c:v libx264 -preset ultrafast -c:a aac -y /tmp/p5c_fixture.mp4`
-  → exit code 0，6,513 字节（`-rw-r--r--@ 1 yun wheel 6513`）。
+  => exit code 0，6,513 字节（`-rw-r--r--@ 1 yun wheel 6513`）。
 - 分片 fixture：
   `ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc=duration=0.3:size=64x48:rate=10 -c:v libx264 -preset ultrafast -movflags frag_keyframe+empty_moov -y /tmp/p5c_frag.mp4`
-  → exit code 0，4,505 字节（`-rw-r--r--@ 1 yun wheel 4505`）。
+  => exit code 0，4,505 字节（`-rw-r--r--@ 1 yun wheel 4505`）。
 
-**Box 级事实基准（`ffprobe -v trace` 经 grep 筛选的相关摘录）**——普通 fixture（6,513 字节）：
+**Box 级事实基准（`ffprobe -v trace` 经 grep 筛选的相关规范化摘录）**——普通 fixture（6,513 字节）：
 
 ```
 type:'ftyp' parent:'root' sz: 32 8 6513
@@ -395,7 +474,7 @@ type:'btrt' parent:'stsd' sz: 20 62 74            (audio btrt)
 type:'smhd' parent:'minf' sz: 16 8 412            (audio sound media header)
 ```
 
-**分片 fixture（`ffprobe -v trace` 经 grep 筛选的相关摘录）**——4,505 字节：
+**分片 fixture（`ffprobe -v trace` 经 grep 筛选的相关规范化摘录）**——4,505 字节：
 
 ```
 type:'mvex' parent:'moov' sz: 40 610 740
@@ -408,7 +487,7 @@ type:'trun' parent:'traf' sz: 36 64 92
 type:'mdat' parent:'root' sz: 3530 916 4505       (follows moof; D7 continuation target)
 ```
 
-**样本级事实基准（`ffprobe -show_packets` 视频流相关摘录）：**
+**样本级事实基准（`ffprobe -show_packets` 视频流相关规范化摘录）：**
 
 ```
 0.000000,0.100000,306,K__      (frame 1: pts 0.0s, duration 0.1s, absolute byte pos 306, keyframe)
@@ -423,4 +502,4 @@ type:'mdat' parent:'root' sz: 3530 916 4505       (follows moof; D7 continuation
 - ADR-0098：未识别注解编译闸门与显式不支持语法。
 - ADR-0040：非致命语法警告与值域注解。
 - ISO/IEC 14496-12:2015（ISOBMFF 容器 box 结构与 `size`/`largesize`/`size == 0` 语义；`uuid` 16 字节 `usertype`）。
-- Task P5c/P5c-R/P5c-R2/P5c-R3 定义与容器事实 10–16，`Sub-Agent分步开发指导计划.md`。
+- Task P5c/P5c-R/P5c-R2/P5c-R3/P5c-R4 定义与容器事实 10-16，`Sub-Agent分步开发指导计划.md`。
