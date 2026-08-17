@@ -4,6 +4,8 @@
 Generator for MP4 P5f test fixtures:
 - mp4_p5f_full_hierarchy_v0.mp4
 - mp4_p5f_time_headers_v1.mp4
+- mp4_p5f_large_hdlr_v0.mp4
+- mp4_p5f_unsupported_version.mp4
 """
 
 import os
@@ -15,6 +17,11 @@ FIXTURES_DIR = os.path.dirname(os.path.abspath(__file__))
 def make_box(fourcc_str: str, payload_bytes: bytes) -> bytes:
     size = len(payload_bytes) + 8
     return struct.pack(">I4s", size, fourcc_str.encode("ascii")) + payload_bytes
+
+
+def make_large_box(fourcc_str: str, payload_bytes: bytes) -> bytes:
+    size = len(payload_bytes) + 16
+    return struct.pack(">I4sQ", 1, fourcc_str.encode("ascii"), size) + payload_bytes
 
 
 def make_full_box(fourcc_str: str, version: int, flags: int, payload_bytes: bytes) -> bytes:
@@ -113,6 +120,12 @@ def make_hdlr(handler_type_str: str, name_str: str) -> bytes:
     return make_full_box("hdlr", 0, 0, payload)
 
 
+def make_large_hdlr(handler_type_str: str, name_str: str) -> bytes:
+    payload = struct.pack(">II4s3I", 0, 0, handler_type_str.encode("ascii"), 0, 0, 0)
+    payload += name_str.encode("utf-8") + b"\x00"
+    return make_large_box("hdlr", payload)
+
+
 def generate_full_hierarchy_v0() -> None:
     path = os.path.join(FIXTURES_DIR, "mp4_p5f_full_hierarchy_v0.mp4")
 
@@ -178,7 +191,33 @@ def generate_time_headers_v1() -> None:
     print(f"Generated {path} ({os.path.getsize(path)} bytes)")
 
 
+def generate_large_hdlr_v0() -> None:
+    path = os.path.join(FIXTURES_DIR, "mp4_p5f_large_hdlr_v0.mp4")
+    hdlr = make_large_hdlr("vide", "LargeVideoHandler")
+    mdia = make_box("mdia", hdlr)
+    moov = make_box("moov", mdia)
+    mdat = make_box("mdat", bytes(range(8)))
+
+    with open(path, "wb") as f:
+        f.write(make_ftyp() + moov + mdat)
+
+    print(f"Generated {path} ({os.path.getsize(path)} bytes)")
+
+
+def generate_unsupported_version() -> None:
+    path = os.path.join(FIXTURES_DIR, "mp4_p5f_unsupported_version.mp4")
+    mvhd = make_full_box("mvhd", 2, 0, b"")
+    mdat = make_box("mdat", bytes(range(8)))
+
+    with open(path, "wb") as f:
+        f.write(make_ftyp() + mvhd + mdat)
+
+    print(f"Generated {path} ({os.path.getsize(path)} bytes)")
+
+
 if __name__ == "__main__":
     os.makedirs(FIXTURES_DIR, exist_ok=True)
     generate_full_hierarchy_v0()
     generate_time_headers_v1()
+    generate_large_hdlr_v0()
+    generate_unsupported_version()

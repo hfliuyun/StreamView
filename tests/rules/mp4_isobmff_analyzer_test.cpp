@@ -181,6 +181,8 @@ private slots:
     void analyzesUnknownOpaqueBox();
     void analyzesFullMoovContainerHierarchyV0();
     void analyzesFullBoxVersion1TimeHeadersAndEditList();
+    void handlesLargeSizeHandlerReferenceBoxWireOrder();
+    void rejectsUnsupportedFullBoxVersionWithoutV0Fallback();
 };
 
 void Mp4IsobmffAnalyzerTest::failsCleanlyWhenNoRulePackageInstalled() {
@@ -1208,8 +1210,8 @@ void Mp4IsobmffAnalyzerTest::analyzesFullMoovContainerHierarchyV0() {
         QStringLiteral("elst_entry_count"),
         QStringLiteral("elst_v0_segment_duration[0]"),
         QStringLiteral("elst_v0_media_time[0]"),
-        QStringLiteral("elst_media_rate_integer[0]"),
-        QStringLiteral("elst_media_rate_fraction[0]")
+        QStringLiteral("elst_v0_media_rate_integer[0]"),
+        QStringLiteral("elst_v0_media_rate_fraction[0]")
     };
     QCOMPARE(elstFieldNames, expectedElstFields);
     const auto elstSegDur = tree.node(elstStruct->children()[5]);
@@ -1419,6 +1421,124 @@ void Mp4IsobmffAnalyzerTest::analyzesFullBoxVersion1TimeHeadersAndEditList() {
     QCOMPARE(hdlrType->value().toULongLong(), quint64{0x736F756E});
 
     QCOMPARE(analyzer->tree().node(analyzer->tree().rootId())->diagnostics().size(), std::size_t{0});
+}
+
+void Mp4IsobmffAnalyzerTest::handlesLargeSizeHandlerReferenceBoxWireOrder() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5f_large_hdlr_v0.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+    QCOMPARE(batch.boxNodes.size(), std::size_t{3});
+
+    const auto& tree = analyzer->tree();
+    const auto moov = tree.node(batch.boxNodes[1]);
+    QVERIFY(moov.has_value());
+    const auto moovStruct = tree.node(moov->children().front());
+    QVERIFY(moovStruct.has_value());
+    const auto moovPayload = tree.node(moovStruct->children().back());
+    QVERIFY(moovPayload.has_value());
+
+    const auto mdiaStruct = tree.node(moovPayload->children().front());
+    QVERIFY(mdiaStruct.has_value());
+    const auto mdiaPayload = tree.node(mdiaStruct->children().back());
+    QVERIFY(mdiaPayload.has_value());
+
+    const auto hdlrStruct = tree.node(mdiaPayload->children().front());
+    QVERIFY(hdlrStruct.has_value());
+    std::vector<QString> fieldNames;
+    for (const auto childId : hdlrStruct->children()) {
+        const auto child = tree.node(childId);
+        QVERIFY(child.has_value());
+        fieldNames.push_back(child->name());
+    }
+    const std::vector<QString> expectedFieldNames = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("hdlr_largesize"),
+        QStringLiteral("hdlr_version"),
+        QStringLiteral("hdlr_flags"),
+        QStringLiteral("hdlr_pre_defined"),
+        QStringLiteral("hdlr_handler_type"),
+        QStringLiteral("hdlr_reserved_0"),
+        QStringLiteral("hdlr_reserved_1"),
+        QStringLiteral("hdlr_reserved_2"),
+        QStringLiteral("hdlr_large_name_bytes"),
+        QStringLiteral("hdlr_large_name"),
+    };
+    QCOMPARE(fieldNames, expectedFieldNames);
+
+    const auto largeSize = tree.node(hdlrStruct->children()[2]);
+    QVERIFY(largeSize->location().has_value());
+    QCOMPARE(largeSize->value().toULongLong(), quint64{58});
+    QCOMPARE(largeSize->location()->logicalRange().start().bitOffset(), quint64{64});
+    QCOMPARE(largeSize->location()->logicalRange().bitLength(), quint64{64});
+
+    const auto version = tree.node(hdlrStruct->children()[3]);
+    QCOMPARE(version->value().toULongLong(), quint64{0});
+    QCOMPARE(version->location()->logicalRange().start().bitOffset(), quint64{128});
+
+    const auto handlerType = tree.node(hdlrStruct->children()[6]);
+    QCOMPARE(handlerType->value().toULongLong(), quint64{0x76696465});
+    QCOMPARE(handlerType->location()->logicalRange().start().bitOffset(), quint64{192});
+
+    const auto nameBytes = tree.node(hdlrStruct->children()[10]);
+    QCOMPARE(nameBytes->value().toULongLong(), quint64{18});
+    const auto name = tree.node(hdlrStruct->children()[11]);
+    QVERIFY(name->location().has_value());
+    QCOMPARE(name->location()->logicalRange().start().bitOffset(), quint64{320});
+    QCOMPARE(name->location()->logicalRange().bitLength(), quint64{144});
+    QCOMPARE(hdlrStruct->state(), streamview::core::MaterializationState::Materialized);
+    QVERIFY(hdlrStruct->diagnostics().empty());
+}
+
+void Mp4IsobmffAnalyzerTest::rejectsUnsupportedFullBoxVersionWithoutV0Fallback() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5f_unsupported_version.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+    QCOMPARE(batch.boxNodes.size(), std::size_t{3});
+
+    const auto& tree = analyzer->tree();
+    const auto mvhd = tree.node(batch.boxNodes[1]);
+    QVERIFY(mvhd.has_value());
+    const auto mvhdStruct = tree.node(mvhd->children().front());
+    QVERIFY(mvhdStruct.has_value());
+    QCOMPARE(mvhdStruct->state(), streamview::core::MaterializationState::Unsupported);
+
+    std::vector<QString> fieldNames;
+    for (const auto childId : mvhdStruct->children()) {
+        const auto child = tree.node(childId);
+        QVERIFY(child.has_value());
+        fieldNames.push_back(child->name());
+    }
+    const std::vector<QString> expectedFieldNames = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("mvhd_version"),
+        QStringLiteral("mvhd_flags"),
+    };
+    QCOMPARE(fieldNames, expectedFieldNames);
+    QCOMPARE(mvhdStruct->diagnostics().size(), std::size_t{1});
+    const auto& diagnostic = mvhdStruct->diagnostics().front();
+    QCOMPARE(diagnostic.code, streamview::core::DiagnosticCode::UnsupportedSyntax);
+    QCOMPARE(diagnostic.severity, streamview::core::DiagnosticSeverity::Warning);
+    QCOMPARE(diagnostic.fieldPath, QStringLiteral("Box.mvhd_version"));
+
+    const auto mdat = tree.node(batch.boxNodes[2]);
+    QVERIFY(mdat.has_value());
+    const auto mdatStruct = tree.node(mdat->children().front());
+    QVERIFY(mdatStruct.has_value());
+    QCOMPARE(mdatStruct->state(), streamview::core::MaterializationState::Materialized);
 }
 
 QTEST_MAIN(Mp4IsobmffAnalyzerTest)
