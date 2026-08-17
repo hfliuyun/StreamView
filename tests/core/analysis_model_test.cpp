@@ -109,6 +109,27 @@ private slots:
         QCOMPARE(current->children().size(), std::size_t{1});
     }
 
+    void restoresTransactionalSnapshotWithoutChangingIdentity() {
+        auto tree = AnalysisTree::create(QStringLiteral("transaction"));
+        QVERIFY(tree.has_value());
+        const quint64 identity = tree->instanceIdentity();
+        auto snapshot = tree->snapshot();
+
+        AnalysisNodeSpec child;
+        child.kind = AnalysisNodeKind::Region;
+        child.name = QStringLiteral("temporary");
+        child.state = MaterializationState::Materialized;
+        QVERIFY(tree->appendChild(tree->rootId(), std::move(child)).has_value());
+        QCOMPARE(tree->nodeCount(), std::size_t{2});
+
+        QVERIFY(tree->restore(std::move(snapshot)));
+        QCOMPARE(tree->instanceIdentity(), identity);
+        QCOMPARE(tree->nodeCount(), std::size_t{1});
+        const auto root = tree->node(tree->rootId());
+        QVERIFY(root.has_value());
+        QVERIFY(root->children().empty());
+    }
+
     void enforcesFieldLocationAndParentRules() {
         auto tree = AnalysisTree::create(QStringLiteral("root"));
         QVERIFY(tree.has_value());

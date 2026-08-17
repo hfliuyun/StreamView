@@ -65,6 +65,44 @@ private:
     quint64 sizeBytes_ = 1024;
 };
 
+class CancellingSource final : public streamview::core::RandomAccessSource {
+public:
+    CancellingSource(std::vector<std::byte> data,
+                     streamview::core::CancellationSource* cancellation,
+                     std::size_t triggerRead)
+        : data_(std::move(data)), cancellation_(cancellation), triggerRead_(triggerRead) {}
+
+    [[nodiscard]] quint64 sizeBytes() const noexcept override {
+        return static_cast<quint64>(data_.size());
+    }
+    [[nodiscard]] QString identity() const override { return QStringLiteral("cancelling"); }
+
+    [[nodiscard]] streamview::core::SourceReadResult
+    readAt(quint64 byteOffset, std::span<std::byte> destination) const override {
+        ++readCount_;
+        if (byteOffset >= data_.size()) {
+            return {streamview::core::SourceReadStatus::EndOfSource, 0, {}};
+        }
+        const auto offset = static_cast<std::size_t>(byteOffset);
+        const auto count = std::min(destination.size(), data_.size() - offset);
+        std::copy_n(data_.data() + offset, count, destination.data());
+        if (readCount_ == triggerRead_ && cancellation_ != nullptr) {
+            (void)cancellation_->requestCancellation();
+        }
+        return {count == destination.size()
+                    ? streamview::core::SourceReadStatus::Complete
+                    : streamview::core::SourceReadStatus::EndOfSource,
+                count,
+                {}};
+    }
+
+private:
+    std::vector<std::byte> data_;
+    streamview::core::CancellationSource* cancellation_ = nullptr;
+    std::size_t triggerRead_ = 0;
+    mutable std::size_t readCount_ = 0;
+};
+
 [[nodiscard]] std::vector<std::byte> readFixtureBytes(const QString& relativePath) {
     const QString fullPath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/") + relativePath;
     QFile file(fullPath);
@@ -132,6 +170,10 @@ private slots:
     void handlesTruncatedBoxRecordsTransactionally();
     void preservesSourceErrorWithoutOverwritingToTruncated();
     void handlesD7FragmentedMoofBoxWithContinuation();
+    void preservesInvalidSyntaxAsPartialAndContinues();
+    void retainsQueuedRecordsAcrossInFlightCancellation();
+    void chargesRunnerCreatedBoxNodesToSharedBudget();
+    void exposesWindowDecoderWithWindowLocalCoordinates();
 };
 
 void Mp4IsobmffAnalyzerTest::failsCleanlyWhenNoRulePackageInstalled() {
@@ -526,6 +568,172 @@ void Mp4IsobmffAnalyzerTest::handlesD7FragmentedMoofBoxWithContinuation() {
     const auto struct4NodeOpt = tree.node(struct4NodeId);
     QVERIFY(struct4NodeOpt.has_value());
     QCOMPARE(struct4NodeOpt->state(), streamview::core::MaterializationState::Materialized);
+}
+
+void Mp4IsobmffAnalyzerTest::preservesInvalidSyntaxAsPartialAndContinues() {
+    const QString dsl = QStringLiteral(
+        "struct Box {\n"
+        "    bits<32> size;\n"
+        "    bits<32> type;\n"
+        "    if (type == 0x62616431) {\n"
+        "        computed<u64> malformed = size - 32;\n"
+        "    } else {\n"
+        "        computed<u64> payload_bytes = size - 8;\n"
+        "        @lazy(payload_bytes) bytes payload;\n"
+        "    }\n"
+        "}\n"
+        "@index(progressive) sequence<Box> boxes = scan(mp4_box);\n"
+        "entry boxes;\n");
+    const auto ruleLookup = createMockRuleResult(dsl);
+
+    std::vector<std::byte> raw(32);
+    raw[3] = std::byte{16};
+    raw[4] = std::byte{'b'};
+    raw[5] = std::byte{'a'};
+    raw[6] = std::byte{'d'};
+    raw[7] = std::byte{'1'};
+    raw[19] = std::byte{16};
+    raw[20] = std::byte{'g'};
+    raw[21] = std::byte{'o'};
+    raw[22] = std::byte{'o'};
+    raw[23] = std::byte{'d'};
+
+    MemorySource source(raw);
+    QString errorMessage;
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, ruleLookup, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qUtf8Printable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+    QCOMPARE(batch.boxNodes.size(), std::size_t{2});
+
+    const auto& tree = analyzer->tree();
+    const auto firstBox = tree.node(batch.boxNodes[0]);
+    const auto secondBox = tree.node(batch.boxNodes[1]);
+    QVERIFY(firstBox.has_value());
+    QVERIFY(secondBox.has_value());
+    const auto firstStructure = tree.node(firstBox->children().front());
+    const auto secondStructure = tree.node(secondBox->children().front());
+    QVERIFY(firstStructure.has_value());
+    QVERIFY(secondStructure.has_value());
+    QCOMPARE(firstStructure->state(), streamview::core::MaterializationState::Invalid);
+    QVERIFY(!firstStructure->diagnostics().empty());
+    QCOMPARE(firstStructure->diagnostics().front().code,
+             streamview::core::DiagnosticCode::InvalidSyntax);
+    QCOMPARE(secondStructure->state(), streamview::core::MaterializationState::Materialized);
+}
+
+void Mp4IsobmffAnalyzerTest::retainsQueuedRecordsAcrossInFlightCancellation() {
+    const QString dsl = QStringLiteral(
+        "struct Box {\n"
+        "    bits<32> size;\n"
+        "    bits<32> type;\n"
+        "    computed<u64> payload_bytes = size - 8;\n"
+        "    @lazy(payload_bytes) bytes payload;\n"
+        "}\n"
+        "@index(progressive) sequence<Box> boxes = scan(mp4_box);\n"
+        "entry boxes;\n");
+    const auto ruleLookup = createMockRuleResult(dsl);
+    std::vector<std::byte> raw(48);
+    for (std::size_t offset = 0; offset < raw.size(); offset += 16) {
+        raw[offset + 3] = std::byte{16};
+    }
+
+    streamview::core::CancellationSource cancellation;
+    CancellingSource source(raw, &cancellation, 2);
+    QString errorMessage;
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(
+        source, ruleLookup, &errorMessage, cancellation.token());
+    QVERIFY2(analyzer.has_value(), qUtf8Printable(errorMessage));
+
+    const auto cancelled = analyzer->analyzeBatch();
+    QCOMPARE(cancelled.status, streamview::rules::Mp4IsobmffAnalysisStatus::Cancelled);
+    QCOMPARE(cancelled.boxNodes.size(), std::size_t{1});
+    QCOMPARE(analyzer->tree().node(analyzer->tree().rootId())->children().size(),
+             std::size_t{1});
+
+    QVERIFY(analyzer->resumeAfterCancellation(std::nullopt, &errorMessage));
+    const auto resumed = analyzer->analyzeBatch();
+    QCOMPARE(resumed.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+    QCOMPARE(resumed.boxNodes.size(), std::size_t{2});
+    QCOMPARE(analyzer->tree().node(analyzer->tree().rootId())->children().size(),
+             std::size_t{3});
+}
+
+void Mp4IsobmffAnalyzerTest::chargesRunnerCreatedBoxNodesToSharedBudget() {
+    const QString dsl = QStringLiteral(
+        "struct Box {\n"
+        "    bits<32> size;\n"
+        "    bits<32> type;\n"
+        "    computed<u64> payload_bytes = size - 8;\n"
+        "    @lazy(payload_bytes) bytes payload;\n"
+        "}\n"
+        "@index(progressive) sequence<Box> boxes = scan(mp4_box);\n"
+        "entry boxes;\n");
+    const auto ruleLookup = createMockRuleResult(dsl);
+    std::vector<std::byte> raw(16);
+    raw[3] = std::byte{16};
+    MemorySource source(raw);
+    QString errorMessage;
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, ruleLookup, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qUtf8Printable(errorMessage));
+    analyzer->budget()->remainingNodes = 1;
+
+    const auto result = analyzer->analyzeBatch();
+    QCOMPARE(result.status, streamview::rules::Mp4IsobmffAnalysisStatus::ResourceLimit);
+    QCOMPARE(analyzer->budget()->remainingNodes, quint64{0});
+    const auto root = analyzer->tree().node(analyzer->tree().rootId());
+    QVERIFY(root.has_value());
+    QVERIFY(root->children().empty());
+}
+
+void Mp4IsobmffAnalyzerTest::exposesWindowDecoderWithWindowLocalCoordinates() {
+    const QString dsl = QStringLiteral(
+        "struct Entry {\n"
+        "    bits<32> value;\n"
+        "}\n"
+        "struct Box {\n"
+        "    bits<32> size;\n"
+        "    bits<32> type;\n"
+        "    bits<32> entry_count;\n"
+        "    computed<u64> payload_bytes = 4;\n"
+        "    @lazy(payload_bytes) bytes payload @window(Entry, entry_count);\n"
+        "}\n"
+        "@index(progressive) sequence<Box> boxes = scan(mp4_box);\n"
+        "entry boxes;\n");
+    const auto ruleLookup = createMockRuleResult(dsl);
+    std::vector<std::byte> raw(16);
+    raw[3] = std::byte{16};
+    raw[11] = std::byte{1};
+    raw[12] = std::byte{0x12};
+    raw[13] = std::byte{0x34};
+    raw[14] = std::byte{0x56};
+    raw[15] = std::byte{0x78};
+    MemorySource source(raw);
+    QString errorMessage;
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, ruleLookup, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qUtf8Printable(errorMessage));
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto boxNode = analyzer->tree().node(batch.boxNodes.front());
+    QVERIFY(boxNode.has_value());
+    const auto structureNode = analyzer->tree().node(boxNode->children().front());
+    QVERIFY(structureNode.has_value());
+    const auto windowNodeId = structureNode->children().back();
+    auto decoder = analyzer->windowDecoder(windowNodeId);
+    QVERIFY(decoder.has_value());
+    const auto decoded = decoder->decodeWindow({0, 1});
+    QCOMPARE(decoded.status, streamview::rules::DslExecutionStatus::Materialized);
+    QCOMPARE(decoded.decodedEntryCount, 1ULL);
+    QVERIFY(!decoded.entryNodes.empty());
+
+    auto secondDecoder = analyzer->windowDecoder(windowNodeId);
+    QVERIFY(secondDecoder.has_value());
+    const auto repeated = secondDecoder->decodeWindow({0, 1});
+    QCOMPARE(repeated.status, streamview::rules::DslExecutionStatus::Materialized);
+    QCOMPARE(repeated.entryNodes, decoded.entryNodes);
+    QCOMPARE(analyzer->tree().node(windowNodeId)->children().size(), std::size_t{1});
 }
 
 QTEST_MAIN(Mp4IsobmffAnalyzerTest)

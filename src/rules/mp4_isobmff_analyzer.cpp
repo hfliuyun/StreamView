@@ -13,6 +13,45 @@ namespace streamview::rules {
 
 namespace {
 
+[[nodiscard]] core::DiagnosticCode diagnosticCode(Mp4IsobmffAnalysisStatus status) noexcept {
+    switch (status) {
+    case Mp4IsobmffAnalysisStatus::Cancelled:
+        return core::DiagnosticCode::Cancelled;
+    case Mp4IsobmffAnalysisStatus::SourceError:
+        return core::DiagnosticCode::SourceError;
+    case Mp4IsobmffAnalysisStatus::ResourceLimit:
+        return core::DiagnosticCode::ResourceLimit;
+    case Mp4IsobmffAnalysisStatus::InvalidRule:
+    case Mp4IsobmffAnalysisStatus::InvalidBatchSize:
+    case Mp4IsobmffAnalysisStatus::InProgress:
+    case Mp4IsobmffAnalysisStatus::Complete:
+        return core::DiagnosticCode::InvalidSyntax;
+    }
+    return core::DiagnosticCode::InvalidSyntax;
+}
+
+class NestingDepthGuard final {
+public:
+    explicit NestingDepthGuard(const std::shared_ptr<RunnerExecutionBudget>& budget)
+        : budget_(budget) {
+        if (budget_) {
+            ++budget_->currentNestingDepth;
+        }
+    }
+
+    NestingDepthGuard(const NestingDepthGuard&) = delete;
+    NestingDepthGuard& operator=(const NestingDepthGuard&) = delete;
+
+    ~NestingDepthGuard() {
+        if (budget_) {
+            --budget_->currentNestingDepth;
+        }
+    }
+
+private:
+    std::shared_ptr<RunnerExecutionBudget> budget_;
+};
+
 class BoundedSourceView final : public core::RandomAccessSource {
 public:
     BoundedSourceView(const core::RandomAccessSource& baseSource,
@@ -33,6 +72,13 @@ public:
         }
         const quint64 available = sizeBytes_ - byteOffset;
         const std::size_t count = static_cast<std::size_t>(std::min(static_cast<quint64>(destination.size()), available));
+
+        constexpr quint64 maxByteCoordinate = std::numeric_limits<quint64>::max() / 8U;
+        if (byteOffset > maxByteCoordinate ||
+            static_cast<quint64>(count) > maxByteCoordinate) {
+            return {core::SourceReadStatus::Error, 0,
+                    QStringLiteral("Container source view coordinate overflow")};
+        }
 
         auto range = core::LogicalRange::create(
             core::LogicalBitAddress(mapping_.viewId(), byteOffset * 8U), count * 8U);
@@ -67,13 +113,6 @@ private:
 };
 
 } // namespace
-
-RulePackageLoadResult loadMp4IsobmffRulePackage() {
-    RulePackageLoadResult result;
-    result.status = RulePackageLoadStatus::InvalidTree;
-    result.errorMessage = QStringLiteral("No bundled MP4 rule package is installed");
-    return result;
-}
 
 std::optional<Mp4IsobmffAnalyzer>
 Mp4IsobmffAnalyzer::create(const core::RandomAccessSource& /*source*/,
@@ -232,7 +271,6 @@ void Mp4IsobmffAnalyzer::markRootPartial(core::DiagnosticCode code,
 
 bool Mp4IsobmffAnalyzer::publishRecord(const Mp4BoxRecord& record,
                                       Mp4IsobmffAnalysisBatch& batch,
-                                      bool /*allowExecutionCancellation*/,
                                       Mp4IsobmffAnalysisStatus* failureStatus,
                                       QString* errorMessage) {
     if (!record.boxSpan.has_value()) {
@@ -275,6 +313,10 @@ bool Mp4IsobmffAnalyzer::publishRecord(const Mp4BoxRecord& record,
         return false;
     }
     ++nextBoxIndex_;
+
+    if (budget_) {
+        --budget_->remainingNodes;
+    }
 
     if (nextViewId_ == 0) {
         if (errorMessage) *errorMessage = QStringLiteral("Logical view identifier limit reached");
@@ -344,11 +386,27 @@ bool Mp4IsobmffAnalyzer::publishRecord(const Mp4BoxRecord& record,
     }
     if (execResult.status == DslExecutionStatus::InvalidDefinition) {
         if (failureStatus) *failureStatus = Mp4IsobmffAnalysisStatus::InvalidRule;
+        if (errorMessage) {
+            *errorMessage = execResult.errorMessage.isEmpty()
+                                ? QStringLiteral("Top-level MP4 rule execution returned an invalid definition")
+                                : execResult.errorMessage;
+        }
         return false;
     }
 
+    // Syntax and dependency failures are content-level results. The VM has
+    // already marked the structure node partial, so preserve it and continue
+    // with later boxes without attempting container re-entry on an invalid
+    // or waiting structure.
+    if (execResult.status == DslExecutionStatus::Unsupported ||
+        execResult.status == DslExecutionStatus::InvalidSyntax ||
+        execResult.status == DslExecutionStatus::TruncatedSource ||
+        execResult.status == DslExecutionStatus::DependencyUnavailable) {
+        return true;
+    }
+
     // Drill containers inside this box node
-    if (!recursivelyDrillContainer(*boxNode, 0, *boxLocation, failureStatus, errorMessage)) {
+    if (!recursivelyDrillContainer(*boxNode, failureStatus, errorMessage)) {
         return false;
     }
 
@@ -362,8 +420,6 @@ bool Mp4IsobmffAnalyzer::publishRecord(const Mp4BoxRecord& record,
 
 bool Mp4IsobmffAnalyzer::recursivelyDrillContainer(
     core::AnalysisNodeId nodeId,
-    quint32 /*unused*/,
-    const core::FieldLocation& parentLocation,
     Mp4IsobmffAnalysisStatus* failureStatus,
     QString* errorMessage) {
     auto nodeOpt = tree_->node(nodeId);
@@ -391,31 +447,42 @@ bool Mp4IsobmffAnalyzer::recursivelyDrillContainer(
                 return false;
             }
 
-            if (budget_) {
-                budget_->currentNestingDepth++;
-            }
+            NestingDepthGuard nestingGuard(budget_);
 
             (void)tree_->transition(childId, core::MaterializationState::Indexing);
 
             const auto& containerLoc = childOpt->location();
-            if (containerLoc.has_value()) {
-                const quint64 containerByteLength = containerLoc->logicalRange().bitLength() / 8U;
-                if (containerByteLength >= 8) {
-                    const auto containerMapping = core::SourceMapping::create(
-                        containerLoc->logicalRange().start().viewId(), containerLoc->sourceSpans());
-                    if (containerMapping.has_value()) {
-                        BoundedSourceView containerSource(*source_, *containerMapping, containerByteLength);
-                        Mp4BoxScanner containerScanner(containerSource, cancellation_);
+            if (!containerLoc.has_value()) {
+                if (failureStatus) *failureStatus = Mp4IsobmffAnalysisStatus::InvalidRule;
+                if (errorMessage) *errorMessage = QStringLiteral("Container node has no source location");
+                return false;
+            }
 
-                        while (!containerScanner.finished()) {
+            const quint64 containerBitLength = containerLoc->logicalRange().bitLength();
+            if ((containerBitLength % 8U) != 0) {
+                if (failureStatus) *failureStatus = Mp4IsobmffAnalysisStatus::InvalidRule;
+                if (errorMessage) *errorMessage = QStringLiteral("Container source location is not byte-aligned");
+                return false;
+            }
+            const quint64 containerByteLength = containerBitLength / 8U;
+            if (containerByteLength >= 8) {
+                const auto containerMapping = core::SourceMapping::create(
+                    containerLoc->logicalRange().start().viewId(), containerLoc->sourceSpans());
+                if (!containerMapping.has_value()) {
+                    if (failureStatus) *failureStatus = Mp4IsobmffAnalysisStatus::SourceError;
+                    if (errorMessage) *errorMessage = QStringLiteral("Failed to create container source mapping");
+                    return false;
+                }
+                BoundedSourceView containerSource(*source_, *containerMapping, containerByteLength);
+                Mp4BoxScanner containerScanner(containerSource, cancellation_);
+
+                while (!containerScanner.finished()) {
                             auto scanBatchRes = containerScanner.scanBatch(256, 256U * 1024U);
                             if (scanBatchRes.status == Mp4BoxScanStatus::Cancelled) {
-                                if (budget_) budget_->currentNestingDepth--;
                                 if (failureStatus) *failureStatus = Mp4IsobmffAnalysisStatus::Cancelled;
                                 return false;
                             }
                             if (scanBatchRes.status == Mp4BoxScanStatus::SourceError) {
-                                if (budget_) budget_->currentNestingDepth--;
                                 if (failureStatus) *failureStatus = Mp4IsobmffAnalysisStatus::SourceError;
                                 return false;
                             }
@@ -424,7 +491,6 @@ bool Mp4IsobmffAnalyzer::recursivelyDrillContainer(
                                 if (!childRecord.boxSpan.has_value()) continue;
 
                                 if (budget_ && (budget_->remainingNodes == 0 || budget_->remainingInstructions == 0)) {
-                                    if (budget_) budget_->currentNestingDepth--;
                                     if (failureStatus) *failureStatus = Mp4IsobmffAnalysisStatus::ResourceLimit;
                                     return false;
                                 }
@@ -433,20 +499,40 @@ bool Mp4IsobmffAnalyzer::recursivelyDrillContainer(
                                 auto childLogicalRange = core::LogicalRange::create(
                                     core::LogicalBitAddress(containerMapping->viewId(), childRecord.boxSpan->start().absoluteBitOffset()),
                                     childRecord.boxSpan->bitLength());
-                                if (!childLogicalRange) continue;
+                                if (!childLogicalRange) {
+                                    if (failureStatus) *failureStatus = Mp4IsobmffAnalysisStatus::SourceError;
+                                    if (errorMessage) *errorMessage = QStringLiteral("Failed to create child box logical range");
+                                    return false;
+                                }
 
                                 auto childSpansRes = containerMapping->locate(*childLogicalRange);
-                                if (!childSpansRes.has_value() || childSpansRes->sourceSpans().empty()) continue;
+                                if (!childSpansRes.has_value() || childSpansRes->sourceSpans().empty()) {
+                                    if (failureStatus) *failureStatus = Mp4IsobmffAnalysisStatus::SourceError;
+                                    if (errorMessage) *errorMessage = QStringLiteral("Failed to map child box source spans");
+                                    return false;
+                                }
 
                                 auto childLoc = makeLocation(childSpansRes->sourceSpans());
-                                if (!childLoc.has_value()) continue;
+                                if (!childLoc.has_value()) {
+                                    if (failureStatus) *failureStatus = Mp4IsobmffAnalysisStatus::ResourceLimit;
+                                    if (errorMessage) *errorMessage = QStringLiteral("Failed to create child box location");
+                                    return false;
+                                }
 
-                                if (nextViewId_ == 0) continue;
+                                if (nextViewId_ == 0) {
+                                    if (failureStatus) *failureStatus = Mp4IsobmffAnalysisStatus::ResourceLimit;
+                                    if (errorMessage) *errorMessage = QStringLiteral("Logical view identifier limit reached");
+                                    return false;
+                                }
                                 const core::LogicalViewId childViewId(nextViewId_);
                                 nextViewId_ = nextViewId_ == std::numeric_limits<quint64>::max() ? 0 : nextViewId_ + 1;
 
                                 const auto childMapping = core::SourceMapping::create(childViewId, childSpansRes->sourceSpans());
-                                if (!childMapping) continue;
+                                if (!childMapping) {
+                                    if (failureStatus) *failureStatus = Mp4IsobmffAnalysisStatus::SourceError;
+                                    if (errorMessage) *errorMessage = QStringLiteral("Failed to create child box source mapping");
+                                    return false;
+                                }
 
                                 core::BitReader childReader(*source_, *childMapping);
 
@@ -488,41 +574,48 @@ bool Mp4IsobmffAnalyzer::recursivelyDrillContainer(
                                 }
 
                                 if (childExec.status == DslExecutionStatus::Cancelled) {
-                                    if (budget_) budget_->currentNestingDepth--;
                                     if (failureStatus) *failureStatus = Mp4IsobmffAnalysisStatus::Cancelled;
                                     return false;
                                 }
                                 if (childExec.status == DslExecutionStatus::ResourceLimit) {
-                                    if (budget_) budget_->currentNestingDepth--;
                                     if (failureStatus) *failureStatus = Mp4IsobmffAnalysisStatus::ResourceLimit;
                                     return false;
                                 }
                                 if (childExec.status == DslExecutionStatus::SourceError) {
-                                    if (budget_) budget_->currentNestingDepth--;
                                     if (failureStatus) *failureStatus = Mp4IsobmffAnalysisStatus::SourceError;
                                     return false;
+                                }
+                                if (childExec.status == DslExecutionStatus::InvalidDefinition) {
+                                    if (failureStatus) *failureStatus = Mp4IsobmffAnalysisStatus::InvalidRule;
+                                    if (errorMessage) {
+                                        *errorMessage = childExec.errorMessage.isEmpty()
+                                                            ? QStringLiteral("Nested MP4 rule execution returned an invalid definition")
+                                                            : childExec.errorMessage;
+                                    }
+                                    return false;
+                                }
+
+                                if (childExec.status == DslExecutionStatus::Unsupported ||
+                                    childExec.status == DslExecutionStatus::InvalidSyntax ||
+                                    childExec.status == DslExecutionStatus::TruncatedSource ||
+                                    childExec.status == DslExecutionStatus::DependencyUnavailable) {
+                                    continue;
                                 }
 
                                 // Drill nested children if this child is also a container
                                 if (childExec.structureNode.has_value() &&
-                                    !recursivelyDrillContainer(*childExec.structureNode, 0, *childLoc, failureStatus, errorMessage)) {
-                                    if (budget_) budget_->currentNestingDepth--;
+                                    !recursivelyDrillContainer(*childExec.structureNode, failureStatus, errorMessage)) {
                                     return false;
                                 }
                             }
-                        }
-                    }
                 }
             }
 
             (void)tree_->transition(childId, core::MaterializationState::Materialized);
 
-            if (budget_) {
-                budget_->currentNestingDepth--;
-            }
         } else {
             // Not a direct container lazy node, but check its children
-            if (!recursivelyDrillContainer(childId, 0, parentLocation, failureStatus, errorMessage)) {
+            if (!recursivelyDrillContainer(childId, failureStatus, errorMessage)) {
                 return false;
             }
         }
@@ -543,45 +636,110 @@ Mp4IsobmffAnalysisBatch Mp4IsobmffAnalyzer::analyzeBatch(
     }
 
     if (terminal_) {
-        batch.status = Mp4IsobmffAnalysisStatus::Complete;
+        batch.status = terminalStatus_;
+        batch.errorMessage = terminalErrorMessage_;
         return batch;
     }
 
-    auto scanBatchRes = scanner_.scanBatch(maximumRecords, maximumInspectedPositions);
+    const auto terminalizeFailure = [this, &batch](Mp4IsobmffAnalysisStatus status,
+                                                   QString message) {
+        batch.status = status;
+        batch.errorMessage = std::move(message);
+        terminal_ = true;
+        terminalStatus_ = batch.status;
+        terminalErrorMessage_ = batch.errorMessage;
+        const auto rootState = status == Mp4IsobmffAnalysisStatus::Cancelled
+                                   ? core::MaterializationState::Cancelled
+                                   : core::MaterializationState::Invalid;
+        markRootPartial(diagnosticCode(status), rootState, batch.errorMessage);
+    };
 
-    if (scanBatchRes.status == Mp4BoxScanStatus::Cancelled) {
-        batch.status = Mp4IsobmffAnalysisStatus::Cancelled;
-        batch.errorMessage = scanBatchRes.errorMessage;
-        markRootPartial(core::DiagnosticCode::Cancelled, core::MaterializationState::Cancelled, scanBatchRes.errorMessage);
-        return batch;
-    }
-    if (scanBatchRes.status == Mp4BoxScanStatus::SourceError) {
-        batch.status = Mp4IsobmffAnalysisStatus::SourceError;
-        batch.errorMessage = scanBatchRes.errorMessage;
-        markRootPartial(core::DiagnosticCode::SourceError, core::MaterializationState::Invalid, scanBatchRes.errorMessage);
-        return batch;
-    }
-    if (scanBatchRes.status == Mp4BoxScanStatus::InvalidBatchSize) {
-        batch.status = Mp4IsobmffAnalysisStatus::InvalidBatchSize;
-        batch.errorMessage = scanBatchRes.errorMessage;
-        return batch;
-    }
-
-    for (const auto& record : scanBatchRes.records) {
-        Mp4IsobmffAnalysisStatus failStatus = Mp4IsobmffAnalysisStatus::InProgress;
-        QString errMsg;
-        if (!publishRecord(record, batch, true, &failStatus, &errMsg)) {
-            batch.status = failStatus;
-            batch.errorMessage = errMsg;
+    if (!deferredScanStatus_) {
+        const auto scanBatchRes = scanner_.scanBatch(maximumRecords, maximumInspectedPositions);
+        if (scanBatchRes.status == Mp4BoxScanStatus::InvalidBatchSize) {
+            batch.status = Mp4IsobmffAnalysisStatus::InvalidBatchSize;
+            batch.errorMessage = scanBatchRes.errorMessage;
             return batch;
         }
+        for (const auto& record : scanBatchRes.records) {
+            queuedRecords_.push_back({record});
+        }
+        deferredScanStatus_ = scanBatchRes.status;
+        deferredScanErrorMessage_ = scanBatchRes.errorMessage;
     }
 
-    if (scanner_.finished()) {
+    while (!queuedRecords_.empty()) {
+        auto treeSnapshot = tree_->snapshot(tree_->rootId());
+        const quint64 nextBoxIndexBefore = nextBoxIndex_;
+        const quint64 nextViewIdBefore = nextViewId_;
+        const std::size_t publishedCount = batch.boxNodes.size();
+        Mp4IsobmffAnalysisStatus failureStatus = Mp4IsobmffAnalysisStatus::InvalidRule;
+        QString errorMessage;
+        if (publishRecord(queuedRecords_.front().record,
+                          batch,
+                          &failureStatus,
+                          &errorMessage)) {
+            queuedRecords_.pop_front();
+            continue;
+        }
+        if (!tree_->restore(std::move(treeSnapshot))) {
+            terminalizeFailure(Mp4IsobmffAnalysisStatus::InvalidRule,
+                                QStringLiteral("Unable to restore failed MP4 record transaction"));
+            return batch;
+        }
+        nextBoxIndex_ = nextBoxIndexBefore;
+        nextViewId_ = nextViewIdBefore;
+        batch.boxNodes.resize(publishedCount);
+        terminalizeFailure(failureStatus, std::move(errorMessage));
+        return batch;
+    }
+
+    if (!deferredScanStatus_) {
+        terminalizeFailure(Mp4IsobmffAnalysisStatus::InvalidRule,
+                           QStringLiteral("MP4 analyzer lost its deferred scanner status"));
+        return batch;
+    }
+
+    const Mp4BoxScanStatus scanStatus = *deferredScanStatus_;
+    batch.status = scanStatus == Mp4BoxScanStatus::Complete
+                       ? Mp4IsobmffAnalysisStatus::Complete
+                       : scanStatus == Mp4BoxScanStatus::Cancelled
+                           ? Mp4IsobmffAnalysisStatus::Cancelled
+                           : scanStatus == Mp4BoxScanStatus::SourceError
+                               ? Mp4IsobmffAnalysisStatus::SourceError
+                               : Mp4IsobmffAnalysisStatus::InProgress;
+    batch.errorMessage = deferredScanErrorMessage_;
+    switch (scanStatus) {
+    case Mp4BoxScanStatus::Complete:
+        if (!tree_->transition(tree_->rootId(), core::MaterializationState::Materialized)) {
+            terminalizeFailure(Mp4IsobmffAnalysisStatus::InvalidRule,
+                               QStringLiteral("Unable to materialize MP4 analysis root"));
+            return batch;
+        }
         terminal_ = true;
-        batch.status = Mp4IsobmffAnalysisStatus::Complete;
-    } else {
+        terminalStatus_ = batch.status;
+        terminalErrorMessage_.clear();
+        deferredScanStatus_.reset();
+        break;
+    case Mp4BoxScanStatus::Cancelled:
+        terminalizeFailure(Mp4IsobmffAnalysisStatus::Cancelled,
+                            batch.errorMessage.isEmpty()
+                                ? QStringLiteral("MP4 box scan was cancelled")
+                                : batch.errorMessage);
+        break;
+    case Mp4BoxScanStatus::SourceError:
+        terminalizeFailure(Mp4IsobmffAnalysisStatus::SourceError, batch.errorMessage);
+        break;
+    case Mp4BoxScanStatus::InProgress:
+        deferredScanStatus_.reset();
+        deferredScanErrorMessage_.clear();
         batch.status = Mp4IsobmffAnalysisStatus::InProgress;
+        batch.errorMessage.clear();
+        break;
+    case Mp4BoxScanStatus::InvalidBatchSize:
+        terminalizeFailure(Mp4IsobmffAnalysisStatus::InvalidRule,
+                           QStringLiteral("MP4 scanner rejected a validated analysis batch"));
+        break;
     }
 
     return batch;
@@ -589,7 +747,13 @@ Mp4IsobmffAnalysisBatch Mp4IsobmffAnalyzer::analyzeBatch(
 
 bool Mp4IsobmffAnalyzer::resumeAfterCancellation(
     std::optional<core::CancellationToken> cancellation,
-    QString* /*errorMessage*/) {
+    QString* errorMessage) {
+    if (!terminal_ || terminalStatus_ != Mp4IsobmffAnalysisStatus::Cancelled) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("MP4 analyzer is not waiting to resume cancellation");
+        }
+        return false;
+    }
     cancellation_ = std::move(cancellation);
     if (budget_) {
         budget_->cancellation = cancellation_;
@@ -598,6 +762,12 @@ bool Mp4IsobmffAnalyzer::resumeAfterCancellation(
         (void)tree_->resumeCancelled(tree_->rootId());
     }
     terminal_ = false;
+    terminalStatus_ = Mp4IsobmffAnalysisStatus::InProgress;
+    terminalErrorMessage_.clear();
+    if (deferredScanStatus_ == Mp4BoxScanStatus::Cancelled) {
+        deferredScanStatus_ = Mp4BoxScanStatus::InProgress;
+        deferredScanErrorMessage_.clear();
+    }
     scanner_.replaceCancellationToken(cancellation_);
     return true;
 }
@@ -616,7 +786,18 @@ std::optional<WindowDecoder> Mp4IsobmffAnalyzer::windowDecoder(core::AnalysisNod
     if (!mapping.has_value()) {
         return std::nullopt;
     }
-    return WindowDecoder(program_, *source_, *mapping, tree_, windowNodeId, budget_, cancellation_);
+    auto& state = windowDecoderStates_[windowNodeId.value()];
+    if (!state) {
+        state = WindowDecoder::createState();
+    }
+    return WindowDecoder(program_,
+                         *source_,
+                         *mapping,
+                         tree_,
+                         windowNodeId,
+                         budget_,
+                         state,
+                         cancellation_);
 }
 
 } // namespace streamview::rules

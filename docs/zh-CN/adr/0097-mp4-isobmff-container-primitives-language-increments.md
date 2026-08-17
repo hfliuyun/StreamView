@@ -211,8 +211,6 @@ struct Mp4IsobmffAnalysisBatch final {
     }
 };
 
-[[nodiscard]] RulePackageLoadResult loadMp4IsobmffRulePackage();
-
 class Mp4IsobmffAnalyzer final {
 public:
     [[nodiscard]] static std::optional<Mp4IsobmffAnalyzer>
@@ -248,6 +246,15 @@ public:
 - VM `execute` 返回后（无论成功、截断或错误），runner 执行受检下溢扣减：`budget.remainingNodes = (result.nodesCreated >= budget.remainingNodes) ? 0 : (budget.remainingNodes - result.nodesCreated)`，`budget.remainingInstructions = (result.instructionsExecuted >= budget.remainingInstructions) ? 0 : (budget.remainingInstructions - result.instructionsExecuted)`。
 - `maximumViewDepth = 64` 与 `maximumCallDepth = 64` 为单次 VM 调用栈深限制，不计为跨重入累计预算。
 - `currentNestingDepth` 在进入子扫描前递增、返回后递减；超过 `maximumNodeDepth = 256` 时将容器节点标记为 `ResourceLimit`。
+- Analyzer 持有 scanner 批次，直至其中每条记录都完成发布。因此取消或 VM 终态失败不会
+  丢弃 scanner 已经越过但尚未发布的记录。单条记录的发布对分析树及 runner 自有索引具有
+  事务性：终态失败时恢复到记录发布前 checkpoint，但共享预算中已经发生的指令/节点工作量
+  扣减不回滚。该 checkpoint 基于追加式树结构，仅保留受影响的父节点，不复制整棵树。
+- VM 内容级结果（`Unsupported`、`InvalidSyntax`、`TruncatedSource`、
+  `DependencyUnavailable`）保留部分结构并继续后续 box；对该结构不再执行容器重入。
+- Runner 在 VM 调用之外直接添加的 region 节点也从 `remainingNodes` 扣除一个单位。递归 VM
+  返回 `InvalidDefinition` 时向上传播为 `Mp4IsobmffAnalysisStatus::InvalidRule`，绝不把对应
+  container 改写为已物化。
 
 **内核/Runner 中立性**：子结构体仅通过 IR 索引引用；**核心与 runner 代码中绝不出现任何 FourCC 字面量**。
 
@@ -449,6 +456,14 @@ public:
 - 受检加法 `pageStartIndex + pageCount`（防溢出）；
 - 受检乘法 `entryIndex * entrySizeBits` 与字节偏移/长度映射；
 - Lazy 区域边界校验：若请求页超出可用范围，仅解码可用条目并返回 `TruncatedSource`；
+- Decoder 将窗口节点的 source spans 规范化为首 bit 偏移为 `0` 的窗口局部逻辑映射；entry
+  偏移始终相对于该映射，不依赖窗口节点在外层 view 中的偏移；
+- Analyzer 所有的 decoder 状态保留已解码 entry index。重复或重叠页请求复用既有 node ID，
+  不追加重复节点；在全部裁剪后 entry 解码完成前，窗口节点保持 `Indexing`；
+- 每个新 entry 都以事务方式追加。entry 失败时，分析树恢复到该 entry 开始前的快照；先前
+  成功 entry 与共享预算扣减均保留；
+- `Mp4IsobmffAnalyzer::windowDecoder` 返回的 `WindowDecoder` 绑定于拥有其 program/source 的
+  analyzer/session 生命周期，不得在 owner 析构后继续使用；
 - **窗口元数据缓存序列化（P5d-2）**：
   - 缓存标志位 `nodeWindowMetadataFlag = 8U`（`analysis_cache_payload.cpp`）；
   - 编码 `windowEntryStructIndex` (`quint32`)、`windowEntryCountFieldIndex` (`quint32`)、`windowEntrySizeBits` (`quint64`)、`entryCount` (`quint64`)；
