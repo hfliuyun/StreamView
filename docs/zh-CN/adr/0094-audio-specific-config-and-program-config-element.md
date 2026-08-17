@@ -311,7 +311,7 @@ entry AudioSpecificConfig;
 ### 3. 诊断与截断语义
 - **截断（`DiagnosticCode::TruncatedSource`）**：若 ASC 码流在解码中途提前结束（如在 `AudioSpecificConfig` 头部、`GASpecificConfig` 或 PCE 声道列表内部），`DslExecutor::decodeStruct` 返回 `DslExecutionStatus::TruncatedSource`。部分物化结构节点附带 `DiagnosticCode::TruncatedSource` 与 `DiagnosticSeverity::Error`（`"Unable to read complete syntax field"`）。
 - **对齐错误（`DiagnosticCode::InvalidSyntax`）**：若 PCE 填充对齐位非零（`@equals(0)` 校验失败），`DslExecutor` 在违规 bit 坐标处产生 `DiagnosticCode::InvalidSyntax` 与 `DiagnosticSeverity::Error` 诊断。
-- **保留值不可表达性边界说明**：在 ASC 中，`sampling_frequency_index` 的合法值为 `{0..12, 15}`（13..14 为保留），`channel_configuration` 的合法值为 `{0..7}`（8..15 为保留）。由于 `{0..12, 15}` 非连续集合，单一 `@range(min, max)` 无法表达；若使用 `@enum` 则会在 VM 层引发致命错误（`src/rules/dsl_vm.cpp:2782-2799`），违反 ADR-0040 中「保留值产生非致命警告而非终止解析」的二分法契约。因此在当前语言能力下，ASC 中的保留值不挂载警告注解，该限制被形式化记录为 DSL 语言表达能力边界。
+- **保留值不可表达性边界说明**：在 ASC 中，`sampling_frequency_index` 的合法值为 `{0..12, 15}`（13..14 为保留），`channel_configuration` 的合法值为 `{0..7}`（8..15 为保留）。由于 `{0..12, 15}` 非连续集合，单一 `@range(min, max)` 无法表达；若使用 `@enum` 则会在 VM 层引发致命错误（`src/rules/dsl_vm.cpp:2891-2909`），违反 ADR-0040 中「保留值产生非致命警告而非终止解析」的二分法契约。因此在当前语言能力下，ASC 中的保留值不挂载警告注解，该限制被形式化记录为 DSL 语言表达能力边界。
 - **非 GA 音频对象类型**：非 GA 的 `audio_object_type`（如 SBR = 5）在此切片中解析基础通用音频头部语法而不报错，专用扩展载荷留待后续专用扩展补充。
 
 ## 验证矩阵与证据

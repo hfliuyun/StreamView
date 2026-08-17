@@ -21,7 +21,7 @@ In previously implemented SEI messages (e.g. `buffering_period`, `recovery_point
 However, in SEI messages such as `pic_timing` (ITU-T H.264 D.1.2 / D.2.2), when `CpbDpbDelaysPresentFlag` is active with default 24-bit delays (24 + 24 = 48 bits) and `pic_struct_present_flag == 0`, the total payload length is exactly 48 bits (6 bytes, an integer multiple of 8). In standard conforming bitstreams, no alignment bits are emitted. If an unconditional `rbsp_trailing_bits;` statement is evaluated at the end of the message, the virtual machine opcode `ReadRbspTrailingBits` will unconditionally attempt to read 8 bits (`10000000`), consuming the next SEI payload type or NAL trailing bits and desynchronizing the stream.
 
 Probing of the current DSL rules engine demonstrates that:
-1. Conditional branches containing `rbsp_trailing_bits` (`if (condition) { rbsp_trailing_bits; }`) are already fully supported by the parser (`src/rules/dsl.cpp:1531`), IR lowering (`src/rules/dsl_ir.cpp:1076`), and VM execution (`src/rules/dsl_vm.cpp:2805-2814`). When the condition is false, the VM cleanly skips the trailing bits without reading any bits from the stream.
+1. Conditional branches containing `rbsp_trailing_bits` (`if (condition) { rbsp_trailing_bits; }`) are already fully supported by the parser (`src/rules/dsl.cpp:1360-1372`), IR lowering (`src/rules/dsl_ir.cpp:3853-3861`), and VM execution (`src/rules/dsl_vm.cpp:2912-2939`). When the condition is false, the VM cleanly skips the trailing bits without reading any bits from the stream.
 2. The expression language currently only provides `more_rbsp_data()` to query stream termination state, but lacks a stream alignment predicate `byte_aligned()`.
 
 ## Decision

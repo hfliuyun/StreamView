@@ -41,13 +41,13 @@ We relax operand typing rules strictly for the commutative and monotonic arithme
    - `bool + u64` / `u64 + bool` $\to$ `u64`.
    - `bool * u64` / `u64 * bool` $\to$ `u64`.
 3. **Dual-Gate Implementation**:
-   - **Parser Layer** (`src/rules/dsl.cpp:2080-2093`):
+   - **Parser Layer** (`src/rules/dsl.cpp:2221-2235`):
      - For `Add` and `Multiply`, validate that `leftType` and `rightType` are each `U64` or `Bool`, emitting `Add and multiply operators require u64 or bool operands` on type violation.
      - For `Subtract`, `Divide`, `Remainder`, require `U64` operands with the existing shared diagnostic `Arithmetic operators require u64 operands` (avoiding unnecessary diagnostic divergence).
-   - **Typed IR Layer** (`src/rules/dsl_ir.cpp:891-900`):
+   - **Typed IR Layer** (`src/rules/dsl_ir.cpp:923-930`):
      - For `Add` and `Multiply`, set `typesValid` to true when `left` and `right` are in `{U64, Bool}`, with `resultType = DslScalarType::U64`.
      - For `Subtract`, `Divide`, `Remainder`, retain `typesValid = left->type == U64 && right->type == U64`.
-   - **VM Layer** (`src/rules/dsl_vm.cpp:665-710`):
+   - **VM Layer** (`src/rules/dsl_vm.cpp:845-850`):
      - In `evaluateTypedExpression`, convert `Bool` scalar values to `1ULL` (true) or `0ULL` (false) before executing integer addition and multiplication.
 
 ## Consequences

@@ -71,7 +71,7 @@ To prevent architectural regressions, this ADR establishes the definitive bounda
 
 ### Evidence & Basis
 - `src/rules/include/streamview/rules/rule_catalog.h:52`: `RulePackageCatalog::resolve(identity, entryPointId, runningLanguage, runningEngine)` provides entry-point lookup across installed packages.
-- `src/rules/dsl_vm.cpp:1113-1117`: `MaterializationState::WaitingDependency` is available if asynchronous cross-layer dependencies are required.
+- `src/rules/dsl_vm.cpp:1117-1123`: `MaterializationState::WaitingDependency` is available if asynchronous cross-layer dependencies are required.
 
 ### Rejected Alternatives
 - **Dynamic Inter-Package AST Linker in v0.1**: Introducing cross-package symbol imports before compiler module semantics are defined.
@@ -93,11 +93,11 @@ To prevent architectural regressions, this ADR establishes the definitive bounda
    - Memory budget: $< 32\text{ MB}$ per 100,000 indexed samples (design target).
 3. **State Integrity**:
    - `MaterializationState::Indexing`: Utilized during container discovery (`src/core/analysis_model.cpp:59`).
-   - `MaterializationState::WaitingDependency`: Generated if external track definitions are pending (`src/rules/dsl_vm.cpp:1116`).
+   - `MaterializationState::WaitingDependency`: Generated if external track definitions are pending (`src/rules/dsl_vm.cpp:1122`).
 
 ### Evidence & Basis
 - `src/core/analysis_model.cpp:59`: `MaterializationState::Indexing` is a valid tree node lifecycle state.
-- `src/rules/dsl_vm.cpp:1116`: `DslExecutionStatus::DependencyUnavailable \to MaterializationState::WaitingDependency` is fully verified in the core engine.
+- `src/rules/dsl_vm.cpp:1122`: `DslExecutionStatus::DependencyUnavailable \to MaterializationState::WaitingDependency` is fully verified in the core engine.
 
 ### Rejected Alternatives
 - **Eager Individual Node Allocation per Sample**: Creating an `AnalysisNode` for every sample in a 500,000-sample stream.

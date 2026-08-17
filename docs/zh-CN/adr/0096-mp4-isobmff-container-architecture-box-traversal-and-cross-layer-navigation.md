@@ -71,7 +71,7 @@ StreamView 阶段 5 引入非分片 MP4/ISOBMFF（`video/mp4`、`audio/mp4`，IS
 
 ### 依据与证据
 - `src/rules/include/streamview/rules/rule_catalog.h:52`：`RulePackageCatalog::resolve(identity, entryPointId, runningLanguage, runningEngine)` 已提供跨包入口点查找与解析能力；
-- `src/rules/dsl_vm.cpp:1113-1117`：核心引擎原生支持 `MaterializationState::WaitingDependency` 状态。
+- `src/rules/dsl_vm.cpp:1117-1123`：核心引擎原生支持 `MaterializationState::WaitingDependency` 状态。
 
 ### 被否决方案及理由
 - **在 v0.1 中引入动态跨包 AST 链接器**：在编译器模块语义尚未完备前强行支持跨包符号导入。
@@ -93,11 +93,11 @@ StreamView 阶段 5 引入非分片 MP4/ISOBMFF（`video/mp4`、`audio/mp4`，IS
    - 内存预算：每 100,000 个索引样本占用内存 $< 32\text{ MB}$（设计目标）。
 3. **状态完整性**：
    - `MaterializationState::Indexing`：用于容器发现与索引阶段（`src/core/analysis_model.cpp:59`）；
-   - `MaterializationState::WaitingDependency`：用于外部依赖未就绪时的状态标记（`src/rules/dsl_vm.cpp:1116`）。
+   - `MaterializationState::WaitingDependency`：用于外部依赖未就绪时的状态标记（`src/rules/dsl_vm.cpp:1122`）。
 
 ### 依据与证据
 - `src/core/analysis_model.cpp:59`：`MaterializationState::Indexing` 是分析树节点的合法生命周期状态；
-- `src/rules/dsl_vm.cpp:1116`：`DslExecutionStatus::DependencyUnavailable \to MaterializationState::WaitingDependency` 已在核心执行引擎中完整验证。
+- `src/rules/dsl_vm.cpp:1122`：`DslExecutionStatus::DependencyUnavailable \to MaterializationState::WaitingDependency` 已在核心执行引擎中完整验证。
 
 ### 被否决方案及理由
 - **为每个样本无节制物化独立 AST 节点**：在包含 500,000 个样本的码流中创建 500,000 个 `AnalysisNode`。
