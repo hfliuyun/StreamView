@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5f — moov/trak/mdia/minf/stbl 层级与时间头规则 v0.1.1
+Last Completed Step: Task P5f-R — 主 Agent 深审补正（large-size wire order 与 FullBox 版本边界）
 Next Action: 下发 Task P5g；实现 stts/stsc/stsz/stco/co64 样本表索引分页规则 v0.1.2
-Last Verification: P5f — Docs commit 9060c94b7fef5dbfd4d6d67b2d5612788cba766f, Feat commit 7fa7e837ca766023cf8737dfae055041a76bbd37; Hosted CI Run 32056136281 (Ubuntu-24.04 job 95466612611, Windows-2022 job 95466612459, macOS-15 job 95466612471: all success); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed; sanitize zero reports; svtool rule check OK; markdown_hygiene passed; git diff --check clean
+Last Verification: P5f-R — Fix commit 0e8d0ccde39ac7208b0bab29ee94c3976e94af2a; Hosted CI Run 32059144201 (Ubuntu-24.04 job 95476148015, Windows-2022 job 95476147998, macOS-15 job 95476148208: all success); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed; sanitize zero reports; all four official svtool rule checks OK; markdown_hygiene passed; git diff --check clean
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2265,3 +2265,11 @@ Blockers: None
      - `markdown_hygiene` 通过，`git diff --check` 干净；
      - Hosted CI Run `32056136281`：Ubuntu-24.04 job `95466612611`、Windows-2022 job `95466612459`、macOS-15 job `95466612471` 全部 success。
   终审结论：P5f 交付完成并闭环。Next Action 切换为下发 Task P5g；实现 stts/stsc/stsz/stco/co64 样本表索引分页规则 v0.1.2。
+
+- 2026-08-18：完成 Task P5f-R —— 主 Agent 深审补正（基线 `c085a8e4cfc27a06e98558dc1d0655cbf33d2629`，修复 commit `0e8d0ccde39ac7208b0bab29ee94c3976e94af2a`）。本轮确认 P5f 的五层容器递归、v0/v1 正常时间头字段和 P5g/P5h 边界均正确；发现并修正两项规则合同问题：
+  1. `hdlr` 的 `size == 1` 分支原先在 FullBox 字段之后读取 `largesize`，现改为紧跟 `size/type` 读取，并用 `largesize - 40` 保持 handler name 的准确跨度；新增真实 large-size fixture 与逐字段/source-span 回归。
+  2. `mvhd`、`tkhd`、`mdhd`、`elst` 对 version `2..255` 原先静默按 v0 解析，现改为只接受 version 0/1，其他版本在 version 字段处产生 `UnsupportedSyntax` warning 并保留前缀；新增 version 2 fixture，断言后续 `mdat` 仍继续物化。
+  3. 同步双语 ADR-0100，明确专用 Box 的 large-size wire order、未知 FullBox 版本行为以及 `elst` 最多 64 条目的有界 DSL 合同；未实现 P5g 样本表分页或 P5h 编解码配置。
+  4. 本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套全量 CTest 均 `40/40` 通过，sanitize 零报告；MP4、AAC ADTS、AAC ASC、H.264 官方规则均 `Rule OK`；`markdown_hygiene` 与 `git diff --check` 通过。
+  5. Hosted CI Run `32059144201`：Ubuntu-24.04 job `95476148015`、Windows-2022 job `95476147998`、macOS-15 job `95476148208` 全部 success。
+  终审结论：P5f-R 通过。P5f 规则可进入 Task P5g；P5g 只实现 `stts`/`stsc`/`stsz`/`stco`/`co64` 样本表索引分页，不得提前实现 P5h 编解码配置或 P5i 跨层导航。
