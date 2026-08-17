@@ -96,9 +96,12 @@ version 1 materialized-result header 为 40 byte：
 | 4 | node-kind code |
 | 4 | materialization-state code |
 | 4 | value-kind code |
-| 4 | flags：bit 0 location，bit 1 specification |
+| 4 | flags：bit 0 location，bit 1 specification，bit 2 target format，bit 3 window metadata，bit 4 container child struct index |
 | variable | name、type name 与 description string |
 | variable | flag bit 1 存在时的 standard 与 clause string |
+| variable | flag bit 2 存在时的 target-format string |
+| 24 | flag bit 3 存在时的 window entry struct index (`u32`)、count-field index (`u32`)、entry bit size (`u64`) 与 entry count (`u64`) |
+| 4 | flag bit 4 存在时的 container child struct index |
 | variable | encoded value |
 | variable | flag bit 0 存在时的 field location |
 | 4 | diagnostic count |
@@ -130,6 +133,10 @@ location layout 为：
 非空、有序、不重叠，并与前一个 span 规范地分离，adjacent span 必须先合并再编码。所有 span
 总长度必须等于 logical length。零长度 logical range 没有 span。syntax field 必须有 location，
 computed field 禁止 location。
+
+target format、window metadata 与 container child struct index 都是可选的 lazy-region metadata。
+在这些 flag 出现前写入的 version 1 body 会清除这三个位，解码时三个值均为 absent。多个扩展
+flag 同时存在时，上表字段顺序是规范顺序。
 
 ### Diagnostic
 

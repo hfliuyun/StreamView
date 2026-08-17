@@ -186,6 +186,12 @@ something other than the complete H.264 trailing pattern without advancing the
 reader. It is available in structure execution expressions but not in pure
 function bodies.
 
+The accepted remaining-byte slice adds the reserved zero-argument
+`available_bytes()` leaf. It returns the whole bytes remaining in the current
+bounded reader (`remainingBits() / 8`) without advancing it. The result is an
+unsigned `u64` available in structure execution expressions but not in pure
+function bodies.
+
 The accepted sequence-element slice adds the reserved
 `header_value(element_field)` form. It resolves one scalar of the sequence
 element structure from within a dispatched payload structure, which lets a
@@ -223,7 +229,7 @@ field_type    := "bits" "<" additive [ "," identifier ] ">" | "ue" | "se"
 computed      := { annotation } "computed" "<" scalar_type ">" identifier
                  "=" expression { annotation } ";"
 lazy_region   := "@" "lazy" "(" expression ")" "bytes" identifier
-                 { presentation_annotation } ";"
+                 { lazy_annotation } ";"
 assertion     := "assert" "(" expression ")" "at" identifier ";"
 unsupported   := "unsupported" "(" string ")" "at" identifier ";"
 rbsp_trailing_bits := "rbsp_trailing_bits" ";"
@@ -231,6 +237,10 @@ compressed_payload := "compressed_payload" identifier
                       { presentation_annotation } ";"
 presentation_annotation := "@" "description" "(" string ")"
                          | "@" "spec" "(" string "," string ")"
+lazy_annotation := presentation_annotation
+                 | "@" "container" "(" identifier ")"
+                 | "@" "target_format" "(" string ")"
+                 | "@" "window" "(" identifier "," identifier ")"
 scalar_type   := "bool" | "u64"
 conditional   := "if" "(" ( identifier "==" integer | identifier
                                | context_value "==" integer ) ")"
@@ -241,6 +251,7 @@ context_value := "context_value" "(" [ identifier "," ] identifier ","
 header_value  := "header_value" "(" identifier ")"
 optional_value := "optional_value" "(" identifier "," expression ")"
 more_rbsp_data := "more_rbsp_data" "(" ")"
+available_bytes := "available_bytes" "(" ")"
 byte_aligned  := "byte_aligned" "(" ")"
 switch        := "switch" "(" identifier ")" "{"
                  switch_case { switch_case } [ switch_default ] "}"
@@ -401,6 +412,12 @@ The static rules for this subset are:
   complete remainder is `1` followed only by zero bits. A probe failure
   propagates the existing truncated-source or source-error status without
   moving the cursor.
+- `available_bytes()` is a reserved source-state leaf with no arguments and
+  type `u64`. It is accepted in structure execution expressions, including
+  computed initializers and lazy byte counts, but rejected in pure-function
+  bodies; a pure function also may not use the reserved name. Evaluation does
+  not advance or read the current reader and returns `remainingBits() / 8`, so
+  a partial trailing byte is deliberately excluded.
 - `byte_aligned()` is a reserved source-position predicate with no arguments
   and type `bool` (ADR-0089). It is accepted in structure execution expressions
   (such as computed fields, conditional guards, and repeat bounds) but rejected
@@ -558,10 +575,10 @@ The static rules for this subset are:
   computed fields guaranteed on every path reaching the declaration. Arrays,
   `se`, unknown or future fields, and unavailable branch-local values are
   rejected. Its expression may also include the reserved `context_value(...)`,
-  `header_value(...)`, `optional_value(...)`, `more_rbsp_data()`, and `available_bytes()` leaves under
-  the full expression grammar, each keeping every constraint it carries
-  elsewhere; a computed
-  initializer in a structure that declares no matching `@context_import` is
+  `header_value(...)`, `optional_value(...)`, `more_rbsp_data()`, and
+  `available_bytes()` leaves under the full expression grammar, each keeping
+  every constraint it carries elsewhere; a computed initializer in a structure
+  that declares no matching `@context_import` is
   rejected exactly as a dynamic width is. A computed field consumes zero bits,
   leaves static alignment unchanged, inherits enclosing guards, counts toward
   the 99,999-field projection limit, and is visible to later declarations under
@@ -589,8 +606,9 @@ The static rules for this subset are:
   - `@window(EntryStruct, count_field)` takes two identifiers: `EntryStruct`
     (which must name a declared fixed-width structure composed solely of
     unconditional static `bits<N>` fields or fixed arrays with a positive,
-    byte-aligned total bit width) and `count_field` (which must name an earlier
-    unconditional unsigned scalar integer field in the enclosing structure).
+    byte-aligned total bit width and no annotations other than `@description`
+    or `@spec`) and `count_field` (which must name an earlier unconditional
+    unsigned scalar integer field, not an array, in the enclosing structure).
   It inherits enclosing conditional, switch, and repeat guards; repeat
   projection appends the same indexes to its materialized name. Every projected
   region counts toward the 99,999-item structure limit.
@@ -617,10 +635,9 @@ The static rules for this subset are:
   operand as one additional expression node. `available_bytes()` takes zero
   arguments and returns the remaining byte count in the current source reader
   from the current bit position (`remainingBits() / 8`) as an unsigned `u64`
-  scalar value. The complete
-  width or assertion expression remains subject to the shared expansion-work
-  limit. Enum fields contribute their decoded `u64`; enum member names are not
-  expression values.
+  scalar value. The complete width or assertion expression remains subject to
+  the shared expansion-work limit. Enum fields contribute their decoded `u64`;
+  enum member names are not expression values.
 - Every written pure-function body, computed-field expression, lazy byte-count
   expression, dynamic width, or assertion condition, and every corresponding
   fully inlined expression, has
@@ -678,7 +695,8 @@ The static rules for this subset are:
   constraints independently to every expanded element. A computed field accepts
   `@description`, `@spec`, and `@context_export`, before the declaration or
   after its expression, but rejects `@equals`, `@enum`, and an array suffix. A
-  lazy byte region accepts `@description` and `@spec` only after its name.
+  lazy byte region accepts `@description`, `@spec`, `@container`,
+  `@target_format`, and `@window` only after its name.
   Compressed payloads accept `@description` and `@spec` only. Sequence scan
   declarations accept `@index(progressive)`, `@spec`, and `@description`.
   Structure declarations accept `@spec`, `@description`, `@context`,
@@ -690,9 +708,9 @@ The static rules for this subset are:
   unregistered or unrecognized annotation (e.g. `@equalss(4095)`) fails
   compilation with `DslDiagnosticCode::InvalidAnnotation` (`"Unknown annotation '@<name>'"`).
   Annotations placed on unsupported declaration hosts are strictly rejected with
-  `DslDiagnosticCode::InvalidAnnotation`. The `@target_format(...)` annotation
-  is reserved for future cross-layer format delegation (Task P5h) and is currently
-  registered with `allowedTargets = 0` (rejected on all hosts).
+  `DslDiagnosticCode::InvalidAnnotation`. The `@container(...)`,
+  `@target_format(...)`, and `@window(...)` annotations are registered only for
+  lazy byte regions; other hosts reject them.
 - A source with lexical or static diagnostics produces no executable rule. The
   parser still returns its partial IR and all diagnostics with line/column
   ranges so an editor can report more than the first error.
@@ -2203,6 +2221,11 @@ node and is evaluated inside the enclosing instruction. The VM probes a copy of
 the current reader, so both a successful query and a failed source read leave
 the execution cursor unchanged. See
 [ADR-0072](../adr/0072-observe-remaining-rbsp-data-in-expressions.md).
+
+The `available_bytes()` leaf lowers to a zero-operand unsigned typed-expression
+node. The VM computes `remainingBits() / 8` from the current bounded reader
+without reading source or moving the execution cursor. See
+[ADR-0097](../adr/0097-mp4-isobmff-container-primitives-language-increments.md).
 
 Publication occurs only after successful materialization, requested exact
 consumption, dependency resolution, and complete typed-payload preparation.

@@ -154,6 +154,10 @@ P5d-1/P5d-2 之后，`sequence<Box> boxes = scan(mp4_box);`（配 `@index(progre
 
 **类型化 IR**：`DslTypedField`（`dsl_ir.h:108-124`）增加 `std::optional<quint32> containerChildStructIndex`（仅 `type.kind == DslValueTypeKind::LazyBytes` 时有效）。在 `compileLazyRegion`（`dsl_ir.cpp:2462-2540`）中解析绑定。
 
+**节点元数据与缓存**：`AnalysisNodeMetadata::containerChildStructIndex` 在 lazy 节点上保存解析后的
+索引。materialized-result cache body 使用 `nodeContainerChildStructIndexFlag = 16U` 编码；缺少
+标志位 `16U` 的旧 body 解码为 `std::nullopt`。
+
 **`RegisterLazyBytes` 职责与会话级 Runner**：
 - `DslOpcode::RegisterLazyBytes`（`dsl_vm.cpp:3169-3320`）**仅注册 lazy 节点**并存储元数据（`containerChildStructIndex`），**不立即执行重入**。
 - 子 box 枚举由会话拥有的 `Mp4IsobmffAnalyzer` runner（P5d-3）在容器字节跨度 `[anchor_start, anchor_end)` 上重入 `Mp4Box` scanner，以指定结构体为元素类型物化子节点并挂载于容器 lazy 节点之下。
@@ -281,7 +285,7 @@ struct Box {
 - **节点元数据**：`core::AnalysisNodeMetadata`（`analysis_model.h:76-80`）增加 `std::optional<QString> targetFormat`。
 - **缓存编码**：`analysis_cache_payload.cpp:35-36` 增加 `nodeTargetFormatFlag = 4U`。缺少该标志位的旧缓存解码为 `targetFormat = std::nullopt`。
 - **`RulePackageCatalog::resolveByFormat` 服务（P5d-2）**：
-  `resolveByFormat(QStringView format, QStringView runningLanguage, QStringView runningEngine)` 扫描规则包匹配 `RulePackageEntryPoint::format`（`rule_package.h:61-69`），返回 `Found`、`MissingContent` 或 `VersionConflict`。
+  `resolveByFormat(QStringView format, QStringView runningLanguage, QStringView runningEngine)` 扫描所有已安装 entry point 中匹配 `RulePackageEntryPoint::format`（`rule_package.h:61-69`）的项。format 为空或无匹配时返回 `MissingContent`；匹配超过一个时返回 `VersionConflict`，不得依赖 catalog 迭代顺序；恰好一个匹配时才继续检查 `IncompatibleLanguage` 与 `IncompatibleEngine`，最后返回 `Found`。
 - **P5d 与 P5i 分工**：P5d-2 交付注解、元数据、缓存标志位与 `resolveByFormat`；P5i 在 UI 导航动作中消费。
 
 ---
@@ -317,6 +321,11 @@ struct Box {
 - `entry_count_field` 必须在所在结构体中先于 lazy 区域声明；
 - 必须为无条件、标量无符号整数字段；
 - `RegisterLazyBytes` 在运行时将解码出的 `entryCount` 快照存入节点窗口元数据。
+
+**malformed typed IR 校验（P5d-2）**：在执行 instruction、读取 source 或创建 node 前，VM
+拒绝以下情况：非 lazy field 携带 lazy metadata；typed field 与 `AnalysisNodeMetadata` 不一致；
+预先填入 runtime window 值；container/entry 索引越界；count field 位于 lazy region 之后、带
+条件、非标量或有符号；`entrySizeBits` 与重新执行固定宽度校验得到的 `EntryStruct` 大小不一致。
 
 **类型化 IR**：`DslTypedField` 增加：
 - `std::optional<quint32> windowEntryStructIndex`；
