@@ -100,6 +100,14 @@ streamview_add_rules_test(
     streamview_h264_ebsp_rbsp_mapper_tests
     rules/h264_ebsp_rbsp_mapper_test.cpp
 )
+streamview_add_rules_test(
+    streamview_mp4_box_scanner_tests
+    rules/mp4_box_scanner_test.cpp
+)
+streamview_add_rules_test(
+    streamview_mp4_box_detector_tests
+    rules/mp4_box_detector_test.cpp
+)
 
 if(TARGET streamview_app)
     streamview_add_app_test(streamview_analysis_session_tests app/analysis_session_test.cpp)

@@ -3559,6 +3559,22 @@ private slots:
         QCOMPARE(compiled.program->entry.targetIndex, quint32(0));
     }
 
+    void compilesMp4BoxScanSequence() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Box { bits<32> size; bits<32> type; }
+            @index(progressive) sequence<Box> boxes = scan(mp4_box);
+            entry boxes;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        QCOMPARE(compiled.program->scans.size(), std::size_t(1));
+        QCOMPARE(compiled.program->scans.front().name, QStringLiteral("boxes"));
+        QCOMPARE(compiled.program->scans.front().scanner, streamview::rules::DslScannerKind::Mp4Box);
+        QCOMPARE(compiled.program->entry.kind, DslEntryKind::Sequence);
+        QCOMPARE(compiled.program->entry.targetIndex, quint32(0));
+    }
+
     void deduplicatesUnsupportedDiagnosticsInsideRepeats() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             struct S {
