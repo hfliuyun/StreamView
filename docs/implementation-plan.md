@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5d-1 — Mp4Box scanner + detector + DSL scanner kind (Mp4BoxScanner with ISO BMFF framing & checked coordinates; Mp4BoxDetector with Weak/Probable/Strong confidence & trailing truncation immunity; DslScannerKind::Mp4Box enum, parser, IR lowering; full unit test suites streamview_mp4_box_scanner_tests 14/14, streamview_mp4_box_detector_tests 11/11, dsl_tests 22/22, dsl_ir_tests 89/89; 38/38 CTest across dev, ci, sanitize; hosted CI run 32026964582 all green)
-Next Action: 主 Agent 复审 P5d-1；未经复审不得开始 P5d-2（P5d-2 仍为 P5c/ADR-0097 决策能力的语言/编译器/IR 实现切片：@container + @window + available_bytes() + @target_format registration/metadata/cache flag 4U/RulePackageCatalog::resolveByFormat）
-Last Verification: P5d-1 — Commit 68c44071b80db949460b455892dbe01b24378402; Docs errata commit b25d3bd677052888f0d1df9e7dc706c1729f478f; Hosted CI Run 32026964582 (macOS-15 job 95378293047, Ubuntu-24.04 job 95378293085, Windows-2022 job 95378293132); CTest 38/38 passed on dev (Debug), ci (Release), sanitize (ASan/UBSan) presets; svtool rule check on official rules (H.264, AAC ADTS, AAC ASC) and probe P1 (Rule OK); git diff --check clean; no FourCC literals in C++ scanner/detector logic
+Last Completed Step: Task P5d-1-R4 — 实施计划活动状态头修正（承接 P5d-1-R3 测试排布与最小 16 字节 largesize 边界整改，记录测试提交 a98f7285d77ff1490ee48c6279231e22c13ff016、Hosted CI Run 32035443756 全绿、dev/ci/sanitize 38/38、detector 18/18 及 scanner 19/19）
+Next Action: 主 Agent 复审 P5d-1-R4；未经复审不得开始 P5d-2（P5d-2 仍为 P5c/ADR-0097 决策能力的语言/编译器/IR 实现切片：@container + @window + available_bytes() + @target_format registration/metadata/cache flag 4U/RulePackageCatalog::resolveByFormat）
+Last Verification: P5d-1-R4 — Test commit a98f7285d77ff1490ee48c6279231e22c13ff016; Docs commit 5f62c028931fef674c1db07edf6bf49025828cdb; Hosted CI Run 32035443756 (macOS-15 job 95404678898, Ubuntu-24.04 job 95404679117, Windows-2022 job 95404679118); CTest 38/38 passed on dev (Debug), ci (Release), sanitize (ASan/UBSan) presets; streamview_mp4_box_detector_tests 18/18; streamview_mp4_box_scanner_tests 19/19; git diff --check clean; no FourCC literals in C++ logic
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2108,3 +2108,9 @@ Blockers: None
      - `git diff --check` 干净；未修改 `src/` 生产代码；
      - Hosted CI Run `32035443756`（macOS job `95404678898`、Ubuntu job `95404679117`、Windows job `95404679118`）全绿。
   Next Action 保持「主 Agent 复审 P5d-1-R3；未经复审不得开始 P5d-2」。
+- 2026-08-17 Task P5d-1-R4（实施计划活动状态头最终修正）：
+  Markdown-only 补正（按 ADR-0019 跳过 Hosted CI）：
+  1. 补正实施计划顶部活动状态头，准确对齐 P5d-1-R3 测试排布与最小 16 字节 largesize 边界整改交付结果；
+  2. 原样载录测试提交 `a98f7285d77ff1490ee48c6279231e22c13ff016`、Hosted CI Run `32035443756`（macOS-15 job `95404678898`、Ubuntu-24.04 job `95404679117`、Windows-2022 job `95404679118`）、本地 3 套预设 CTest 38/38 以及 detector 18/18 / scanner 19/19 结果；
+  3. 保持不删除任何既有历史记录。
+  Next Action 保持「主 Agent 复审 P5d-1-R4；未经复审不得开始 P5d-2」。
