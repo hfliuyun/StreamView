@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5c — MP4/ISOBMFF container primitive expressibility probing & bilingual ADR-0097 (markdown-only + scratch probes; no code, no rule assets, no hosted run)
-Next Action: Task P5d — implement P5c-decided capabilities: DslScannerKind::Mp4Box scanner, @container annotation + runner re-entry, available_bytes() builtin, @target_format registration + LazyRegion whitelist relaxation (capability-only slices P5d-1/2/3)
-Last Verification: P5c — 11 scratch `svtool rule check` probes executed with expected errors / Rule OK; `markdown_hygiene` (CTest #36) passed; bilingual ADR-0097 symmetry check passed (16 headings / 42 table rows, line-for-line parity); markdown-only change per ADR-0019, no hosted run produced this round. Prior hosted baselines remain: P5b-R run 31965623068 (macOS job 95210238754, Windows job 95210238781, Ubuntu job 95210238826) on commit 2624276; P5b-R2 run 31969610307 (macOS job 95219881189, Ubuntu job 95219881227, Windows job 95219881244) on commit 7671916
+Last Completed Step: Task P5c-R — ADR-0097 implementability & evidence-loop remediation (markdown-only + scratch probes; precise codeable/testable contracts for every capability; no code, no rule assets, no hosted run)
+Next Action: 主 Agent 复审 P5c-R；未经复审不得开始 P5d（P5d 仍为 P5c/P5c-R 决策能力的实现切片：DslScannerKind::Mp4Box scanner、@container annotation + runner re-entry、available_bytes() builtin、@target_format registration + LazyRegion whitelist relaxation）
+Last Verification: P5c-R — 14 scratch `svtool rule check` probes executed (P1–P8c) with verbatim expected errors / Rule OK, including new P8a uuid two-`bits<64>` positive, P8b `bits<128>` negative, P8c `@container(Child)` name-gate probe; `markdown_hygiene` (CTest #36) passed; `git diff --check` clean; bilingual ADR-0097 symmetry check passed (16 headings / 44 table rows, line-for-line parity; probe tokens and cited file:line counts equal EN/ZH); markdown-only change per ADR-0019, no hosted run produced this round. Prior hosted baselines remain: P5b-R run 31965623068 (macOS job 95210238754, Windows job 95210238781, Ubuntu job 95210238826) on commit 2624276; P5b-R2 run 31969610307 (macOS job 95219881189, Ubuntu job 95219881227, Windows job 95219881244) on commit 7671916
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1918,3 +1918,16 @@ Blockers: None
   2. 产出双语 ADR-0097（D1–D7 决策 + 被否决方案 + 影响 + 验证矩阵 + 参考），EN/ZH 结构对称（16 标题 / 42 表格行，行号一一对应）。
   3. 验证：`markdown_hygiene`（CTest #36）通过；双语对称性检查通过；P5c 为 Markdown-only，按 ADR-0019 跳过 hosted CI，本轮无新 run。
   Next Action 指向 Task P5d（能力实现切片）。
+
+- 2026-08-17：完成 Task P5c-R —— ADR-0097 可实施性与证据闭环整改（Markdown-only + scratch 探针，docs commit，ADR 修正 `docs: correct mp4 primitive implementation contracts` + 本记录 commit）。本次更正覆盖原 P5c 记录中的以下错误结论（旧记录保留为历史，以本记录为准）：
+  1. 修正 UUID（原 P5c 的 `bits<128> usertype` 非法）：新探针 P8b 实测 `bits<128>` → `error: Bit field width must be in the range 1..64`（`dsl.cpp:1038`）；锁定形态为两个 `bits<64>` 字段（`usertype_hi`/`usertype_lo`），探针 P8a `Rule OK`；明确 v0.1 只透明保存 128 位值，不支持整 UUID 字面量 equality（fact 10）；
+  2. 锁定 Mp4Box framing/candidate 合同：合法尺寸集（`size==0` 终结、`size==1 && largesize>=16`、`size>=8`；2..7 与 `largesize<16` 畸形）、头长（普通 8 / large 16 / uuid 另加 16 usertype）、截断头/跨度越界/128 位受检加法/size 小于头长/区域末尾/`size==0` terminal 行为全定义；单 box 合法性与 detector Strong（≥3 连续头）阈值分述；
+  3. 修正 scanner/DSL 数据合同：采用 ADTS 同构 span-only 合同（scanner 输出 box span，runner 映射，Box DSL 从源重读 size/type/largesize），撤回原 P5c「scanner publishes header values」错误陈述（值下传需完整 typed scan/value schema，列入被否决方案 7）；
+  4. 完整定义 `@container`：锁定后置 `@container(ChildStruct)`（一个 struct identifier 参数、仅 LazyRegion 宿主、arity/kind/存在性诊断），parser AST（dsl.cpp:782-810 通用注解解析）、typed IR（`DslLazyRegion::containerChildStructIndex`）、runner 重入、子映射边界/递归-环策略（递减跨度 + 深度 16 + 节点预算 100'000）/取消/截断/子错误传播；核心/runner 零 FourCC 字面量；探针 P8c 证明名称闸门先行、参数解析为 Identifier（dsl.cpp:801）；
+  5. 完整定义 `@target_format`：后置 `@target_format("video/mp4")`、一个 string 参数、仅 LazyRegion；knownAnnotations（dsl.cpp:1834-1866）预留项 `{u"target_format", 0U}`（dsl.cpp:1865）改为 LazyRegion、白名单消息（dsl.cpp:1895）同步放开；typed IR `DslLazyRegion::targetFormat`、FieldMetadata/analysis tree 传播、session/cache 保留（analysis_cache_payload 节点元数据）、AnalysisSession/UI 消费（RulePackageCatalog::resolve，rule_catalog.h:52）；P5d 实现点与正反测试矩阵齐备；
+  6. 修正窗口化设计：通用 lazy-region window decoder（分页 + 坐标回映 `container_anchor + index * entry_size`）纳入显式能力切片（P5d-3 子项 / 独立 P5d-4），不假定 P5g 规则自研；硬性编译要求收窄为「产品默认窗口化，小表可 bounded repeat」；
+  7. 修正分片 MP4 证据：P7d 只证明 unsupported 形态可编译；moof 节点 Unsupported/Warning、此前节点保留、后续 mdat 续扫三点标为 P5d runner 规范性合同与必测行为（测试向量 /tmp/p5c_frag.mp4，ffprobe trace 摘录 moof→mfhd/traf→tfhd/trun → 后续 mdat）；
+  8. 补齐证据：14 探针全部给出完整命令与当次输出；fixture 生成命令写全（普通 6513 字节 / 分片 4505 字节）；ffprobe 输出经 grep 的明确标注为「相关摘录」，覆盖 smhd、音频 btrt、mvex、trex 节点；ADR 的验证矩阵声明与报告事实一致；
+  9. 同步修正：knownAnnotations 引用范围改为现场真实 `dsl.cpp:1834-1866`（原 1836-1865）；「seven facts / facts 10–16」计数统一（七条容器事实）；行号全部现场 `grep -n` 取（含 `dsl.cpp:3556-3564` sequence 元素类型查找、`dsl.cpp:3577-3580` @index(progressive) 消费）；EN/ZH 语义与结构对称（16 标题 / 44 表格行，探针 token 与引用行号计数 EN=ZH）。
+  验证：14 个 scratch 探针全部 `svtool rule check` 实跑，输出与 ADR 矩阵逐字一致（P7d/P8a `Rule OK`，其余错误消息原文匹配）；`markdown_hygiene`（CTest #36）通过；`git diff --check` 干净；P5c-R 为 Markdown-only，按 ADR-0019 跳过 hosted CI，本轮无新 run（最新 hosted 基线仍为 P5b-R2 run 31969610307）。
+  Next Action 保持「主 Agent 复审 P5c-R，未经复审不得开始 P5d」。
