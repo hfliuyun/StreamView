@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: P5b-R / P5b-R2 review remediation — annotation compile gate and explicit unsupported syntax (ADR-0098), plus UnsupportedSyntax severity alignment to non-fatal Warning
-Next Action: Task P5c — ISOBMFF container language primitives probing & ADR-0097
-Last Verification: P5b-R2 local dev/ci/sanitize 36/36 passing with zero sanitizer warnings (dev 50.16s, ci 16.49s, sanitize 131.35s); targeted suites dsl 87 / dsl_ir 88 / AAC 31 / H.264 174; all three bundled H.264/AAC .svfmt sources pass `svtool rule check`. Latest hosted baseline: P5b-R run 31965623068 (macOS job 95210238754, Windows job 95210238781, Ubuntu job 95210238826) on commit 2624276; P5b-R2 hosted run 31969610307 (macOS job 95219881189, Ubuntu job 95219881227, Windows job 95219881244) on commit 7671916
+Last Completed Step: Task P5c — MP4/ISOBMFF container primitive expressibility probing & bilingual ADR-0097 (markdown-only + scratch probes; no code, no rule assets, no hosted run)
+Next Action: Task P5d — implement P5c-decided capabilities: DslScannerKind::Mp4Box scanner, @container annotation + runner re-entry, available_bytes() builtin, @target_format registration + LazyRegion whitelist relaxation (capability-only slices P5d-1/2/3)
+Last Verification: P5c — 11 scratch `svtool rule check` probes executed with expected errors / Rule OK; `markdown_hygiene` (CTest #36) passed; bilingual ADR-0097 symmetry check passed (16 headings / 42 table rows, line-for-line parity); markdown-only change per ADR-0019, no hosted run produced this round. Prior hosted baselines remain: P5b-R run 31965623068 (macOS job 95210238754, Windows job 95210238781, Ubuntu job 95210238826) on commit 2624276; P5b-R2 run 31969610307 (macOS job 95219881189, Ubuntu job 95219881227, Windows job 95219881244) on commit 7671916
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1904,3 +1904,17 @@ Blockers: None
      - 本地 dev/ci/sanitize 三套 36/36 全绿（dev 50.16s、ci 16.49s、sanitize 131.35s，零 sanitizer 告警）；定向套件 dsl 87 / dsl_ir 88 / AAC 31 / H.264 174；三份 bundled `.svfmt` 全部 `Rule OK`；
      - push 后 Hosted CI run `31969610307` 在 macOS 15（job `95219881189`）、Ubuntu 24.04（job `95219881227`）、Windows 2022（job `95219881244`）三平台全部成功。
   Next Action 保持 Task P5c（ISOBMFF 容器语言原语探测与 ADR-0097 编写）。
+
+- 2026-08-17：完成 Task P5c —— MP4/ISOBMFF 容器原语可表达性探测与双语 ADR-0097（Markdown-only + scratch 探针，commit `4bd1e28`）。
+  1. 探测结论（11 个 scratch 探针全部 `svtool rule check` 实跑，均符合预期）：
+     - Q① 顶层 box 枚举：`scan(mp4_box)` → `error: Only h264_start_code and adts_frame are supported`（parser `dsl.cpp:3568` / IR `dsl_ir.cpp:3679`）——需新增 `DslScannerKind::Mp4Box`（只做分帧、不认任何 FourCC，与 AacAdtsScanner 只认 syncword/长度链同构）；
+     - Q② 嵌套下钻：结构体类型字段 / struct 内 sequence / `payload<mp4>` / `@container` 四条探针全部报错（`Expected bits<N...>` ×2、`The only accepted payload view kind is rbsp`（dsl.cpp:3669）、`Unknown annotation '@container'`（dsl.cpp:1880））——选定最小机制 `@container` + runner 重入（容器语义留 DSL，核心零 FourCC）；
+     - Q③ type 标签：fact 10 复确认，ADR-0097 附 40 个 FourCC 常量表；`uuid` 扩展类型以 `@equals(0x75756964)` + 不透明 `bits<128> usertype` 收口（ADR-0096 D1 §5 遗留问题）；
+     - Q④ size 分支：`size == 1`/`else` 用 ADR-0096 D1 既有分支内 `computed`+`@lazy` 形态（复确认唯一可行写法）；`size == 0` 选定新增 `available_bytes()` 内建（否决 scanner 计算剩余长度下传）；
+     - Q⑤ `@target_format`：后置位被 lazy 白名单拦（`dsl.cpp:1895`）、前置位被拒（`Expected bytes after @lazy(...)`，`dsl.cpp:1112`）——设计为注册 `{target_format, LazyRegion}`、仅后置位，注册表改动落在 P5d-2；
+     - Q⑥ 样本表窗口化：`maximumExpandedFieldsPerStructure = 99'999`（dsl_ir.cpp:13）为编译期硬上限，设计 lazy 区域 + 按需窗口解码 + source coordinate 回映 + UI 翻页契约（非可选优化）；
+     - Q⑦ moof：三条禁令实测（`dsl_ir.cpp:2741/2748/2771`），box 头后 `unsupported(...) at type;` 形态 `Rule OK`——选定规则内 unsupported（保留已解码前缀、继续后续顶层扫描），否决探测器整份拒绝；
+     - Q⑧ 工具链：ffprobe 8.1 + ffmpeg 可用、MP4Box 缺失；ffmpeg 生成普通/分片 fixture，`ffprobe -v trace` 取 box 层级 ground truth（ftyp/free/mdat/moov → mvhd/trak×2 → tkhd/edts/mdia → mdhd/hdlr/minf → vmhd/smhd/dinf/stbl → stsd(avc1+avcC/pasp/btrt, mp4a+esds/btrt)/stts/stss/stsc/stsz/stco；分片：moov(+mvex/trex) → moof→mfhd/traf→tfhd/trun → mdat），`-show_packets` 取 sample offset/时间戳/关键帧（视频帧 1：pos 306 关键帧；帧 2：pos 3282）；
+  2. 产出双语 ADR-0097（D1–D7 决策 + 被否决方案 + 影响 + 验证矩阵 + 参考），EN/ZH 结构对称（16 标题 / 42 表格行，行号一一对应）。
+  3. 验证：`markdown_hygiene`（CTest #36）通过；双语对称性检查通过；P5c 为 Markdown-only，按 ADR-0019 跳过 hosted CI，本轮无新 run。
+  Next Action 指向 Task P5d（能力实现切片）。
