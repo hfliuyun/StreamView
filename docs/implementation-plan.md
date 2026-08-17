@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5d-3 — MP4 rule-driven runner 骨架、容器重入、跨重入共享执行预算、session-owned WindowDecoder 与 D7 moof/mdat 续扫闭环
-Next Action: 等待主 Agent / 用户审阅 P5d-3 交付物，复审通过后准备规划并推进 Task P5e（MP4 官方规则包规范编写与开发）；严格遵守不提前实现 P5e/P5f/P5g/P5h/P5i
-Last Verification: P5d-3 — Docs commit fbddca976d9eecbcfe12b9d9c490218b6fc8e4b7; Feat commit c5db52277d337d1cf70cbb413c631b1e959ee308; Fix commit 357aefd1b1103fdf5a7bcab4d8e57eead05ef7d2; Hosted CI Run 32045017480 (Ubuntu-24.04 job 95430874433, macOS-15 job 95430874417, Windows-2022 job 95430874338: all green); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed with zero sanitizer reports; svtool rule check on official H.264/AAC packages Rule OK; git diff --check clean
+Last Completed Step: Task P5d-3-R — MP4 runner/window decoder 深审补正与验证闭环
+Next Action: 主 Agent 复审 P5d-3-R；未经复审不得开始 P5e（MP4 官方规则包规范编写与开发）
+Last Verification: P5d-3-R — Source/ADR/Test commit 8b9b4c2bad2f87337cf7afbd646b802f0ad600fb; Hosted CI Run 32050668857 (macOS-15 job 95448996389, Ubuntu-24.04 job 95448996588, Windows-2022 job 95448996456: all success); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed; sanitize zero reports; markdown_hygiene passed; git diff --check clean
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2171,10 +2171,10 @@ Blockers: None
   终审结论：P5d-2 通过。Next Action 切换为下发 P5d-3；P5d-3 仍须严格保持 capability-only，
   不得创建/发布 MP4 规则包或升级任何包版本。
 
-- 2026-08-18：完成 Task P5d-3 —— MP4 rule-driven runner、容器重入、跨重入共享预算与 WindowDecoder（Docs commit `fbddca976d9eecbcfe12b9d9c490218b6fc8e4b7`，Feat commit `c5db52277d337d1cf70cbb413c631b1e959ee308`，Fix commit `357aefd1b1103fdf5a7bcab4d8e57eead05ef7d2` 与本记录 commit）。
+- 2026-08-18：完成 Task P5d-3 —— MP4 rule-driven runner、容器重入、跨重入共享预算与 WindowDecoder（Docs commit `fbddca96b166c82562d504f9e811cb518be045a8`，Feat commit `c5db522590107aaba80f32d1c1b068a5521a9813`，Fix commit `357aefdf15a58db186e4b3a25b766b87319adf08` 与本记录 commit）。
   严格遵守 capability-only 原则，未创建 `org.streamview.mp4` 规则包，未升级任何 `rule.toml` 版本，C++ 源码中无任何硬编码 FourCC 字面量。
   1. Mp4IsobmffAnalyzer 规则驱动 Runner 骨架：
-     - 实现 `loadMp4IsobmffRulePackage()` 动态查找已安装 MP4 规则包，未安装时通过 `create(&errorMessage)` 干净失败返回 `std::nullopt`；
+     - `create(&errorMessage)` 在没有已安装 MP4 规则包时干净失败返回 `std::nullopt`；不保留无调用方的公开规则包加载桩；
      - `analyzeBatch` 驱动 `Mp4BoxScanner` 扫描 box 记录，创建 `@index(progressive)` 顶层 box 节点（`Lazy -> Indexing -> Materialized`）；
      - 接入 `AnalysisSession`，扩展 `analyzer_` std::variant 分支，统一调度进度与状态。
   2. 容器重入（Container Re-Entry）与 BoundedSourceView：
@@ -2202,5 +2202,17 @@ Blockers: None
      - 测试夹具由脚本装配生成：`tests/fixtures/generate_mp4_p5d3_fixtures.py`；
      - 新增测试追加至测试类末尾：`tests/rules/mp4_isobmff_analyzer_test.cpp`（10 tests）、`tests/rules/window_decoder_test.cpp`（9 tests）、`tests/app/analysis_session_test.cpp`（追加 1 test）；
      - 静态检查：官方 H.264 与 AAC（ADTS/ASC）规则包全部通过 `svtool rule check`（`Rule OK`）；
-     - 本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套完整构建全量 CTest 均 40/40 通过，ASan/UBSan 零警告/零报告；
+     - 本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套完整构建全量 CTest 均 40/40 通过，ASan/UBSan 零警告/零报告；原始 P5d-3 diff 的 fixture generator 存在 16 处尾随空白，故当时的 `git diff --check clean` 记录不成立，并由后续主 Agent 整改清理；
      - Hosted CI Run `32045017480`：Ubuntu-24.04 job `95430874433`、macOS-15 job `95430874417`、Windows-2022 job `95430874338` 全部 success。
+
+- 2026-08-18：完成 Task P5d-3-R —— 主 Agent 深审补正（基线 `8357e8675044501418245e8543e18b247f83c121`，原始交付 HEAD `d2fcd00d5d8685cc5e371867016f65231556534e`，整改 Source/ADR/Test commit `8b9b4c2bad2f87337cf7afbd646b802f0ad600fb`）。本轮按“主 Agent 深审后直接完成边界明确的补正”流程闭环，仍保持 capability-only：不创建/发布 MP4 规则包、不升级 `rule.toml`、核心与 runner 生产代码无 FourCC 字面量。
+  1. 深审发现与生产补正：
+     - 原事务实现复制整棵 `AnalysisTree`，在大窗口分页时形成 O(n²) 复制成本；改为 append-only checkpoint，仅保留 node count 与受影响父节点，runner 记录回滚保留 root，WindowDecoder entry 记录回滚保留 window parent；共享预算扣减仍不回滚；
+     - runner 顶层/递归 VM `InvalidDefinition` 现在都传播为 `InvalidRule`，补齐具体 `errorMessage`；`Unsupported`、`InvalidSyntax`、`TruncatedSource`、`DependencyUnavailable` 作为内容级部分结果保留诊断并续扫，且不对该结构继续容器重入；
+     - 容器重入的 source mapping、logical range、view id 与 byte alignment 失败不再静默跳过，统一返回明确的 `SourceError`、`ResourceLimit` 或 `InvalidRule`；BoundedSourceView 增加 bit-coordinate overflow guard；递归深度使用作用域 guard，保证所有早退路径恢复深度；
+     - 删除无调用方的公开 `loadMp4IsobmffRulePackage()` 死桩，清理 fixture generator 尾随空白，并同步英中 ADR 的 runner/transaction/content-level 状态合同。
+  2. 回归测试与验证：
+     - 新增 invalid-syntax partial-result + subsequent-box continuation 回归，以及轻量 checkpoint 恢复覆盖；保留多页/重叠页复用、非零窗口坐标、entry 失败回滚、取消恢复、预算与 5 层容器重入覆盖；
+     - 本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套完整构建与 CTest 均 `40/40`，sanitize 零报告；`markdown_hygiene` 通过，`git diff --check` 干净；
+     - Hosted CI Run `32050668857`：macOS-15 job `95448996389`、Ubuntu-24.04 job `95448996588`、Windows-2022 job `95448996456` 全部 success。
+  终审结论：P5d-3-R 的代码与证据整改已完成，等待主 Agent 复审；Next Action 锁定为主 Agent 复审 P5d-3-R，未经复审不得开始 P5e。
