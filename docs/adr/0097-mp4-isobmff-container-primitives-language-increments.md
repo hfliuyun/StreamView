@@ -165,20 +165,20 @@ Container boxes (`moov`/`trak`/`mdia`/`minf`/`stbl`) need to enumerate child box
 | Unsupported / Invalid / Materialized | — | Terminal; no further transition |
 
 **Runner-owned shared execution budget (`RunnerExecutionBudget`)**:
-The runner maintains an active shared budget across all nested VM re-entries:
+The session-owned runner maintains an active shared budget across all nested VM re-entries. Because analysis execution is strictly single-threaded within the session runner, `RunnerExecutionBudget` is accessed serially without mutex overhead:
 
 ```cpp
 struct RunnerExecutionBudget {
-    quint64 remainingNodes;         // Initialized to 100'000 (defaultMaximumMaterializedNodes)
-    quint64 remainingInstructions;  // Initialized to 1'000'000 (defaultMaximumInstructions)
-    quint32 currentNestingDepth;    // Initialized to 0; bounded by defaultMaximumNodeDepth = 256
+    quint64 remainingNodes = 100'000;         // defaultMaximumMaterializedNodes
+    quint64 remainingInstructions = 1'000'000;  // defaultMaximumInstructions
+    quint32 currentNestingDepth = 0;          // bounded by defaultMaximumNodeDepth = 256
     std::shared_ptr<const std::atomic_bool> cancellation;
 };
 ```
 
 - Before calling VM `execute`, the per-invocation limits in `DslExecutionOptions` are narrowed to the shared balances (`limits.maximumMaterializedNodes = budget.remainingNodes`, `limits.maximumInstructions = budget.remainingInstructions`).
 - If `budget.remainingNodes == 0` or `budget.remainingInstructions == 0`, the operation immediately returns `DslExecutionStatus::ResourceLimit`.
-- After VM `execute` returns (regardless of success, truncation, or error), the runner deducts `result.nodesCreated` from `budget.remainingNodes` and `result.instructionsExecuted` from `budget.remainingInstructions`.
+- After VM `execute` returns (regardless of success, truncation, or error), the runner performs checked subtraction: `budget.remainingNodes = (result.nodesCreated >= budget.remainingNodes) ? 0 : (budget.remainingNodes - result.nodesCreated)` and `budget.remainingInstructions = (result.instructionsExecuted >= budget.remainingInstructions) ? 0 : (budget.remainingInstructions - result.instructionsExecuted)`.
 - `maximumViewDepth = 64` and `maximumCallDepth = 64` are per-invocation VM stack limits, not cumulative budgets.
 - `currentNestingDepth` is incremented before child scan re-entry and decremented upon return; exceeding `maximumNodeDepth = 256` marks the container node as `ResourceLimit`.
 
@@ -320,17 +320,18 @@ struct Box {
 **`WindowDecoder` Session-Owned Object (`src/rules/include/streamview/rules/window_decoder.h`, P5d-3)**:
 
 ```cpp
-class WindowDecoder {
+class WindowDecoder final {
 public:
     explicit WindowDecoder(
-        const DslProgram& program,
-        std::shared_ptr<const core::Source> source,
+        const DslTypedProgram& program,
+        const core::RandomAccessSource& source,
         core::SourceMapping sourceMapping,
         std::shared_ptr<core::AnalysisTree> tree,
         core::AnalysisNodeId containerNodeId,
-        std::shared_ptr<RunnerExecutionBudget> budget);
+        std::shared_ptr<RunnerExecutionBudget> budget,
+        std::optional<core::CancellationToken> cancellation = std::nullopt);
 
-    WindowDecodeResult decodeWindow(const WindowDecodeRequest& request);
+    [[nodiscard]] WindowDecodeResult decodeWindow(const WindowDecodeRequest& request);
 };
 ```
 
@@ -351,12 +352,19 @@ Window decoding returns a subset of these states:
 - `TruncatedSource`: lazy region or source shorter than requested page entries;
 - `ResourceLimit`: shared node count or instruction budget exhausted;
 - `Cancelled`: cancellation token triggered during decoding;
+- `SourceError`: I/O or bit-coordinate error reading source bytes;
 - `InvalidDefinition`: invalid `entryStructIndex` or malformed request parameters.
 
-**Boundary and bounds checks**:
-- Checked multiplication `pageIndex * pageSize` (to derive `pageStartIndex`);
-- Checked multiplication `entryIndex * entrySizeBits` within the page;
-- Lazy region boundary check: if `(pageStartIndex + pageCount) * (entrySizeBits / 8) > region_byte_length`, decodes only available entries and returns `TruncatedSource`.
+**Boundary, checked arithmetic, and cache contracts**:
+- `entryCount` is clamped to available region capacity: `clampedCount = min(entryCount, availableRegionBytes / (entrySizeBits / 8))`;
+- Checked multiplication `pageIndex * pageSize` with overflow check;
+- Checked addition `pageStartIndex + pageCount` with overflow check;
+- Checked multiplication `entryIndex * entrySizeBits` and byte offset/length mapping;
+- Lazy region boundary check: if requested page exceeds available range, decodes only available entries and returns `TruncatedSource`;
+- **Window metadata cache serialization (P5d-2)**:
+  - Cache flag `nodeWindowMetadataFlag = 8U` in `analysis_cache_payload.cpp`;
+  - Encodes `windowEntryStructIndex` (`quint32`), `windowEntryCountFieldIndex` (`quint32`), `windowEntrySizeBits` (`quint64`), `entryCount` (`quint64`);
+  - Backwards compatibility: old cache payloads without flag bit `8U` decode with window metadata `std::nullopt`.
 
 ---
 

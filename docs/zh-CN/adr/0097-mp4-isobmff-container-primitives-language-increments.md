@@ -165,20 +165,20 @@ P5d-1/P5d-2 之后，`sequence<Box> boxes = scan(mp4_box);`（配 `@index(progre
 | Unsupported / Invalid / Materialized | — | Terminal; no further transition |
 
 **Runner 拥有的跨重入共享执行预算（`RunnerExecutionBudget`）**：
-Runner 维护跨所有嵌套 VM 重入的共享预算跟踪器：
+Session 拥有的 Runner 维护跨所有嵌套 VM 重入的共享预算跟踪器。由于分析执行在 Session Runner 内部严格单线程串行进行，`RunnerExecutionBudget` 串行访问无锁开销：
 
 ```cpp
 struct RunnerExecutionBudget {
-    quint64 remainingNodes;         // 初始值为 100'000 (defaultMaximumMaterializedNodes)
-    quint64 remainingInstructions;  // 初始值为 1'000'000 (defaultMaximumInstructions)
-    quint32 currentNestingDepth;    // 初始值为 0；受 defaultMaximumNodeDepth = 256 约束
+    quint64 remainingNodes = 100'000;         // defaultMaximumMaterializedNodes
+    quint64 remainingInstructions = 1'000'000;  // defaultMaximumInstructions
+    quint32 currentNestingDepth = 0;          // 受 defaultMaximumNodeDepth = 256 约束
     std::shared_ptr<const std::atomic_bool> cancellation;
 };
 ```
 
 - 每次调用 VM `execute` 前，将 `DslExecutionOptions` 中的单次上限收窄为共享余额（`limits.maximumMaterializedNodes = budget.remainingNodes`，`limits.maximumInstructions = budget.remainingInstructions`）。
 - 若 `budget.remainingNodes == 0` 或 `budget.remainingInstructions == 0`，操作立即返回 `DslExecutionStatus::ResourceLimit`。
-- VM `execute` 返回后（无论成功、截断或错误），runner 从余额中扣除 `result.nodesCreated` 与 `result.instructionsExecuted`。
+- VM `execute` 返回后（无论成功、截断或错误），runner 执行受检下溢扣减：`budget.remainingNodes = (result.nodesCreated >= budget.remainingNodes) ? 0 : (budget.remainingNodes - result.nodesCreated)`，`budget.remainingInstructions = (result.instructionsExecuted >= budget.remainingInstructions) ? 0 : (budget.remainingInstructions - result.instructionsExecuted)`。
 - `maximumViewDepth = 64` 与 `maximumCallDepth = 64` 为单次 VM 调用栈深限制，不计为跨重入累计预算。
 - `currentNestingDepth` 在进入子扫描前递增、返回后递减；超过 `maximumNodeDepth = 256` 时将容器节点标记为 `ResourceLimit`。
 
@@ -320,17 +320,18 @@ struct Box {
 **`WindowDecoder` 会话级对象（`src/rules/include/streamview/rules/window_decoder.h`，P5d-3）**：
 
 ```cpp
-class WindowDecoder {
+class WindowDecoder final {
 public:
     explicit WindowDecoder(
-        const DslProgram& program,
-        std::shared_ptr<const core::Source> source,
+        const DslTypedProgram& program,
+        const core::RandomAccessSource& source,
         core::SourceMapping sourceMapping,
         std::shared_ptr<core::AnalysisTree> tree,
         core::AnalysisNodeId containerNodeId,
-        std::shared_ptr<RunnerExecutionBudget> budget);
+        std::shared_ptr<RunnerExecutionBudget> budget,
+        std::optional<core::CancellationToken> cancellation = std::nullopt);
 
-    WindowDecodeResult decodeWindow(const WindowDecodeRequest& request);
+    [[nodiscard]] WindowDecodeResult decodeWindow(const WindowDecodeRequest& request);
 };
 ```
 
@@ -351,12 +352,19 @@ public:
 - `TruncatedSource`：lazy 区域或源短于请求页条目；
 - `ResourceLimit`：共享节点数或指令预算耗尽；
 - `Cancelled`：解码期间触发取消标记；
+- `SourceError`：读取底层源字节时发生 I/O 或坐标错误；
 - `InvalidDefinition`：结构体索引越界或请求参数非法。
 
-**边界与越界校验**：
-- 受检乘法 `pageIndex * pageSize`（求得 `pageStartIndex`）；
-- 受检乘法 `entryIndex * entrySizeBits`（页内偏移）；
-- Lazy 区域边界校验：若 `(pageStartIndex + pageCount) * (entrySizeBits / 8) > region_byte_length`，仅解码可用条目并返回 `TruncatedSource`。
+**边界、受检算术与缓存合同**：
+- `entryCount` 裁剪至可用区域容量：`clampedCount = min(entryCount, availableRegionBytes / (entrySizeBits / 8))`；
+- 受检乘法 `pageIndex * pageSize`（防溢出）；
+- 受检加法 `pageStartIndex + pageCount`（防溢出）；
+- 受检乘法 `entryIndex * entrySizeBits` 与字节偏移/长度映射；
+- Lazy 区域边界校验：若请求页超出可用范围，仅解码可用条目并返回 `TruncatedSource`；
+- **窗口元数据缓存序列化（P5d-2）**：
+  - 缓存标志位 `nodeWindowMetadataFlag = 8U`（`analysis_cache_payload.cpp`）；
+  - 编码 `windowEntryStructIndex` (`quint32`)、`windowEntryCountFieldIndex` (`quint32`)、`windowEntrySizeBits` (`quint64`)、`entryCount` (`quint64`)；
+  - 向后兼容性：缺少标志位 `8U` 的旧缓存解码为 `std::nullopt`。
 
 ---
 
