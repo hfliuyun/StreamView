@@ -2033,7 +2033,7 @@ Blockers: None
      - Hosted CI Run `32026964582`（macOS job `95378293047`、Ubuntu job `95378293085`、Windows job `95378293132`）全绿。
   Next Action 保持「主 Agent 复审 P5d-1；未经复审不得开始 P5d-2」。
 - 2026-08-17 Task P5d-1-R（Mp4Box scanner/detector 边界与状态机整改）：
-  Docs-first 澄清（commit `6244effcba78bb51d9326e107df038ce61d3e86f`，Markdown-only 按 ADR-0019 跳过 hosted CI）：
+  Docs-first 澄清（commit `6244eff08597f72db79e15366c94e4d9869af3e9`，Markdown-only 按 ADR-0019 跳过 hosted CI）：
   1. 双语 ADR-0097 同步澄清探测器检查窗口边界 `inspectedByteCount = min(prefix.size(), sourceSizeBytes, 64KiB)` 与 `sourceFullyInspected = (inspectedByteCount >= sourceSizeBytes)`；
   2. 明确 evidence 跨度必须完全落在被检窗口内（`offset + boxSize <= inspectedByteCount`），探针末尾仅头部完整而 body 延展出窗的 box 不计入 evidence；
   3. 明确 `size == 0` 终态 box 仅在 `sourceFullyInspected == true` 时才可计为 evidence；
@@ -2058,3 +2058,34 @@ Blockers: None
      - `git diff --check` 干净；C++ 源码中无任何 FourCC 字面量；
      - Hosted CI Run `32030004686`（Ubuntu job `95387660050`、macOS job `95387660192`、Windows job `95387660232`）全绿。
   Next Action 保持「主 Agent 复审 P5d-1-R；未经复审不得开始 P5d-2」。
+- 2026-08-17 Task P5d-1-R2（MP4 边界回归测试有效性与验证记录整改）：
+  Docs-first 澄清（commit `5f62c029705a6bb9aee5d7a64161da3111ff31b4`，Markdown-only 按 ADR-0019 跳过 hosted CI）：
+  1. 双语 ADR-0097 将置信度等级判定从「boxes tiling 铺满 inspected window」精确定义为「从 offset 0 开始连续相接、完整落入 inspected window 的 box 链」；
+  2. 明确持久 `SourceError` 合同限定为「后续使用合法非零批次参数的调用持续返回 SourceError 且不重新尝试/不发起额外读取」，不改变 `InvalidBatchSize` 与 `failed_` 的既有校验优先级；
+  3. 修正此前 P5d-1-R 记录中 docs-first commit SHA 为 `6244eff08597f72db79e15366c94e4d9869af3e9`。
+
+  测试强化与真实 Red/Green 证明（commit `c5913cb7a139e3040fda0fd63fabb3c38e57d89d`，Hosted CI Run `32032780595`）：
+  1. 测试用例有效性强化：
+     - `Mp4BoxScannerTest::handlesHeaderCrossingBufferBoundary`：第二个 box 从 offset 65533 开始，使 4 字节 size 字段本身跨越 64 KiB 边界（前 3 字节在 chunk 0，第 4 字节及 type 在 chunk 1）；
+     - `Mp4BoxScannerTest::handlesLargeHeaderCrossingBufferBoundary`：第二个 box 从 offset 65524 开始，使 `start + 8 = 65532` 的 8 字节 largesize 字段跨越 64 KiB 边界；
+     - `Mp4BoxScannerTest::persistsSourceErrorStateOnSubsequentCalls`：使用 `FailOnceMemorySource`，首调失败后再次合法调用 `scanBatch` 断言不发起二次读取（`readCount == 1`）且持久返回 `SourceError`；
+     - `Mp4BoxDetectorTest::neverReadsPastSourceSizeBytesWhenPrefixIsLarger`：前缀 40 字节（包含 32 字节 box + 8 字节 size==0 头部），`sourceSizeBytes = 36`，断言旧实现错误产出第 2 条 evidence，新实现严格截断为 1 条；
+     - `Mp4BoxDetectorTest::evidenceSpanExceedingProbeWindowIsRejected`：源大于 64 KiB 且尾部 box 延展出窗，断言旧实现产生的超窗 span 被新实现严格拒绝；
+     - 补全 detector largesize 边界套件：15 字节不完整大头拒绝（`rejectsIncompleteLargeHeaderLessThanSixteenBytesInProbe`）、16 字节完整大头接受（`detectsLargeBoxWhenFullyContainedInProbe`）、大头合法但 body 超窗拒绝且保留已有等级（`rejectsLargeBoxWhoseBodyExtendsPastProbe`）；
+     - 坐标防溢出测试 `handlesBitCoordinateOverflowWithOverrideSize` 明确记录为防御性 coverage-only，不作旧实现 Red 声称；
+  2. 独立临时 worktree（`e2bded3e38f2044f512f3fb067a9d7f46795a38a`）上实测 Red 验证（sanitize 构建）：
+     - `handlesHeaderCrossingBufferBoundary`：真实触发 ASan `heap-buffer-overflow`（`READ of size 8 at 0x63100004c800`，`SIGABRT`）；
+     - `handlesZeroMaximumInspectedPositions`：`Actual (batch.status): 0 (InProgress), Expected: 4 (InvalidBatchSize)`；
+     - `persistsSourceErrorStateOnSubsequentCalls`：`Actual readCount: 2, Expected: 1`；
+     - `sizeZeroTerminalOnlyEvidenceWhenSourceFullyInspected`：`!resPartial.candidate.has_value() returned FALSE`；
+     - `neverReadsPastSourceSizeBytesWhenPrefixIsLarger`：`Actual confidence: 1 (Probable), Expected: 0 (Weak)`；
+     - `clampsInspectedByteCountToProbeSize`：`Actual: 131072, Expected: 65536`；
+     - `rejectsBoxWhoseBodyExtendsPastInspectedByteCount`：`Actual: 2 (Strong), Expected: 1 (Probable)`；
+     - `evidenceSpanExceedingProbeWindowIsRejected`：`Actual evidence size: 4, Expected: 3`；
+     - `rejectsLargeBoxWhoseBodyExtendsPastProbe`：`Actual: 2 (Strong), Expected: 1 (Probable)`；
+  3. 当前实现全量 Green 验证：
+     - `tests/rules/mp4_box_scanner_test.cpp`（19/19 passed）、`tests/rules/mp4_box_detector_test.cpp`（18/18 passed）；
+     - 本地 3 套构建与全量 CTest 均通过（dev 38/38、ci 38/38、sanitize 38/38 无 sanitizer 报错）；
+     - `git diff --check` 干净；双语 ADR 对称性检查通过；
+     - Hosted CI Run `32032780595`（Ubuntu job `95396312842`、macOS job `95396312868`、Windows job `95396313012`）全绿。
+  Next Action 保持「主 Agent 复审 P5d-1-R2；未经复审不得开始 P5d-2」。
