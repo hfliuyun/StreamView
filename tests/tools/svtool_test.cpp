@@ -157,8 +157,47 @@ private slots:
         QVERIFY(standardError.contains(QStringLiteral("invalid-syntax")));
         QVERIFY(standardError.contains(QStringLiteral("No H.264 Annex B start code")));
     }
+
+    void analyzesMp4BoxesWithTheSharedRunner() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString sourcePath = directory.filePath(QStringLiteral("sample.mp4"));
+        QFile sourceFile(sourcePath);
+        QVERIFY(sourceFile.open(QIODevice::WriteOnly));
+
+        // ftyp (32 bytes) + free (8 bytes) + mdat (24 bytes)
+        QByteArray data;
+        const char ftypHeader[] =
+            "\x00\x00\x00\x20\x66\x74\x79\x70\x69\x73\x6f\x6d\x00\x00\x02\x00\x69\x73\x6f\x6d\x69\x73\x6f\x32\x61\x76\x63\x31\x6d\x70\x34\x31";
+        data.append(ftypHeader, 32);
+        const char freeBox[] = "\x00\x00\x00\x08\x66\x72\x65\x65";
+        data.append(freeBox, 8);
+        const char mdatBox[] =
+            "\x00\x00\x00\x18\x6d\x64\x61\x74\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f";
+        data.append(mdatBox, 24);
+
+        QCOMPARE(sourceFile.write(data), static_cast<qint64>(data.size()));
+        sourceFile.close();
+
+        QProcess process;
+        process.start(QStringLiteral(SVTOOL_PATH),
+                      {QStringLiteral("analyze"), sourcePath});
+        QVERIFY2(process.waitForFinished(), qPrintable(process.errorString()));
+
+        QCOMPARE(process.exitStatus(), QProcess::NormalExit);
+        QCOMPARE(process.exitCode(), 0);
+        const QString standardOutput = QString::fromUtf8(process.readAllStandardOutput());
+        QVERIFY(standardOutput.contains(QStringLiteral("mp4_isobmff")));
+        QVERIFY(standardOutput.contains(QStringLiteral("box[0]")));
+        QVERIFY(standardOutput.contains(QStringLiteral("major_brand = 1769172845")));
+        QVERIFY(standardOutput.contains(QStringLiteral("box[2]")));
+        QVERIFY(standardOutput.contains(QStringLiteral("type = 1835295092")));
+        QVERIFY(standardOutput.contains(QStringLiteral("payload_bytes = 16")));
+        QVERIFY(process.readAllStandardError().isEmpty());
+    }
 };
 
 QTEST_GUILESS_MAIN(SvtoolTest)
 
 #include "svtool_test.moc"
+

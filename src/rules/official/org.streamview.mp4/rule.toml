@@ -1,0 +1,20 @@
+manifest-version = 1
+
+[package]
+id = "org.streamview.mp4"
+version = "0.1.0"
+authors = ["StreamView contributors"]
+license = "MIT"
+dependencies = []
+
+[compatibility]
+language = "0.1"
+engine = ">=0.1.0 <0.2.0"
+
+[[entrypoints]]
+id = "main"
+format = "video.mp4"
+source = "src/mp4_isobmff.svfmt"
+profiles = ["isobmff"]
+depth = "boxes"
+detector = "mp4-box"

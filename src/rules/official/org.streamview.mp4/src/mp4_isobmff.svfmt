@@ -1,0 +1,70 @@
+@spec("ISO/IEC 14496-12:2015", "4.2")
+@description("Top-level ISO Base Media File Format box.")
+struct Box {
+    bits<32> size
+        @description("Box size in bytes. 1 indicates 64-bit largesize; 0 indicates extends to EOF.");
+    bits<32> type
+        @description("Box FourCC type identifier.");
+    if (type == 0x66747970) {
+        if (size == 1) {
+            bits<64> ftyp_largesize
+                @description("64-bit box size in bytes.");
+            bits<32> ftyp_large_major_brand
+                @description("Major brand identifier.");
+            bits<32> ftyp_large_minor_version
+                @description("Minor version of major brand.");
+            computed<u64> ftyp_large_brand_count = (ftyp_largesize - 24) / 4;
+            repeat (ftyp_large_brand_count, 64) {
+                bits<32> ftyp_large_compatible_brands
+                    @description("Compatible brand identifier.");
+            }
+        } else {
+            if (size == 0) {
+                bits<32> ftyp_eof_major_brand
+                    @description("Major brand identifier.");
+                bits<32> ftyp_eof_minor_version
+                    @description("Minor version of major brand.");
+                computed<u64> ftyp_eof_brand_count = available_bytes() / 4;
+                repeat (ftyp_eof_brand_count, 64) {
+                    bits<32> ftyp_eof_compatible_brands
+                        @description("Compatible brand identifier.");
+                }
+            } else {
+                bits<32> major_brand
+                    @description("Major brand identifier.");
+                bits<32> minor_version
+                    @description("Minor version of major brand.");
+                computed<u64> brand_count = (size - 16) / 4;
+                repeat (brand_count, 64) {
+                    bits<32> compatible_brands
+                        @description("Compatible brand identifier.");
+                }
+            }
+        }
+    } else {
+        if (type == 0x6D6F6F66) {
+            unsupported("fragmented MP4 (moof/traf) is outside the v0.1 subset") at type;
+        } else {
+            if (size == 1) {
+                bits<64> largesize
+                    @description("64-bit box size in bytes.");
+                computed<u64> large_payload_bytes = largesize - 16;
+                @lazy(large_payload_bytes) bytes large_payload
+                    @description("Box payload data.");
+            } else {
+                if (size == 0) {
+                    computed<u64> eof_payload_bytes = available_bytes();
+                    @lazy(eof_payload_bytes) bytes eof_payload
+                        @description("Box payload data extending to EOF.");
+                } else {
+                    computed<u64> payload_bytes = size - 8;
+                    @lazy(payload_bytes) bytes payload
+                        @description("Box payload data.");
+                }
+            }
+        }
+    }
+}
+
+@index(progressive) sequence<Box> boxes = scan(mp4_box);
+entry boxes;

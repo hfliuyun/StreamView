@@ -3,11 +3,13 @@
 #include <streamview/core/version.h>
 #include <streamview/rules/dsl.h>
 #include <streamview/rules/dsl_ir.h>
-#include <streamview/rules/h264_annex_b_analyzer.h>
 #include <streamview/rules/aac_adts_analyzer.h>
 #include <streamview/rules/aac_adts_detector.h>
+#include <streamview/rules/h264_annex_b_analyzer.h>
 #include <streamview/rules/h264_annex_b_detector.h>
 #include <streamview/rules/language_version.h>
+#include <streamview/rules/mp4_box_detector.h>
+#include <streamview/rules/mp4_isobmff_analyzer.h>
 
 #include <QCoreApplication>
 #include <QFile>
@@ -135,11 +137,41 @@ int analyzeSource(const QString& path) {
         streamview::rules::detectH264AnnexBCandidate(prefix, source->sizeBytes());
     const auto aacDetection =
         streamview::rules::detectAacAdtsCandidate(prefix, source->sizeBytes());
+    const auto mp4Detection =
+        streamview::rules::detectMp4Candidate(prefix, source->sizeBytes());
 
+    const auto mp4Conf =
+        mp4Detection.candidate ? std::optional(mp4Detection.candidate->confidence) : std::nullopt;
     const auto aacConf =
         aacDetection.candidate ? std::optional(aacDetection.candidate->confidence) : std::nullopt;
     const auto h264Conf =
         h264Detection.candidate ? std::optional(h264Detection.candidate->confidence) : std::nullopt;
+
+    if (mp4Conf == streamview::rules::Mp4DetectionConfidence::Strong &&
+        h264Conf != streamview::rules::H264AnnexBDetectionConfidence::Strong &&
+        aacConf != streamview::rules::AacAdtsDetectionConfidence::Strong) {
+        auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(*source, &errorMessage);
+        if (!analyzer) {
+            QTextStream(stderr) << path << ": " << errorMessage << '\n';
+            return 2;
+        }
+
+        streamview::rules::Mp4IsobmffAnalysisStatus finalStatus =
+            streamview::rules::Mp4IsobmffAnalysisStatus::InProgress;
+        while (!analyzer->finished()) {
+            const auto batch = analyzer->analyzeBatch();
+            finalStatus = batch.status;
+        }
+
+        QTextStream output(stdout);
+        QTextStream errors(stderr);
+        printNode(analyzer->tree(), analyzer->tree().rootId(), 0, output, errors);
+        if (finalStatus != streamview::rules::Mp4IsobmffAnalysisStatus::Complete ||
+            analyzer->tree().hasPartialResults()) {
+            return 1;
+        }
+        return 0;
+    }
 
     if (aacConf == streamview::rules::AacAdtsDetectionConfidence::Strong &&
         h264Conf != streamview::rules::H264AnnexBDetectionConfidence::Strong) {

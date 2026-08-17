@@ -20,6 +20,8 @@
 
 namespace streamview::rules {
 
+[[nodiscard]] RulePackageLoadResult loadMp4IsobmffRulePackage();
+
 enum class Mp4IsobmffAnalysisStatus : quint8 {
     InProgress,
     Complete,
