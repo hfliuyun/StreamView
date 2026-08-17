@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5d-3-R — MP4 runner/window decoder 深审补正与验证闭环
-Next Action: 下发 Task P5e；严格遵守 P5e 激活边界，未经 P5e 复审不得开始 P5f
-Last Verification: P5d-3-R — Source/ADR/Test commit 8b9b4c2bad2f87337cf7afbd646b802f0ad600fb; Hosted CI Run 32050668857 (macOS-15 job 95448996389, Ubuntu-24.04 job 95448996588, Windows-2022 job 95448996456: all success); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed; sanitize zero reports; markdown_hygiene passed; git diff --check clean
+Last Completed Step: Task P5e — 官方 MP4 规则包 org.streamview.mp4 v0.1.0、顶层 box 遍历、ftyp、mdat lazy 与 MP4 激活
+Next Action: 经 P5e 复审后下发 Task P5f；实现 moov/trak/mdia/minf/stbl 容器层级规则
+Last Verification: P5e — Docs commit b51dcc3e1bc6386bf2da32ae6fdbdd0412852230, Feat commit db499b02fddc3b4811baa36c68ea82c349e7dcd3; Hosted CI Run 32052352474 (Ubuntu-24.04 job 95454504329, Windows-2022 job 95454504390, macOS-15 job 95454504630: all success); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed; sanitize zero reports; svtool rule check passed; svtool analyze end-to-end verified on all 4 fixtures; markdown_hygiene passed; git diff --check clean
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -226,12 +226,12 @@ Blockers: None
 - **Task P5j**（验收与审计切片）：逐 bit 验收审计、超大 `mdat` 惰性验证与阶段 5 里程碑关闭。
 
 ### 阶段 5 检查清单
-- [ ] 支持普通、64 位、size=0 和未知 box；`mdat` 默认 lazy。
+- [x] 支持普通、64 位、size=0 和未知 box；`mdat` 默认 lazy。
 - [ ] 实现 `ftyp`、movie/track/media 层级、sample descriptions、时间与 sample tables、编辑列表。
 - [ ] 实现 `avcC`、`esds`、AVC/AAC sample entry。
 - [ ] 根据 `stsc`、`stsz`、`stco/co64` 建立分页 sample 索引。
 - [ ] 从 MP4 sample 进入 H.264/AAC 规则，并可返回容器字段。
-- [ ] 对 `moof` 明确报告 fragmented MP4 不在首版范围。
+- [x] 对 `moof` 明确报告 fragmented MP4 不在首版范围。
 - [ ] 使用参考工具交叉验证 sample offset、时间戳和关键帧。
 
 ## 阶段 6：会话、规则管理和桌面体验
@@ -2216,3 +2216,27 @@ Blockers: None
      - 本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套完整构建与 CTest 均 `40/40`，sanitize 零报告；`markdown_hygiene` 通过，`git diff --check` 干净；
      - Hosted CI Run `32050668857`：macOS-15 job `95448996389`、Ubuntu-24.04 job `95448996588`、Windows-2022 job `95448996456` 全部 success。
   终审结论：P5d-3-R 通过。Next Action 切换为下发 Task P5e；P5e 仍须严格遵守官方 MP4 规则包激活边界，未经 P5e 复审不得开始 P5f。
+
+- 2026-08-18：完成 Task P5e —— 官方 MP4 规则包 `org.streamview.mp4` v0.1.0、顶层 box 遍历、`ftyp`、`mdat` lazy 与 MP4 激活（Docs commit `b51dcc3e1bc6386bf2da32ae6fdbdd0412852230`，Feat commit `db499b02fddc3b4811baa36c68ea82c349e7dcd3` 与本记录 commit）。
+  严格遵守 ADR-0097 与 ADR-0099 规范，FourCC 语义完全保留在 DSL 规则层中，C++ runner、scanner 与 detector 中未添加任何硬编码 FourCC 字面量。
+  1. 官方规则包 `org.streamview.mp4` v0.1.0：
+     - 新建 `src/rules/official/org.streamview.mp4/rule.toml`（`id = "org.streamview.mp4"`, `version = "0.1.0"`, `format = "video.mp4"`, `depth = "boxes"`, `detector = "mp4-box"`, `entrypoint = "main"`）；
+     - 新建 `src/rules/official/org.streamview.mp4/src/mp4_isobmff.svfmt`，覆盖普通 32 位 box、size == 1 64 位 largesize、size == 0 EOF 尾部跨度（通过 `available_bytes()` 计算）、未知 box 兜底 opaque 载荷、`ftyp`（`major_brand`、`minor_version` 与 `compatible_brands` repeat 循环）以及 `mdat`（`@lazy` 惰性载荷）；
+     - 规则包通过 `qt_add_resources(streamview_official_rules_mp4 ...)` 嵌入二进制构建。
+  2. 运行时与应用激活：
+     - 在 `Mp4IsobmffAnalyzer` 中实现 `loadMp4IsobmffRulePackage()` 与 `bundledMp4IsobmffRule()`，默认 `Mp4IsobmffAnalyzer::create(source, errorMessage)` 成功解析内置规则包；
+     - 在 `AnalysisSession` 中激活 MP4 会话（`activatesMp4AnalysisSessionWithBundledRulePackage`）；
+     - 在 `svtool analyze` 中激活 MP4 解析。
+  3. 可复现 Fixtures 与端到端断言：
+     - 通过 `tests/fixtures/generate_mp4_p5e_fixtures.py` 构造 4 套真实二进制 MP4 文件：
+       1. `mp4_p5e_basic_ftyp_mdat.mp4`（32 字节 `ftyp` + 8 字节 `free` + 24 字节 `mdat`）；
+       2. `mp4_p5e_largesize_box.mp4`（32 字节 `ftyp` + 8 字节 `free` + 64 位 largesize=32 的 `mdat`）；
+       3. `mp4_p5e_size0_eof_box.mp4`（32 字节 `ftyp` + 8 字节 `free` + size=0 延伸至 EOF 的 `mdat`）；
+       4. `mp4_p5e_unknown_opaque_box.mp4`（32 字节 `ftyp` + 24 字节未知 `skip` box + 24 字节 `mdat`）。
+     - 通过 `svtool analyze` 与 C++ 单元测试实测回读，严格断言完整有序 child 字段名列表、每个字段的精确 bit span 与值。
+  4. 本地与 Hosted CI 验证：
+     - 规则静态校验：`svtool rule check` 针对 `mp4_isobmff.svfmt` 输出 `Rule OK`；
+     - 本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套完整构建全量 CTest 均 `40/40` 通过，ASan/UBSan 零警告/零报告；
+     - `markdown_hygiene` 通过，`git diff --check` 干净；
+     - Hosted CI Run `32052352474`：Ubuntu-24.04 job `95454504329`、Windows-2022 job `95454504390`、macOS-15 job `95454504630` 全部 success。
+  终审结论：P5e 交付完成并闭环。Next Action 切换为经 P5e 复审后下发 Task P5f；未经 P5e 复审不得开始 P5f。
