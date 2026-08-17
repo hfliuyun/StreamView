@@ -213,74 +213,6 @@ private slots:
         QCOMPARE(result.candidate->evidence.size(), std::size_t(2));
     }
 
-    void evidenceSpanExceedingProbeWindowIsRejected() {
-        // 3 complete boxes in [0, 60000)
-        std::vector<std::byte> prefix(64U * 1024U, std::byte{0x00});
-        const auto b1 = makeNormalBox(20000, 0x66747970);
-        const auto b2 = makeNormalBox(20000, 0x66726565);
-        const auto b3 = makeNormalBox(20000, 0x6D6F6F76);
-        std::copy(b1.begin(), b1.end(), prefix.begin());
-        std::copy(b2.begin(), b2.end(), prefix.begin() + 20000);
-        std::copy(b3.begin(), b3.end(), prefix.begin() + 40000);
-        // 4th box at 60000 declares size 10000 (ends at 70000 > 65536)
-        const auto b4 = makeNormalBox(10000, 0x6D646174);
-        std::copy_n(b4.begin(), static_cast<std::size_t>(prefix.size() - 60000), prefix.begin() + 60000);
-
-        const auto result = detectMp4Candidate(prefix, 100U * 1024U);
-        QVERIFY(result.candidate.has_value());
-        QCOMPARE(result.candidate->confidence, Mp4DetectionConfidence::Strong);
-        QCOMPARE(result.candidate->evidence.size(), std::size_t(3));
-        for (const auto& ev : result.candidate->evidence) {
-            QVERIFY(ev.boxSpan.has_value());
-            QVERIFY(ev.boxSpan->endExclusive().byteOffset() <= result.inspectedByteCount);
-        }
-    }
-
-    void rejectsIncompleteLargeHeaderLessThanSixteenBytesInProbe() {
-        std::vector<std::byte> prefix;
-        const auto b1 = makeNormalBox(32, 0x66747970);
-        prefix.insert(prefix.end(), b1.begin(), b1.end());
-        // Append 15 bytes of large header (size=1, type='mdat', 7 bytes of largesize)
-        const auto b2 = makeLargeBox(64, 0x6D646174);
-        prefix.insert(prefix.end(), b2.begin(), b2.begin() + 15);
-
-        const auto result = detectMp4Candidate(prefix, prefix.size());
-        QVERIFY(result.candidate.has_value());
-        // Only b1 is complete -> Weak
-        QCOMPARE(result.candidate->confidence, Mp4DetectionConfidence::Weak);
-        QCOMPARE(result.candidate->evidence.size(), std::size_t(1));
-    }
-
-    void detectsLargeBoxWhenFullyContainedInProbe() {
-        std::vector<std::byte> prefix;
-        const auto b1 = makeNormalBox(32, 0x66747970);
-        const auto b2 = makeLargeBox(64,  0x6D646174);
-        prefix.insert(prefix.end(), b1.begin(), b1.end());
-        prefix.insert(prefix.end(), b2.begin(), b2.end());
-
-        const auto result = detectMp4Candidate(prefix, prefix.size());
-        QVERIFY(result.candidate.has_value());
-        QCOMPARE(result.candidate->confidence, Mp4DetectionConfidence::Probable);
-        QCOMPARE(result.candidate->evidence.size(), std::size_t(2));
-        QCOMPARE(result.candidate->evidence[1].declaredBoxSize, quint64(64));
-    }
-
-    void rejectsLargeBoxWhoseBodyExtendsPastProbe() {
-        std::vector<std::byte> prefix(64U * 1024U, std::byte{0x00});
-        const auto b1 = makeNormalBox(32768, 0x66747970);
-        const auto b2 = makeNormalBox(32732, 0x6D6F6F76);
-        std::copy(b1.begin(), b1.end(), prefix.begin());
-        std::copy(b2.begin(), b2.end(), prefix.begin() + 32768);
-        // At 65500, place large box with largesize = 1000 (ends at 66500 > 65536)
-        const auto b3 = makeLargeBox(1000, 0x6D646174);
-        std::copy_n(b3.begin(), 36, prefix.begin() + 65500);
-
-        const auto result = detectMp4Candidate(prefix, 100U * 1024U);
-        QVERIFY(result.candidate.has_value());
-        QCOMPARE(result.candidate->confidence, Mp4DetectionConfidence::Probable);
-        QCOMPARE(result.candidate->evidence.size(), std::size_t(2));
-    }
-
     void allEvidenceSpansEndWithinInspectedByteCount() {
         std::vector<std::byte> prefix;
         for (int i = 0; i < 5; ++i) {
@@ -319,6 +251,78 @@ private slots:
         QVERIFY(!result.candidate.has_value());
         QCOMPARE(result.inspectedByteCount, quint64(0));
         QVERIFY(result.sourceFullyInspected);
+    }
+
+    void evidenceSpanExceedingProbeWindowIsRejected() {
+        // 3 complete boxes in [0, 60000)
+        std::vector<std::byte> prefix(64U * 1024U, std::byte{0x00});
+        const auto b1 = makeNormalBox(20000, 0x66747970);
+        const auto b2 = makeNormalBox(20000, 0x66726565);
+        const auto b3 = makeNormalBox(20000, 0x6D6F6F76);
+        std::copy(b1.begin(), b1.end(), prefix.begin());
+        std::copy(b2.begin(), b2.end(), prefix.begin() + 20000);
+        std::copy(b3.begin(), b3.end(), prefix.begin() + 40000);
+        // 4th box at 60000 declares size 10000 (ends at 70000 > 65536)
+        const auto b4 = makeNormalBox(10000, 0x6D646174);
+        std::copy_n(b4.begin(), static_cast<std::size_t>(prefix.size() - 60000), prefix.begin() + 60000);
+
+        const auto result = detectMp4Candidate(prefix, 100U * 1024U);
+        QVERIFY(result.candidate.has_value());
+        QCOMPARE(result.candidate->confidence, Mp4DetectionConfidence::Strong);
+        QCOMPARE(result.candidate->evidence.size(), std::size_t(3));
+        for (const auto& ev : result.candidate->evidence) {
+            QVERIFY(ev.boxSpan.has_value());
+            QVERIFY(ev.boxSpan->endExclusive().byteOffset() <= result.inspectedByteCount);
+        }
+    }
+
+    void rejectsIncompleteLargeHeaderLessThanSixteenBytesInProbe() {
+        std::vector<std::byte> prefix;
+        const auto b1 = makeNormalBox(32, 0x66747970);
+        prefix.insert(prefix.end(), b1.begin(), b1.end());
+        // Append 15 bytes of large header (size=1, type='mdat', 7 bytes of largesize)
+        const auto b2 = makeLargeBox(64, 0x6D646174);
+        prefix.insert(prefix.end(), b2.begin(), b2.begin() + 15);
+
+        const auto result = detectMp4Candidate(prefix, prefix.size());
+        QVERIFY(result.candidate.has_value());
+        // Only b1 is complete -> Weak
+        QCOMPARE(result.candidate->confidence, Mp4DetectionConfidence::Weak);
+        QCOMPARE(result.candidate->evidence.size(), std::size_t(1));
+    }
+
+    void detectsMinimumSixteenByteLargeBoxWhenFullyContainedInProbe() {
+        // Exactly 16 bytes: minimum valid largesize box (size=1, type='mdat', largesize=16, 0 payload bytes)
+        const auto b = makeLargeBox(16, 0x6D646174);
+        QCOMPARE(b.size(), std::size_t(16));
+
+        const auto result = detectMp4Candidate(b, b.size());
+        QVERIFY(result.candidate.has_value());
+        QCOMPARE(result.candidate->confidence, Mp4DetectionConfidence::Weak);
+        QCOMPARE(result.candidate->evidence.size(), std::size_t(1));
+        QCOMPARE(result.candidate->evidence[0].boxOffset, quint64(0));
+        QCOMPARE(result.candidate->evidence[0].declaredBoxSize, quint64(16));
+        QVERIFY(result.candidate->evidence[0].boxSpan.has_value());
+        QCOMPARE(result.candidate->evidence[0].boxSpan->start().absoluteBitOffset(), quint64(0));
+        QCOMPARE(result.candidate->evidence[0].boxSpan->bitLength(), quint64(16 * 8));
+        QCOMPARE(result.inspectedByteCount, quint64(16));
+        QVERIFY(result.sourceFullyInspected);
+    }
+
+    void rejectsLargeBoxWhoseBodyExtendsPastProbe() {
+        std::vector<std::byte> prefix(64U * 1024U, std::byte{0x00});
+        const auto b1 = makeNormalBox(32768, 0x66747970);
+        const auto b2 = makeNormalBox(32732, 0x6D6F6F76);
+        std::copy(b1.begin(), b1.end(), prefix.begin());
+        std::copy(b2.begin(), b2.end(), prefix.begin() + 32768);
+        // At 65500, place large box with largesize = 1000 (ends at 66500 > 65536)
+        const auto b3 = makeLargeBox(1000, 0x6D646174);
+        std::copy_n(b3.begin(), 36, prefix.begin() + 65500);
+
+        const auto result = detectMp4Candidate(prefix, 100U * 1024U);
+        QVERIFY(result.candidate.has_value());
+        QCOMPARE(result.candidate->confidence, Mp4DetectionConfidence::Probable);
+        QCOMPARE(result.candidate->evidence.size(), std::size_t(2));
     }
 };
 
