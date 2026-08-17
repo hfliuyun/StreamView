@@ -108,6 +108,19 @@ streamview_add_rules_test(
     streamview_mp4_box_detector_tests
     rules/mp4_box_detector_test.cpp
 )
+streamview_add_rules_test(
+    streamview_window_decoder_tests
+    rules/window_decoder_test.cpp
+)
+streamview_add_rules_test(
+    streamview_mp4_isobmff_analyzer_tests
+    rules/mp4_isobmff_analyzer_test.cpp
+)
+target_compile_definitions(
+    streamview_mp4_isobmff_analyzer_tests
+    PRIVATE
+        STREAMVIEW_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
 
 if(TARGET streamview_app)
     streamview_add_app_test(streamview_analysis_session_tests app/analysis_session_test.cpp)

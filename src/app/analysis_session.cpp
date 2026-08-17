@@ -72,7 +72,8 @@ AnalysisSession::AnalysisSession(std::unique_ptr<core::RandomAccessSource> sourc
                                  core::SourcePage initialPage,
                                  rules::H264AnnexBDetectionResult formatDetection,
                                  rules::AacAdtsDetectionResult aacFormatDetection,
-                                 std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer> analyzer,
+                                 rules::Mp4DetectionResult mp4FormatDetection,
+                                 std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer> analyzer,
                                  SessionUserState userState,
                                  std::unique_ptr<rules::AnalysisCacheOwner> cacheOwner,
                                  AnalysisSessionCacheStatus cacheStatus,
@@ -80,6 +81,7 @@ AnalysisSession::AnalysisSession(std::unique_ptr<core::RandomAccessSource> sourc
     : source_(std::move(source)), sourcePath_(std::move(sourcePath)),
       initialPage_(std::move(initialPage)), formatDetection_(std::move(formatDetection)),
       aacFormatDetection_(std::move(aacFormatDetection)),
+      mp4FormatDetection_(std::move(mp4FormatDetection)),
       analyzer_(std::move(analyzer)), userState_(std::move(userState)),
       cacheOwner_(std::move(cacheOwner)), cacheStatus_(cacheStatus),
       cacheErrorMessage_(std::move(cacheErrorMessage)) {}
@@ -138,7 +140,8 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
 
     rules::H264AnnexBDetectionResult formatDetection;
     rules::AacAdtsDetectionResult aacFormatDetection;
-    std::optional<std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer>> analyzerVariant;
+    rules::Mp4DetectionResult mp4FormatDetection;
+    std::optional<std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer>> analyzerVariant;
     QString analyzerError;
 
     if (resolvedRule != nullptr) {
@@ -156,6 +159,21 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
                 return nullptr;
             }
             analyzerVariant.emplace(std::move(*aacAnalyzer));
+        } else if (resolvedRule->package->manifest().packageId == QStringLiteral("org.streamview.mp4") ||
+                   (resolvedRule->entryPoint &&
+                    (resolvedRule->entryPoint->format == QStringLiteral("video.mp4") ||
+                     resolvedRule->entryPoint->format == QStringLiteral("video/mp4")))) {
+            mp4FormatDetection =
+                rules::detectMp4Candidate(initialPage.bytes, source->sizeBytes());
+            auto mp4Analyzer =
+                rules::Mp4IsobmffAnalyzer::create(*source, *resolvedRule, &analyzerError);
+            if (!mp4Analyzer) {
+                if (errorMessage != nullptr) {
+                    *errorMessage = analyzerError;
+                }
+                return nullptr;
+            }
+            analyzerVariant.emplace(std::move(*mp4Analyzer));
         } else {
             formatDetection =
                 rules::detectH264AnnexBCandidate(initialPage.bytes, source->sizeBytes());
@@ -174,7 +192,12 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
             rules::detectH264AnnexBCandidate(initialPage.bytes, source->sizeBytes());
         aacFormatDetection =
             rules::detectAacAdtsCandidate(initialPage.bytes, source->sizeBytes());
+        mp4FormatDetection =
+            rules::detectMp4Candidate(initialPage.bytes, source->sizeBytes());
 
+        const auto mp4Conf = mp4FormatDetection.candidate
+                                 ? std::optional(mp4FormatDetection.candidate->confidence)
+                                 : std::nullopt;
         const auto aacConf = aacFormatDetection.candidate
                                  ? std::optional(aacFormatDetection.candidate->confidence)
                                  : std::nullopt;
@@ -182,10 +205,26 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
                                   ? std::optional(formatDetection.candidate->confidence)
                                   : std::nullopt;
 
-        const bool chooseAac = (aacConf == rules::AacAdtsDetectionConfidence::Strong &&
+        const bool chooseMp4 = (mp4Conf == rules::Mp4DetectionConfidence::Strong &&
+                                h264Conf != rules::H264AnnexBDetectionConfidence::Strong &&
+                                aacConf != rules::AacAdtsDetectionConfidence::Strong);
+        const bool chooseAac = (!chooseMp4 &&
+                                aacConf == rules::AacAdtsDetectionConfidence::Strong &&
                                 h264Conf != rules::H264AnnexBDetectionConfidence::Strong);
 
-        if (chooseAac) {
+        if (chooseMp4) {
+            auto mp4Analyzer = rules::Mp4IsobmffAnalyzer::create(*source, &analyzerError);
+            if (mp4Analyzer.has_value()) {
+                analyzerVariant.emplace(std::move(*mp4Analyzer));
+            } else {
+                if (errorMessage != nullptr) {
+                    *errorMessage = analyzerError.isEmpty()
+                                        ? QStringLiteral("No installed package matches format: video/mp4")
+                                        : analyzerError;
+                }
+                return nullptr;
+            }
+        } else if (chooseAac) {
             auto aacAnalyzer = rules::AacAdtsAnalyzer::create(*source, &analyzerError);
             if (aacAnalyzer.has_value()) {
                 analyzerVariant.emplace(std::move(*aacAnalyzer));
@@ -226,6 +265,7 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
     return std::unique_ptr<AnalysisSession>(
         new AnalysisSession(std::move(source), std::move(sourcePath), std::move(initialPage),
                             std::move(formatDetection), std::move(aacFormatDetection),
+                            std::move(mp4FormatDetection),
                             std::move(*analyzerVariant), std::move(userState),
                             std::move(cacheSetup.owner), cacheSetup.status,
                             std::move(cacheSetup.errorMessage)));
@@ -378,7 +418,7 @@ AnalysisBatchResult AnalysisSession::analyzeBatch(
         result.topLevelNodes = batch.nalUnitNodes;
         result.errorMessage = batch.errorMessage;
         publishCachePages(batch);
-    } else {
+    } else if (std::holds_alternative<rules::AacAdtsAnalyzer>(analyzer_)) {
         auto& aac = std::get<rules::AacAdtsAnalyzer>(analyzer_);
         const auto batch = aac.analyzeBatch(maximumRecords, maximumInspectedPositions);
         switch (batch.status) {
@@ -405,6 +445,45 @@ AnalysisBatchResult AnalysisSession::analyzeBatch(
             break;
         }
         result.topLevelNodes = batch.frameNodes;
+        result.errorMessage = batch.errorMessage;
+        if (cacheStatus_ == AnalysisSessionCacheStatus::Active && cacheOwner_ &&
+            finished() && !materializedCacheSubmitted_) {
+            materializedCacheSubmitted_ = true;
+            rules::MaterializedResultCacheExportResult exported =
+                rules::exportMaterializedResultCachePages(tree(), 0);
+            if (!exported.succeeded()) {
+                disableCache(exported.errorMessage);
+            } else {
+                acceptCacheWrite(cacheOwner_->writeMaterializedResult(std::move(exported.pages)));
+            }
+        }
+    } else {
+        auto& mp4 = std::get<rules::Mp4IsobmffAnalyzer>(analyzer_);
+        const auto batch = mp4.analyzeBatch(maximumRecords, maximumInspectedPositions);
+        switch (batch.status) {
+        case rules::Mp4IsobmffAnalysisStatus::InProgress:
+            result.status = AnalysisBatchStatus::InProgress;
+            break;
+        case rules::Mp4IsobmffAnalysisStatus::Complete:
+            result.status = AnalysisBatchStatus::Complete;
+            break;
+        case rules::Mp4IsobmffAnalysisStatus::Cancelled:
+            result.status = AnalysisBatchStatus::Cancelled;
+            break;
+        case rules::Mp4IsobmffAnalysisStatus::SourceError:
+            result.status = AnalysisBatchStatus::SourceError;
+            break;
+        case rules::Mp4IsobmffAnalysisStatus::ResourceLimit:
+            result.status = AnalysisBatchStatus::ResourceLimit;
+            break;
+        case rules::Mp4IsobmffAnalysisStatus::InvalidRule:
+            result.status = AnalysisBatchStatus::InvalidRule;
+            break;
+        case rules::Mp4IsobmffAnalysisStatus::InvalidBatchSize:
+            result.status = AnalysisBatchStatus::InvalidBatchSize;
+            break;
+        }
+        result.topLevelNodes = batch.boxNodes;
         result.errorMessage = batch.errorMessage;
         if (cacheStatus_ == AnalysisSessionCacheStatus::Active && cacheOwner_ &&
             finished() && !materializedCacheSubmitted_) {

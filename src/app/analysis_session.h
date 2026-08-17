@@ -10,6 +10,8 @@
 #include <streamview/rules/analysis_cache_owner.h>
 #include <streamview/rules/h264_annex_b_analyzer.h>
 #include <streamview/rules/h264_annex_b_detector.h>
+#include <streamview/rules/mp4_box_detector.h>
+#include <streamview/rules/mp4_isobmff_analyzer.h>
 #include <streamview/rules/rule_catalog.h>
 
 #include <QString>
@@ -94,6 +96,9 @@ public:
     [[nodiscard]] const rules::AacAdtsDetectionResult& aacFormatDetection() const noexcept {
         return aacFormatDetection_;
     }
+    [[nodiscard]] const rules::Mp4DetectionResult& mp4FormatDetection() const noexcept {
+        return mp4FormatDetection_;
+    }
 
     [[nodiscard]] AnalysisBatchResult analyzeBatch(
         std::size_t maximumRecords = 256,
@@ -136,7 +141,8 @@ private:
                     core::SourcePage initialPage,
                     rules::H264AnnexBDetectionResult formatDetection,
                     rules::AacAdtsDetectionResult aacFormatDetection,
-                    std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer> analyzer,
+                    rules::Mp4DetectionResult mp4FormatDetection,
+                    std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer> analyzer,
                     SessionUserState userState,
                     std::unique_ptr<rules::AnalysisCacheOwner> cacheOwner,
                     AnalysisSessionCacheStatus cacheStatus,
@@ -158,7 +164,8 @@ private:
     core::SourcePage initialPage_;
     rules::H264AnnexBDetectionResult formatDetection_;
     rules::AacAdtsDetectionResult aacFormatDetection_;
-    std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer> analyzer_;
+    rules::Mp4DetectionResult mp4FormatDetection_;
+    std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer> analyzer_;
     SessionUserState userState_;
     std::unique_ptr<rules::AnalysisCacheOwner> cacheOwner_;
     std::vector<std::future<rules::AnalysisCacheOwnerWriteResult>> pendingCacheWrites_;
