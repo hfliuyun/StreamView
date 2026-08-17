@@ -25,6 +25,8 @@ Task P5f extends `org.streamview.mp4` to version `0.1.1` by specifying:
    - Media Header Box (`mdhd` / `0x6D646864`)
    - Handler Reference Box (`hdlr` / `0x68646C72`)
 3. Support for FullBox `version == 0` (32-bit timestamp and duration fields) and `version == 1` (64-bit timestamp and duration fields), consuming exact wire bit spans per ISO/IEC 14496-12:2015.
+   - For a `size == 1` box, the 64-bit `largesize` field is consumed immediately after `size` and `type`, before the FullBox payload. This applies to both containers and the dedicated header/metadata boxes below.
+   - FullBox versions other than `0` and `1` are reported as `UnsupportedSyntax` at the version field; they must never fall back to the version-0 layout.
 4. Clear boundaries:
    - Sample table paging (`stts`, `stsc`, `stsz`, `stco`, `co64`) is deferred to Task P5g.
    - Codec configuration boxes (`stsd`, `avc1`, `mp4a`, `avcC`, `esds`) are deferred to Task P5h.
@@ -92,6 +94,9 @@ struct Box {
             }
         } else {
             if (type == 0x6D766864) {
+                if (size == 1) {
+                    bits<64> mvhd_largesize;
+                }
                 bits<8> mvhd_version
                     @description("Version of movie header box (0 or 1).");
                 bits<24> mvhd_flags
@@ -106,14 +111,18 @@ struct Box {
                     bits<64> mvhd_v1_duration
                         @description("Duration of movie in timescale units.");
                 } else {
-                    bits<32> mvhd_v0_creation_time
-                        @description("Creation time (seconds since 1904-01-01).");
-                    bits<32> mvhd_v0_modification_time
-                        @description("Modification time (seconds since 1904-01-01).");
-                    bits<32> mvhd_v0_timescale
-                        @description("Time scale units per second.");
-                    bits<32> mvhd_v0_duration
-                        @description("Duration of movie in timescale units.");
+                    if (mvhd_version == 0) {
+                        bits<32> mvhd_v0_creation_time
+                            @description("Creation time (seconds since 1904-01-01).");
+                        bits<32> mvhd_v0_modification_time
+                            @description("Modification time (seconds since 1904-01-01).");
+                        bits<32> mvhd_v0_timescale
+                            @description("Time scale units per second.");
+                        bits<32> mvhd_v0_duration
+                            @description("Duration of movie in timescale units.");
+                    } else {
+                        unsupported("Unsupported mvhd FullBox version") at mvhd_version;
+                    }
                 }
                 bits<32> mvhd_rate
                     @description("Playback rate (fixed-point 16.16, 0x00010000 is 1.0).");
@@ -189,7 +198,7 @@ struct Box {
    - `elst_version`: `bits<8>`
    - `elst_flags`: `bits<24>`
    - `elst_entry_count`: `bits<32>`
-   - `repeat (elst_entry_count, 64)`:
+   - `repeat (elst_entry_count, 64)` (P5f accepts at most 64 entries; a larger count is `InvalidSyntax` to preserve the bounded DSL projection contract):
      - `segment_duration`, `media_time`: 64-bit if `version == 1`, 32-bit if `version == 0`
      - `media_rate_integer`: `bits<16>`
      - `media_rate_fraction`: `bits<16>`
@@ -200,4 +209,6 @@ struct Box {
 
 - End-to-end MP4 analysis now parses full 5-level container hierarchies (`moov -> trak -> mdia -> minf -> stbl`) without hardcoded C++ logic.
 - Time headers in version 0 and version 1 consume exact wire bits.
+- Large-size `hdlr` consumes `largesize` before the FullBox payload and preserves the handler name span.
+- Unsupported FullBox versions retain the decoded prefix and produce a warning without decoding a v0 suffix.
 - P5g sample table indexing and P5h codec configuration remain cleanly isolated for subsequent tasks.

@@ -58,6 +58,9 @@ struct Box {
             }
         } else {
             if (type == 0x6D766864) {
+                if (size == 1) {
+                    bits<64> mvhd_largesize;
+                }
                 bits<8> mvhd_version
                     @description("Version of movie header box (0 or 1).");
                 bits<24> mvhd_flags
@@ -72,14 +75,18 @@ struct Box {
                     bits<64> mvhd_v1_duration
                         @description("Duration of movie in timescale units.");
                 } else {
-                    bits<32> mvhd_v0_creation_time
-                        @description("Creation time (seconds since 1904-01-01).");
-                    bits<32> mvhd_v0_modification_time
-                        @description("Modification time (seconds since 1904-01-01).");
-                    bits<32> mvhd_v0_timescale
-                        @description("Time scale units per second.");
-                    bits<32> mvhd_v0_duration
-                        @description("Duration of movie in timescale units.");
+                    if (mvhd_version == 0) {
+                        bits<32> mvhd_v0_creation_time
+                            @description("Creation time (seconds since 1904-01-01).");
+                        bits<32> mvhd_v0_modification_time
+                            @description("Modification time (seconds since 1904-01-01).");
+                        bits<32> mvhd_v0_timescale
+                            @description("Time scale units per second.");
+                        bits<32> mvhd_v0_duration
+                            @description("Duration of movie in timescale units.");
+                    } else {
+                        unsupported("Unsupported mvhd FullBox version") at mvhd_version;
+                    }
                 }
                 bits<32> mvhd_rate
                     @description("Playback rate (fixed-point 16.16, 0x00010000 is 1.0).");
@@ -114,6 +121,9 @@ struct Box {
                     }
                 } else {
                     if (type == 0x746B6864) {
+                        if (size == 1) {
+                            bits<64> tkhd_largesize;
+                        }
                         bits<8> tkhd_version
                             @description("Version of track header box (0 or 1).");
                         bits<24> tkhd_flags
@@ -129,15 +139,19 @@ struct Box {
                             bits<64> tkhd_v1_duration
                                 @description("Track duration in movie timescale.");
                         } else {
-                            bits<32> tkhd_v0_creation_time
-                                @description("Creation time (seconds since 1904-01-01).");
-                            bits<32> tkhd_v0_modification_time
-                                @description("Modification time (seconds since 1904-01-01).");
-                            bits<32> tkhd_v0_track_id
-                                @description("Track identifier.");
-                            bits<32> tkhd_v0_reserved;
-                            bits<32> tkhd_v0_duration
-                                @description("Track duration in movie timescale.");
+                            if (tkhd_version == 0) {
+                                bits<32> tkhd_v0_creation_time
+                                    @description("Creation time (seconds since 1904-01-01).");
+                                bits<32> tkhd_v0_modification_time
+                                    @description("Modification time (seconds since 1904-01-01).");
+                                bits<32> tkhd_v0_track_id
+                                    @description("Track identifier.");
+                                bits<32> tkhd_v0_reserved;
+                                bits<32> tkhd_v0_duration
+                                    @description("Track duration in movie timescale.");
+                            } else {
+                                unsupported("Unsupported tkhd FullBox version") at tkhd_version;
+                            }
                         }
                         bits<64> tkhd_reserved_2;
                         bits<16> tkhd_layer
@@ -172,28 +186,41 @@ struct Box {
                             }
                         } else {
                             if (type == 0x656C7374) {
+                                if (size == 1) {
+                                    bits<64> elst_largesize;
+                                }
                                 bits<8> elst_version
                                     @description("Version of edit list box (0 or 1).");
                                 bits<24> elst_flags
                                     @description("Flags.");
                                 bits<32> elst_entry_count
                                     @description("Number of edit list entries.");
-                                repeat (elst_entry_count, 64) {
-                                    if (elst_version == 1) {
+                                if (elst_version == 1) {
+                                    repeat (elst_entry_count, 64) {
                                         bits<64> elst_v1_segment_duration
                                             @description("Segment duration in movie timescale.");
                                         bits<64> elst_v1_media_time
                                             @description("Starting media time (-1 for empty edit).");
-                                    } else {
-                                        bits<32> elst_v0_segment_duration
-                                            @description("Segment duration in movie timescale.");
-                                        bits<32> elst_v0_media_time
-                                            @description("Starting media time (-1 for empty edit).");
+                                        bits<16> elst_v1_media_rate_integer
+                                            @description("Playback rate integer portion (1 is normal).");
+                                        bits<16> elst_v1_media_rate_fraction
+                                            @description("Playback rate fractional portion.");
                                     }
-                                    bits<16> elst_media_rate_integer
-                                        @description("Playback rate integer portion (1 is normal).");
-                                    bits<16> elst_media_rate_fraction
-                                        @description("Playback rate fractional portion.");
+                                } else {
+                                    if (elst_version == 0) {
+                                        repeat (elst_entry_count, 64) {
+                                            bits<32> elst_v0_segment_duration
+                                                @description("Segment duration in movie timescale.");
+                                            bits<32> elst_v0_media_time
+                                                @description("Starting media time (-1 for empty edit).");
+                                            bits<16> elst_v0_media_rate_integer
+                                                @description("Playback rate integer portion (1 is normal).");
+                                            bits<16> elst_v0_media_rate_fraction
+                                                @description("Playback rate fractional portion.");
+                                        }
+                                    } else {
+                                        unsupported("Unsupported elst FullBox version") at elst_version;
+                                    }
                                 }
                             } else {
                                 if (type == 0x6D646961) {
@@ -212,6 +239,9 @@ struct Box {
                                     }
                                 } else {
                                     if (type == 0x6D646864) {
+                                        if (size == 1) {
+                                            bits<64> mdhd_largesize;
+                                        }
                                         bits<8> mdhd_version
                                             @description("Version of media header box (0 or 1).");
                                         bits<24> mdhd_flags
@@ -226,14 +256,18 @@ struct Box {
                                             bits<64> mdhd_v1_duration
                                                 @description("Media duration in media timescale units.");
                                         } else {
-                                            bits<32> mdhd_v0_creation_time
-                                                @description("Creation time (seconds since 1904-01-01).");
-                                            bits<32> mdhd_v0_modification_time
-                                                @description("Modification time (seconds since 1904-01-01).");
-                                            bits<32> mdhd_v0_timescale
-                                                @description("Media timescale units per second.");
-                                            bits<32> mdhd_v0_duration
-                                                @description("Media duration in media timescale units.");
+                                            if (mdhd_version == 0) {
+                                                bits<32> mdhd_v0_creation_time
+                                                    @description("Creation time (seconds since 1904-01-01).");
+                                                bits<32> mdhd_v0_modification_time
+                                                    @description("Modification time (seconds since 1904-01-01).");
+                                                bits<32> mdhd_v0_timescale
+                                                    @description("Media timescale units per second.");
+                                                bits<32> mdhd_v0_duration
+                                                    @description("Media duration in media timescale units.");
+                                            } else {
+                                                unsupported("Unsupported mdhd FullBox version") at mdhd_version;
+                                            }
                                         }
                                         bits<1> mdhd_pad;
                                         bits<15> mdhd_language
@@ -241,6 +275,9 @@ struct Box {
                                         bits<16> mdhd_pre_defined;
                                     } else {
                                         if (type == 0x68646C72) {
+                                            if (size == 1) {
+                                                bits<64> hdlr_largesize;
+                                            }
                                             bits<8> hdlr_version
                                                 @description("Version of handler box.");
                                             bits<24> hdlr_flags
@@ -252,7 +289,6 @@ struct Box {
                                             bits<32> hdlr_reserved_1;
                                             bits<32> hdlr_reserved_2;
                                             if (size == 1) {
-                                                bits<64> hdlr_largesize;
                                                 computed<u64> hdlr_large_name_bytes = hdlr_largesize - 40;
                                                 @lazy(hdlr_large_name_bytes) bytes hdlr_large_name
                                                     @description("Handler component name string.");

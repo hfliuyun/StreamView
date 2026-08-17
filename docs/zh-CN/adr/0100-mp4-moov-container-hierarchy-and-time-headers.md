@@ -25,6 +25,8 @@
    - 媒体头 Box（`mdhd` / `0x6D646864`）
    - 处理器引用 Box（`hdlr` / `0x68646C72`）
 3. 支持 FullBox `version == 0`（32 位时间戳与时长字段）和 `version == 1`（64 位时间戳与时长字段），按 ISO/IEC 14496-12:2015 消费精确码流比特跨度。
+   - 对 `size == 1` 的 Box，64 位 `largesize` 必须紧跟在 `size` 与 `type` 之后、FullBox 载荷之前消费；容器和下述专用头/元数据 Box 均遵守该顺序。
+   - 除 `0` 与 `1` 之外的 FullBox 版本在 version 字段处报告 `UnsupportedSyntax`，不得静默回退为 version-0 布局。
 4. 明确的切片边界：
    - 样本表分页（`stts`、`stsc`、`stsz`、`stco`、`co64`）延后至任务 P5g；
    - 编解码配置 Box（`stsd`、`avc1`、`mp4a`、`avcC`、`esds`）延后至任务 P5h；
@@ -92,6 +94,9 @@ struct Box {
             }
         } else {
             if (type == 0x6D766864) {
+                if (size == 1) {
+                    bits<64> mvhd_largesize;
+                }
                 bits<8> mvhd_version
                     @description("Version of movie header box (0 or 1).");
                 bits<24> mvhd_flags
@@ -106,14 +111,18 @@ struct Box {
                     bits<64> mvhd_v1_duration
                         @description("Duration of movie in timescale units.");
                 } else {
-                    bits<32> mvhd_v0_creation_time
-                        @description("Creation time (seconds since 1904-01-01).");
-                    bits<32> mvhd_v0_modification_time
-                        @description("Modification time (seconds since 1904-01-01).");
-                    bits<32> mvhd_v0_timescale
-                        @description("Time scale units per second.");
-                    bits<32> mvhd_v0_duration
-                        @description("Duration of movie in timescale units.");
+                    if (mvhd_version == 0) {
+                        bits<32> mvhd_v0_creation_time
+                            @description("Creation time (seconds since 1904-01-01).");
+                        bits<32> mvhd_v0_modification_time
+                            @description("Modification time (seconds since 1904-01-01).");
+                        bits<32> mvhd_v0_timescale
+                            @description("Time scale units per second.");
+                        bits<32> mvhd_v0_duration
+                            @description("Duration of movie in timescale units.");
+                    } else {
+                        unsupported("Unsupported mvhd FullBox version") at mvhd_version;
+                    }
                 }
                 bits<32> mvhd_rate
                     @description("Playback rate (fixed-point 16.16, 0x00010000 is 1.0).");
@@ -189,7 +198,7 @@ struct Box {
    - `elst_version`：`bits<8>`
    - `elst_flags`：`bits<24>`
    - `elst_entry_count`：`bits<32>`
-   - `repeat (elst_entry_count, 64)`：
+   - `repeat (elst_entry_count, 64)`（P5f 最多接受 64 个条目；更大计数返回 `InvalidSyntax`，以保持 DSL 有界投影合同）：
      - `segment_duration`、`media_time`：`version == 1` 为 64 位，`version == 0` 为 32 位
      - `media_rate_integer`：`bits<16>`
      - `media_rate_fraction`：`bits<16>`
@@ -200,4 +209,6 @@ struct Box {
 
 - MP4 分析现已支持完整的 5 层容器嵌套（`moov -> trak -> mdia -> minf -> stbl`），完全由 DSL 规则驱动，核心引擎无硬编码逻辑。
 - 时间头在 version 0 与 version 1 下消费精确码流比特。
+- large-size `hdlr` 在 FullBox 载荷前消费 `largesize`，并保持 handler name 的正确跨度。
+- 未支持的 FullBox 版本保留已解码前缀并产生 warning，不继续按 v0 解码后缀。
 - P5g 样本表索引与 P5h 编解码配置隔离至后续任务交付。
