@@ -3,7 +3,7 @@
 Status: In Progress
 Current Phase: 5
 Last Completed Step: Task P5d-3-R — MP4 runner/window decoder 深审补正与验证闭环
-Next Action: 主 Agent 复审 P5d-3-R；未经复审不得开始 P5e（MP4 官方规则包规范编写与开发）
+Next Action: 下发 Task P5e；严格遵守 P5e 激活边界，未经 P5e 复审不得开始 P5f
 Last Verification: P5d-3-R — Source/ADR/Test commit 8b9b4c2bad2f87337cf7afbd646b802f0ad600fb; Hosted CI Run 32050668857 (macOS-15 job 95448996389, Ubuntu-24.04 job 95448996588, Windows-2022 job 95448996456: all success); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed; sanitize zero reports; markdown_hygiene passed; git diff --check clean
 Blockers: None
 
@@ -2215,4 +2215,4 @@ Blockers: None
      - 新增 invalid-syntax partial-result + subsequent-box continuation 回归，以及轻量 checkpoint 恢复覆盖；保留多页/重叠页复用、非零窗口坐标、entry 失败回滚、取消恢复、预算与 5 层容器重入覆盖；
      - 本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套完整构建与 CTest 均 `40/40`，sanitize 零报告；`markdown_hygiene` 通过，`git diff --check` 干净；
      - Hosted CI Run `32050668857`：macOS-15 job `95448996389`、Ubuntu-24.04 job `95448996588`、Windows-2022 job `95448996456` 全部 success。
-  终审结论：P5d-3-R 的代码与证据整改已完成，等待主 Agent 复审；Next Action 锁定为主 Agent 复审 P5d-3-R，未经复审不得开始 P5e。
+  终审结论：P5d-3-R 通过。Next Action 切换为下发 Task P5e；P5e 仍须严格遵守官方 MP4 规则包激活边界，未经 P5e 复审不得开始 P5f。
