@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5e-R — 主 Agent 深审补正（官方 MP4 规则包资源初始化）
-Next Action: 下发 Task P5f；实现 moov/trak/mdia/minf/stbl 容器层级规则
-Last Verification: P5e-R — Fix commit 154ebc0ed4b48ba48d50f908e222dddd04fe61a5; Hosted CI Run 32054646988 (Ubuntu-24.04 job 95461876053, Windows-2022 job 95461876031, macOS-15 job 95461876023: all success); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed; sanitize zero reports; markdown_hygiene passed; git diff --check clean
+Last Completed Step: Task P5f — moov/trak/mdia/minf/stbl 层级与时间头规则 v0.1.1
+Next Action: 下发 Task P5g；实现 stts/stsc/stsz/stco/co64 样本表索引分页规则 v0.1.2
+Last Verification: P5f — Docs commit 9060c94b7fef5dbfd4d6d67b2d5612788cba766f, Feat commit 7fa7e837ca766023cf8737dfae055041a76bbd37; Hosted CI Run 32056136281 (Ubuntu-24.04 job 95466612611, Windows-2022 job 95466612459, macOS-15 job 95466612471: all success); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed; sanitize zero reports; svtool rule check OK; markdown_hygiene passed; git diff --check clean
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2245,3 +2245,23 @@ Blockers: None
   1. 本地验证：dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套构建与全量 CTest 均 `40/40` 通过；sanitize 零报告；`markdown_hygiene` 通过；`git diff --check` 干净。
   2. Hosted CI：Run `32054646988` 的 macOS-15 job `95461876023`、Ubuntu-24.04 job `95461876053`、Windows-2022 job `95461876031` 全部 success。
   终审结论：P5e-R 通过。P5e 规则包与激活链路可进入 Task P5f；P5f 不得提前实现 P5g 及之后的样本表分页或媒体解码能力。
+- 2026-08-18：完成 Task P5f —— `moov`/`trak`/`mdia`/`minf`/`stbl` 层级与时间头规则 v0.1.1（基线 `d8154142a9c83cc0fecc1cb36a17155cb009b797`，Docs commit `9060c94b7fef5dbfd4d6d67b2d5612788cba766f`，Feat commit `7fa7e837ca766023cf8737dfae055041a76bbd37`）。
+  1. 规范先行（Docs-First）：
+     - 编写双语 ADR-0100（`docs/adr/0100-mp4-moov-container-hierarchy-and-time-headers.md` 与 `docs/zh-CN/adr/0100-mp4-moov-container-hierarchy-and-time-headers.md`）；
+     - 明确 `org.streamview.mp4` 规则包从 v0.1.0 升级至 v0.1.1；
+     - 规范 `@container(Box)` 递归容器语法，覆盖 `moov`、`trak`、`edts`、`mdia`、`minf`、`stbl`；
+     - 规范 `mvhd`、`tkhd`、`mdhd`、`elst` 的 FullBox version 0（32 位）与 version 1（64 位）时间字段合同，以及 `hdlr` 静态字节对齐结构；
+     - 严格划定边界：`stbl` 仅实现容器层级（`stsd`、`stts` 等作为 opaque 载荷），样本表分页延后至 P5g，编解码配置延后至 P5h。
+  2. 规则与测试实现：
+     - 更新 `src/rules/official/org.streamview.mp4/rule.toml` 版本至 `0.1.1`；
+     - 更新 `src/rules/official/org.streamview.mp4/src/mp4_isobmff.svfmt`，通过 DSL 规则表达 5 层容器嵌套与时间头字段；
+     - 编写 Python 真实码流生成脚本 `tests/fixtures/generate_mp4_p5f_fixtures.py` 并装配：
+       1. `mp4_p5f_full_hierarchy_v0.mp4`（包含 5 层容器 `moov -> trak -> edts -> mdia -> minf -> stbl` 及 v0 时间头、编辑列表与 lazy `mdat`）；
+       2. `mp4_p5f_time_headers_v1.mp4`（包含 64 位时间戳的 v1 `mvhd`、`tkhd`、`mdhd` 与含 -1 空编辑的 v1 `elst`）。
+     - 在 `tests/rules/mp4_isobmff_analyzer_test.cpp` 中追加 `analyzesFullMoovContainerHierarchyV0` 与 `analyzesFullBoxVersion1TimeHeadersAndEditList`，严格断言完整有序 child 字段名列表、每个字段的精确 bit span、值与零诊断状态。
+  3. 本地与 Hosted CI 验证：
+     - 规则静态校验：`svtool rule check` 针对所有官方规则（`mp4_isobmff.svfmt`、`aac_adts.svfmt`、`aac_asc.svfmt`、`h264_annex_b.svfmt`）均输出 `Rule OK`；
+     - 本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套完整构建全量 CTest 均 `40/40` 通过，ASan/UBSan 零警告/零报告；
+     - `markdown_hygiene` 通过，`git diff --check` 干净；
+     - Hosted CI Run `32056136281`：Ubuntu-24.04 job `95466612611`、Windows-2022 job `95466612459`、macOS-15 job `95466612471` 全部 success。
+  终审结论：P5f 交付完成并闭环。Next Action 切换为下发 Task P5g；实现 stts/stsc/stsz/stco/co64 样本表索引分页规则 v0.1.2。
