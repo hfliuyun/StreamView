@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5c-R3 — ADR-0097 wire-order, window-binding & honest-evidence remediation (markdown-only + scratch probes; size==0 terminal branch; UUID standard wire order; dedicated @window annotation; runner shared execution state; restored P5d-1/P5d-2/P5d-3 slices; honest shell commands & excerpts; no code, no rule assets, no hosted run)
-Next Action: 主 Agent 复审 P5c-R3；未经复审不得开始 P5d（P5d 仍为 P5c/P5c-R/P5c-R2/P5c-R3 决策能力的实现切片：P5d-1 DslScannerKind::Mp4Box scanner+detector；P5d-2 @container + @window + available_bytes() + @target_format registration/metadata/cache/resolveByFormat；P5d-3 Mp4IsobmffAnalyzer runner skeleton + container re-entry + shared execution budget + window decoder + D7 continuation/fixture tests）
-Last Verification: P5c-R3 — 18 scratch `svtool rule check` probes executed (P1–P9b) with verbatim expected errors / Rule OK, including P8d correct UUID wire order (Rule OK), P8e size==0 gap (`error: Pure function is not declared before this call`, dsl_ir.cpp:772), and new P9a/P9b @window probes (`error: Unknown annotation '@window'`, dsl.cpp:1880); ffmpeg fixture generator commands (regular 6513 bytes, fragmented 4505 bytes) and ffprobe trace/packets excerpts verified; `markdown_hygiene` (CTest #36) passed; `git diff --check` clean; bilingual ADR-0097 symmetry check passed (16 headings / 40 table rows / 18 code fences, line-for-line parity); markdown-only change per ADR-0019, no hosted run produced this run. Prior hosted baselines remain: P5b-R run 31965623068 (macOS job 95210238754, Windows job 95210238781, Ubuntu job 95210238826) on commit 2624276; P5b-R2 run 31969610307 (macOS job 95219881189, Ubuntu job 95219881227, Windows job 95219881244) on commit 7671916
+Last Completed Step: Task P5c-R4 — ADR-0097 final contract & evidence closure (markdown-only + scratch probes; checked coordinates + SourceError; ASCII state table + RunnerExecutionBudget with nodes/instructions; UUID underflow error semantics; EntryStruct static constraints + WindowDecoder session object + full 9-state DslExecutionStatus; probe driver non-zero exit on failure; no code, no rule assets, no hosted run)
+Next Action: 主 Agent 复审 P5c-R4；未经复审不得开始 P5d（P5d 仍为 P5c/P5c-R/P5c-R2/P5c-R3/P5c-R4 决策能力的实现切片：P5d-1 DslScannerKind::Mp4Box scanner+detector；P5d-2 @container + @window + available_bytes() + @target_format registration/metadata/cache/resolveByFormat；P5d-3 Mp4IsobmffAnalyzer runner skeleton + container re-entry + shared execution budget + window decoder + D7 continuation/fixture tests）
+Last Verification: P5c-R4 — 18 scratch `svtool rule check` probes executed (P1–P9b) via Python driver (exit=0 on all matched, non-zero on failure) with normalized expected errors / Rule OK, including P8d correct UUID wire order (Rule OK), P8e first exposes missing available_bytes gap (`error: Pure function is not declared before this call`, dsl_ir.cpp:772), and P9a/P9b @window name gate rejection (`error: Unknown annotation '@window'`, dsl.cpp:1880); ffmpeg fixture generator commands (regular 6513 bytes, fragmented 4505 bytes) and ffprobe trace/packets normalized excerpts verified; `markdown_hygiene` (CTest #36) passed; `git diff --check` clean; bilingual ADR-0097 symmetry check passed (505 lines, 16 headings, 51 table rows, 22 code fences line-for-line); markdown-only change per ADR-0019, no hosted run produced this round. Prior hosted baselines remain: P5b-R run 31965623068 (macOS job 95210238754, Windows job 95210238781, Ubuntu job 95210238826) on commit 2624276; P5b-R2 run 31969610307 (macOS job 95219881189, Ubuntu job 95219881227, Windows job 95219881244) on commit 7671916
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1972,3 +1972,29 @@ Blockers: None
      - fixture 生成命令（普通 6513 字节 / 分片 4505 字节，exit=0）与 `ffprobe` 摘录完整附录；
      - `markdown_hygiene`（CTest #36）通过；`git diff --check` 干净；双语 ADR-0097 对称性检查通过（16 标题 / 40 表格行 / 18 代码围栏完全一致）；P5c-R3 为 Markdown-only，按 ADR-0019 跳过 hosted CI。
   Next Action 保持「主 Agent 复审 P5c-R3；未经复审不得开始 P5d」。
+
+- 2026-08-17：完成 Task P5c-R4 —— ADR-0097 合同终态与验证措辞收口（Markdown-only + scratch 探针，commit `ce855d3` 与本记录 commit）。本次收口覆盖原 P5c-R3 记录中的未闭合项与证据措辞：
+  1. D1 坐标防护、真实诊断码与探测器分级：
+     - 增加字节到比特坐标越界防护：`start`、`length` 与 `start + length` 均受受检加法保护（不超过 `quint64 max / 8`）；
+     - `SourceSpan::create` 失败统一使用现有 `DiagnosticCode::SourceError` 与 `DiagnosticSeverity::Error`，节点终态为 `MaterializationState::Invalid`，彻底删除虚构的 `InvalidSourceSpan`；
+     - 明确探测器 `detectMp4Candidate` 仅对完整、未截断、格式良好的 box 计数（`Weak=1`、`Probable=2`、`Strong>=3`）；截断记录不计入任何等级，且尾部截断不降低此前完整链等级（3 完整 + 1 截断仍为 `Strong`；首 box 截断返回 `std::nullopt`）；
+  2. D2 完整状态转移矩阵与全量共享执行预算：
+     - 恢复完整 ASCII 状态转移表，逐项对齐 `AnalysisTree::canTransition`（`analysis_model.cpp:218-251`），消除损坏格式；
+     - 定义 `RunnerExecutionBudget` 包含 `remainingNodes`（初始 100'000）与 `remainingInstructions`（初始 1'000'000）双累计扣减余额，以及 `currentNestingDepth`（受 `maximumNodeDepth = 256` 约束）与共享 `cancellation` 标记；
+     - 每次调用 VM `execute` 前将单次上限收窄为共享余额，返回后无论状态如何均扣除 `nodesCreated` 与 `instructionsExecuted`；`viewDepth` 与 `callDepth` 明确为单次 VM 栈深上限而非累计预算；
+     - 明确 `RegisterLazyBytes` 仅注册元数据，重入由 session 拥有的 `Mp4IsobmffAnalyzer` 驱动；
+  3. D3/D4 UUID 最小尺寸与减法下溢诊断语义：
+     - 明确 Large UUID（`size == 1`）要求 `largesize >= 32`，Normal UUID（`size != 1 && size != 0`）要求 `size >= 24`；
+     - 明确畸形 UUID 流在 `largesize - 32` 或 `size - 24` 时通过 VM 受检无符号减法下溢产生确定性的 `DslExecutionStatus::InvalidSyntax` 与 `"Unsigned subtraction underflow in computed field"` 诊断；
+     - 探针 P8d 证实正确分支与线序可编译，探针 P8e 明确为“首先暴露 `available_bytes` 内建缺失”；
+  4. D6 @window 完整闭合设计：
+     - 锁定 `EntryStruct`（v0.1）仅允许无条件、源 backing 的静态 `bits<N[, endian]>` 标量字段与静态 `bits<N>` 固定长度数组；禁止动态位宽、`ue`/`se`/`ff_coded`、`if`/`else`、`repeat`/`until`、`computed`、`@lazy`、`compressed_payload`、`unsupported` 或嵌套结构体；`entrySizeBits` 必须 `> 0`、字节对齐且受防溢出求和校验；
+     - 计数字段必须先于 lazy 区域声明且为无条件无符号标量；`RegisterLazyBytes` 快照其值存入节点元数据；
+     - 明确 `WindowDecoder` 为 session 拥有的对象（持有 `DslProgram`、`Source`、`SourceMapping`、`AnalysisTree`、`containerNodeId` 与 `RunnerExecutionBudget`）；
+     - 列出 `DslExecutionStatus` 完整 9 态矩阵并指明窗口操作返回子集；
+     - 包含 `pageIndex * pageSize`、`entryIndex * entrySizeBits` 与 lazy 边界校验；
+  5. 证据与验证规范化：
+     - P9a/P9b 明确仅证实未知注解名称闸门（`Unknown annotation '@window'`），参数类型校验留待 P5d-2 注册后单元测试；
+     - 探针驱动脚本 `verify_all_18_probes.py` 增加失败非零退出机制，18 项探针全量跑通；
+     - `markdown_hygiene`（CTest #36）通过；双语 ADR-0097 对称性检查通过（505 行完全对齐）；`git diff --check 5fbdfed...HEAD` 干净；Markdown-only 按 ADR-0019 跳过 hosted CI。
+  Next Action 保持「主 Agent 复审 P5c-R4；未经复审不得开始 P5d」。
