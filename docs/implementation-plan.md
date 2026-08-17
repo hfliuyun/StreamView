@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 5
 Last Completed Step: Task P5d-1 — Mp4Box scanner + detector + DSL scanner kind (Mp4BoxScanner with ISO BMFF framing & checked coordinates; Mp4BoxDetector with Weak/Probable/Strong confidence & trailing truncation immunity; DslScannerKind::Mp4Box enum, parser, IR lowering; full unit test suites streamview_mp4_box_scanner_tests 14/14, streamview_mp4_box_detector_tests 11/11, dsl_tests 22/22, dsl_ir_tests 89/89; 38/38 CTest across dev, ci, sanitize; hosted CI run 32026964582 all green)
 Next Action: 主 Agent 复审 P5d-1；未经复审不得开始 P5d-2（P5d-2 仍为 P5c/ADR-0097 决策能力的语言/编译器/IR 实现切片：@container + @window + available_bytes() + @target_format registration/metadata/cache flag 4U/RulePackageCatalog::resolveByFormat）
-Last Verification: P5d-1 — Commit 68c44071b80db949460b455892dbe01b24378402; Docs errata commit b25d3bd52dd3fcfe4cce6cb3d4b68e986b2fe17b; Hosted CI Run 32026964582 (macOS-15 job 95378293047, Ubuntu-24.04 job 95378293085, Windows-2022 job 95378293132); CTest 38/38 passed on dev (Debug), ci (Release), sanitize (ASan/UBSan) presets; svtool rule check on official rules (H.264, AAC ADTS, AAC ASC) and probe P1 (Rule OK); git diff --check clean; no FourCC literals in C++ scanner/detector logic
+Last Verification: P5d-1 — Commit 68c44071b80db949460b455892dbe01b24378402; Docs errata commit b25d3bd677052888f0d1df9e7dc706c1729f478f; Hosted CI Run 32026964582 (macOS-15 job 95378293047, Ubuntu-24.04 job 95378293085, Windows-2022 job 95378293132); CTest 38/38 passed on dev (Debug), ci (Release), sanitize (ASan/UBSan) presets; svtool rule check on official rules (H.264, AAC ADTS, AAC ASC) and probe P1 (Rule OK); git diff --check clean; no FourCC literals in C++ scanner/detector logic
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1999,7 +1999,7 @@ Blockers: None
      - `markdown_hygiene`（CTest #36）通过；双语 ADR-0097 对称性检查通过（505 行完全对齐）；`git diff --check 5fbdfed...HEAD` 干净；Markdown-only 按 ADR-0019 跳过 hosted CI。
   Next Action 保持「主 Agent 复审 P5c-R4；未经复审不得开始 P5d」。
 - 2026-08-17 Task P5d-1（Mp4Box scanner + 探测器 + DSL scanner kind）：
-  Docs-first 勘误（commit `b25d3bd52dd3fcfe4cce6cb3d4b68e986b2fe17b`，Markdown-only 按 ADR-0019 跳过 hosted CI）：
+  Docs-first 勘误（commit `b25d3bd677052888f0d1df9e7dc706c1729f478f`，Markdown-only 按 ADR-0019 跳过 hosted CI）：
   1. UUID 减法下溢真实错误消息对齐源码 `dsl_vm.cpp:872` 的 `Computed expression subtraction underflow`，明确 computed 字段为合成表达式、不声称源位置；
   2. `WindowDecoder` 构造签名对齐 `DslTypedProgram`、`core::RandomAccessSource`，cancellation 使用 `std::optional<core::CancellationToken>`；
   3. `WindowDecoder` 返回子集补入 `SourceError`（底层源读取错误）；
@@ -2032,3 +2032,29 @@ Blockers: None
      - 本地 3 套 CTest（dev 38/38、ci 38/38、sanitize 38/38 无报错）；
      - Hosted CI Run `32026964582`（macOS job `95378293047`、Ubuntu job `95378293085`、Windows job `95378293132`）全绿。
   Next Action 保持「主 Agent 复审 P5d-1；未经复审不得开始 P5d-2」。
+- 2026-08-17 Task P5d-1-R（Mp4Box scanner/detector 边界与状态机整改）：
+  Docs-first 澄清（commit `6244effcba78bb51d9326e107df038ce61d3e86f`，Markdown-only 按 ADR-0019 跳过 hosted CI）：
+  1. 双语 ADR-0097 同步澄清探测器检查窗口边界 `inspectedByteCount = min(prefix.size(), sourceSizeBytes, 64KiB)` 与 `sourceFullyInspected = (inspectedByteCount >= sourceSizeBytes)`；
+  2. 明确 evidence 跨度必须完全落在被检窗口内（`offset + boxSize <= inspectedByteCount`），探针末尾仅头部完整而 body 延展出窗的 box 不计入 evidence；
+  3. 明确 `size == 0` 终态 box 仅在 `sourceFullyInspected == true` 时才可计为 evidence；
+  4. 明确 scanner 参数校验（`maximumInspectedPositions == 0` 返回 `InvalidBatchSize`）、`SourceError` 持久故障态（不隐式恢复）、以及 `readBytes` 跨块安全读取合同；
+  5. 修正此前 P5d-1 记录中的 docs-first commit SHA 为 `b25d3bd677052888f0d1df9e7dc706c1729f478f`。
+
+  功能实现与测试（commit `7811c08bad0b210628d3a3421d58a77db7dd5b9e`，Hosted CI Run `32030004686`）：
+  1. `Mp4BoxScanner` 边界与状态机加固（`src/rules/include/streamview/rules/mp4_box_scanner.h`、`src/rules/mp4_box_scanner.cpp`）：
+     - 修复 `readBytes` 跨块读取：在 `memcpy` 前先校验请求完全在 `[bufferStart_, bufferEnd_)` 内且使用差值比较 `count <= (bufferEnd_ - offset)`，未命中时按请求 offset 对齐加载新 chunk，彻底杜绝跨 64 KiB 边界时的越界 `memcpy`；
+     - `maximumRecords == 0 || maximumInspectedPositions == 0` 统一返回 `InvalidBatchSize`；
+     - 增加 `failed_` 与 `lastErrorMessage_` 持久故障字段，`SourceError` 发生后后续 `scanBatch` 调用稳定返回 `SourceError`，不隐式恢复扫描；
+  2. `Mp4BoxDetector` 探针窗口与 evidence 判定加固（`src/rules/mp4_box_detector.cpp`）：
+     - 统一使用 `inspectionSize = min({prefixSize, sourceSizeBytes, probeMax})`（探针上限 64 KiB）；
+     - `sourceFullyInspected = (inspectionSize >= sourceSizeBytes)`，探测器严禁访问 `inspectionSize` 之外的字节；
+     - `size == 0` 仅在 `sourceFullyInspected == true` 时作为 evidence；
+     - box 判定使用 `boxSize <= remainingInInspection`，只有完整 box 位于探针窗口内才计入 evidence；
+     - 保持已有完整链 + 尾部截断/超窗 box 不降低置信度（>=3 仍为 Strong、2 为 Probable、1 为 Weak）；
+  3. 失败先行与全量回归测试：
+     - `tests/rules/mp4_box_scanner_test.cpp`（19/19 passed）：新增 8 字节 header 跨 64 KiB 边界、16 字节 largesize 跨 64 KiB 边界、`maximumInspectedPositions == 0` 返回 `InvalidBatchSize`、`SourceError` 状态持久性、`overrideSizeBytes` 坐标算术溢出 5 项回归测试（实现前红、实现后绿）；
+     - `tests/rules/mp4_box_detector_test.cpp`（16/16 passed）：新增 `size == 0` 仅在完整源检查时作为 evidence、探针大小 64 KiB 夹紧、body 超出探针窗口的 box 拒入 evidence、前缀大于源尺寸时不读取源外字节、所有 evidence 跨度末端不超探针窗口 5 项回归测试（实现前红、实现后绿）；
+     - 本地 3 套构建与全量 CTest 均通过（dev 38/38、ci 38/38、sanitize 38/38 无 sanitizer 报错）；
+     - `git diff --check` 干净；C++ 源码中无任何 FourCC 字面量；
+     - Hosted CI Run `32030004686`（Ubuntu job `95387660050`、macOS job `95387660192`、Windows job `95387660232`）全绿。
+  Next Action 保持「主 Agent 复审 P5d-1-R；未经复审不得开始 P5d-2」。
