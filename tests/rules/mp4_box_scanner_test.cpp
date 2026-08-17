@@ -49,14 +49,23 @@ public:
         if (destination.empty()) {
             return {SourceReadStatus::Complete, 0, {}};
         }
-        if (byteOffset >= data_.size()) {
+        if (byteOffset >= sizeBytes()) {
             return {SourceReadStatus::EndOfSource, 0, {}};
         }
         const auto offset = static_cast<std::size_t>(byteOffset);
-        const std::size_t count = std::min(destination.size(), data_.size() - offset);
-        std::copy_n(data_.begin() + static_cast<std::ptrdiff_t>(offset),
-                    static_cast<std::ptrdiff_t>(count),
-                    destination.begin());
+        const std::size_t available = (offset < data_.size()) ? (data_.size() - offset) : 0;
+        const std::size_t count = std::min(destination.size(), available);
+        if (count > 0) {
+            std::copy_n(data_.begin() + static_cast<std::ptrdiff_t>(offset),
+                        static_cast<std::ptrdiff_t>(count),
+                        destination.begin());
+        }
+        if (overrideSizeBytes_ > 0 && destination.size() > count) {
+            std::fill(destination.begin() + static_cast<std::ptrdiff_t>(count),
+                      destination.end(),
+                      std::byte{0x00});
+            return {SourceReadStatus::Complete, destination.size(), {}};
+        }
         return {count == destination.size() ? SourceReadStatus::Complete
                                             : SourceReadStatus::EndOfSource,
                 count,
@@ -106,9 +115,9 @@ class Mp4BoxScannerTest : public QObject {
 private slots:
     void scansNormalBoxesConsecutively() {
         std::vector<std::byte> data;
-        const auto b1 = makeNormalBox(32, 0x66747970); // ftyp (32 bytes)
-        const auto b2 = makeNormalBox(8,  0x66726565); // free (8 bytes)
-        const auto b3 = makeNormalBox(64, 0x6D6F6F76); // moov (64 bytes)
+        const auto b1 = makeNormalBox(32, 0x66747970);
+        const auto b2 = makeNormalBox(8,  0x66726565);
+        const auto b3 = makeNormalBox(64, 0x6D6F6F76);
         data.insert(data.end(), b1.begin(), b1.end());
         data.insert(data.end(), b2.begin(), b2.end());
         data.insert(data.end(), b3.begin(), b3.end());
@@ -122,7 +131,7 @@ private slots:
         QVERIFY(scanner.finished());
         QCOMPARE(scanner.cursor(), quint64(104));
 
-        // Box 1 (ftyp, offset 0, size 32)
+        // Box 1 (offset 0, size 32)
         QCOMPARE(batch.records[0].boxOffset, quint64(0));
         QCOMPARE(batch.records[0].declaredBoxSize, quint64(32));
         QCOMPARE(batch.records[0].truncated, false);
@@ -131,7 +140,7 @@ private slots:
         QCOMPARE(batch.records[0].boxSpan->start().absoluteBitOffset(), quint64(0));
         QCOMPARE(batch.records[0].boxSpan->bitLength(), quint64(32 * 8));
 
-        // Box 2 (free, offset 32, size 8)
+        // Box 2 (offset 32, size 8)
         QCOMPARE(batch.records[1].boxOffset, quint64(32));
         QCOMPARE(batch.records[1].declaredBoxSize, quint64(8));
         QCOMPARE(batch.records[1].truncated, false);
@@ -140,7 +149,7 @@ private slots:
         QCOMPARE(batch.records[1].boxSpan->start().absoluteBitOffset(), quint64(32 * 8));
         QCOMPARE(batch.records[1].boxSpan->bitLength(), quint64(8 * 8));
 
-        // Box 3 (moov, offset 40, size 64)
+        // Box 3 (offset 40, size 64)
         QCOMPARE(batch.records[2].boxOffset, quint64(40));
         QCOMPARE(batch.records[2].declaredBoxSize, quint64(64));
         QCOMPARE(batch.records[2].truncated, false);
@@ -151,7 +160,7 @@ private slots:
     }
 
     void scansLargeSizeBox() {
-        const auto b = makeLargeBox(100, 0x6D646174); // mdat with large size 100
+        const auto b = makeLargeBox(100, 0x6D646174);
         MemorySource source(b);
         Mp4BoxScanner scanner(source);
         const auto batch = scanner.scanBatch();
@@ -171,7 +180,7 @@ private slots:
     void scansSizeZeroBoxExtendingToEof() {
         std::vector<std::byte> data;
         const auto b1 = makeNormalBox(16, 0x66747970);
-        const auto b2 = makeNormalBox(0,  0x6D646174); // size = 0, terminal box
+        const auto b2 = makeNormalBox(0,  0x6D646174);
         data.insert(data.end(), b1.begin(), b1.end());
         data.insert(data.end(), b2.begin(), b2.end());
         data.insert(data.end(), 50, std::byte{0x55});
@@ -229,7 +238,7 @@ private slots:
 
     void handlesIncompleteLargeHeaderLessThanSixteenBytes() {
         std::vector<std::byte> data(12, std::byte{0x00});
-        data[3] = std::byte{0x01}; // size = 1
+        data[3] = std::byte{0x01};
         data[4] = std::byte{0x6D};
         data[5] = std::byte{0x64};
         data[6] = std::byte{0x61};
@@ -247,7 +256,7 @@ private slots:
     void handlesMalformedSizeTwoToSeven() {
         std::vector<std::byte> data;
         const auto b1 = makeNormalBox(16, 0x66747970);
-        const auto b2 = makeNormalBox(5,  0x6D6F6F76); // size 5 is malformed
+        const auto b2 = makeNormalBox(5,  0x6D6F6F76);
         data.insert(data.end(), b1.begin(), b1.end());
         data.insert(data.end(), b2.begin(), b2.end());
 
@@ -280,6 +289,91 @@ private slots:
 
         QCOMPARE(batch.status, Mp4BoxScanStatus::SourceError);
         QVERIFY(!batch.errorMessage.isEmpty());
+    }
+
+    void handlesHeaderCrossingBufferBoundary() {
+        // Construct Box 1 of size 65532 (64KiB - 4)
+        // Box 2 (8 bytes) starts at offset 65532, crossing the 64KiB boundary (bytes 0..3 in chunk 0, bytes 4..7 in chunk 1)
+        std::vector<std::byte> data;
+        const auto b1 = makeNormalBox(65532, 0x66747970);
+        const auto b2 = makeNormalBox(16,    0x6D6F6F76);
+        data.insert(data.end(), b1.begin(), b1.end());
+        data.insert(data.end(), b2.begin(), b2.end());
+
+        MemorySource source(data);
+        Mp4BoxScanner scanner(source);
+        const auto batch = scanner.scanBatch();
+
+        QCOMPARE(batch.status, Mp4BoxScanStatus::Complete);
+        QCOMPARE(batch.records.size(), std::size_t(2));
+        QCOMPARE(batch.records[0].boxOffset, quint64(0));
+        QCOMPARE(batch.records[0].declaredBoxSize, quint64(65532));
+        QCOMPARE(batch.records[1].boxOffset, quint64(65532));
+        QCOMPARE(batch.records[1].declaredBoxSize, quint64(16));
+        QVERIFY(scanner.finished());
+        QCOMPARE(scanner.cursor(), quint64(65532 + 16));
+    }
+
+    void handlesLargeHeaderCrossingBufferBoundary() {
+        // Construct Box 1 of size 65530
+        // Box 2 is a large header (16 bytes header) starting at 65530, crossing 65536
+        std::vector<std::byte> data;
+        const auto b1 = makeNormalBox(65530, 0x66747970);
+        const auto b2 = makeLargeBox(100,    0x6D646174);
+        data.insert(data.end(), b1.begin(), b1.end());
+        data.insert(data.end(), b2.begin(), b2.end());
+
+        MemorySource source(data);
+        Mp4BoxScanner scanner(source);
+        const auto batch = scanner.scanBatch();
+
+        QCOMPARE(batch.status, Mp4BoxScanStatus::Complete);
+        QCOMPARE(batch.records.size(), std::size_t(2));
+        QCOMPARE(batch.records[0].boxOffset, quint64(0));
+        QCOMPARE(batch.records[0].declaredBoxSize, quint64(65530));
+        QCOMPARE(batch.records[1].boxOffset, quint64(65530));
+        QCOMPARE(batch.records[1].declaredBoxSize, quint64(100));
+        QVERIFY(scanner.finished());
+        QCOMPARE(scanner.cursor(), quint64(65530 + 100));
+    }
+
+    void handlesZeroMaximumInspectedPositions() {
+        const auto b = makeNormalBox(16, 0x66747970);
+        MemorySource source(b);
+        Mp4BoxScanner scanner(source);
+        const auto batch = scanner.scanBatch(256, 0);
+
+        QCOMPARE(batch.status, Mp4BoxScanStatus::InvalidBatchSize);
+        QVERIFY(!batch.errorMessage.isEmpty());
+    }
+
+    void persistsSourceErrorStateOnSubsequentCalls() {
+        std::vector<std::byte> data = makeNormalBox(16, 0x66747970);
+        MemorySource source(data, /*failReads=*/true);
+        Mp4BoxScanner scanner(source);
+
+        const auto batch1 = scanner.scanBatch();
+        QCOMPARE(batch1.status, Mp4BoxScanStatus::SourceError);
+        const QString savedError = batch1.errorMessage;
+        QVERIFY(!savedError.isEmpty());
+
+        // Subsequent call must return SourceError with preserved message
+        const auto batch2 = scanner.scanBatch();
+        QCOMPARE(batch2.status, Mp4BoxScanStatus::SourceError);
+        QCOMPARE(batch2.errorMessage, savedError);
+    }
+
+    void handlesBitCoordinateOverflowWithOverrideSize() {
+        // Size 0 box with synthetic huge source size
+        const auto b = makeNormalBox(0, 0x6D646174);
+        constexpr quint64 hugeSize = (std::numeric_limits<quint64>::max() / 8U) + 100U;
+        MemorySource source(b, /*failReads=*/false, /*overrideSizeBytes=*/hugeSize);
+
+        Mp4BoxScanner scanner(source);
+        const auto batch = scanner.scanBatch();
+
+        QCOMPARE(batch.status, Mp4BoxScanStatus::SourceError);
+        QCOMPARE(batch.errorMessage, QStringLiteral("Coordinate arithmetic overflow"));
     }
 
     void supportsBatchPagingAndWorkBudget() {
