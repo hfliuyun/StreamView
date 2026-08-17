@@ -180,11 +180,66 @@ P5d-1/P5d-2 之后，`sequence<Box> boxes = scan(mp4_box);`（配 `@index(progre
 Session 拥有的 Runner 维护跨所有嵌套 VM 重入的共享预算跟踪器。由于分析执行在 Session Runner 内部严格单线程串行进行，`RunnerExecutionBudget` 串行访问无锁开销：
 
 ```cpp
-struct RunnerExecutionBudget {
+struct RunnerExecutionBudget final {
     quint64 remainingNodes = 100'000;         // defaultMaximumMaterializedNodes
     quint64 remainingInstructions = 1'000'000;  // defaultMaximumInstructions
     quint32 currentNestingDepth = 0;          // 受 defaultMaximumNodeDepth = 256 约束
-    std::shared_ptr<const std::atomic_bool> cancellation;
+    std::optional<core::CancellationToken> cancellation;
+};
+```
+
+**`Mp4IsobmffAnalyzer` Runner 接口（`src/rules/include/streamview/rules/mp4_isobmff_analyzer.h`，P5d-3）**：
+
+```cpp
+enum class Mp4IsobmffAnalysisStatus : quint8 {
+    InProgress,
+    Complete,
+    Cancelled,
+    SourceError,
+    ResourceLimit,
+    InvalidRule,
+    InvalidBatchSize,
+};
+
+struct Mp4IsobmffAnalysisBatch final {
+    Mp4IsobmffAnalysisStatus status = Mp4IsobmffAnalysisStatus::InProgress;
+    std::vector<core::AnalysisNodeId> boxNodes;
+    QString errorMessage;
+
+    [[nodiscard]] bool complete() const noexcept {
+        return status == Mp4IsobmffAnalysisStatus::Complete;
+    }
+};
+
+[[nodiscard]] RulePackageLoadResult loadMp4IsobmffRulePackage();
+
+class Mp4IsobmffAnalyzer final {
+public:
+    [[nodiscard]] static std::optional<Mp4IsobmffAnalyzer>
+    create(const core::RandomAccessSource& source,
+           QString* errorMessage = nullptr,
+           std::optional<core::CancellationToken> cancellation = std::nullopt);
+
+    [[nodiscard]] static std::optional<Mp4IsobmffAnalyzer>
+    create(const core::RandomAccessSource& source,
+           const RuleCatalogLookupResult& resolvedRule,
+           QString* errorMessage = nullptr,
+           std::optional<core::CancellationToken> cancellation = std::nullopt);
+
+    [[nodiscard]] Mp4IsobmffAnalysisBatch analyzeBatch(
+        std::size_t maximumRecords = 256,
+        quint64 maximumInspectedPositions = 256U * 1024U);
+
+    [[nodiscard]] bool resumeAfterCancellation(
+        std::optional<core::CancellationToken> cancellation = std::nullopt,
+        QString* errorMessage = nullptr);
+
+    [[nodiscard]] const core::AnalysisTree& tree() const noexcept;
+    [[nodiscard]] bool finished() const noexcept;
+    [[nodiscard]] quint64 scanCursor() const noexcept;
+    [[nodiscard]] const RuleEntryPointIdentity& ruleIdentity() const noexcept;
+    [[nodiscard]] std::shared_ptr<RunnerExecutionBudget> budget() const noexcept;
+    [[nodiscard]] std::optional<WindowDecoder> windowDecoder(core::AnalysisNodeId windowNodeId) const;
 };
 ```
 
@@ -337,6 +392,22 @@ struct Box {
 **`WindowDecoder` 会话级对象（`src/rules/include/streamview/rules/window_decoder.h`，P5d-3）**：
 
 ```cpp
+struct WindowDecodeRequest final {
+    quint64 pageIndex = 0;
+    quint64 pageSize = 256;
+};
+
+struct WindowDecodeResult final {
+    DslExecutionStatus status = DslExecutionStatus::Materialized;
+    std::vector<core::AnalysisNodeId> entryNodes;
+    quint64 decodedEntryCount = 0;
+    QString errorMessage;
+
+    [[nodiscard]] bool complete() const noexcept {
+        return status == DslExecutionStatus::Materialized;
+    }
+};
+
 class WindowDecoder final {
 public:
     explicit WindowDecoder(
@@ -344,7 +415,7 @@ public:
         const core::RandomAccessSource& source,
         core::SourceMapping sourceMapping,
         std::shared_ptr<core::AnalysisTree> tree,
-        core::AnalysisNodeId containerNodeId,
+        core::AnalysisNodeId windowNodeId,
         std::shared_ptr<RunnerExecutionBudget> budget,
         std::optional<core::CancellationToken> cancellation = std::nullopt);
 
