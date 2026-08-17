@@ -959,22 +959,22 @@ private slots:
         QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
     }
 
-    void failsCleanlyWhenOpeningMp4FileWithoutInstalledRulePackage() {
+    void activatesMp4AnalysisSessionWithBundledRulePackage() {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         const QString mediaPath = directory.filePath(QStringLiteral("sample.mp4"));
 
-        // 3 boxes: ftyp (16 bytes), moov (16 bytes), mdat (16 bytes) -> Strong candidate
+        // 3 boxes: ftyp (16 bytes), free (8 bytes), mdat (24 bytes) -> Strong candidate
         std::vector<std::byte> mp4Bytes(48);
         // ftyp
         mp4Bytes[3] = std::byte{16};
         mp4Bytes[4] = std::byte{0x66}; mp4Bytes[5] = std::byte{0x74}; mp4Bytes[6] = std::byte{0x79}; mp4Bytes[7] = std::byte{0x70};
-        // moov
-        mp4Bytes[19] = std::byte{16};
-        mp4Bytes[20] = std::byte{0x6D}; mp4Bytes[21] = std::byte{0x6F}; mp4Bytes[22] = std::byte{0x6F}; mp4Bytes[23] = std::byte{0x76};
+        // free
+        mp4Bytes[19] = std::byte{8};
+        mp4Bytes[20] = std::byte{0x66}; mp4Bytes[21] = std::byte{0x72}; mp4Bytes[22] = std::byte{0x65}; mp4Bytes[23] = std::byte{0x65};
         // mdat
-        mp4Bytes[35] = std::byte{16};
-        mp4Bytes[36] = std::byte{0x6D}; mp4Bytes[37] = std::byte{0x64}; mp4Bytes[38] = std::byte{0x61}; mp4Bytes[39] = std::byte{0x74};
+        mp4Bytes[27] = std::byte{24};
+        mp4Bytes[28] = std::byte{0x6D}; mp4Bytes[29] = std::byte{0x64}; mp4Bytes[30] = std::byte{0x61}; mp4Bytes[31] = std::byte{0x74};
 
         QVERIFY(writeFile(
             mediaPath,
@@ -983,8 +983,18 @@ private slots:
 
         QString errorMessage;
         auto session = AnalysisSession::openFile(mediaPath, &errorMessage);
-        QVERIFY(session == nullptr);
-        QVERIFY(!errorMessage.isEmpty());
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+
+        QVERIFY(session->mp4FormatDetection().candidate.has_value());
+        QCOMPARE(session->mp4FormatDetection().candidate->confidence,
+                 streamview::rules::Mp4DetectionConfidence::Strong);
+
+        QCOMPARE(session->ruleIdentity().packageIdentity().packageId(),
+                 QStringLiteral("org.streamview.mp4"));
+        QCOMPARE(session->ruleIdentity().entryPointId(), QStringLiteral("main"));
+
+        const auto batch = session->analyzeBatch();
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
     }
 };
 

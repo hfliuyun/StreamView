@@ -2,16 +2,49 @@
 
 #include <streamview/core/bit_reader.h>
 #include <streamview/core/coordinates.h>
+#include <streamview/core/version.h>
 #include <streamview/rules/dsl.h>
 #include <streamview/rules/dsl_executor.h>
 #include <streamview/rules/dsl_ir.h>
+#include <streamview/rules/language_version.h>
+
+#include <QFile>
 
 #include <algorithm>
 #include <limits>
 
+extern int qInitResources_streamview_official_rules_mp4();
+
 namespace streamview::rules {
 
 namespace {
+
+void initializeStreamViewOfficialRulesMp4() {
+#if defined(QT_STATIC) || true
+    qInitResources_streamview_official_rules_mp4();
+#endif
+}
+
+[[nodiscard]] std::optional<QByteArray> readBundledPackageFile(const QString& resourcePath,
+                                                               QString* errorMessage) {
+    QFile file(resourcePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Unable to read bundled MP4 resource %1: %2")
+                                .arg(resourcePath, file.errorString());
+        }
+        return std::nullopt;
+    }
+    const QByteArray contents = file.readAll();
+    if (file.error() != QFileDevice::NoError) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Unable to read bundled MP4 resource %1: %2")
+                                .arg(resourcePath, file.errorString());
+        }
+        return std::nullopt;
+    }
+    return contents;
+}
 
 [[nodiscard]] core::DiagnosticCode diagnosticCode(Mp4IsobmffAnalysisStatus status) noexcept {
     switch (status) {
@@ -112,16 +145,78 @@ private:
     quint64 sizeBytes_;
 };
 
+struct BundledMp4Rule final {
+    RuleCatalogLookupResult resolved;
+    QString errorMessage;
+};
+
+} // namespace
+
+RulePackageLoadResult loadMp4IsobmffRulePackage() {
+    initializeStreamViewOfficialRulesMp4();
+    QString errorMessage;
+    const QString root = QStringLiteral(":/streamview/rules/org.streamview.mp4/");
+    auto manifest = readBundledPackageFile(root + QStringLiteral("rule.toml"), &errorMessage);
+    auto source = readBundledPackageFile(root + QStringLiteral("src/mp4_isobmff.svfmt"),
+                                         &errorMessage);
+    if (!manifest || !source) {
+        return {RulePackageLoadStatus::InvalidTree, std::nullopt, std::move(errorMessage)};
+    }
+    RulePackageLoadResult loaded = RulePackage::fromFiles({
+        {QStringLiteral("rule.toml"), std::move(*manifest)},
+        {QStringLiteral("src/mp4_isobmff.svfmt"), std::move(*source)},
+    });
+    if (!loaded.succeeded()) {
+        loaded.errorMessage = QStringLiteral("Bundled MP4 package is invalid: %1")
+                                  .arg(loaded.errorMessage);
+    }
+    return loaded;
+}
+
+namespace {
+
+[[nodiscard]] const BundledMp4Rule& bundledMp4IsobmffRule() {
+    static const BundledMp4Rule bundled = [] {
+        BundledMp4Rule result;
+        RulePackageLoadResult loaded = loadMp4IsobmffRulePackage();
+        if (!loaded.succeeded()) {
+            result.errorMessage = std::move(loaded.errorMessage);
+            return result;
+        }
+        const RulePackageIdentity identity = loaded.package->identity();
+        RulePackageCatalog catalog;
+        const RuleCatalogRegistrationResult registered =
+            catalog.registerPackage(std::move(*loaded.package));
+        if (!registered.succeeded()) {
+            result.errorMessage = registered.errorMessage;
+            return result;
+        }
+        result.resolved = catalog.resolve(identity, u"main", languageVersion(),
+                                          core::version());
+        if (!result.resolved.succeeded()) {
+            result.errorMessage = result.resolved.errorMessage;
+        }
+        return result;
+    }();
+    return bundled;
+}
+
 } // namespace
 
 std::optional<Mp4IsobmffAnalyzer>
-Mp4IsobmffAnalyzer::create(const core::RandomAccessSource& /*source*/,
+Mp4IsobmffAnalyzer::create(const core::RandomAccessSource& source,
                            QString* errorMessage,
-                           std::optional<core::CancellationToken> /*cancellation*/) {
-    if (errorMessage != nullptr) {
-        *errorMessage = QStringLiteral("No installed package matches format: video/mp4");
+                           std::optional<core::CancellationToken> cancellation) {
+    const auto& bundled = bundledMp4IsobmffRule();
+    if (!bundled.resolved.succeeded()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = bundled.errorMessage.isEmpty()
+                                ? QStringLiteral("No installed package matches format: video/mp4")
+                                : bundled.errorMessage;
+        }
+        return std::nullopt;
     }
-    return std::nullopt;
+    return create(source, bundled.resolved, errorMessage, std::move(cancellation));
 }
 
 std::optional<Mp4IsobmffAnalyzer>

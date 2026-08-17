@@ -174,13 +174,21 @@ private slots:
     void retainsQueuedRecordsAcrossInFlightCancellation();
     void chargesRunnerCreatedBoxNodesToSharedBudget();
     void exposesWindowDecoderWithWindowLocalCoordinates();
+    void loadsBundledMp4PackageSuccessfully();
+    void analyzesStandardFtypBoxAndBrands();
+    void analyzesLargesize64BitBox();
+    void analyzesSizeZeroEofBox();
+    void analyzesUnknownOpaqueBox();
 };
 
 void Mp4IsobmffAnalyzerTest::failsCleanlyWhenNoRulePackageInstalled() {
     std::vector<std::byte> raw(16);
     MemorySource source(raw);
+    streamview::rules::RuleCatalogLookupResult invalidRule;
+    invalidRule.status = streamview::rules::RuleCatalogLookupStatus::MissingContent;
+    invalidRule.errorMessage = QStringLiteral("Missing rule package");
     QString errorMsg;
-    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMsg);
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, invalidRule, &errorMsg);
     QVERIFY(!analyzer.has_value());
     QVERIFY(!errorMsg.isEmpty());
 }
@@ -736,5 +744,293 @@ void Mp4IsobmffAnalyzerTest::exposesWindowDecoderWithWindowLocalCoordinates() {
     QCOMPARE(analyzer->tree().node(windowNodeId)->children().size(), std::size_t{1});
 }
 
+void Mp4IsobmffAnalyzerTest::loadsBundledMp4PackageSuccessfully() {
+    const auto loaded = streamview::rules::loadMp4IsobmffRulePackage();
+    QVERIFY(loaded.succeeded());
+    QVERIFY(loaded.package.has_value());
+    QCOMPARE(loaded.package->identity().packageId(), QStringLiteral("org.streamview.mp4"));
+    QCOMPARE(loaded.package->identity().packageVersion(), QStringLiteral("0.1.0"));
+    const auto* mp4Source = loaded.package->fileContents(QStringLiteral("src/mp4_isobmff.svfmt"));
+    QVERIFY(mp4Source != nullptr);
+    QVERIFY(!mp4Source->isEmpty());
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesStandardFtypBoxAndBrands() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5e_basic_ftyp_mdat.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+    QCOMPARE(batch.boxNodes.size(), std::size_t{3});
+
+    const auto& tree = analyzer->tree();
+
+    // Box 0: ftyp (32 bytes)
+    const auto box0 = tree.node(batch.boxNodes[0]);
+    QVERIFY(box0.has_value());
+    QCOMPARE(box0->children().size(), std::size_t{1});
+    const auto struct0 = tree.node(box0->children().front());
+    QVERIFY(struct0.has_value());
+
+    std::vector<QString> box0FieldNames;
+    for (const auto childId : struct0->children()) {
+        const auto child = tree.node(childId);
+        if (child) {
+            box0FieldNames.push_back(child->name());
+        }
+    }
+    const std::vector<QString> expectedFtypFields = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("major_brand"),
+        QStringLiteral("minor_version"),
+        QStringLiteral("brand_count"),
+        QStringLiteral("compatible_brands[0]"),
+        QStringLiteral("compatible_brands[1]"),
+        QStringLiteral("compatible_brands[2]"),
+        QStringLiteral("compatible_brands[3]")
+    };
+    QCOMPARE(box0FieldNames, expectedFtypFields);
+
+    const auto sizeNode = tree.node(struct0->children()[0]);
+    QCOMPARE(sizeNode->value().toULongLong(), quint64{32});
+    QVERIFY(sizeNode->location().has_value());
+    QCOMPARE(sizeNode->location()->logicalRange().start().bitOffset(), quint64{0});
+    QCOMPARE(sizeNode->location()->logicalRange().bitLength(), quint64{32});
+
+    const auto typeNode = tree.node(struct0->children()[1]);
+    QCOMPARE(typeNode->value().toULongLong(), quint64{0x66747970});
+    QVERIFY(typeNode->location().has_value());
+    QCOMPARE(typeNode->location()->logicalRange().start().bitOffset(), quint64{32});
+    QCOMPARE(typeNode->location()->logicalRange().bitLength(), quint64{32});
+
+    const auto majorBrandNode = tree.node(struct0->children()[2]);
+    QCOMPARE(majorBrandNode->value().toULongLong(), quint64{0x69736F6D});
+    QVERIFY(majorBrandNode->location().has_value());
+    QCOMPARE(majorBrandNode->location()->logicalRange().start().bitOffset(), quint64{64});
+    QCOMPARE(majorBrandNode->location()->logicalRange().bitLength(), quint64{32});
+
+    const auto minorVerNode = tree.node(struct0->children()[3]);
+    QCOMPARE(minorVerNode->value().toULongLong(), quint64{0x00000200});
+    QVERIFY(minorVerNode->location().has_value());
+    QCOMPARE(minorVerNode->location()->logicalRange().start().bitOffset(), quint64{96});
+    QCOMPARE(minorVerNode->location()->logicalRange().bitLength(), quint64{32});
+
+    const auto brand0Node = tree.node(struct0->children()[5]);
+    QCOMPARE(brand0Node->value().toULongLong(), quint64{0x69736F6D});
+    QVERIFY(brand0Node->location().has_value());
+    QCOMPARE(brand0Node->location()->logicalRange().start().bitOffset(), quint64{128});
+    QCOMPARE(brand0Node->location()->logicalRange().bitLength(), quint64{32});
+
+    const auto brand1Node = tree.node(struct0->children()[6]);
+    QCOMPARE(brand1Node->value().toULongLong(), quint64{0x69736F32});
+    QVERIFY(brand1Node->location().has_value());
+    QCOMPARE(brand1Node->location()->logicalRange().start().bitOffset(), quint64{160});
+    QCOMPARE(brand1Node->location()->logicalRange().bitLength(), quint64{32});
+
+    const auto brand2Node = tree.node(struct0->children()[7]);
+    QCOMPARE(brand2Node->value().toULongLong(), quint64{0x61766331});
+    QVERIFY(brand2Node->location().has_value());
+    QCOMPARE(brand2Node->location()->logicalRange().start().bitOffset(), quint64{192});
+    QCOMPARE(brand2Node->location()->logicalRange().bitLength(), quint64{32});
+
+    const auto brand3Node = tree.node(struct0->children()[8]);
+    QCOMPARE(brand3Node->value().toULongLong(), quint64{0x6D703431});
+    QVERIFY(brand3Node->location().has_value());
+    QCOMPARE(brand3Node->location()->logicalRange().start().bitOffset(), quint64{224});
+    QCOMPARE(brand3Node->location()->logicalRange().bitLength(), quint64{32});
+
+    // Box 1: free (8 bytes)
+    const auto box1 = tree.node(batch.boxNodes[1]);
+    QVERIFY(box1.has_value());
+    const auto struct1 = tree.node(box1->children().front());
+    QVERIFY(struct1.has_value());
+    std::vector<QString> box1FieldNames;
+    for (const auto childId : struct1->children()) {
+        const auto child = tree.node(childId);
+        if (child) {
+            box1FieldNames.push_back(child->name());
+        }
+    }
+    const std::vector<QString> expectedFreeFields = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("payload_bytes"),
+        QStringLiteral("payload")
+    };
+    QCOMPARE(box1FieldNames, expectedFreeFields);
+
+    // Box 2: mdat (24 bytes, 16 payload bytes)
+    const auto box2 = tree.node(batch.boxNodes[2]);
+    QVERIFY(box2.has_value());
+    const auto struct2 = tree.node(box2->children().front());
+    QVERIFY(struct2.has_value());
+    std::vector<QString> box2FieldNames;
+    for (const auto childId : struct2->children()) {
+        const auto child = tree.node(childId);
+        if (child) {
+            box2FieldNames.push_back(child->name());
+        }
+    }
+    const std::vector<QString> expectedMdatFields = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("payload_bytes"),
+        QStringLiteral("payload")
+    };
+    QCOMPARE(box2FieldNames, expectedMdatFields);
+    const auto mdatPayload = tree.node(struct2->children()[3]);
+    QVERIFY(mdatPayload->location().has_value());
+    QCOMPARE(mdatPayload->location()->logicalRange().start().bitOffset(), quint64{64});
+    QCOMPARE(mdatPayload->location()->logicalRange().bitLength(), quint64{128});
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesLargesize64BitBox() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5e_largesize_box.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+    QCOMPARE(batch.boxNodes.size(), std::size_t{3});
+
+    const auto& tree = analyzer->tree();
+    const auto box2 = tree.node(batch.boxNodes[2]);
+    QVERIFY(box2.has_value());
+    const auto struct2 = tree.node(box2->children().front());
+    QVERIFY(struct2.has_value());
+
+    std::vector<QString> box2FieldNames;
+    for (const auto childId : struct2->children()) {
+        const auto child = tree.node(childId);
+        if (child) {
+            box2FieldNames.push_back(child->name());
+        }
+    }
+    const std::vector<QString> expectedLargeFields = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("largesize"),
+        QStringLiteral("large_payload_bytes"),
+        QStringLiteral("large_payload")
+    };
+    QCOMPARE(box2FieldNames, expectedLargeFields);
+
+    const auto sizeNode = tree.node(struct2->children()[0]);
+    QCOMPARE(sizeNode->value().toULongLong(), quint64{1});
+    const auto typeNode = tree.node(struct2->children()[1]);
+    QCOMPARE(typeNode->value().toULongLong(), quint64{0x6D646174});
+    const auto largeSizeNode = tree.node(struct2->children()[2]);
+    QCOMPARE(largeSizeNode->value().toULongLong(), quint64{32});
+    QVERIFY(largeSizeNode->location().has_value());
+    QCOMPARE(largeSizeNode->location()->logicalRange().start().bitOffset(), quint64{64});
+    QCOMPARE(largeSizeNode->location()->logicalRange().bitLength(), quint64{64});
+
+    const auto payloadNode = tree.node(struct2->children()[4]);
+    QVERIFY(payloadNode->location().has_value());
+    QCOMPARE(payloadNode->location()->logicalRange().start().bitOffset(), quint64{128});
+    QCOMPARE(payloadNode->location()->logicalRange().bitLength(), quint64{128});
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesSizeZeroEofBox() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5e_size0_eof_box.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+    QCOMPARE(batch.boxNodes.size(), std::size_t{3});
+
+    const auto& tree = analyzer->tree();
+    const auto box2 = tree.node(batch.boxNodes[2]);
+    QVERIFY(box2.has_value());
+    const auto struct2 = tree.node(box2->children().front());
+    QVERIFY(struct2.has_value());
+
+    std::vector<QString> box2FieldNames;
+    for (const auto childId : struct2->children()) {
+        const auto child = tree.node(childId);
+        if (child) {
+            box2FieldNames.push_back(child->name());
+        }
+    }
+    const std::vector<QString> expectedSize0Fields = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("eof_payload_bytes"),
+        QStringLiteral("eof_payload")
+    };
+    QCOMPARE(box2FieldNames, expectedSize0Fields);
+
+    const auto sizeNode = tree.node(struct2->children()[0]);
+    QCOMPARE(sizeNode->value().toULongLong(), quint64{0});
+    const auto typeNode = tree.node(struct2->children()[1]);
+    QCOMPARE(typeNode->value().toULongLong(), quint64{0x6D646174});
+
+    const auto payloadNode = tree.node(struct2->children()[3]);
+    QVERIFY(payloadNode->location().has_value());
+    QCOMPARE(payloadNode->location()->logicalRange().start().bitOffset(), quint64{64});
+    QCOMPARE(payloadNode->location()->logicalRange().bitLength(), quint64{96});
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesUnknownOpaqueBox() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5e_unknown_opaque_box.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+    QCOMPARE(batch.boxNodes.size(), std::size_t{3});
+
+    const auto& tree = analyzer->tree();
+    const auto box1 = tree.node(batch.boxNodes[1]);
+    QVERIFY(box1.has_value());
+    const auto struct1 = tree.node(box1->children().front());
+    QVERIFY(struct1.has_value());
+
+    std::vector<QString> box1FieldNames;
+    for (const auto childId : struct1->children()) {
+        const auto child = tree.node(childId);
+        if (child) {
+            box1FieldNames.push_back(child->name());
+        }
+    }
+    const std::vector<QString> expectedSkipFields = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("payload_bytes"),
+        QStringLiteral("payload")
+    };
+    QCOMPARE(box1FieldNames, expectedSkipFields);
+
+    const auto sizeNode = tree.node(struct1->children()[0]);
+    QCOMPARE(sizeNode->value().toULongLong(), quint64{24});
+    const auto typeNode = tree.node(struct1->children()[1]);
+    QCOMPARE(typeNode->value().toULongLong(), quint64{0x736B6970});
+
+    const auto payloadNode = tree.node(struct1->children()[3]);
+    QVERIFY(payloadNode->location().has_value());
+    QCOMPARE(payloadNode->location()->logicalRange().start().bitOffset(), quint64{64});
+    QCOMPARE(payloadNode->location()->logicalRange().bitLength(), quint64{128});
+
+    const auto rootNode = analyzer->tree().node(analyzer->tree().rootId());
+    QVERIFY(rootNode.has_value());
+    QCOMPARE(rootNode->diagnostics().size(), std::size_t{0});
+}
+
 QTEST_MAIN(Mp4IsobmffAnalyzerTest)
 #include "mp4_isobmff_analyzer_test.moc"
+
