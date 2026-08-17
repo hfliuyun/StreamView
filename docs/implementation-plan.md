@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5c-R2 — ADR-0097 implementation-mapping & evidence-truthfulness remediation (markdown-only + scratch probes; every capability mapped to real C++ types/functions; no code, no rule assets, no hosted run)
-Next Action: 主 Agent 复审 P5c-R2；未经复审不得开始 P5d（P5d 仍为 P5c/P5c-R/P5c-R2 决策能力的实现切片：P5d-1 DslScannerKind::Mp4Box scanner+detector；P5d-2 @container + runner re-entry、available_bytes() builtin、@target_format registration + metadata + cache + resolveByFormat；P5d-3 窗口解码器子项）
-Last Verification: P5c-R2 — 16 scratch `svtool rule check` probes executed (P1–P8e) with verbatim expected errors / Rule OK, including new P8d uuid full size branches (Rule OK) and P8e size==0 gap (`error: Pure function is not declared before this call`, dsl_ir.cpp:772); all cited file:line ranges verified by working-tree grep (DslTypedField dsl_ir.h:108-124, DslExecutionLimits dsl_vm.h:30-51, compileLazyRegion dsl_ir.cpp:2462-2540, RegisterLazyBytes dsl_vm.cpp:3169-3320, canTransition analysis_model.cpp:218-251, AnalysisNodeMetadata analysis_model.h:76-80, cache flags analysis_cache_payload.cpp:35-36/:682-683/:796, resolve rule_catalog.h:52-53, entrypoint format rule_package.h:61-69, frameSpan mapping aac_adts_analyzer.cpp:309/:346); `markdown_hygiene` (CTest #36) passed; `git diff --check` clean; bilingual ADR-0097 symmetry check passed (16 headings / 59 table rows, line-for-line parity; 16 probe tokens and 56 cited symbol/file:line counts equal EN/ZH); markdown-only change per ADR-0019, no hosted run produced this round. Prior hosted baselines remain: P5b-R run 31965623068 (macOS job 95210238754, Windows job 95210238781, Ubuntu job 95210238826) on commit 2624276; P5b-R2 run 31969610307 (macOS job 95219881189, Ubuntu job 95219881227, Windows job 95219881244) on commit 7671916
+Last Completed Step: Task P5c-R3 — ADR-0097 wire-order, window-binding & honest-evidence remediation (markdown-only + scratch probes; size==0 terminal branch; UUID standard wire order; dedicated @window annotation; runner shared execution state; restored P5d-1/P5d-2/P5d-3 slices; honest shell commands & excerpts; no code, no rule assets, no hosted run)
+Next Action: 主 Agent 复审 P5c-R3；未经复审不得开始 P5d（P5d 仍为 P5c/P5c-R/P5c-R2/P5c-R3 决策能力的实现切片：P5d-1 DslScannerKind::Mp4Box scanner+detector；P5d-2 @container + @window + available_bytes() + @target_format registration/metadata/cache/resolveByFormat；P5d-3 Mp4IsobmffAnalyzer runner skeleton + container re-entry + shared execution budget + window decoder + D7 continuation/fixture tests）
+Last Verification: P5c-R3 — 18 scratch `svtool rule check` probes executed (P1–P9b) with verbatim expected errors / Rule OK, including P8d correct UUID wire order (Rule OK), P8e size==0 gap (`error: Pure function is not declared before this call`, dsl_ir.cpp:772), and new P9a/P9b @window probes (`error: Unknown annotation '@window'`, dsl.cpp:1880); ffmpeg fixture generator commands (regular 6513 bytes, fragmented 4505 bytes) and ffprobe trace/packets excerpts verified; `markdown_hygiene` (CTest #36) passed; `git diff --check` clean; bilingual ADR-0097 symmetry check passed (16 headings / 40 table rows / 18 code fences, line-for-line parity); markdown-only change per ADR-0019, no hosted run produced this run. Prior hosted baselines remain: P5b-R run 31965623068 (macOS job 95210238754, Windows job 95210238781, Ubuntu job 95210238826) on commit 2624276; P5b-R2 run 31969610307 (macOS job 95219881189, Ubuntu job 95219881227, Windows job 95219881244) on commit 7671916
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1943,3 +1943,32 @@ Blockers: None
   8. 全量行号现场核对：本轮修正 `dsl_ir.h:85-108→108-124`、`dsl_vm.h:17-31→30-51`、`dsl_ir.cpp:2462-2537→2462-2540`、`dsl_vm.cpp:3169-3262→3169-3320`、`analysis_model.cpp:218-245→218-251`；其余引用逐一 grep -n 确认。
   验证：16 个 scratch 探针全部 `svtool rule check` 实跑，stdout/stderr/exit code 与 ADR 矩阵逐字一致（P7d/P8a/P8d `Rule OK` exit=0，其余 exit=1 错误消息原文匹配）；`markdown_hygiene`（CTest #36）通过；`git diff --check` 干净；EN/ZH 语义与结构对称（16 标题 / 59 表格行 / 16 代码围栏，16 探针 token 与 56 个符号/行号计数 EN=ZH 全等）；P5c-R2 为 Markdown-only，按 ADR-0019 跳过 hosted CI，本轮无新 run（最新 hosted 基线仍为 P5b-R2 run 31969610307）。
   Next Action 保持「主 Agent 复审 P5c-R2，未经复审不得开始 P5d」。
+
+- 2026-08-17：完成 Task P5c-R3 —— ADR-0097 分支线序、窗口绑定与证据终审整改（Markdown-only + scratch 探针，commit `8679565` 与本记录 commit）。本次更正覆盖原 P5c-R2 记录中的以下错误结论（旧记录保留为历史，以本记录为准）：
+  1. 修正 D1 size==0 分支与分帧算术：
+     - `size == 0` 独立前置处理为 `span = [start, region_end)`、`terminal = true`、`truncated = false`，不再套用 `span_end = start + box_size` 导致零长度 span 错误；
+     - 仅 `size != 0` 时进入 `box_size <= remaining` 减法式跨度算术；
+     - 明确字节到比特坐标保护（`offset`/`length` 不得超过 `quint64 max / 8`，`SourceSpan::create` 失败产生确定性 `InvalidSourceSpan` 诊断）；
+     - 明确截断记录（`truncated = true`）可由分析器物化（附带 `TruncatedSource` 诊断），但不计为候选探测器 `Strong` 链的完整合法节点；
+  2. 修正普通 Box 与 UUID 的三路分支与线序：
+     - 普通 box 采用互斥三路分支，`size == 0` 分支走 `available_bytes()`，绝不执行 `size - 8` 无符号减法下溢；
+     - UUID 按照 ISO/IEC 14496-12 规范线序排列：`size == 1` 时按 `size → type → largesize → usertype_hi → usertype_lo → large_data` 读取，`size != 1` 时按 `size → type → usertype_hi → usertype_lo → payload` 读取；`usertype` 绝不在判断 `size == 1` 之前统一读取；
+     - 探针 P8d 证实正确线序语法可编译（`Rule OK`），P8e 证实 `available_bytes()` 仍为唯一缺失内建；
+  3. 为样本表窗口解码定义独立 `@window` 规则绑定：
+     - 彻底解耦 `@container` 与窗口解码：`@container(Child)` 专用于 `Mp4Box` scanner 重入，固定宽度样本表使用专有 `@window(EntryStruct, entry_count)` 注解；
+     - 锁定宿主为 `LazyRegion`、两个 `Identifier` 参数（表项结构体与计数字段）；
+     - 映射到 typed IR 独立字段（`windowEntryStructIndex`、`windowEntryCountFieldIndex`、`windowEntrySizeBits`）与节点元数据；
+     - 新增探针 P9a/P9b 证实 `@window` 注解名称闸门与参数校验行为；
+     - `WindowDecodeRequest` 直接消费该独立元数据，不读取 `containerChildStructIndex`；
+  4. 恢复 P5d 任务文档切片：
+     - P5d-1：`Mp4Box` scanner + 探测器（`detectMp4Candidate`）；
+     - P5d-2：语言/编译器/IR 增量（`@container`、`@window`、`available_bytes()`、`@target_format`、元数据、缓存、`RulePackageCatalog::resolveByFormat`）；
+     - P5d-3：`Mp4IsobmffAnalyzer` runner 骨架 + 容器重入 + 共享执行预算 + 窗口解码器（`window_decoder.h`） + D7 续扫/fixture 测试；
+  5. 补实 D2 runner 共享执行预算与执行职责：
+     - 明确 runner 维护跨重入共享执行状态（`totalNodesMaterialized` 累计计数器、`currentNestingDepth` 深度跟踪、共享 `cancellationToken`）；
+     - 明确 `RegisterLazyBytes` 在 VM 执行中仅注册 lazy 节点并存储元数据，不立即执行重入；重入由 runner / session 按需驱动；
+  6. 诚实证据与验证：
+     - 18 项探针（P1–P9b）全部实跑验证，输出与 ADR 矩阵逐字一致；
+     - fixture 生成命令（普通 6513 字节 / 分片 4505 字节，exit=0）与 `ffprobe` 摘录完整附录；
+     - `markdown_hygiene`（CTest #36）通过；`git diff --check` 干净；双语 ADR-0097 对称性检查通过（16 标题 / 40 表格行 / 18 代码围栏完全一致）；P5c-R3 为 Markdown-only，按 ADR-0019 跳过 hosted CI。
+  Next Action 保持「主 Agent 复审 P5c-R3；未经复审不得开始 P5d」。
