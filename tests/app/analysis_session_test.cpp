@@ -958,6 +958,34 @@ private slots:
         const auto batch = session->analyzeBatch();
         QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
     }
+
+    void failsCleanlyWhenOpeningMp4FileWithoutInstalledRulePackage() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("sample.mp4"));
+
+        // 3 boxes: ftyp (16 bytes), moov (16 bytes), mdat (16 bytes) -> Strong candidate
+        std::vector<std::byte> mp4Bytes(48);
+        // ftyp
+        mp4Bytes[3] = std::byte{16};
+        mp4Bytes[4] = std::byte{0x66}; mp4Bytes[5] = std::byte{0x74}; mp4Bytes[6] = std::byte{0x79}; mp4Bytes[7] = std::byte{0x70};
+        // moov
+        mp4Bytes[19] = std::byte{16};
+        mp4Bytes[20] = std::byte{0x6D}; mp4Bytes[21] = std::byte{0x6F}; mp4Bytes[22] = std::byte{0x6F}; mp4Bytes[23] = std::byte{0x76};
+        // mdat
+        mp4Bytes[35] = std::byte{16};
+        mp4Bytes[36] = std::byte{0x6D}; mp4Bytes[37] = std::byte{0x64}; mp4Bytes[38] = std::byte{0x61}; mp4Bytes[39] = std::byte{0x74};
+
+        QVERIFY(writeFile(
+            mediaPath,
+            QByteArray(reinterpret_cast<const char*>(mp4Bytes.data()),
+                       static_cast<qsizetype>(mp4Bytes.size()))));
+
+        QString errorMessage;
+        auto session = AnalysisSession::openFile(mediaPath, &errorMessage);
+        QVERIFY(session == nullptr);
+        QVERIFY(!errorMessage.isEmpty());
+    }
 };
 
 QTEST_GUILESS_MAIN(AnalysisSessionTest)
