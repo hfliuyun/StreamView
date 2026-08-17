@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5c-R4 — ADR-0097 final contract & evidence closure (markdown-only + scratch probes; checked coordinates + SourceError; ASCII state table + RunnerExecutionBudget with nodes/instructions; UUID underflow error semantics; EntryStruct static constraints + WindowDecoder session object + full 9-state DslExecutionStatus; probe driver non-zero exit on failure; no code, no rule assets, no hosted run)
-Next Action: 主 Agent 复审 P5c-R4；未经复审不得开始 P5d（P5d 仍为 P5c/P5c-R/P5c-R2/P5c-R3/P5c-R4 决策能力的实现切片：P5d-1 DslScannerKind::Mp4Box scanner+detector；P5d-2 @container + @window + available_bytes() + @target_format registration/metadata/cache/resolveByFormat；P5d-3 Mp4IsobmffAnalyzer runner skeleton + container re-entry + shared execution budget + window decoder + D7 continuation/fixture tests）
-Last Verification: P5c-R4 — 18 scratch `svtool rule check` probes executed (P1–P9b) via Python driver (exit=0 on all matched, non-zero on failure) with normalized expected errors / Rule OK, including P8d correct UUID wire order (Rule OK), P8e first exposes missing available_bytes gap (`error: Pure function is not declared before this call`, dsl_ir.cpp:772), and P9a/P9b @window name gate rejection (`error: Unknown annotation '@window'`, dsl.cpp:1880); ffmpeg fixture generator commands (regular 6513 bytes, fragmented 4505 bytes) and ffprobe trace/packets normalized excerpts verified; `markdown_hygiene` (CTest #36) passed; `git diff --check` clean; bilingual ADR-0097 symmetry check passed (505 lines, 16 headings, 51 table rows, 22 code fences line-for-line); markdown-only change per ADR-0019, no hosted run produced this round. Prior hosted baselines remain: P5b-R run 31965623068 (macOS job 95210238754, Windows job 95210238781, Ubuntu job 95210238826) on commit 2624276; P5b-R2 run 31969610307 (macOS job 95219881189, Ubuntu job 95219881227, Windows job 95219881244) on commit 7671916
+Last Completed Step: Task P5d-1 — Mp4Box scanner + detector + DSL scanner kind (Mp4BoxScanner with ISO BMFF framing & checked coordinates; Mp4BoxDetector with Weak/Probable/Strong confidence & trailing truncation immunity; DslScannerKind::Mp4Box enum, parser, IR lowering; full unit test suites streamview_mp4_box_scanner_tests 14/14, streamview_mp4_box_detector_tests 11/11, dsl_tests 22/22, dsl_ir_tests 89/89; 38/38 CTest across dev, ci, sanitize; hosted CI run 32026964582 all green)
+Next Action: 主 Agent 复审 P5d-1；未经复审不得开始 P5d-2（P5d-2 仍为 P5c/ADR-0097 决策能力的语言/编译器/IR 实现切片：@container + @window + available_bytes() + @target_format registration/metadata/cache flag 4U/RulePackageCatalog::resolveByFormat）
+Last Verification: P5d-1 — Commit 68c44071b80db949460b455892dbe01b24378402; Docs errata commit b25d3bd52dd3fcfe4cce6cb3d4b68e986b2fe17b; Hosted CI Run 32026964582 (macOS-15 job 95378293047, Ubuntu-24.04 job 95378293085, Windows-2022 job 95378293132); CTest 38/38 passed on dev (Debug), ci (Release), sanitize (ASan/UBSan) presets; svtool rule check on official rules (H.264, AAC ADTS, AAC ASC) and probe P1 (Rule OK); git diff --check clean; no FourCC literals in C++ scanner/detector logic
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -1998,3 +1998,37 @@ Blockers: None
      - 探针驱动脚本 `verify_all_18_probes.py` 增加失败非零退出机制，18 项探针全量跑通；
      - `markdown_hygiene`（CTest #36）通过；双语 ADR-0097 对称性检查通过（505 行完全对齐）；`git diff --check 5fbdfed...HEAD` 干净；Markdown-only 按 ADR-0019 跳过 hosted CI。
   Next Action 保持「主 Agent 复审 P5c-R4；未经复审不得开始 P5d」。
+- 2026-08-17 Task P5d-1（Mp4Box scanner + 探测器 + DSL scanner kind）：
+  Docs-first 勘误（commit `b25d3bd52dd3fcfe4cce6cb3d4b68e986b2fe17b`，Markdown-only 按 ADR-0019 跳过 hosted CI）：
+  1. UUID 减法下溢真实错误消息对齐源码 `dsl_vm.cpp:872` 的 `Computed expression subtraction underflow`，明确 computed 字段为合成表达式、不声称源位置；
+  2. `WindowDecoder` 构造签名对齐 `DslTypedProgram`、`core::RandomAccessSource`，cancellation 使用 `std::optional<core::CancellationToken>`；
+  3. `WindowDecoder` 返回子集补入 `SourceError`（底层源读取错误）；
+  4. 补入 `entryCount` 裁剪至可用区域容量 `clampedCount = min(entryCount, availableRegionBytes / (entrySizeBits / 8))`，以及 `pageIndex * pageSize`、`pageStartIndex + pageCount`、`entryIndex * entrySizeBits` 全部受检算术；
+  5. 窗口元数据缓存序列化合同：标志位 `nodeWindowMetadataFlag = 8U`（`analysis_cache_payload.cpp`），编码 `windowEntryStructIndex` (`quint32`)、`windowEntryCountFieldIndex` (`quint32`)、`windowEntrySizeBits` (`quint64`)、`entryCount` (`quint64`)，向后兼容缺标志位旧缓存；
+  6. `RunnerExecutionBudget` 明确为 session-owner 单线程串行访问无锁开销，扣减执行受检下溢防护；
+  7. 证据用词规范化：探针与命令输出改称规范化摘录（normalized excerpts），双语对称性检查明确为结构计数一致。
+
+  功能实现与测试（commit `68c44071b80db949460b455892dbe01b24378402`，Hosted CI Run `32026964582`）：
+  1. `Mp4BoxScanner`（`src/rules/include/streamview/rules/mp4_box_scanner.h`、`src/rules/mp4_box_scanner.cpp`）：
+     - 构造接收 `const core::RandomAccessSource&` 与 `std::optional<core::CancellationToken>`；
+     - 扫描状态闭集 `Mp4BoxScanStatus`（`InProgress`、`Complete`、`Cancelled`、`SourceError`、`InvalidBatchSize`）；
+     - 记录结构 `Mp4BoxRecord`（`boxSpan`、`boxOffset`、`declaredBoxSize`、`truncated`、`terminal`）；
+     - `size == 0` 时 `declaredBoxSize = 0`、跨度延伸至 EOF、`terminal = true`；
+     - `size == 1` 时读取 64 位 `largesize`（`largesize < 16` 判定畸形即停）；`size` 在 2..7 时判定畸形即停；
+     - 包含字节转 bit 防溢出校验与 64KiB 块缓存读取，完全不依赖、不识别、不保存任何 FourCC 字面量；
+  2. `Mp4BoxDetector`（`src/rules/include/streamview/rules/mp4_box_detector.h`、`src/rules/mp4_box_detector.cpp`）：
+     - `detectMp4Candidate` 接收 `std::span<const std::byte>` 与 `sourceSizeBytes`，探针大小 64KiB；
+     - 置信度分级：完整 box 链 1 个为 `Weak`、2 个为 `Probable`、>=3 个为 `Strong`；
+     - 截断 box 不计入任何等级，且尾部截断不降低此前完整链等级（3 完整 + 1 尾截断仍为 `Strong`；首 box 截断返回 `std::nullopt`）；
+     - `size == 0` 作为完整 terminal box 计入等级，格式中立、不检查 FourCC；
+  3. DSL 语言/编译器增量：
+     - `DslScannerKind::Mp4Box` 枚举值加入 `dsl_ir.h`；
+     - `dsl.cpp` 与 `dsl_ir.cpp` 支持 `scan(mp4_box)` 语法及 Typed IR lowering，报错消息列出全部 3 个 scanner kind；
+     - 探针 P1（`scratch/p5c_p1_scan_mp4_box.svfmt`）经 `svtool rule check` 由原 Unsupported 转为 `Rule OK`；
+  4. 单元测试与验证：
+     - `tests/rules/mp4_box_scanner_test.cpp`（14/14 passed）：正向连续 box、大尺寸 box、size 0 EOF 跨度、尾部截断夹紧、<8 字节截断头、<16 字节不完整大头、2..7 畸形尺寸、<16 畸形大尺寸、源读取错误、分页与工作预算、非正批次、取消与恢复；
+     - `tests/rules/mp4_box_detector_test.cpp`（11/11 passed）：Strong (>=3)、Probable (2)、Weak (1)、3 完整 + 尾截断保持 Strong、首 box 截断拒识、size 0 终端识别、畸形中断、前缀小于源、空输入；
+     - `tests/rules/dsl_test.cpp` 与 `tests/rules/dsl_ir_test.cpp`（`parsesMp4BoxScanSequence` 与 `compilesMp4BoxScanSequence`）；
+     - 本地 3 套 CTest（dev 38/38、ci 38/38、sanitize 38/38 无报错）；
+     - Hosted CI Run `32026964582`（macOS job `95378293047`、Ubuntu job `95378293085`、Windows job `95378293132`）全绿。
+  Next Action 保持「主 Agent 复审 P5d-1；未经复审不得开始 P5d-2」。
