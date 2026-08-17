@@ -154,6 +154,11 @@ Container boxes (`moov`/`trak`/`mdia`/`minf`/`stbl`) need to enumerate child box
 
 **Typed IR**: `DslTypedField` (`dsl_ir.h:108-124`) gains `std::optional<quint32> containerChildStructIndex` (valid only when `type.kind == DslValueTypeKind::LazyBytes`). Resolved during `compileLazyRegion` (`dsl_ir.cpp:2462-2540`).
 
+**Node metadata and cache**: `AnalysisNodeMetadata::containerChildStructIndex`
+preserves the resolved index on the lazy node. Materialized-result cache bodies
+encode it under `nodeContainerChildStructIndexFlag = 16U`; old bodies without
+bit `16U` decode it as `std::nullopt`.
+
 **Role of `RegisterLazyBytes` vs Session-Owned Runner**:
 - `DslOpcode::RegisterLazyBytes` (`dsl_vm.cpp:3169-3320`) **only registers the lazy node** and stores metadata (`containerChildStructIndex`). It does **not** eagerly execute re-entry.
 - Child box enumeration is driven by the session-owned `Mp4IsobmffAnalyzer` runner (P5d-3) re-entering the `Mp4Box` scanner over the container's byte span `[anchor_start, anchor_end)` and materializing child nodes using the named struct as the element type, attached under the container's lazy node.
@@ -281,7 +286,7 @@ struct Box {
 - **Node metadata**: `core::AnalysisNodeMetadata` (`analysis_model.h:76-80`) gains `std::optional<QString> targetFormat`.
 - **Cache encoding**: `nodeTargetFormatFlag = 4U` in `analysis_cache_payload.cpp:35-36`. Old caches without the flag bit decode with `targetFormat = std::nullopt`.
 - **`RulePackageCatalog::resolveByFormat` service (P5d-2)**:
-  `resolveByFormat(QStringView format, QStringView runningLanguage, QStringView runningEngine)` scans packages for an entry point matching `RulePackageEntryPoint::format` (`rule_package.h:61-69`), returning `Found`, `MissingContent`, or `VersionConflict`.
+  `resolveByFormat(QStringView format, QStringView runningLanguage, QStringView runningEngine)` scans all installed entry points matching `RulePackageEntryPoint::format` (`rule_package.h:61-69`). An empty format or no match returns `MissingContent`; more than one matching entry point returns `VersionConflict` without depending on catalog iteration order; one unique match is then checked for `IncompatibleLanguage` and `IncompatibleEngine` before returning `Found`.
 - **P5d vs P5i**: P5d-2 delivers the annotation, metadata, cache flag, and `resolveByFormat`; P5i consumes it in the UI navigation action.
 
 ---
@@ -317,6 +322,13 @@ struct Box {
 - `entry_count_field` must be declared earlier in the enclosing struct, before the lazy region.
 - Must be an unconditional, scalar unsigned integer field.
 - `RegisterLazyBytes` snapshots `entryCount` into the node's window metadata.
+
+**Malformed typed IR validation (P5d-2)**: before executing instructions,
+reading source, or creating nodes, the VM rejects lazy metadata on a non-lazy
+field; mismatches between typed fields and `AnalysisNodeMetadata`; a prefilled
+runtime window value; out-of-range container/entry indices; a count field that
+is later, conditional, non-scalar, or signed; and an `entrySizeBits` value that
+does not equal a fresh fixed-width validation of `EntryStruct`.
 
 **Typed IR**: `DslTypedField` gains:
 - `std::optional<quint32> windowEntryStructIndex`;

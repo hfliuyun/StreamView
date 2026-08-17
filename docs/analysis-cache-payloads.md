@@ -107,9 +107,12 @@ then the variable fields in the listed order:
 | 4 | node-kind code |
 | 4 | materialization-state code |
 | 4 | value-kind code |
-| 4 | flags: bit 0 location, bit 1 specification |
+| 4 | flags: bit 0 location, bit 1 specification, bit 2 target format, bit 3 window metadata, bit 4 container child struct index |
 | variable | name, type name, and description strings |
 | variable | standard and clause strings when flag bit 1 is set |
+| variable | target-format string when flag bit 2 is set |
+| 24 | window entry struct index (`u32`), count-field index (`u32`), entry size in bits (`u64`), and entry count (`u64`) when flag bit 3 is set |
+| 4 | container child struct index when flag bit 4 is set |
 | variable | encoded value |
 | variable | field location when flag bit 0 is set |
 | 4 | diagnostic count |
@@ -145,6 +148,11 @@ canonically separated from the preceding span; adjacent spans must be merged
 before encoding. Their total length must equal the logical length. A zero-length
 logical range has no spans. Syntax fields require a location, while computed
 fields must not have one.
+
+Target format, window metadata, and container child struct index are optional
+lazy-region metadata. A version 1 body written before these flags existed has
+all three bits clear and decodes each value as absent. The field order above is
+normative when multiple extension flags are set.
 
 ### Diagnostics
 

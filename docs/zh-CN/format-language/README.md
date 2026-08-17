@@ -146,9 +146,13 @@ guard 与依赖性 repeat count 正是这样表达的。
 抵达要求“每条路径都必须有值”的 position 的。它是 branch-guarantee 规则唯一的豁免之处，
 而且只有第一个实参被豁免。
 
-当前接受的 RBSP source-state 切片新增保留的零参数 leaf `more_rbsp_data()`、`available_bytes()`。它在不推进
+当前接受的 RBSP source-state 切片新增保留的零参数 leaf `more_rbsp_data()`。它在不推进
 reader 的前提下，报告当前 logical remainder 是否不是完整的 H.264 trailing pattern。
 它可以用于 structure 执行期表达式，但不能用于 pure function body。
+
+当前接受的剩余字节切片新增保留的零参数 leaf `available_bytes()`。它在不推进 reader 的
+前提下返回当前 bounded reader 中剩余的完整字节数（`remainingBits() / 8`）。结果类型为
+unsigned `u64`，可用于 structure 执行期表达式，但不能用于 pure function body。
 
 当前接受的 sequence-element 切片新增保留形式 `header_value(element_field)`。它在被派发的
 payload structure 内部解析 sequence element structure 的一个 scalar，使 payload 能够依赖
@@ -183,7 +187,7 @@ field_type    := "bits" "<" additive [ "," identifier ] ">" | "ue" | "se"
 computed      := { annotation } "computed" "<" scalar_type ">" identifier
                  "=" expression { annotation } ";"
 lazy_region   := "@" "lazy" "(" expression ")" "bytes" identifier
-                 { presentation_annotation } ";"
+                 { lazy_annotation } ";"
 assertion     := "assert" "(" expression ")" "at" identifier ";"
 unsupported   := "unsupported" "(" string ")" "at" identifier ";"
 rbsp_trailing_bits := "rbsp_trailing_bits" ";"
@@ -191,6 +195,10 @@ compressed_payload := "compressed_payload" identifier
                       { presentation_annotation } ";"
 presentation_annotation := "@" "description" "(" string ")"
                          | "@" "spec" "(" string "," string ")"
+lazy_annotation := presentation_annotation
+                 | "@" "container" "(" identifier ")"
+                 | "@" "target_format" "(" string ")"
+                 | "@" "window" "(" identifier "," identifier ")"
 scalar_type   := "bool" | "u64"
 conditional   := "if" "(" ( identifier "==" integer | identifier
                                | context_value "==" integer ) ")"
@@ -201,6 +209,7 @@ context_value := "context_value" "(" [ identifier "," ] identifier ","
 header_value  := "header_value" "(" identifier ")"
 optional_value := "optional_value" "(" identifier "," expression ")"
 more_rbsp_data := "more_rbsp_data" "(" ")"
+available_bytes := "available_bytes" "(" ")"
 byte_aligned  := "byte_aligned" "(" ")"
 switch        := "switch" "(" identifier ")" "{"
                  switch_case { switch_case } [ switch_default ] "}"
@@ -319,12 +328,16 @@ primary       := integer | "true" | "false" | identifier
 - `power_of_two(unsigned_expression)` 是有界幂运算 leaf。`u64` exponent 为 `0..63` 时返回
   `1 << exponent`，更大的 exponent 在求值时返回致命 `invalid-syntax`。它遵守完整 expression
   grammar，不读取 source，也不新增 presentation node。
-- `more_rbsp_data()`、`available_bytes()` 是不接受参数、类型为 `bool` 的保留 source-state leaf。它可用于
+- `more_rbsp_data()` 是不接受参数、类型为 `bool` 的保留 source-state leaf。它可用于
   structure 执行期表达式，包括 computed initializer 与 assertion condition，但 pure-function
   body 会拒绝它，pure function 也不能使用该保留名。求值不推进当前 reader：剩余零 bit 时
   返回 false，多于八 bit 时返回 true；剩余一至八 bit 时，只有完整 remainder 恰好为 `1`
   后全零才返回 false。探测失败会沿用现有 truncated-source 或 source-error 状态传播，且
   cursor 不移动。
+- `available_bytes()` 是不接受参数、类型为 `u64` 的保留 source-state leaf。它可用于
+  structure 执行期表达式，包括 computed initializer 与 lazy byte count，但 pure-function body
+  会拒绝它，pure function 也不能使用该保留名。求值不推进或读取当前 reader，返回
+  `remainingBits() / 8`，因此会有意舍去末尾不足一个字节的 bit。
 - `byte_aligned()` 是不接受参数、类型为 `bool` 的保留码流位置谓词（ADR-0089）。它可用于
   结构体执行期表达式（如 computed 字段、条件 guard、repeat 界限），但在 pure-function
   body 中被拒绝。它在不推进 reader 的情况下评估当前逻辑坐标是否精确为 8 的倍数
@@ -422,14 +435,15 @@ primary       := integer | "true" | "false" | identifier
   unknown。不提供 `break`、`continue` 或 EOF 驱动的 repeat。
 - 有界 while repeat 使用 pre-tested
   `repeat (maximum) while (more_rbsp_data()) { ... };`，maximum 为 `1..1024`（ADR-0080）。
-  每次迭代执行前（包括首次迭代），运行时评估 `more_rbsp_data()`、`available_bytes()`；若为 true 则执行
+  每次迭代执行前（包括首次迭代），运行时评估 `more_rbsp_data()`；若为 true 则执行
   该次迭代体，若为 false 则循环正常退出并进入后续字段。若已执行 maximum 次迭代且
-  `more_rbsp_data()`、`available_bytes()` 仍为 true，解码失败并生成 `invalid-syntax` 诊断。
+  `more_rbsp_data()` 仍为 true，解码失败并生成 `invalid-syntax` 诊断。
 - 计算字段声明 `computed<bool>` 或 `computed<u64>` 和一条表达式。它可以引用此前声明、
   且在到达当前声明的每条路径上都保证存在的 scalar 无符号 `bits`、enum、`ue` 或计算字段。
   数组、`se`、未知或未来字段，以及路径上不可用的 branch-local 值都会被拒绝。它的表达式
   还可以按完整 expression 语法包含保留的 `context_value(...)`、`header_value(...)`、
-  `optional_value(...)` 与 `more_rbsp_data()`、`available_bytes()` leaf，它们在别处携带的每一项约束都继续适用；若 structure 未声明
+  `optional_value(...)`、`more_rbsp_data()` 与 `available_bytes()` leaf；它们在别处携带的
+  每一项约束都继续适用。若 structure 未声明
   匹配的 `@context_import`，其中的 computed initializer 会被拒绝，方式与 dynamic width
   完全一致。计算字段消耗零 bit，不改变静态对齐，继承外层 guard，计入 99,999 字段投影
   上限，并按与语法字段相同的 scope 规则供后续声明使用。repeat 投影会给它的物化名称
@@ -503,7 +517,8 @@ primary       := integer | "true" | "false" | identifier
   字段默认继承所属结构的规范引用，也可以用自己的注解覆盖。数组声明解析出的类型、注解、metadata
   和约束会分别应用到每个展开元素。计算字段可在声明前或表达式后使用 `@description`、`@spec` 与
   `@context_export`，但拒绝 `@equals`、`@enum` 和数组后缀。lazy byte region 只在 name 之后接受
-  `@description` 与 `@spec`。compressed payload 仅接受 `@description` 与 `@spec`。sequence 扫描
+  `@description`、`@spec`、`@container`、`@target_format` 与 `@window`。compressed payload
+  仅接受 `@description` 与 `@spec`。sequence 扫描
   声明接受 `@index(progressive)`、`@spec` 与 `@description`。结构体声明接受 `@spec`、
   `@description`、`@context`、`@context_import` 与 `@context_dependency`。enum 声明接受 `@spec`
   与 `@description`。payload 派发声明接受 `@spec` 与 `@description`。纯函数（`pure`）与 entry
@@ -511,8 +526,8 @@ primary       := integer | "true" | "false" | identifier
 - 所有注解在编译期通过统一注册表进行校验。任何未注册或未识别的注解（例如 `@equalss(4095)`）
   均会在编译期报错 `DslDiagnosticCode::InvalidAnnotation`（报错信息 `"Unknown annotation '@<name>'"`）。
   将注解放置于不支持的声明宿主上同样会被严格拦截并发出 `DslDiagnosticCode::InvalidAnnotation`。
-  `@target_format(...)` 注解已为后续跨层格式委托（任务 P5h）预留注册，当前其 `allowedTargets = 0`
-  （在所有宿主上均不可用）。
+  `@container(...)`、`@target_format(...)` 与 `@window(...)` 仅注册于 lazy byte region；其他
+  宿主一律拒绝。
 - 出现词法或静态诊断时，source 不会生成可执行规则；parser 仍返回部分 IR 以及带行列范围的全部诊断，便于编辑器一次报告多个错误。
 
 `enum`、`big`、`little`、`ue`、`se`、`pure`、`return`、`bool`、`u64`、
@@ -615,10 +630,16 @@ projection；不新增 jump 或 conditional opcode。guard identity 包含完整
 lazy declaration 以 `LazyBytes` kind 加入同一 typed-field stream，携带必需且已经内联的
 `u64` byte-count expression、解析后的 presentation metadata，以及相同的外层 guard 与
 repeat index。后置注解支持 `@description`、`@spec`、`@container`、`@target_format` 与 `@window`：
-- `@container(ChildStruct)` 接收恰好一个标识符参数，且必须指向已声明的结构体，标记该 lazy region 包含由 `ChildStruct` 解码的子元素序列；
-- `@target_format("format")` 接收恰好一个非空字符串字面量，为 lazy region 附加跨格式有效负载导航的目标格式元数据；
-- `@window(EntryStruct, count_field)` 接收两个标识符参数：`EntryStruct`（必须指向仅包含无条件静态 `bits<N>` 标量或固定数组、总位宽大于 0 且字节对齐的固定宽度结构体）与 `count_field`（必须指向当前外层结构体中更早声明的无条件无符号标量整数字段）。
-它生成一条 `register-lazy-bytes` instruction；不会加入 scalar value namespace，其 dynamic width 会使后续精确静态 offset 变为未知。
+- `@container(ChildStruct)` 接收恰好一个标识符参数，且必须指向已声明的结构体，标记该
+  lazy region 包含由 `ChildStruct` 解码的子元素序列；
+- `@target_format("format")` 接收恰好一个非空字符串字面量，为 lazy region 附加跨格式
+  有效负载导航的目标格式元数据；
+- `@window(EntryStruct, count_field)` 接收两个标识符参数：`EntryStruct` 必须指向仅包含
+  无条件静态 `bits<N>` 标量或固定数组、总位宽大于 0 且字节对齐的固定宽度结构体，结构体
+  及字段除 `@description`/`@spec` 外不得携带其他注解；`count_field` 必须指向当前外层
+  结构体中更早声明的无条件无符号标量整数字段，且不能是数组。
+它生成一条 `register-lazy-bytes` instruction；不会加入 scalar value namespace，其 dynamic
+width 会使后续精确静态 offset 变为未知。
 
 最小 VM 通过 bounded bit reader 按顺序执行结构。执行 bytecode 前，它会验证 reader 的完整
 normalized backing 是否精确等于从给定 logical start 开始的 execution mapping slice。backing
@@ -947,7 +968,7 @@ source-backed SPS core 字段含义如下：
 
 type `8` 解码 clause 7.3.2.2 的 base PPS，要求只有一个 slice group，并支持有界的可选
 High-profile extension。可见的 `has_pps_extension` computed field 会在 base 字段后调用
-`more_rbsp_data()`、`available_bytes()`，因此合法的 base-only High-profile PPS 不会被误认为截断的 extension。
+`more_rbsp_data()`，因此合法的 base-only High-profile PPS 不会被误认为截断的 extension。
 存在 extension 语法时，精确 imported SPS generation 必须满足 `profile_idc == 100`；
 Baseline、Main 与 Extended 码流会在读取任何 extension 字段前，于带 source 的
 `seq_parameter_set_id` 上失败。
@@ -1752,10 +1773,14 @@ scope，因此不会有 index 与后续 projection 混淆。fallback 只在需�
 exponent 会在 shift 前检查，因此 malformed typed descriptor 不会触发未定义的 host shift。
 详见 [ADR-0070](../adr/0070-add-bounded-power-of-two-expression.md)。
 
-`more_rbsp_data()`、`available_bytes()` leaf 降低为零 operand 的 Boolean typed-expression node，并在外层
+`more_rbsp_data()` leaf 降低为零 operand 的 Boolean typed-expression node，并在外层
 instruction 内求值。VM 探测当前 reader 的副本，因此查询成功或 source 读取失败都不会改变
 执行 cursor。详见
 [ADR-0072](../adr/0072-observe-remaining-rbsp-data-in-expressions.md)。
+
+`available_bytes()` leaf 降低为零 operand 的 unsigned typed-expression node。VM 从当前
+bounded reader 计算 `remainingBits() / 8`，不会读取 source 或移动执行 cursor。详见
+[ADR-0097](../adr/0097-mp4-isobmff-container-primitives-language-increments.md)。
 
 只有 structure 成功 materialize、满足请求的精确消费策略、完成 dependency resolution 和
 typed-payload 准备后才会发布。registration 前会预留 payload 与 directory 容量，因此成功
