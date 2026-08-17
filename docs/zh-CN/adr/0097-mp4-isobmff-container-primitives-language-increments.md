@@ -111,10 +111,10 @@ else:
 
 **探测器候选分级与探测窗口边界**：
 - 候选探测器（`detectMp4Candidate`，P5d-1）检查严格受限于 `inspectedByteCount = min(prefix.size(), sourceSizeBytes, mp4DetectionProbeSizeBytes())`（探针上限 64 KiB）的窗口，并置 `sourceFullyInspected = (inspectedByteCount >= sourceSizeBytes)`。
-- 探测器**仅对完整跨度完全位于被检窗口内（`offset + boxSize <= inspectedByteCount`）的已验证完整 box 计数**：
-  - `Strong`：>= 3 个完整且已验证的 box 铺满被检窗口；
-  - `Probable`：2 个完整且已验证的 box；
-  - `Weak`：1 个完整且已验证的 box。
+- 探测器**仅对从 offset 0 开始连续相接、完整落入被检窗口（`offset + boxSize <= inspectedByteCount`）的已验证完整 box 链计数**：
+  - `Strong`：>= 3 个从 offset 0 开始连续相接且完整落入被检窗口的已验证 box；
+  - `Probable`：2 个从 offset 0 开始连续相接且完整落入被检窗口的已验证 box；
+  - `Weak`：1 个位于 offset 0 且完整落入被检窗口的已验证 box。
 - 若 box 头部落在探针窗口内但 body 超出 `inspectedByteCount`，由于无法在探针内证实完整性，**不计入 evidence**（亦不降低此前已累积等级）。
 - `size == 0` 终态 box **仅在 `sourceFullyInspected == true` 时**计入 evidence（探针窗口覆盖至 EOF）。
 - 截断 box 记录（`truncated = true`）由 scanner 正常发出，以便分析器将残缺 box 头部物化上树并附带 `core::DiagnosticCode::TruncatedSource` 诊断（`dsl_vm.cpp:3249-3252`），但截断记录**绝不计入**任何探测器等级。
@@ -124,7 +124,7 @@ else:
 **Scanner 状态机、故障持久性与 DSL 数据合同**：
 - scanner 输出每个 box 的**跨度**（起始偏移、结束偏移、截断标记及内部 framing `declaredBoxSize`）。`declaredBoxSize` 仅为 scanner/detector 编排使用的 framing 元数据，**绝不暴露**为 DSL 字段。
 - scanner 参数校验：`maximumRecords == 0 || maximumInspectedPositions == 0` 返回 `Mp4BoxScanStatus::InvalidBatchSize`。
-- 持久故障状态：若发生 `SourceError`，scanner 进入持久失败态（`failed_ = true; lastErrorMessage_ = errorMessage;`），后续调用 `scanBatch` 持续返回 `SourceError`，不重新尝试或跳过。
+- 持久故障状态：若发生 `SourceError`，scanner 进入持久失败态（`failed_ = true; lastErrorMessage_ = errorMessage;`），后续使用合法非零批次参数调用 `scanBatch` 时持续返回 `SourceError`，不重新尝试、不进行额外读取或跳过。
 - 跨块安全读取：`Mp4BoxScanner::readBytes` 安全处理跨 64 KiB 缓存边界的头部读取，严禁越界 `memcpy`。
 - runner 将跨度映射为源子视图（`aac_adts_analyzer.cpp:309/:346` 先例），DSL 的 `Box` 结构体在跨度内**从源重新读取** `size`/`type`/`largesize`。
 
