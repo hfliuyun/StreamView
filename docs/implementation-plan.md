@@ -2059,7 +2059,7 @@ Blockers: None
      - Hosted CI Run `32030004686`（Ubuntu job `95387660050`、macOS job `95387660192`、Windows job `95387660232`）全绿。
   Next Action 保持「主 Agent 复审 P5d-1-R；未经复审不得开始 P5d-2」。
 - 2026-08-17 Task P5d-1-R2（MP4 边界回归测试有效性与验证记录整改）：
-  Docs-first 澄清（commit `5f62c029705a6bb9aee5d7a64161da3111ff31b4`，Markdown-only 按 ADR-0019 跳过 hosted CI）：
+  Docs-first 澄清（commit `5f62c028931fef674c1db07edf6bf49025828cdb`，Markdown-only 按 ADR-0019 跳过 hosted CI）：
   1. 双语 ADR-0097 将置信度等级判定从「boxes tiling 铺满 inspected window」精确定义为「从 offset 0 开始连续相接、完整落入 inspected window 的 box 链」；
   2. 明确持久 `SourceError` 合同限定为「后续使用合法非零批次参数的调用持续返回 SourceError 且不重新尝试/不发起额外读取」，不改变 `InvalidBatchSize` 与 `failed_` 的既有校验优先级；
   3. 修正此前 P5d-1-R 记录中 docs-first commit SHA 为 `6244eff08597f72db79e15366c94e4d9869af3e9`。
@@ -2071,7 +2071,7 @@ Blockers: None
      - `Mp4BoxScannerTest::persistsSourceErrorStateOnSubsequentCalls`：使用 `FailOnceMemorySource`，首调失败后再次合法调用 `scanBatch` 断言不发起二次读取（`readCount == 1`）且持久返回 `SourceError`；
      - `Mp4BoxDetectorTest::neverReadsPastSourceSizeBytesWhenPrefixIsLarger`：前缀 40 字节（包含 32 字节 box + 8 字节 size==0 头部），`sourceSizeBytes = 36`，断言旧实现错误产出第 2 条 evidence，新实现严格截断为 1 条；
      - `Mp4BoxDetectorTest::evidenceSpanExceedingProbeWindowIsRejected`：源大于 64 KiB 且尾部 box 延展出窗，断言旧实现产生的超窗 span 被新实现严格拒绝；
-     - 补全 detector largesize 边界套件：15 字节不完整大头拒绝（`rejectsIncompleteLargeHeaderLessThanSixteenBytesInProbe`）、16 字节完整大头接受（`detectsLargeBoxWhenFullyContainedInProbe`）、大头合法但 body 超窗拒绝且保留已有等级（`rejectsLargeBoxWhoseBodyExtendsPastProbe`）；
+     - 补全 detector largesize 边界套件：15 字节不完整大头拒绝（`rejectsIncompleteLargeHeaderLessThanSixteenBytesInProbe`）、16 字节精确最小大头接受（`detectsMinimumSixteenByteLargeBoxWhenFullyContainedInProbe`）、大头合法但 body 超窗拒绝且保留已有等级（`rejectsLargeBoxWhoseBodyExtendsPastProbe`）；
      - 坐标防溢出测试 `handlesBitCoordinateOverflowWithOverrideSize` 明确记录为防御性 coverage-only，不作旧实现 Red 声称；
   2. 独立临时 worktree（`e2bded3e38f2044f512f3fb067a9d7f46795a38a`）上实测 Red 验证（sanitize 构建）：
      - `handlesHeaderCrossingBufferBoundary`：真实触发 ASan `heap-buffer-overflow`（`READ of size 8 at 0x63100004c800`，`SIGABRT`）；
@@ -2089,3 +2089,22 @@ Blockers: None
      - `git diff --check` 干净；双语 ADR 对称性检查通过；
      - Hosted CI Run `32032780595`（Ubuntu job `95396312842`、macOS job `95396312868`、Windows job `95396313012`）全绿。
   Next Action 保持「主 Agent 复审 P5d-1-R2；未经复审不得开始 P5d-2」。
+- 2026-08-17 Task P5d-1-R3（MP4 测试排布、最小 largesize 边界与验证记录终审整改）：
+  测试排布与最小边界整改（commit `a98f7285d77ff1490ee48c6279231e22c13ff016`，Hosted CI Run `32035443756`）：
+  1. 将 `Mp4BoxDetectorTest` 中新增的 4 个回归用例移动到测试类末尾，保持测试语义完整：
+     - `evidenceSpanExceedingProbeWindowIsRejected`
+     - `rejectsIncompleteLargeHeaderLessThanSixteenBytesInProbe`
+     - `detectsMinimumSixteenByteLargeBoxWhenFullyContainedInProbe`
+     - `rejectsLargeBoxWhoseBodyExtendsPastProbe`
+  2. 精确覆盖 largesize 最小合法边界测试 `detectsMinimumSixteenByteLargeBoxWhenFullyContainedInProbe`：
+     - 输入数据恰为 16 字节，`largesize == 16`，断言 `declaredBoxSize == 16`，`bitLength == 16 * 8`，`inspectedByteCount == 16`，`sourceFullyInspected == true`；
+     - 该 16 字节边界用例明确记录为防御性 coverage-only 测试（不作 Red 声称）；
+  3. 计划与 SHA 勘误：
+     - 修正此前 P5d-1-R2 记录中 docs-first commit SHA 真实值为 `5f62c028931fef674c1db07edf6bf49025828cdb`；
+     - 修正 16 字节最小 largesize 测试名称与记录一致；
+  4. 本地与 Hosted CI 验证：
+     - `tests/rules/mp4_box_scanner_test.cpp`（19/19 passed）、`tests/rules/mp4_box_detector_test.cpp`（18/18 passed）；
+     - 本地 3 套构建全量 CTest 均通过（dev 38/38、ci 38/38、sanitize 38/38 无 sanitizer 报错）；
+     - `git diff --check` 干净；未修改 `src/` 生产代码；
+     - Hosted CI Run `32035443756`（macOS job `95404678898`、Ubuntu job `95404679117`、Windows job `95404679118`）全绿。
+  Next Action 保持「主 Agent 复审 P5d-1-R3；未经复审不得开始 P5d-2」。
