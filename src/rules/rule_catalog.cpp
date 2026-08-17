@@ -89,4 +89,60 @@ RuleCatalogLookupResult RulePackageCatalog::resolve(const RulePackageIdentity& i
     return {RuleCatalogLookupStatus::Found, package, *entry, {}};
 }
 
+RuleCatalogLookupResult RulePackageCatalog::resolveByFormat(QStringView format,
+                                                            QStringView runningLanguage,
+                                                            QStringView runningEngine) const {
+    if (format.isEmpty()) {
+        return {RuleCatalogLookupStatus::MissingContent,
+                {},
+                std::nullopt,
+                QStringLiteral("Format descriptor is empty")};
+    }
+
+    std::shared_ptr<const RulePackage> matchedPackage;
+    std::optional<RulePackageEntryPoint> matchedEntryPoint;
+
+    for (const auto& versions : packages_) {
+        for (const auto& package : versions) {
+            for (const RulePackageEntryPoint& entry : package->manifest().entryPoints) {
+                if (entry.format == format) {
+                    matchedPackage = package;
+                    matchedEntryPoint = entry;
+                    break;
+                }
+            }
+            if (matchedPackage) {
+                break;
+            }
+        }
+        if (matchedPackage) {
+            break;
+        }
+    }
+
+    if (!matchedPackage || !matchedEntryPoint) {
+        return {RuleCatalogLookupStatus::MissingContent,
+                {},
+                std::nullopt,
+                QStringLiteral("No installed package matches format: %1").arg(format)};
+    }
+
+    if (!matchedPackage->manifest().languageContract.accepts(runningLanguage)) {
+        return {RuleCatalogLookupStatus::IncompatibleLanguage,
+                matchedPackage,
+                *matchedEntryPoint,
+                QStringLiteral("Package requires DSL %1, running DSL is %2")
+                    .arg(matchedPackage->manifest().languageContract.text(), runningLanguage)};
+    }
+    if (!matchedPackage->manifest().engineRange.contains(runningEngine)) {
+        return {RuleCatalogLookupStatus::IncompatibleEngine,
+                matchedPackage,
+                *matchedEntryPoint,
+                QStringLiteral("Package requires engine %1, running engine is %2")
+                    .arg(matchedPackage->manifest().engineRange.text(), runningEngine)};
+    }
+
+    return {RuleCatalogLookupStatus::Found, matchedPackage, *matchedEntryPoint, {}};
+}
+
 } // namespace streamview::rules

@@ -2263,6 +2263,102 @@ private slots:
         QCOMPARE(result.diagnostics.size(), std::size_t(1));
         QCOMPARE(result.diagnostics.front().code, DslDiagnosticCode::MissingToken);
     }
+    void parsesAvailableBytesExpression() {
+        const auto inComputed = DslParser::parse(QStringLiteral(
+            "struct S { computed<u64> rem = available_bytes(); } entry S;"));
+        QVERIFY(inComputed.succeeded());
+
+        const auto inLazy = DslParser::parse(QStringLiteral(
+            "struct S { @lazy(available_bytes()) bytes payload; } entry S;"));
+        QVERIFY(inLazy.succeeded());
+
+        const auto withArgs = DslParser::parse(QStringLiteral(
+            "struct S { computed<u64> rem = available_bytes(1); } entry S;"));
+        QVERIFY(!withArgs.succeeded());
+        QVERIFY(hasDiagnostic(withArgs, DslDiagnosticCode::InvalidExpression));
+
+        const auto inPure = DslParser::parse(QStringLiteral(
+            "pure u64 rem() { return available_bytes(); } struct S { bits<8> f; } entry S;"));
+        QVERIFY(!inPure.succeeded());
+        QVERIFY(hasDiagnostic(inPure, DslDiagnosticCode::UnknownReference));
+    }
+
+    void parsesContainerAnnotationOnLazyRegion() {
+        const auto valid = DslParser::parse(QStringLiteral(
+            "struct Child { bits<8> c; } struct Parent { @lazy(10) bytes payload @container(Child); } entry Parent;"));
+        QVERIFY(valid.succeeded());
+
+        const auto invalidHost = DslParser::parse(QStringLiteral(
+            "struct Child { bits<8> c; } struct S { bits<8> f @container(Child); } entry S;"));
+        QVERIFY(!invalidHost.succeeded());
+        QVERIFY(hasDiagnostic(invalidHost, DslDiagnosticCode::InvalidAnnotation));
+
+        const auto invalidArity = DslParser::parse(QStringLiteral(
+            "struct Child { bits<8> c; } struct S { @lazy(10) bytes payload @container(); } entry S;"));
+        QVERIFY(!invalidArity.succeeded());
+        QVERIFY(hasDiagnostic(invalidArity, DslDiagnosticCode::InvalidAnnotation));
+
+        const auto invalidArgKind = DslParser::parse(QStringLiteral(R"(
+            struct S { @lazy(10) bytes payload @container("Child"); } entry S;
+        )"));
+        QVERIFY(!invalidArgKind.succeeded());
+        QVERIFY(hasDiagnostic(invalidArgKind, DslDiagnosticCode::InvalidAnnotation));
+    }
+
+    void parsesTargetFormatAnnotationOnLazyRegion() {
+        const auto valid = DslParser::parse(QStringLiteral(R"(
+            struct S { @lazy(10) bytes payload @target_format("video/mp4"); } entry S;
+        )"));
+        QVERIFY(valid.succeeded());
+
+        const auto invalidHost = DslParser::parse(QStringLiteral(R"(
+            struct S { bits<8> f @target_format("video/mp4"); } entry S;
+        )"));
+        QVERIFY(!invalidHost.succeeded());
+        QVERIFY(hasDiagnostic(invalidHost, DslDiagnosticCode::InvalidAnnotation));
+
+        const auto emptyString = DslParser::parse(QStringLiteral(R"(
+            struct S { @lazy(10) bytes payload @target_format(""); } entry S;
+        )"));
+        QVERIFY(!emptyString.succeeded());
+        QVERIFY(hasDiagnostic(emptyString, DslDiagnosticCode::InvalidAnnotation));
+
+        const auto invalidArgKind = DslParser::parse(QStringLiteral(R"(
+            struct S { @lazy(10) bytes payload @target_format(video_mp4); } entry S;
+        )"));
+        QVERIFY(!invalidArgKind.succeeded());
+        QVERIFY(hasDiagnostic(invalidArgKind, DslDiagnosticCode::InvalidAnnotation));
+
+        const auto leadingPosition = DslParser::parse(QStringLiteral(R"(
+            struct S { @target_format("video/mp4") @lazy(10) bytes payload; } entry S;
+        )"));
+        QVERIFY(!leadingPosition.succeeded());
+    }
+
+    void parsesWindowAnnotationOnLazyRegion() {
+        const auto valid = DslParser::parse(QStringLiteral(R"(
+            struct Entry { bits<8> e; } struct S { bits<32> count; @lazy(10) bytes payload @window(Entry, count); } entry S;
+        )"));
+        QVERIFY(valid.succeeded());
+
+        const auto invalidHost = DslParser::parse(QStringLiteral(R"(
+            struct Entry { bits<8> e; } struct S { bits<32> count @window(Entry, count); } entry S;
+        )"));
+        QVERIFY(!invalidHost.succeeded());
+        QVERIFY(hasDiagnostic(invalidHost, DslDiagnosticCode::InvalidAnnotation));
+
+        const auto invalidArity = DslParser::parse(QStringLiteral(R"(
+            struct Entry { bits<8> e; } struct S { bits<32> count; @lazy(10) bytes payload @window(Entry); } entry S;
+        )"));
+        QVERIFY(!invalidArity.succeeded());
+        QVERIFY(hasDiagnostic(invalidArity, DslDiagnosticCode::InvalidAnnotation));
+
+        const auto invalidArgKind = DslParser::parse(QStringLiteral(R"(
+            struct Entry { bits<8> e; } struct S { bits<32> count; @lazy(10) bytes payload @window("Entry", "count"); } entry S;
+        )"));
+        QVERIFY(!invalidArgKind.succeeded());
+        QVERIFY(hasDiagnostic(invalidArgKind, DslDiagnosticCode::InvalidAnnotation));
+    }
 };
 
 QTEST_GUILESS_MAIN(DslTest)

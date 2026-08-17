@@ -53,6 +53,9 @@ public:
                                                   QStringView entryPointId,
                                                   QStringView runningLanguage,
                                                   QStringView runningEngine) const;
+    [[nodiscard]] RuleCatalogLookupResult resolveByFormat(QStringView format,
+                                                          QStringView runningLanguage,
+                                                          QStringView runningEngine) const;
     [[nodiscard]] qsizetype packageCount() const noexcept { return packageCount_; }
 
 private:

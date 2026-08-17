@@ -338,6 +338,29 @@ private slots:
         QCOMPARE(catalog.resolve(identity, u"packet", u"0.1", u"0.2.0").status,
                  RuleCatalogLookupStatus::IncompatibleEngine);
     }
+    void resolvesPackageByFormat() {
+        auto loaded = loadPackage();
+        QVERIFY(loaded.succeeded());
+        RulePackageCatalog catalog;
+        QVERIFY(catalog.registerPackage(std::move(*loaded.package)).succeeded());
+
+        const auto found = catalog.resolveByFormat(u"application.example.packet", u"0.1", u"0.1.0");
+        QCOMPARE(found.status, RuleCatalogLookupStatus::Found);
+        QVERIFY(found.succeeded());
+        QCOMPARE(found.entryPoint->format, QStringLiteral("application.example.packet"));
+
+        const auto missing = catalog.resolveByFormat(u"video/unknown", u"0.1", u"0.1.0");
+        QCOMPARE(missing.status, RuleCatalogLookupStatus::MissingContent);
+
+        const auto empty = catalog.resolveByFormat(u"", u"0.1", u"0.1.0");
+        QCOMPARE(empty.status, RuleCatalogLookupStatus::MissingContent);
+
+        const auto badLang = catalog.resolveByFormat(u"application.example.packet", u"0.2", u"0.1.0");
+        QCOMPARE(badLang.status, RuleCatalogLookupStatus::IncompatibleLanguage);
+
+        const auto badEngine = catalog.resolveByFormat(u"application.example.packet", u"0.1", u"0.2.0");
+        QCOMPARE(badEngine.status, RuleCatalogLookupStatus::IncompatibleEngine);
+    }
 };
 
 QTEST_GUILESS_MAIN(RulePackageTest)

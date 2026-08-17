@@ -71,12 +71,28 @@ struct ParseDiagnostic final {
 struct AnalysisSpecification final {
     QString standard;
     QString clause;
+
+    bool operator==(const AnalysisSpecification&) const = default;
+};
+
+struct AnalysisNodeWindowMetadata final {
+    quint32 entryStructIndex = 0;
+    quint32 entryCountFieldIndex = 0;
+    quint64 entrySizeBits = 0;
+    quint64 entryCount = 0;
+
+    bool operator==(const AnalysisNodeWindowMetadata&) const = default;
 };
 
 struct AnalysisNodeMetadata final {
     QString typeName;
     QString description;
     std::optional<AnalysisSpecification> specification;
+    std::optional<quint32> containerChildStructIndex;
+    std::optional<QString> targetFormat;
+    std::optional<AnalysisNodeWindowMetadata> window;
+
+    bool operator==(const AnalysisNodeMetadata&) const = default;
 };
 
 struct AnalysisNodeSpec final {

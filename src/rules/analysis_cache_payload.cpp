@@ -34,6 +34,8 @@ constexpr std::size_t maximumMaterializedNodes = 1024;
 constexpr quint32 progressiveEndOfSourceFlag = 1U;
 constexpr quint32 nodeLocationFlag = 1U;
 constexpr quint32 nodeSpecificationFlag = 2U;
+constexpr quint32 nodeTargetFormatFlag = 4U;
+constexpr quint32 nodeWindowMetadataFlag = 8U;
 constexpr quint32 diagnosticLocationFlag = 1U;
 
 static_assert(AnalysisCachePageBodyCodec::progressiveIndexFormatVersion() ==
@@ -681,6 +683,8 @@ AnalysisCacheBodyEncodeResult AnalysisCachePageBodyCodec::encodeMaterializedResu
         }
         quint32 flags = node.spec.location ? nodeLocationFlag : 0U;
         flags |= node.spec.metadata.specification ? nodeSpecificationFlag : 0U;
+        flags |= node.spec.metadata.targetFormat ? nodeTargetFormatFlag : 0U;
+        flags |= node.spec.metadata.window ? nodeWindowMetadataFlag : 0U;
         writer.append64(node.id.value());
         writer.append64(node.parentId ? node.parentId->value() : 0U);
         writer.append32(*kind);
@@ -698,6 +702,17 @@ AnalysisCacheBodyEncodeResult AnalysisCachePageBodyCodec::encodeMaterializedResu
              !writer.appendString(node.spec.metadata.specification->clause))) {
             return invalidEncode(AnalysisCacheBodyEncodeStatus::PayloadTooLarge,
                                  QStringLiteral("Materialized-result specification is too large"));
+        }
+        if (node.spec.metadata.targetFormat &&
+            !writer.appendString(*node.spec.metadata.targetFormat)) {
+            return invalidEncode(AnalysisCacheBodyEncodeStatus::PayloadTooLarge,
+                                 QStringLiteral("Materialized-result target format is too large"));
+        }
+        if (node.spec.metadata.window) {
+            writer.append32(node.spec.metadata.window->entryStructIndex);
+            writer.append32(node.spec.metadata.window->entryCountFieldIndex);
+            writer.append64(node.spec.metadata.window->entrySizeBits);
+            writer.append64(node.spec.metadata.window->entryCount);
         }
         if (!appendValue(&writer, *valueKind, node.spec.value)) {
             return invalidEncode(AnalysisCacheBodyEncodeStatus::PayloadTooLarge,
@@ -793,7 +808,7 @@ MaterializedResultCacheDecodeResult AnalysisCachePageBodyCodec::decodeMaterializ
         if (!reader.read64(&nodeId) || !reader.read64(&parentId) ||
             !reader.read32(&kindValue) || !reader.read32(&stateValue) ||
             !reader.read32(&valueKindValue) || !reader.read32(&flags) ||
-            (flags & ~(nodeLocationFlag | nodeSpecificationFlag)) != 0U) {
+            (flags & ~(nodeLocationFlag | nodeSpecificationFlag | nodeTargetFormatFlag | nodeWindowMetadataFlag)) != 0U) {
             return invalidMaterializedDecode(
                 AnalysisCacheBodyDecodeStatus::InvalidBody,
                 QStringLiteral("Materialized-result node header is invalid"));
@@ -839,6 +854,27 @@ MaterializedResultCacheDecodeResult AnalysisCachePageBodyCodec::decodeMaterializ
                     QStringLiteral("Materialized-result specification is invalid"));
             }
             node.spec.metadata.specification = std::move(specification);
+        }
+        if ((flags & nodeTargetFormatFlag) != 0U) {
+            QString targetFormat;
+            if (!reader.readString(&targetFormat)) {
+                return invalidMaterializedDecode(
+                    AnalysisCacheBodyDecodeStatus::InvalidBody,
+                    QStringLiteral("Materialized-result target format is invalid"));
+            }
+            node.spec.metadata.targetFormat = std::move(targetFormat);
+        }
+        if ((flags & nodeWindowMetadataFlag) != 0U) {
+            core::AnalysisNodeWindowMetadata window;
+            if (!reader.read32(&window.entryStructIndex) ||
+                !reader.read32(&window.entryCountFieldIndex) ||
+                !reader.read64(&window.entrySizeBits) ||
+                !reader.read64(&window.entryCount)) {
+                return invalidMaterializedDecode(
+                    AnalysisCacheBodyDecodeStatus::InvalidBody,
+                    QStringLiteral("Materialized-result window metadata is invalid"));
+            }
+            node.spec.metadata.window = window;
         }
         if (!readValue(&reader, static_cast<StoredValueKind>(valueKindValue),
                        &node.spec.value)) {

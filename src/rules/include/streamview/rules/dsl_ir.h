@@ -57,6 +57,7 @@ enum class DslTypedExpressionKind : quint8 {
     PowerOfTwo,
     MoreRbspData,
     ByteAligned,
+    AvailableBytes,
     // Yields the named field when the executed path materialized it and
     // evaluates operands[0] as the fallback otherwise. See ADR-0066.
     OptionalFieldReference,
@@ -117,6 +118,11 @@ struct DslTypedField final {
     std::optional<DslTypedSignedRange> signedRangeConstraint;
     std::optional<DslTypedExpression> computedExpression;
     std::optional<DslTypedExpression> lazyByteCountExpression;
+    std::optional<quint32> containerChildStructIndex;
+    std::optional<QString> targetFormat;
+    std::optional<quint32> windowEntryStructIndex;
+    std::optional<quint32> windowEntryCountFieldIndex;
+    std::optional<quint64> windowEntrySizeBits;
     std::vector<DslTypedFieldCondition> conditions;
     core::AnalysisNodeMetadata metadata;
     DslSourceRange range;
