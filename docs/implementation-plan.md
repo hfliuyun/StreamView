@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5d-2 — MP4 容器语言原语、元数据、缓存与格式解析服务（完成 available_bytes()、@container(ChildStruct)、@target_format("format")、@window(EntryStruct, count_field)、IR 编译、节点元数据、缓存 flags 4U/8U 编解码兼容、以及 RulePackageCatalog::resolveByFormat）
-Next Action: 主 Agent 复审 P5d-2；未经复审不得开始 P5d-3（P5d-3 为 Mp4IsobmffAnalyzer runner 骨架 + 容器重入 + 共享执行预算 + 窗口解码器 window_decoder.h + D7 续扫/fixture 测试）
-Last Verification: P5d-2 — Docs commit 283b9813e3135b8046b9aebbb7d94cfc6233eeec; Feat commit f254c926601b18c22a93434251eaee06e4544cd5; Hosted CI Run 32038194444 (macOS-15 job 95412664978, Ubuntu-24.04 job 95412665021, Windows-2022 job 95412664933: all green); CTest 38/38 passed on dev (Debug), ci (Release), sanitize (ASan/UBSan) presets with zero sanitizer reports; svtool rule check passed on all official rules; git diff --check clean; no FourCC literals in C++ logic
+Last Completed Step: Task P5d-2-R — 主 Agent 深审并补正 MP4 容器语言元数据合同（确定性 resolveByFormat 冲突、malformed Typed IR 预检、container 缓存 flag 16U、窗口结构/count 约束、双语语言与缓存布局规范）
+Next Action: 向子 Agent 下发 Task P5d-3（Mp4IsobmffAnalyzer rule-driven runner 骨架 + AnalysisSession 接入 + 容器重入 + 跨重入共享执行预算 + WindowDecoder + D7 moof 续扫/fixture 测试）；仍不建 MP4 规则包、不发布规则、不升级包版本
+Last Verification: P5d-2-R — Original docs commit 283b9816aa98fbbe4a7880717319ca5de59fb8b1; Original feat commit f254c926601b18c22a93434251eaee06e4544cd5; Remediation docs commit e44912b0585fbdf3fd93de47c31b9c3ee447caba; Remediation code/test commit ce335fa3817c65a59097f253c356fee2e37b56bd; Hosted CI Run 32042908309 (Ubuntu-24.04 job 95425285328, macOS-15 job 95425285355, Windows-2022 job 95425285422: all green); CTest 38/38 passed on dev (Debug), ci (Release), sanitize (ASan/UBSan) with zero sanitizer reports; four targeted suites passed and all four failed on original HEAD 55b4bea with the strengthened tests; official H.264/AAC rules passed svtool rule check; git diff --check clean
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2115,8 +2115,8 @@ Blockers: None
   3. 保持不删除任何既有历史记录。
   Next Action 保持「主 Agent 复审 P5d-1-R4；未经复审不得开始 P5d-2」。
 - 2026-08-17 Task P5d-2（MP4 容器语言原语、元数据、缓存与格式解析服务）：
-  语言/编译器/IR/缓存/服务增量交付（Docs commit `283b9813e3135b8046b9aebbb7d94cfc6233eeec`，Feat commit `f254c926601b18c22a93434251eaee06e4544cd5`，Hosted CI Run `32038194444`）：
-  1. Docs-first（commit `283b9813e3135b8046b9aebbb7d94cfc6233eeec`）：
+  语言/编译器/IR/缓存/服务增量交付（Docs commit `283b9816aa98fbbe4a7880717319ca5de59fb8b1`，Feat commit `f254c926601b18c22a93434251eaee06e4544cd5`，Hosted CI Run `32038194444`）：
+  1. Docs-first（commit `283b9816aa98fbbe4a7880717319ca5de59fb8b1`）：
      - 更新中英文格式语言参考 `docs/format-language/README.md` 与 `docs/zh-CN/format-language/README.md`；
      - 详细规范 `available_bytes()`、`@container(ChildStruct)`、`@target_format("format")`、`@window(EntryStruct, count_field)` 语义与约束。
   2. 语言与编译器实现（commit `f254c926601b18c22a93434251eaee06e4544cd5`）：
@@ -2132,3 +2132,41 @@ Blockers: None
      - `svtool rule check` 官方规则（H.264、AAC ADTS、AAC ASC）全部通过；
      - Hosted CI Run `32038194444`（macOS-15 job `95412664978`、Ubuntu-24.04 job `95412665021`、Windows-2022 job `95412664933`）三平台全绿。
   Next Action 保持「主 Agent 复审 P5d-2；未经复审不得开始 P5d-3」。
+- 2026-08-17 Task P5d-2-R（主 Agent 深审补正并终审通过）：
+  深审基线为 `a3550b173870c472e517305ca9397c1cd8a0a3c3`，原始子 Agent 交付 HEAD 为
+  `55b4bea5ca3fd624c028d04e118737eafe2880e0`。本轮按“主 Agent 深审后直接完成边界明确的
+  补正”流程闭环（Docs commit `e44912b0585fbdf3fd93de47c31b9c3ee447caba`，code/test commit
+  `ce335fa3817c65a59097f253c356fee2e37b56bd`，Hosted CI Run `32042908309`）：
+  1. 深审发现与生产补正：
+     - `RulePackageCatalog::resolveByFormat` 原先依赖 `QHash` 首个命中，多个版本或多个 entry
+       point 声明同一 format 时错误返回 `Found`；现扫描全部匹配，零匹配返回
+       `MissingContent`，多匹配确定性返回 `VersionConflict`，唯一匹配才检查 language/engine；
+     - VM 在任何 instruction/source read/node creation 前重新验证 lazy metadata：typed/node
+       container 与 target 必须一致，window runtime metadata 不得预填，count field 必须更早、
+       无条件且为 unsigned scalar，entry struct 索引与编译期 bit size 必须重新校验；非 lazy
+       field 携带任一 lazy metadata 同样拒绝为 `InvalidDefinition`；
+     - `@window` 编译器拒绝 EntryStruct 上除 `@description`/`@spec` 外的 operational annotation，
+       并拒绝以数组作为 count field；
+     - materialized-result cache 增加 `nodeContainerChildStructIndexFlag = 16U` 及 `quint32`
+       编解码，修复 container 元数据 round-trip 丢失；缺 bit 16U 的旧 version 1 body 仍解码为
+       `std::nullopt`。
+  2. 文档与证据补正：
+     - 修复中文语言参考把 `available_bytes()` 机械并入 Boolean `more_rbsp_data()`、while repeat
+       与 PPS 文案的错误；英中同步补齐 grammar、`u64` floor 语义、lazy 注解宿主与 lowering；
+     - ADR-0097 英中同步补齐 cache flag 16U、确定性 format 解析及 malformed IR 预检合同；
+       `docs/analysis-cache-payloads.md` 英中同步记录 flags 4U/8U/16U 与规范字段顺序；
+     - 修正原 P5d-2 记录中不存在的 docs SHA
+       `283b9813e3135b8046b9aebbb7d94cfc6233eeec` 为真实
+       `283b9816aa98fbbe4a7880717319ca5de59fb8b1`。
+  3. 测试有效性与验证：
+     - 强化测试仅挂载到原始 HEAD `55b4bea` 后，四个靶向套件 4/4 真实失败：IR 接受非法
+       EntryStruct annotation/数组 count，VM 物化 malformed metadata，catalog 对跨版本与同包
+       歧义均返回 `Found`，cache 将 container index 解码为 `std::nullopt`；修复后四套全绿；
+     - `available_bytes()` 非对齐位置测试采用 `bits<3>` 查询、`bits<5>` 补齐后注册 lazy region，
+       在旧实现与当前实现均通过，证明其验证 floor 语义而非触发 lazy 对齐闸门；
+     - 官方 AAC ASC、AAC ADTS、H.264 规则 `svtool rule check` 全部 `Rule OK`；本地 dev/ci/
+       sanitize 重新配置、完整构建、CTest 均 38/38，ASan/UBSan 无报告；`git diff --check` 干净；
+     - Hosted CI Run `32042908309`：Ubuntu-24.04 job `95425285328`、macOS-15 job
+       `95425285355`、Windows-2022 job `95425285422` 全部 success。
+  终审结论：P5d-2 通过。Next Action 切换为下发 P5d-3；P5d-3 仍须严格保持 capability-only，
+  不得创建/发布 MP4 规则包或升级任何包版本。
