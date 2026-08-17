@@ -13,17 +13,13 @@
 #include <algorithm>
 #include <limits>
 
-extern int qInitResources_streamview_official_rules_mp4();
+static void initializeStreamViewOfficialRulesMp4() {
+    Q_INIT_RESOURCE(streamview_official_rules_mp4);
+}
 
 namespace streamview::rules {
 
 namespace {
-
-void initializeStreamViewOfficialRulesMp4() {
-#if defined(QT_STATIC) || true
-    qInitResources_streamview_official_rules_mp4();
-#endif
-}
 
 [[nodiscard]] std::optional<QByteArray> readBundledPackageFile(const QString& resourcePath,
                                                                QString* errorMessage) {
