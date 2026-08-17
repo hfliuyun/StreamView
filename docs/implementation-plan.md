@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5d-2-R — 主 Agent 深审并补正 MP4 容器语言元数据合同（确定性 resolveByFormat 冲突、malformed Typed IR 预检、container 缓存 flag 16U、窗口结构/count 约束、双语语言与缓存布局规范）
-Next Action: 向子 Agent 下发 Task P5d-3（Mp4IsobmffAnalyzer rule-driven runner 骨架 + AnalysisSession 接入 + 容器重入 + 跨重入共享执行预算 + WindowDecoder + D7 moof 续扫/fixture 测试）；仍不建 MP4 规则包、不发布规则、不升级包版本
-Last Verification: P5d-2-R — Original docs commit 283b9816aa98fbbe4a7880717319ca5de59fb8b1; Original feat commit f254c926601b18c22a93434251eaee06e4544cd5; Remediation docs commit e44912b0585fbdf3fd93de47c31b9c3ee447caba; Remediation code/test commit ce335fa3817c65a59097f253c356fee2e37b56bd; Hosted CI Run 32042908309 (Ubuntu-24.04 job 95425285328, macOS-15 job 95425285355, Windows-2022 job 95425285422: all green); CTest 38/38 passed on dev (Debug), ci (Release), sanitize (ASan/UBSan) with zero sanitizer reports; four targeted suites passed and all four failed on original HEAD 55b4bea with the strengthened tests; official H.264/AAC rules passed svtool rule check; git diff --check clean
+Last Completed Step: Task P5d-3 — MP4 rule-driven runner 骨架、容器重入、跨重入共享执行预算、session-owned WindowDecoder 与 D7 moof/mdat 续扫闭环
+Next Action: 等待主 Agent / 用户审阅 P5d-3 交付物，复审通过后准备规划并推进 Task P5e（MP4 官方规则包规范编写与开发）；严格遵守不提前实现 P5e/P5f/P5g/P5h/P5i
+Last Verification: P5d-3 — Docs commit fbddca976d9eecbcfe12b9d9c490218b6fc8e4b7; Feat commit c5db52277d337d1cf70cbb413c631b1e959ee308; Fix commit 357aefd1b1103fdf5a7bcab4d8e57eead05ef7d2; Hosted CI Run 32045017480 (Ubuntu-24.04 job 95430874433, macOS-15 job 95430874417, Windows-2022 job 95430874338: all green); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed with zero sanitizer reports; svtool rule check on official H.264/AAC packages Rule OK; git diff --check clean
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2170,3 +2170,37 @@ Blockers: None
        `95425285355`、Windows-2022 job `95425285422` 全部 success。
   终审结论：P5d-2 通过。Next Action 切换为下发 P5d-3；P5d-3 仍须严格保持 capability-only，
   不得创建/发布 MP4 规则包或升级任何包版本。
+
+- 2026-08-18：完成 Task P5d-3 —— MP4 rule-driven runner、容器重入、跨重入共享预算与 WindowDecoder（Docs commit `fbddca976d9eecbcfe12b9d9c490218b6fc8e4b7`，Feat commit `c5db52277d337d1cf70cbb413c631b1e959ee308`，Fix commit `357aefd1b1103fdf5a7bcab4d8e57eead05ef7d2` 与本记录 commit）。
+  严格遵守 capability-only 原则，未创建 `org.streamview.mp4` 规则包，未升级任何 `rule.toml` 版本，C++ 源码中无任何硬编码 FourCC 字面量。
+  1. Mp4IsobmffAnalyzer 规则驱动 Runner 骨架：
+     - 实现 `loadMp4IsobmffRulePackage()` 动态查找已安装 MP4 规则包，未安装时通过 `create(&errorMessage)` 干净失败返回 `std::nullopt`；
+     - `analyzeBatch` 驱动 `Mp4BoxScanner` 扫描 box 记录，创建 `@index(progressive)` 顶层 box 节点（`Lazy -> Indexing -> Materialized`）；
+     - 接入 `AnalysisSession`，扩展 `analyzer_` std::variant 分支，统一调度进度与状态。
+  2. 容器重入（Container Re-Entry）与 BoundedSourceView：
+     - 对携带 `containerChildStructIndex` 的 lazy payload region，构造 `BoundedSourceView` 与隔离 `Mp4BoxScanner`；
+     - 递归重入 `DslExecutor::decodeStruct` 物化子 box 结构，支持任意层级嵌套容器（测试验证 5 层嵌套 `moov -> trak -> mdia -> minf -> stbl -> stsz`）。
+  3. 跨重入共享执行预算（RunnerExecutionBudget）：
+     - `Mp4IsobmffAnalyzer` 持有 `RunnerExecutionBudget`（默认 `remainingNodes = 100'000`, `remainingInstructions = 1'000'000`, `maxNestingDepth = 256`）；
+     - 顶层及所有嵌套 VM 调用共享统一预算计数器；单次 VM 执行前收窄为余额，返回后扣减；
+     - 深度超出 256 或预算耗尽时安全返回 `ResourceLimit`。
+  4. Session-Owned WindowDecoder：
+     - 实现 `WindowDecoder` 及 `WindowDecodeRequest`/`WindowDecodeResult`，负责按需物化样本表等超大懒加载列表；
+     - 默认 `pageSize = 256`，通过 `clampedCount` 裁剪超容 entry，全链路采用可移植受检算术（`addWouldOverflow` / `multiplyWouldOverflow`，消除编译器内置扩展对 MSVC 的依赖）；
+     - 坐标通过 `sourceMapping_.locate` 回映，无缝支持非连续 multi-span source mapping；
+     - 严格错误与资源隔离：单项 entry 失败不影响同页已物化节点，支持取消令牌中途打断。
+  5. ADR-0097 D7 moof 语法警告与后续续扫行为锁定：
+     - 构造精确 fixture（`mp4_d7_fragmented.mp4`）与测试用例，严格断言 7 项合同：
+       1. moof box 结构节点状态为 `MaterializationState::Unsupported`；
+       2. DiagnosticCode 为 `DiagnosticCode::UnsupportedSyntax`；
+       3. severity 为 `DiagnosticSeverity::Warning`；
+       4. diagnostic 锚定 `Box.type` 字段（`location` 匹配 `type` 字段起始坐标）；
+       5. `size`/`type` 字段在结构内保持 `MaterializationState::Materialized`；
+       6. moof 之前的 top-level box 保持完整物化；
+       7. moof 之后的后续 box（如 `mdat`）继续扫描并成功物化。
+  6. 验证与 Hosted CI：
+     - 测试夹具由脚本装配生成：`tests/fixtures/generate_mp4_p5d3_fixtures.py`；
+     - 新增测试追加至测试类末尾：`tests/rules/mp4_isobmff_analyzer_test.cpp`（10 tests）、`tests/rules/window_decoder_test.cpp`（9 tests）、`tests/app/analysis_session_test.cpp`（追加 1 test）；
+     - 静态检查：官方 H.264 与 AAC（ADTS/ASC）规则包全部通过 `svtool rule check`（`Rule OK`）；
+     - 本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套完整构建全量 CTest 均 40/40 通过，ASan/UBSan 零警告/零报告；
+     - Hosted CI Run `32045017480`：Ubuntu-24.04 job `95430874433`、macOS-15 job `95430874417`、Windows-2022 job `95430874338` 全部 success。
