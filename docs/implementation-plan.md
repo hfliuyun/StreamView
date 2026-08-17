@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5d-1-R4 — 实施计划活动状态头修正（承接 P5d-1-R3 测试排布与最小 16 字节 largesize 边界整改，记录测试提交 a98f7285d77ff1490ee48c6279231e22c13ff016、Hosted CI Run 32035443756 全绿、dev/ci/sanitize 38/38、detector 18/18 及 scanner 19/19）
-Next Action: 主 Agent 复审 P5d-1-R4；未经复审不得开始 P5d-2（P5d-2 仍为 P5c/ADR-0097 决策能力的语言/编译器/IR 实现切片：@container + @window + available_bytes() + @target_format registration/metadata/cache flag 4U/RulePackageCatalog::resolveByFormat）
-Last Verification: P5d-1-R4 — Test commit a98f7285d77ff1490ee48c6279231e22c13ff016; Docs commit 5f62c028931fef674c1db07edf6bf49025828cdb; Hosted CI Run 32035443756 (macOS-15 job 95404678898, Ubuntu-24.04 job 95404679117, Windows-2022 job 95404679118); CTest 38/38 passed on dev (Debug), ci (Release), sanitize (ASan/UBSan) presets; streamview_mp4_box_detector_tests 18/18; streamview_mp4_box_scanner_tests 19/19; git diff --check clean; no FourCC literals in C++ logic
+Last Completed Step: Task P5d-2 — MP4 容器语言原语、元数据、缓存与格式解析服务（完成 available_bytes()、@container(ChildStruct)、@target_format("format")、@window(EntryStruct, count_field)、IR 编译、节点元数据、缓存 flags 4U/8U 编解码兼容、以及 RulePackageCatalog::resolveByFormat）
+Next Action: 主 Agent 复审 P5d-2；未经复审不得开始 P5d-3（P5d-3 为 Mp4IsobmffAnalyzer runner 骨架 + 容器重入 + 共享执行预算 + 窗口解码器 window_decoder.h + D7 续扫/fixture 测试）
+Last Verification: P5d-2 — Docs commit 283b9813e3135b8046b9aebbb7d94cfc6233eeec; Feat commit f254c926601b18c22a93434251eaee06e4544cd5; Hosted CI Run 32038194444 (macOS-15 job 95412664978, Ubuntu-24.04 job 95412665021, Windows-2022 job 95412664933: all green); CTest 38/38 passed on dev (Debug), ci (Release), sanitize (ASan/UBSan) presets with zero sanitizer reports; svtool rule check passed on all official rules; git diff --check clean; no FourCC literals in C++ logic
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2114,3 +2114,21 @@ Blockers: None
   2. 原样载录测试提交 `a98f7285d77ff1490ee48c6279231e22c13ff016`、Hosted CI Run `32035443756`（macOS-15 job `95404678898`、Ubuntu-24.04 job `95404679117`、Windows-2022 job `95404679118`）、本地 3 套预设 CTest 38/38 以及 detector 18/18 / scanner 19/19 结果；
   3. 保持不删除任何既有历史记录。
   Next Action 保持「主 Agent 复审 P5d-1-R4；未经复审不得开始 P5d-2」。
+- 2026-08-17 Task P5d-2（MP4 容器语言原语、元数据、缓存与格式解析服务）：
+  语言/编译器/IR/缓存/服务增量交付（Docs commit `283b9813e3135b8046b9aebbb7d94cfc6233eeec`，Feat commit `f254c926601b18c22a93434251eaee06e4544cd5`，Hosted CI Run `32038194444`）：
+  1. Docs-first（commit `283b9813e3135b8046b9aebbb7d94cfc6233eeec`）：
+     - 更新中英文格式语言参考 `docs/format-language/README.md` 与 `docs/zh-CN/format-language/README.md`；
+     - 详细规范 `available_bytes()`、`@container(ChildStruct)`、`@target_format("format")`、`@window(EntryStruct, count_field)` 语义与约束。
+  2. 语言与编译器实现（commit `f254c926601b18c22a93434251eaee06e4544cd5`）：
+     - `available_bytes()`：0 参数标量表达式，返回当前 bit reader 剩余字节数（`remainingBits() / 8U`），在纯函数中禁止；
+     - `@container(ChildStruct)`：仅允许置于 lazy byte region，携带 1 个标识符参数，编译器解析对应结构体索引并存入 `DslTypedField::containerChildStructIndex`，传播至 `AnalysisNodeMetadata`；
+     - `@target_format("format")`：仅允许置于 lazy byte region，携带 1 个非空字符串参数，存入 `DslTypedField::targetFormat`，传播至 `AnalysisNodeMetadata`；
+     - `@window(EntryStruct, count_field)`：仅允许置于 lazy byte region，携带 2 个标识符参数（EntryStruct 必须为静态无条件非空且字节对齐的 bits 字段/数组结构，count_field 必须为此前声明的无条件无符号整数标量），存入 `DslTypedField` 的 window 索引与尺寸，并在 VM `RegisterLazyBytes` 动态捕获当前条目数，生成 `AnalysisNodeWindowMetadata`；
+     - 缓存序列化扩展：`AnalysisCachePageBodyCodec` 引入 `nodeTargetFormatFlag = 4U` 和 `nodeWindowMetadataFlag = 8U`，支持向后兼容解码（缺对应 flag 解码为 `std::nullopt`）；
+     - 格式解析服务：`RulePackageCatalog::resolveByFormat(format, runningLanguage, runningEngine)` 支持按 entry point format 字符串查找安装的规则包，返回 `Found`、`MissingContent`、`IncompatibleLanguage`、`IncompatibleEngine` 四态。
+  3. 验证与测试：
+     - 新增独立解析、IR 编译、VM 执行、缓存编解码和目录服务测试，全量追加至各测试类末尾；
+     - 本地三套构建与全量 CTest 均通过（dev 38/38、ci 38/38、sanitize 38/38 无 sanitizer 报告）；
+     - `svtool rule check` 官方规则（H.264、AAC ADTS、AAC ASC）全部通过；
+     - Hosted CI Run `32038194444`（macOS-15 job `95412664978`、Ubuntu-24.04 job `95412665021`、Windows-2022 job `95412664933`）三平台全绿。
+  Next Action 保持「主 Agent 复审 P5d-2；未经复审不得开始 P5d-3」。
