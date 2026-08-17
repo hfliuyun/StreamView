@@ -21,7 +21,7 @@ if( !byte_aligned( ) ) {
 然而，在诸如 `pic_timing`（ITU-T H.264 D.1.2 / D.2.2）等消息中：当 `CpbDpbDelaysPresentFlag` 有效且使用缺省 24 位延迟（24 + 24 = 48 位），同时 `pic_struct_present_flag == 0` 时，载荷总位宽恰好为 48 位（即 6 字节，为 8 的整数倍）。在合规码流中，此时**没有任何对齐位**。若在规则末尾无条件放置 `rbsp_trailing_bits;`，虚拟机字节码 `ReadRbspTrailingBits` 将强制读取 8 位（`10000000`），从而错误吞食后续 SEI 消息的 `payload_type` 或 NAL 单元末尾的 trailing bits，造成码流严重错位。
 
 规则引擎探测表明：
-1. 分支内的条件性 `rbsp_trailing_bits`（`if (condition) { rbsp_trailing_bits; }`）在解析器（`src/rules/dsl.cpp:1531`）、IR 降级（`src/rules/dsl_ir.cpp:1076`）和 VM 执行（`src/rules/dsl_vm.cpp:2805-2814`）中**已获完整支持**。当条件为 false 时，VM 干净跳过所有对齐位，不从 reader 读取任何 bit。
+1. 分支内的条件性 `rbsp_trailing_bits`（`if (condition) { rbsp_trailing_bits; }`）在解析器（`src/rules/dsl.cpp:1360-1372`）、IR 降级（`src/rules/dsl_ir.cpp:3853-3861`）和 VM 执行（`src/rules/dsl_vm.cpp:2912-2939`）中**已获完整支持**。当条件为 false 时，VM 干净跳过所有对齐位，不从 reader 读取任何 bit。
 2. 当前表达式语言仅有用于查询码流结束状态的 `more_rbsp_data()`，尚无查询当前 bit 是否字节对齐的位置谓词 `byte_aligned()`。
 
 ## 决策
