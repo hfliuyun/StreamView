@@ -8054,6 +8054,137 @@ private slots:
             QCOMPARE(wNode->metadata().window->entryCount, quint64(5));
         }
     }
+
+    void rejectsMalformedLazyMetadataBeforeReadingSource() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Child { bits<8> value; }
+            struct Entry { bits<16> value; }
+            struct Container {
+                @lazy(4) bytes payload @container(Child);
+            }
+            struct Target {
+                @lazy(4) bytes payload @target_format("video/mp4");
+            }
+            struct Table {
+                bits<32> count;
+                @lazy(4) bytes entries @window(Entry, count);
+            }
+            entry Table;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const quint32 containerIndex =
+            *compiled.program->structureIndex(QStringLiteral("Container"));
+        const quint32 targetIndex =
+            *compiled.program->structureIndex(QStringLiteral("Target"));
+        const quint32 tableIndex =
+            *compiled.program->structureIndex(QStringLiteral("Table"));
+
+        std::vector<std::pair<DslTypedProgram, quint32>> malformed;
+
+        auto mismatchedContainer = *compiled.program;
+        mismatchedContainer.structs.at(containerIndex)
+            .fields.front()
+            .metadata.containerChildStructIndex = quint32(1);
+        malformed.emplace_back(std::move(mismatchedContainer), containerIndex);
+
+        auto mismatchedTarget = *compiled.program;
+        mismatchedTarget.structs.at(targetIndex).fields.front().metadata.targetFormat =
+            QStringLiteral("audio/aac");
+        malformed.emplace_back(std::move(mismatchedTarget), targetIndex);
+
+        auto futureCount = *compiled.program;
+        futureCount.structs.at(tableIndex).fields.at(1).windowEntryCountFieldIndex = 1;
+        malformed.emplace_back(std::move(futureCount), tableIndex);
+
+        auto mismatchedEntrySize = *compiled.program;
+        mismatchedEntrySize.structs.at(tableIndex).fields.at(1).windowEntrySizeBits = 24;
+        malformed.emplace_back(std::move(mismatchedEntrySize), tableIndex);
+
+        auto prepopulatedWindow = *compiled.program;
+        streamview::core::AnalysisNodeWindowMetadata window;
+        window.entryStructIndex = 1;
+        window.entryCountFieldIndex = 0;
+        window.entrySizeBits = 16;
+        window.entryCount = 7;
+        prepopulatedWindow.structs.at(tableIndex).fields.at(1).metadata.window = window;
+        malformed.emplace_back(std::move(prepopulatedWindow), tableIndex);
+
+        auto typedMetadataOnNonLazy = *compiled.program;
+        typedMetadataOnNonLazy.structs.at(tableIndex).fields.front().targetFormat =
+            QStringLiteral("video/mp4");
+        malformed.emplace_back(std::move(typedMetadataOnNonLazy), tableIndex);
+
+        auto nodeMetadataOnNonLazy = *compiled.program;
+        nodeMetadataOnNonLazy.structs.at(tableIndex)
+            .fields.front()
+            .metadata.containerChildStructIndex = quint32(0);
+        malformed.emplace_back(std::move(nodeMetadataOnNonLazy), tableIndex);
+
+        for (std::size_t index = 0; index < malformed.size(); ++index) {
+            MemorySource source(std::vector<std::byte>(8, std::byte{0}));
+            const auto mapping = mappingForBytes(8);
+            const auto range = SourceSpan::create(
+                streamview::core::SourceBitAddress(0), 8 * 8);
+            auto tree = AnalysisTree::create(
+                QStringLiteral("malformed-lazy-metadata-%1").arg(index));
+            QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+            BitReader reader(source, *range);
+
+            const auto result = DslExecutor::decodeStruct(
+                malformed.at(index).first,
+                malformed.at(index).second,
+                reader,
+                *mapping,
+                0,
+                *tree,
+                tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+            QCOMPARE(result.instructionsExecuted, quint64(0));
+            QCOMPARE(reader.position(), quint64(0));
+            QCOMPARE(source.readCount(), quint64(0));
+            const auto root = tree->node(tree->rootId());
+            QVERIFY(root.has_value());
+            QVERIFY(root->children().empty());
+        }
+    }
+
+    void floorsAvailableBytesAtAnUnalignedReaderPosition() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct S {
+                bits<3> prefix;
+                computed<u64> whole_bytes = available_bytes();
+                bits<5> padding;
+                @lazy(available_bytes()) bytes payload;
+            }
+            entry S;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0xff, 0xff}));
+        const auto mapping = mappingForBytes(2);
+        const auto range = SourceSpan::create(
+            streamview::core::SourceBitAddress(0), 16);
+        auto tree = AnalysisTree::create(QStringLiteral("available-bytes-unaligned"));
+        QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+        BitReader reader(source, *range);
+
+        const auto result = DslExecutor::decodeStruct(
+            *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(reader.position(), quint64(16));
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        const auto count = tree->node(structure->children().at(1));
+        const auto payload = tree->node(structure->children().at(3));
+        QVERIFY(count.has_value() && payload.has_value());
+        QCOMPARE(count->value().toULongLong(), quint64(1));
+        QCOMPARE(payload->location()->logicalRange().bitLength(), quint64(8));
+    }
 };
 
 QTEST_GUILESS_MAIN(DslExecutorTest)

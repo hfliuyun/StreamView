@@ -305,6 +305,42 @@ constexpr quint64 maximumUnsignedExpGolombValue = std::numeric_limits<quint64>::
     return std::nullopt;
 }
 
+[[nodiscard]] std::optional<quint64> fixedWindowEntrySizeBits(
+    const DslTypedStruct& structure) noexcept {
+    if (structure.fields.empty() || !structure.repeatBounds.empty() ||
+        !structure.sentinelRepeats.empty() || !structure.whileRepeats.empty() ||
+        !structure.assertions.empty() || !structure.unsupportedStatements.empty() ||
+        structure.contextDefinition || !structure.contextImports.empty() ||
+        structure.metadata.containerChildStructIndex || structure.metadata.targetFormat ||
+        structure.metadata.window) {
+        return std::nullopt;
+    }
+
+    quint64 totalBits = 0;
+    for (const DslTypedField& field : structure.fields) {
+        const bool validEndian = field.type.endian == DslEndian::Big ||
+                                 field.type.endian == DslEndian::Little;
+        if (field.kind != DslTypedFieldKind::Declared ||
+            field.type.kind != DslValueTypeKind::UnsignedBits ||
+            field.type.bitWidth == 0 || field.type.bitWidth > 64 || !validEndian ||
+            (field.type.endian == DslEndian::Little && field.type.bitWidth % 8 != 0) ||
+            field.type.enumIndex || field.type.maxBytes != 0 || field.bitWidthExpression ||
+            field.equalsConstraint || field.rangeConstraint || field.signedRangeConstraint ||
+            field.computedExpression || field.lazyByteCountExpression ||
+            !field.conditions.empty() || field.containerChildStructIndex || field.targetFormat ||
+            field.windowEntryStructIndex || field.windowEntryCountFieldIndex ||
+            field.windowEntrySizeBits || field.metadata.containerChildStructIndex ||
+            field.metadata.targetFormat || field.metadata.window ||
+            totalBits > std::numeric_limits<quint64>::max() - field.type.bitWidth) {
+            return std::nullopt;
+        }
+        totalBits += field.type.bitWidth;
+    }
+
+    return totalBits != 0 && totalBits % 8 == 0 ? std::optional<quint64>(totalBits)
+                                                : std::nullopt;
+}
+
 [[nodiscard]] bool sameTypedExpression(const DslTypedExpression& left,
                                        const DslTypedExpression& right) noexcept {
     if (left.kind != right.kind || left.type != right.type ||
@@ -1325,6 +1361,23 @@ DslExecutionResult DslVirtualMachine::execute(
         const bool lazyBytes = field.type.kind == DslValueTypeKind::LazyBytes;
         const bool compressedPayload =
             field.type.kind == DslValueTypeKind::CompressedPayload;
+        const bool hasTypedLazyMetadata = field.containerChildStructIndex ||
+                                          field.targetFormat ||
+                                          field.windowEntryStructIndex ||
+                                          field.windowEntryCountFieldIndex ||
+                                          field.windowEntrySizeBits;
+        const bool hasNodeLazyMetadata = field.metadata.containerChildStructIndex ||
+                                         field.metadata.targetFormat ||
+                                         field.metadata.window;
+        if (!lazyBytes && (hasTypedLazyMetadata || hasNodeLazyMetadata)) {
+            markFailure(DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Non-lazy typed field has lazy-region metadata"),
+                        &field,
+                        std::nullopt,
+                        std::nullopt,
+                        false);
+            return result;
+        }
         if (compressedPayload) {
             if (fieldIndex + 1 != structure.fields.size() ||
                 field.kind != DslTypedFieldKind::Declared || field.name.isEmpty() ||
@@ -1349,7 +1402,12 @@ DslExecutionResult DslVirtualMachine::execute(
             if (field.type.bitWidth != 0 || field.type.endian != DslEndian::Big ||
                 field.type.enumIndex || field.equalsConstraint || field.rangeConstraint ||
                 field.computedExpression || field.bitWidthExpression ||
-                !field.lazyByteCountExpression) {
+                !field.lazyByteCountExpression ||
+                field.containerChildStructIndex !=
+                    field.metadata.containerChildStructIndex ||
+                field.targetFormat != field.metadata.targetFormat ||
+                (field.targetFormat && field.targetFormat->isEmpty()) ||
+                field.metadata.window) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Typed lazy byte region definition is invalid"),
                             &field,
@@ -1370,12 +1428,26 @@ DslExecutionResult DslVirtualMachine::execute(
             }
             if (field.windowEntryStructIndex || field.windowEntryCountFieldIndex ||
                 field.windowEntrySizeBits) {
+                std::optional<quint64> actualEntrySizeBits;
+                if (field.windowEntryStructIndex &&
+                    *field.windowEntryStructIndex < program.structs.size()) {
+                    actualEntrySizeBits = fixedWindowEntrySizeBits(
+                        program.structs.at(*field.windowEntryStructIndex));
+                }
+                const DslTypedField* countField = nullptr;
+                if (field.windowEntryCountFieldIndex &&
+                    *field.windowEntryCountFieldIndex < fieldIndex) {
+                    countField = &structure.fields.at(*field.windowEntryCountFieldIndex);
+                }
                 if (!field.windowEntryStructIndex || !field.windowEntryCountFieldIndex ||
                     !field.windowEntrySizeBits ||
                     *field.windowEntryStructIndex >= program.structs.size() ||
-                    *field.windowEntryCountFieldIndex >= structure.fields.size() ||
+                    !countField || countField->kind != DslTypedFieldKind::Declared ||
+                    !countField->conditions.empty() ||
+                    scalarTypeForField(*countField) != DslScalarType::U64 ||
                     *field.windowEntrySizeBits == 0 ||
-                    *field.windowEntrySizeBits % 8 != 0) {
+                    *field.windowEntrySizeBits % 8 != 0 || !actualEntrySizeBits ||
+                    *actualEntrySizeBits != *field.windowEntrySizeBits) {
                     markFailure(DslExecutionStatus::InvalidDefinition,
                                 QStringLiteral("Typed lazy byte window definition is invalid"),
                                 &field,
