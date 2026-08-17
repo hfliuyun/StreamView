@@ -82,6 +82,8 @@ private:
     quint64 cursor_ = 0;
     quint64 inspectedPositions_ = 0;
     bool finished_ = false;
+    bool failed_ = false;
+    QString lastErrorMessage_;
 };
 
 } // namespace streamview::rules

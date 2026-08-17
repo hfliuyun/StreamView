@@ -57,29 +57,40 @@ Mp4BoxScanner::ReadBytesStatus Mp4BoxScanner::readBytes(quint64 offset,
         return ReadBytesStatus::End;
     }
 
-    if (offset < bufferStart_ || (offset + count) > bufferEnd_) {
-        bufferStart_ = (offset / kChunkSize) * kChunkSize;
-        const quint64 available = sourceSize - bufferStart_;
-        const quint64 requested = std::min(kChunkSize, available);
-        if (requested > static_cast<quint64>(std::numeric_limits<std::size_t>::max())) {
-            if (errorMessage != nullptr) {
-                *errorMessage = QStringLiteral("Scanner chunk exceeds host size limits");
-            }
-            return ReadBytesStatus::Error;
-        }
+    if (offset >= bufferStart_ && offset < bufferEnd_ && count <= (bufferEnd_ - offset)) {
+        const std::size_t bufferOffset = static_cast<std::size_t>(offset - bufferStart_);
+        std::memcpy(destination, buffer_.data() + bufferOffset, count);
+        return ReadBytesStatus::Available;
+    }
 
-        buffer_.resize(static_cast<std::size_t>(requested));
-        const auto readResult = source_->readAt(
-            bufferStart_, std::span<std::byte>(buffer_.data(), buffer_.size()));
-        if (!readResult.complete() || readResult.bytesRead != buffer_.size()) {
-            if (errorMessage != nullptr) {
-                *errorMessage = readResult.errorMessage.isEmpty()
-                                    ? QStringLiteral("Unable to read source while scanning MP4 boxes")
-                                    : readResult.errorMessage;
-            }
-            return ReadBytesStatus::Error;
+    bufferStart_ = offset;
+    const quint64 available = sourceSize - bufferStart_;
+    const quint64 requested = std::min(kChunkSize, available);
+    if (requested > static_cast<quint64>(std::numeric_limits<std::size_t>::max())) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Scanner chunk exceeds host size limits");
         }
-        bufferEnd_ = bufferStart_ + requested;
+        return ReadBytesStatus::Error;
+    }
+
+    buffer_.resize(static_cast<std::size_t>(requested));
+    const auto readResult = source_->readAt(
+        bufferStart_, std::span<std::byte>(buffer_.data(), buffer_.size()));
+    if (!readResult.complete() || readResult.bytesRead != buffer_.size()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = readResult.errorMessage.isEmpty()
+                                ? QStringLiteral("Unable to read source while scanning MP4 boxes")
+                                : readResult.errorMessage;
+        }
+        return ReadBytesStatus::Error;
+    }
+    bufferEnd_ = bufferStart_ + requested;
+
+    if (count > (bufferEnd_ - offset)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Read count exceeds buffer range");
+        }
+        return ReadBytesStatus::Error;
     }
 
     const std::size_t bufferOffset = static_cast<std::size_t>(offset - bufferStart_);
@@ -91,15 +102,23 @@ Mp4BoxScanBatch Mp4BoxScanner::scanBatch(std::size_t maximumRecords,
                                          quint64 maximumInspectedPositions) {
     Mp4BoxScanBatch batch;
 
-    if (maximumRecords == 0) {
+    if (maximumRecords == 0 || maximumInspectedPositions == 0) {
         batch.status = Mp4BoxScanStatus::InvalidBatchSize;
-        batch.errorMessage = QStringLiteral("Batch maximum record count must be greater than zero");
+        batch.errorMessage = QStringLiteral("Batch maximum record count and position limit must be greater than zero");
+        return batch;
+    }
+
+    if (failed_) {
+        batch.status = Mp4BoxScanStatus::SourceError;
+        batch.errorMessage = lastErrorMessage_;
         return batch;
     }
 
     if (source_ == nullptr) {
         batch.status = Mp4BoxScanStatus::SourceError;
         batch.errorMessage = QStringLiteral("Source is not available");
+        failed_ = true;
+        lastErrorMessage_ = batch.errorMessage;
         return batch;
     }
 
@@ -141,6 +160,8 @@ Mp4BoxScanBatch Mp4BoxScanner::scanBatch(std::size_t maximumRecords,
         const auto headerStatus = readBytes(start, 8U, headerBytes, &batch.errorMessage);
         if (headerStatus == ReadBytesStatus::Error) {
             batch.status = Mp4BoxScanStatus::SourceError;
+            failed_ = true;
+            lastErrorMessage_ = batch.errorMessage;
             return batch;
         }
         if (headerStatus == ReadBytesStatus::End) {
@@ -155,6 +176,8 @@ Mp4BoxScanBatch Mp4BoxScanner::scanBatch(std::size_t maximumRecords,
             if (!checkBitCoordinateOverflow(start, remaining)) {
                 batch.status = Mp4BoxScanStatus::SourceError;
                 batch.errorMessage = QStringLiteral("Coordinate arithmetic overflow");
+                failed_ = true;
+                lastErrorMessage_ = batch.errorMessage;
                 return batch;
             }
 
@@ -163,6 +186,8 @@ Mp4BoxScanBatch Mp4BoxScanner::scanBatch(std::size_t maximumRecords,
             if (!span.has_value()) {
                 batch.status = Mp4BoxScanStatus::SourceError;
                 batch.errorMessage = QStringLiteral("Failed to create source span");
+                failed_ = true;
+                lastErrorMessage_ = batch.errorMessage;
                 return batch;
             }
 
@@ -194,6 +219,8 @@ Mp4BoxScanBatch Mp4BoxScanner::scanBatch(std::size_t maximumRecords,
             const auto largeStatus = readBytes(start + 8U, 8U, largeSizeBytes, &batch.errorMessage);
             if (largeStatus == ReadBytesStatus::Error) {
                 batch.status = Mp4BoxScanStatus::SourceError;
+                failed_ = true;
+                lastErrorMessage_ = batch.errorMessage;
                 return batch;
             }
             if (largeStatus == ReadBytesStatus::End) {
@@ -224,6 +251,8 @@ Mp4BoxScanBatch Mp4BoxScanner::scanBatch(std::size_t maximumRecords,
             if (!checkBitCoordinateOverflow(start, boxSize)) {
                 batch.status = Mp4BoxScanStatus::SourceError;
                 batch.errorMessage = QStringLiteral("Coordinate arithmetic overflow");
+                failed_ = true;
+                lastErrorMessage_ = batch.errorMessage;
                 return batch;
             }
 
@@ -232,6 +261,8 @@ Mp4BoxScanBatch Mp4BoxScanner::scanBatch(std::size_t maximumRecords,
             if (!span.has_value()) {
                 batch.status = Mp4BoxScanStatus::SourceError;
                 batch.errorMessage = QStringLiteral("Failed to create source span");
+                failed_ = true;
+                lastErrorMessage_ = batch.errorMessage;
                 return batch;
             }
 
@@ -251,6 +282,8 @@ Mp4BoxScanBatch Mp4BoxScanner::scanBatch(std::size_t maximumRecords,
             if (!checkBitCoordinateOverflow(start, remaining)) {
                 batch.status = Mp4BoxScanStatus::SourceError;
                 batch.errorMessage = QStringLiteral("Coordinate arithmetic overflow");
+                failed_ = true;
+                lastErrorMessage_ = batch.errorMessage;
                 return batch;
             }
 
@@ -259,6 +292,8 @@ Mp4BoxScanBatch Mp4BoxScanner::scanBatch(std::size_t maximumRecords,
             if (!span.has_value()) {
                 batch.status = Mp4BoxScanStatus::SourceError;
                 batch.errorMessage = QStringLiteral("Failed to create source span");
+                failed_ = true;
+                lastErrorMessage_ = batch.errorMessage;
                 return batch;
             }
 

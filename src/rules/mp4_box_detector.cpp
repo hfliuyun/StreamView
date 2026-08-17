@@ -38,26 +38,24 @@ namespace {
 Mp4DetectionResult
 detectMp4Candidate(std::span<const std::byte> sourcePrefix,
                    quint64 sourceSizeBytes) {
-    Mp4DetectionResult result;
-    result.inspectedByteCount = std::min<quint64>(sourcePrefix.size(), sourceSizeBytes);
-    result.sourceFullyInspected = (result.inspectedByteCount >= sourceSizeBytes);
+    const quint64 prefixSize = static_cast<quint64>(sourcePrefix.size());
+    const quint64 probeMax = mp4DetectionProbeSizeBytes();
+    const quint64 inspectionSize = std::min({prefixSize, sourceSizeBytes, probeMax});
 
-    if (sourcePrefix.empty() || sourceSizeBytes == 0U) {
+    Mp4DetectionResult result;
+    result.inspectedByteCount = inspectionSize;
+    result.sourceFullyInspected = (inspectionSize >= sourceSizeBytes);
+
+    if (sourcePrefix.empty() || sourceSizeBytes == 0U || inspectionSize == 0U) {
         return result;
     }
 
     quint64 offset = 0;
     std::vector<Mp4DetectionEvidence> evidence;
-    const quint64 prefixSize = static_cast<quint64>(sourcePrefix.size());
 
-    while (offset < sourceSizeBytes) {
-        const quint64 remainingInSource = sourceSizeBytes - offset;
-        if (offset >= prefixSize) {
-            break;
-        }
-
-        const quint64 remainingInPrefix = prefixSize - offset;
-        if (remainingInPrefix < 8U) {
+    while (offset < inspectionSize) {
+        const quint64 remainingInInspection = inspectionSize - offset;
+        if (remainingInInspection < 8U) {
             break;
         }
 
@@ -65,6 +63,12 @@ detectMp4Candidate(std::span<const std::byte> sourcePrefix,
         const quint32 size = readBigEndianU32(headerPtr);
 
         if (size == 0U) {
+            if (!result.sourceFullyInspected) {
+                // Cannot verify size 0 terminal evidence unless full source is inspected
+                break;
+            }
+
+            const quint64 remainingInSource = sourceSizeBytes - offset;
             if (!checkBitCoordinateOverflow(offset, remainingInSource)) {
                 break;
             }
@@ -85,7 +89,7 @@ detectMp4Candidate(std::span<const std::byte> sourcePrefix,
         quint64 declaredSize = 0;
 
         if (size == 1U) {
-            if (remainingInPrefix < 16U) {
+            if (remainingInInspection < 16U) {
                 break;
             }
             const quint64 largesize = readBigEndianU64(headerPtr + 8U);
@@ -101,8 +105,8 @@ detectMp4Candidate(std::span<const std::byte> sourcePrefix,
             break;
         }
 
-        if (boxSize > remainingInSource) {
-            // Truncated in source: do not add to evidence, stop chain
+        if (boxSize > remainingInInspection) {
+            // Box extends beyond inspection window or is truncated in source
             break;
         }
 
