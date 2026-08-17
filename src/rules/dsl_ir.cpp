@@ -2571,7 +2571,14 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                           annotation.range);
                         } else {
                             quint64 totalBits = 0;
-                            bool entryStructValid = true;
+                            const bool annotationsValid = std::all_of(
+                                entryIt->annotations.begin(),
+                                entryIt->annotations.end(),
+                                [](const DslAnnotation& annotation) {
+                                    return annotation.name == QStringLiteral("description") ||
+                                           annotation.name == QStringLiteral("spec");
+                                });
+                            bool entryStructValid = annotationsValid;
                             if (entryIt->items.empty()) {
                                 entryStructValid = false;
                             }
@@ -2635,6 +2642,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                               annotation.range);
                             } else if (fieldIt->scalarType != DslScalarType::U64 ||
                                        (!fieldIt->source && !fieldIt->computed) ||
+                                       (fieldIt->source && fieldIt->source->arrayLength) ||
                                        (fieldIt->source && fieldIt->source->encoding == DslFieldEncoding::SignedExpGolomb)) {
                                 addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidType,
                                               QStringLiteral("Window count field '%1' must be an unsigned scalar integer").arg(countFieldName),

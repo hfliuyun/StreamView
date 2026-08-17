@@ -3768,6 +3768,41 @@ private slots:
         QVERIFY(!invalidCompiled2.succeeded());
         QVERIFY(hasDiagnostic(invalidCompiled2, DslDiagnosticCode::InvalidType));
     }
+
+    void rejectsOperationalAnnotationsOnWindowEntryStruct() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            @context("h264-sps", id)
+            struct Entry {
+                bits<8> id;
+            }
+            struct Table {
+                bits<32> count;
+                @lazy(100) bytes entries @window(Entry, count);
+            }
+            entry Table;
+        )"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(!compiled.succeeded());
+        QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidType));
+    }
+
+    void rejectsArrayWindowCountField() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Entry { bits<8> value; }
+            struct Table {
+                bits<32> counts[2];
+                @lazy(100) bytes entries @window(Entry, counts);
+            }
+            entry Table;
+        )"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(!compiled.succeeded());
+        QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidType));
+    }
 };
 
 QTEST_GUILESS_MAIN(DslIrTest)

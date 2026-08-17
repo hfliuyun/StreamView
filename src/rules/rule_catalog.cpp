@@ -106,17 +106,18 @@ RuleCatalogLookupResult RulePackageCatalog::resolveByFormat(QStringView format,
         for (const auto& package : versions) {
             for (const RulePackageEntryPoint& entry : package->manifest().entryPoints) {
                 if (entry.format == format) {
+                    if (matchedPackage) {
+                        return {
+                            RuleCatalogLookupStatus::VersionConflict,
+                            {},
+                            std::nullopt,
+                            QStringLiteral("Multiple installed package entry points match format: %1")
+                                .arg(format)};
+                    }
                     matchedPackage = package;
                     matchedEntryPoint = entry;
-                    break;
                 }
             }
-            if (matchedPackage) {
-                break;
-            }
-        }
-        if (matchedPackage) {
-            break;
         }
     }
 

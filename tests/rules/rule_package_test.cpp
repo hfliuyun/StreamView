@@ -361,6 +361,56 @@ private slots:
         const auto badEngine = catalog.resolveByFormat(u"application.example.packet", u"0.1", u"0.2.0");
         QCOMPARE(badEngine.status, RuleCatalogLookupStatus::IncompatibleEngine);
     }
+
+    void rejectsAmbiguousPackagesWhenResolvingByFormat() {
+        auto first = loadPackage(QStringLiteral("0.1.0"));
+        auto second = loadPackage(QStringLiteral("0.2.0"));
+        QVERIFY(first.succeeded());
+        QVERIFY(second.succeeded());
+
+        RulePackageCatalog catalog;
+        QVERIFY(catalog.registerPackage(std::move(*first.package)).succeeded());
+        QVERIFY(catalog.registerPackage(std::move(*second.package)).succeeded());
+
+        const auto conflict =
+            catalog.resolveByFormat(u"application.example.packet", u"0.1", u"0.1.0");
+        QCOMPARE(conflict.status, RuleCatalogLookupStatus::VersionConflict);
+        QVERIFY(!conflict.succeeded());
+        QVERIFY(!conflict.package);
+        QVERIFY(!conflict.entryPoint.has_value());
+        QVERIFY(!conflict.errorMessage.isEmpty());
+    }
+
+    void rejectsAmbiguousEntryPointsWithinOnePackageByFormat() {
+        const QByteArray duplicateEntry = QByteArrayLiteral(
+            "\n"
+            "[[entrypoints]]\n"
+            "id = \"packet-copy\"\n"
+            "format = \"application.example.packet\"\n"
+            "source = \"src/packet_copy.svfmt\"\n"
+            "profiles = [\"baseline\"]\n"
+            "depth = \"header\"\n");
+        auto files = packageFiles(manifest(
+            QStringLiteral("0.1.0"),
+            QStringLiteral("0.1"),
+            QStringLiteral(">=0.1.0 <0.2.0"),
+            duplicateEntry));
+        files.push_back({QStringLiteral("src/packet_copy.svfmt"),
+                         QByteArrayLiteral(
+                             "struct PacketCopy { bits<8> value; }\nentry PacketCopy;\n")});
+        auto loaded = RulePackage::fromFiles(std::move(files));
+        QVERIFY(loaded.succeeded());
+
+        RulePackageCatalog catalog;
+        QVERIFY(catalog.registerPackage(std::move(*loaded.package)).succeeded());
+
+        const auto conflict =
+            catalog.resolveByFormat(u"application.example.packet", u"0.1", u"0.1.0");
+        QCOMPARE(conflict.status, RuleCatalogLookupStatus::VersionConflict);
+        QVERIFY(!conflict.succeeded());
+        QVERIFY(!conflict.package);
+        QVERIFY(!conflict.entryPoint.has_value());
+    }
 };
 
 QTEST_GUILESS_MAIN(RulePackageTest)

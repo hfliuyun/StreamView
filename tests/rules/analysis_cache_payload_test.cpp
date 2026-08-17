@@ -596,7 +596,7 @@ private slots:
                      .status,
                  AnalysisCacheBodyDecodeStatus::UnsupportedValue);
         auto invalidFlags = encoded.bytes;
-        write32(&invalidFlags, 68, 16U);
+        write32(&invalidFlags, 68, 32U);
         QCOMPARE(AnalysisCachePageBodyCodec::decodeMaterializedResult(page.key, invalidFlags)
                      .status,
                  AnalysisCacheBodyDecodeStatus::InvalidBody);
@@ -627,7 +627,7 @@ private slots:
         QCOMPARE(AnalysisCachePageBodyCodec::decodeMaterializedResult(page.key, oversized).status,
                  AnalysisCacheBodyDecodeStatus::InvalidBody);
     }
-    void encodesAndDecodesTargetFormatAndWindowMetadata() {
+    void encodesAndDecodesExtendedLazyMetadata() {
         MaterializedResultCachePage page;
         page.key = {PagedCachePageKind::MaterializedResult, 1, 0};
 
@@ -638,6 +638,7 @@ private slots:
         node1.spec.name = QStringLiteral("payload");
         node1.spec.state = MaterializationState::Lazy;
         node1.spec.metadata.typeName = QStringLiteral("bytes");
+        node1.spec.metadata.containerChildStructIndex = 7;
         node1.spec.metadata.targetFormat = QStringLiteral("video/mp4");
 
         MaterializedResultCacheNode node2;
@@ -661,6 +662,7 @@ private slots:
         node3.spec.name = QStringLiteral("combined");
         node3.spec.state = MaterializationState::Lazy;
         node3.spec.metadata.typeName = QStringLiteral("bytes");
+        node3.spec.metadata.containerChildStructIndex = 9;
         node3.spec.metadata.targetFormat = QStringLiteral("audio/aac");
         node3.spec.metadata.window = windowMeta;
 
@@ -673,7 +675,10 @@ private slots:
         QVERIFY(decoded.succeeded());
         QCOMPARE(decoded.page->nodes.size(), std::size_t(4));
 
-        QCOMPARE(decoded.page->nodes.at(1).spec.metadata.targetFormat, std::optional<QString>(QStringLiteral("video/mp4")));
+        QCOMPARE(decoded.page->nodes.at(1).spec.metadata.containerChildStructIndex,
+                 std::optional<quint32>(7));
+        QCOMPARE(decoded.page->nodes.at(1).spec.metadata.targetFormat,
+                 std::optional<QString>(QStringLiteral("video/mp4")));
         QCOMPARE(decoded.page->nodes.at(1).spec.metadata.window, std::nullopt);
 
         QCOMPARE(decoded.page->nodes.at(2).spec.metadata.targetFormat, std::nullopt);
@@ -683,9 +688,36 @@ private slots:
         QCOMPARE(decoded.page->nodes.at(2).spec.metadata.window->entrySizeBits, quint64(64));
         QCOMPARE(decoded.page->nodes.at(2).spec.metadata.window->entryCount, quint64(1000));
 
-        QCOMPARE(decoded.page->nodes.at(3).spec.metadata.targetFormat, std::optional<QString>(QStringLiteral("audio/aac")));
+        QCOMPARE(decoded.page->nodes.at(3).spec.metadata.containerChildStructIndex,
+                 std::optional<quint32>(9));
+        QCOMPARE(decoded.page->nodes.at(3).spec.metadata.targetFormat,
+                 std::optional<QString>(QStringLiteral("audio/aac")));
         QVERIFY(decoded.page->nodes.at(3).spec.metadata.window.has_value());
         QCOMPARE(decoded.page->nodes.at(3).spec.metadata.window->entryCount, quint64(1000));
+    }
+
+    void decodesLegacyLazyMetadataWithoutExtensionFlags() {
+        MaterializedResultCachePage page;
+        page.key = {PagedCachePageKind::MaterializedResult, 1, 0};
+
+        MaterializedResultCacheNode node;
+        node.id = AnalysisNodeId(2);
+        node.parentId = AnalysisNodeId(1);
+        node.spec.kind = AnalysisNodeKind::Region;
+        node.spec.name = QStringLiteral("legacy_payload");
+        node.spec.state = MaterializationState::Lazy;
+        node.spec.metadata.typeName = QStringLiteral("bytes");
+        page.nodes = {rootNode(), node};
+
+        const auto encoded = AnalysisCachePageBodyCodec::encodeMaterializedResult(page);
+        QVERIFY(encoded.succeeded());
+        const auto decoded =
+            AnalysisCachePageBodyCodec::decodeMaterializedResult(page.key, encoded.bytes);
+        QVERIFY(decoded.succeeded());
+        const auto& metadata = decoded.page->nodes.at(1).spec.metadata;
+        QCOMPARE(metadata.containerChildStructIndex, std::nullopt);
+        QCOMPARE(metadata.targetFormat, std::nullopt);
+        QCOMPARE(metadata.window, std::nullopt);
     }
 };
 
