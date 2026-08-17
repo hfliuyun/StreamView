@@ -109,16 +109,24 @@ Before constructing bit addresses, offset and length values are validated:
 `start <= std::numeric_limits<quint64>::max() / 8`, `span_length <= std::numeric_limits<quint64>::max() / 8`, and `span_length <= (std::numeric_limits<quint64>::max() / 8) - start`.
 If `core::SourceSpan::create` fails due to coordinate bounds, the scanner produces an error with `core::DiagnosticCode::SourceError`, `core::DiagnosticSeverity::Error`, and the analysis node terminates in `core::MaterializationState::Invalid`.
 
-**Detector candidate rating vs truncated records**:
-- The candidate detector (`detectMp4Candidate`, P5d-1) counts **only complete, non-truncated, well-formed boxes**:
-  - `Strong`: >= 3 complete boxes tiling the inspected prefix;
-  - `Probable`: 2 complete boxes;
-  - `Weak`: 1 complete box.
-- Truncated box records (`truncated = true`) are emitted so the analyzer can materialize the partial box header with `core::DiagnosticCode::TruncatedSource` (`dsl_vm.cpp:3249-3252`), but they are **never counted** toward any candidate tier.
-- A trailing truncated box does not downgrade previously accumulated complete boxes (e.g. 3 complete boxes + 1 trailing truncated box evaluates to `Strong`; a truncated first box yields no candidate `std::nullopt`).
+**Detector candidate rating and inspection window boundaries**:
+- The candidate detector (`detectMp4Candidate`, P5d-1) inspects a window strictly bounded by `inspectedByteCount = min(prefix.size(), sourceSizeBytes, mp4DetectionProbeSizeBytes())` (probe ceiling 64 KiB) and sets `sourceFullyInspected = (inspectedByteCount >= sourceSizeBytes)`.
+- It evaluates **only complete, verified, well-formed boxes whose entire span is fully contained within the inspected window** (`offset + boxSize <= inspectedByteCount`):
+  - `Strong`: >= 3 complete verified boxes tiling the inspected window;
+  - `Probable`: 2 complete verified boxes;
+  - `Weak`: 1 complete verified box.
+- A box whose header falls inside the probe window but whose body extends past `inspectedByteCount` cannot be verified as complete within the probe and is **not added as evidence** (and does not downgrade prior complete boxes).
+- A `size == 0` terminal box is counted as evidence **only if `sourceFullyInspected == true`** (the probe window covers the complete source up to EOF).
+- Truncated box records (`truncated = true`) are emitted by the scanner so the analyzer can materialize the partial box header with `core::DiagnosticCode::TruncatedSource` (`dsl_vm.cpp:3249-3252`), but they are **never counted** toward any detector tier.
+- A trailing unverified or truncated box does not downgrade previously accumulated complete boxes (e.g. 3 complete boxes + 1 trailing truncated/extended box evaluates to `Strong`; a truncated first box yields no candidate `std::nullopt`).
+- All evidence spans have `span.endExclusive().byteOffset() <= inspectedByteCount`.
 
-**Scanner/DSL data contract — span-only, no header-value publication**:
-The scanner outputs each box **span** (start offset, end offset, truncation flag). It does **not** publish `size`/`type`/`largesize` values. The runner maps the span to a source sub-view (`aac_adts_analyzer.cpp:309/:346` precedent), and the DSL `Box` struct **re-reads** `size`/`type`/`largesize` from the source within the span.
+**Scanner state machine, fault persistence, and DSL data contract**:
+- The scanner outputs each box **span** (start offset, end offset, truncation flag, and internal framing `declaredBoxSize`). `declaredBoxSize` is internal framing metadata for scanner/detector orchestration and is **not** exposed as a DSL field.
+- Scanner argument validation: `maximumRecords == 0 || maximumInspectedPositions == 0` produces `Mp4BoxScanStatus::InvalidBatchSize`.
+- Persistent fault state: If `SourceError` occurs, the scanner enters a persistent failed state (`failed_ = true; lastErrorMessage_ = errorMessage;`). Subsequent calls to `scanBatch` persistently return `SourceError` without restarting or skipping.
+- Chunk-boundary safe reads: `Mp4BoxScanner::readBytes` safely reads headers crossing 64 KiB buffer boundaries without out-of-bounds `memcpy`.
+- The runner maps the span to a source sub-view (`aac_adts_analyzer.cpp:309/:346` precedent), and the DSL `Box` struct **re-reads** `size`/`type`/`largesize` from the source within the span.
 
 After P5d-1/P5d-2, `sequence<Box> boxes = scan(mp4_box);` (with `@index(progressive)`) becomes expressible.
 
