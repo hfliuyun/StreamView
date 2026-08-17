@@ -179,6 +179,8 @@ private slots:
     void analyzesLargesize64BitBox();
     void analyzesSizeZeroEofBox();
     void analyzesUnknownOpaqueBox();
+    void analyzesFullMoovContainerHierarchyV0();
+    void analyzesFullBoxVersion1TimeHeadersAndEditList();
 };
 
 void Mp4IsobmffAnalyzerTest::failsCleanlyWhenNoRulePackageInstalled() {
@@ -749,7 +751,7 @@ void Mp4IsobmffAnalyzerTest::loadsBundledMp4PackageSuccessfully() {
     QVERIFY(loaded.succeeded());
     QVERIFY(loaded.package.has_value());
     QCOMPARE(loaded.package->identity().packageId(), QStringLiteral("org.streamview.mp4"));
-    QCOMPARE(loaded.package->identity().packageVersion(), QStringLiteral("0.1.0"));
+    QCOMPARE(loaded.package->identity().packageVersion(), QStringLiteral("0.1.1"));
     const auto* mp4Source = loaded.package->fileContents(QStringLiteral("src/mp4_isobmff.svfmt"));
     QVERIFY(mp4Source != nullptr);
     QVERIFY(!mp4Source->isEmpty());
@@ -1031,6 +1033,393 @@ void Mp4IsobmffAnalyzerTest::analyzesUnknownOpaqueBox() {
     QCOMPARE(rootNode->diagnostics().size(), std::size_t{0});
 }
 
+void Mp4IsobmffAnalyzerTest::analyzesFullMoovContainerHierarchyV0() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5f_full_hierarchy_v0.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+    QCOMPARE(batch.boxNodes.size(), std::size_t{3});
+
+    const auto& tree = analyzer->tree();
+
+    // Box 0: ftyp (32 bytes)
+    const auto box0 = tree.node(batch.boxNodes[0]);
+    QVERIFY(box0.has_value());
+
+    // Box 1: moov (385 bytes)
+    const auto box1 = tree.node(batch.boxNodes[1]);
+    QVERIFY(box1.has_value());
+    const auto struct1 = tree.node(box1->children().front());
+    QVERIFY(struct1.has_value());
+    std::vector<QString> moovFieldNames;
+    for (const auto childId : struct1->children()) {
+        const auto child = tree.node(childId);
+        if (child) {
+            moovFieldNames.push_back(child->name());
+        }
+    }
+    const std::vector<QString> expectedMoovFields = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("moov_payload_bytes"),
+        QStringLiteral("moov_payload")
+    };
+    QCOMPARE(moovFieldNames, expectedMoovFields);
+
+    const auto moovPayloadNode = tree.node(struct1->children()[3]);
+    QVERIFY(moovPayloadNode.has_value());
+    // moov contains 2 child boxes: mvhd and trak
+    QCOMPARE(moovPayloadNode->children().size(), std::size_t{2});
+
+    // 1. mvhd (108 bytes)
+    const auto mvhdStruct = tree.node(moovPayloadNode->children()[0]);
+    QVERIFY(mvhdStruct.has_value());
+
+    std::vector<QString> mvhdFieldNames;
+    for (const auto childId : mvhdStruct->children()) {
+        const auto child = tree.node(childId);
+        if (child) {
+            mvhdFieldNames.push_back(child->name());
+        }
+    }
+    const std::vector<QString> expectedMvhdFields = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("mvhd_version"),
+        QStringLiteral("mvhd_flags"),
+        QStringLiteral("mvhd_v0_creation_time"),
+        QStringLiteral("mvhd_v0_modification_time"),
+        QStringLiteral("mvhd_v0_timescale"),
+        QStringLiteral("mvhd_v0_duration"),
+        QStringLiteral("mvhd_rate"),
+        QStringLiteral("mvhd_volume"),
+        QStringLiteral("mvhd_reserved"),
+        QStringLiteral("mvhd_reserved_2"),
+        QStringLiteral("mvhd_matrix_count"),
+        QStringLiteral("mvhd_matrix[0]"),
+        QStringLiteral("mvhd_matrix[1]"),
+        QStringLiteral("mvhd_matrix[2]"),
+        QStringLiteral("mvhd_matrix[3]"),
+        QStringLiteral("mvhd_matrix[4]"),
+        QStringLiteral("mvhd_matrix[5]"),
+        QStringLiteral("mvhd_matrix[6]"),
+        QStringLiteral("mvhd_matrix[7]"),
+        QStringLiteral("mvhd_matrix[8]"),
+        QStringLiteral("mvhd_pre_defined_count"),
+        QStringLiteral("mvhd_pre_defined[0]"),
+        QStringLiteral("mvhd_pre_defined[1]"),
+        QStringLiteral("mvhd_pre_defined[2]"),
+        QStringLiteral("mvhd_pre_defined[3]"),
+        QStringLiteral("mvhd_pre_defined[4]"),
+        QStringLiteral("mvhd_pre_defined[5]"),
+        QStringLiteral("mvhd_next_track_id")
+    };
+    QCOMPARE(mvhdFieldNames, expectedMvhdFields);
+
+    const auto mvhdVersion = tree.node(mvhdStruct->children()[2]);
+    QCOMPARE(mvhdVersion->value().toULongLong(), quint64{0});
+    const auto mvhdTimescale = tree.node(mvhdStruct->children()[6]);
+    QCOMPARE(mvhdTimescale->value().toULongLong(), quint64{1000});
+    const auto mvhdDuration = tree.node(mvhdStruct->children()[7]);
+    QCOMPARE(mvhdDuration->value().toULongLong(), quint64{5000});
+    const auto mvhdNextTrackId = tree.node(mvhdStruct->children()[29]);
+    QCOMPARE(mvhdNextTrackId->value().toULongLong(), quint64{2});
+
+    // 2. trak (269 bytes)
+    const auto trakStruct = tree.node(moovPayloadNode->children()[1]);
+    QVERIFY(trakStruct.has_value());
+    const auto trakPayloadNode = tree.node(trakStruct->children()[3]);
+    QVERIFY(trakPayloadNode.has_value());
+    // trak contains 3 child boxes: tkhd, edts, mdia
+    QCOMPARE(trakPayloadNode->children().size(), std::size_t{3});
+
+    // 2.1 tkhd (92 bytes)
+    const auto tkhdStruct = tree.node(trakPayloadNode->children()[0]);
+    QVERIFY(tkhdStruct.has_value());
+    std::vector<QString> tkhdFieldNames;
+    for (const auto childId : tkhdStruct->children()) {
+        const auto child = tree.node(childId);
+        if (child) {
+            tkhdFieldNames.push_back(child->name());
+        }
+    }
+    const std::vector<QString> expectedTkhdFields = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("tkhd_version"),
+        QStringLiteral("tkhd_flags"),
+        QStringLiteral("tkhd_v0_creation_time"),
+        QStringLiteral("tkhd_v0_modification_time"),
+        QStringLiteral("tkhd_v0_track_id"),
+        QStringLiteral("tkhd_v0_reserved"),
+        QStringLiteral("tkhd_v0_duration"),
+        QStringLiteral("tkhd_reserved_2"),
+        QStringLiteral("tkhd_layer"),
+        QStringLiteral("tkhd_alternate_group"),
+        QStringLiteral("tkhd_volume"),
+        QStringLiteral("tkhd_reserved_3"),
+        QStringLiteral("tkhd_matrix_count"),
+        QStringLiteral("tkhd_matrix[0]"),
+        QStringLiteral("tkhd_matrix[1]"),
+        QStringLiteral("tkhd_matrix[2]"),
+        QStringLiteral("tkhd_matrix[3]"),
+        QStringLiteral("tkhd_matrix[4]"),
+        QStringLiteral("tkhd_matrix[5]"),
+        QStringLiteral("tkhd_matrix[6]"),
+        QStringLiteral("tkhd_matrix[7]"),
+        QStringLiteral("tkhd_matrix[8]"),
+        QStringLiteral("tkhd_width"),
+        QStringLiteral("tkhd_height")
+    };
+    QCOMPARE(tkhdFieldNames, expectedTkhdFields);
+    const auto tkhdTrackId = tree.node(tkhdStruct->children()[6]);
+    QCOMPARE(tkhdTrackId->value().toULongLong(), quint64{1});
+    const auto tkhdDuration = tree.node(tkhdStruct->children()[8]);
+    QCOMPARE(tkhdDuration->value().toULongLong(), quint64{5000});
+    const auto tkhdWidth = tree.node(tkhdStruct->children()[24]);
+    QCOMPARE(tkhdWidth->value().toULongLong(), quint64{0x07800000});
+
+    // 2.2 edts (36 bytes) -> contains elst (28 bytes)
+    const auto edtsStruct = tree.node(trakPayloadNode->children()[1]);
+    QVERIFY(edtsStruct.has_value());
+    const auto edtsPayloadNode = tree.node(edtsStruct->children()[3]);
+    QVERIFY(edtsPayloadNode.has_value());
+    QCOMPARE(edtsPayloadNode->children().size(), std::size_t{1});
+
+    const auto elstStruct = tree.node(edtsPayloadNode->children()[0]);
+    QVERIFY(elstStruct.has_value());
+    std::vector<QString> elstFieldNames;
+    for (const auto childId : elstStruct->children()) {
+        const auto child = tree.node(childId);
+        if (child) {
+            elstFieldNames.push_back(child->name());
+        }
+    }
+    const std::vector<QString> expectedElstFields = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("elst_version"),
+        QStringLiteral("elst_flags"),
+        QStringLiteral("elst_entry_count"),
+        QStringLiteral("elst_v0_segment_duration[0]"),
+        QStringLiteral("elst_v0_media_time[0]"),
+        QStringLiteral("elst_media_rate_integer[0]"),
+        QStringLiteral("elst_media_rate_fraction[0]")
+    };
+    QCOMPARE(elstFieldNames, expectedElstFields);
+    const auto elstSegDur = tree.node(elstStruct->children()[5]);
+    QCOMPARE(elstSegDur->value().toULongLong(), quint64{5000});
+    const auto elstMediaTime = tree.node(elstStruct->children()[6]);
+    QCOMPARE(elstMediaTime->value().toULongLong(), quint64{0});
+
+    // 2.3 mdia (133 bytes) -> contains mdhd, hdlr, minf
+    const auto mdiaStruct = tree.node(trakPayloadNode->children()[2]);
+    QVERIFY(mdiaStruct.has_value());
+    const auto mdiaPayloadNode = tree.node(mdiaStruct->children()[3]);
+    QVERIFY(mdiaPayloadNode.has_value());
+    QCOMPARE(mdiaPayloadNode->children().size(), std::size_t{3});
+
+    // 2.3.1 mdhd (32 bytes)
+    const auto mdhdStruct = tree.node(mdiaPayloadNode->children()[0]);
+    QVERIFY(mdhdStruct.has_value());
+    std::vector<QString> mdhdFieldNames;
+    for (const auto childId : mdhdStruct->children()) {
+        const auto child = tree.node(childId);
+        if (child) {
+            mdhdFieldNames.push_back(child->name());
+        }
+    }
+    const std::vector<QString> expectedMdhdFields = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("mdhd_version"),
+        QStringLiteral("mdhd_flags"),
+        QStringLiteral("mdhd_v0_creation_time"),
+        QStringLiteral("mdhd_v0_modification_time"),
+        QStringLiteral("mdhd_v0_timescale"),
+        QStringLiteral("mdhd_v0_duration"),
+        QStringLiteral("mdhd_pad"),
+        QStringLiteral("mdhd_language"),
+        QStringLiteral("mdhd_pre_defined")
+    };
+    QCOMPARE(mdhdFieldNames, expectedMdhdFields);
+    const auto mdhdTimescale = tree.node(mdhdStruct->children()[6]);
+    QCOMPARE(mdhdTimescale->value().toULongLong(), quint64{30000});
+    const auto mdhdDuration = tree.node(mdhdStruct->children()[7]);
+    QCOMPARE(mdhdDuration->value().toULongLong(), quint64{150000});
+
+    // 2.3.2 hdlr (45 bytes)
+    const auto hdlrStruct = tree.node(mdiaPayloadNode->children()[1]);
+    QVERIFY(hdlrStruct.has_value());
+    std::vector<QString> hdlrFieldNames;
+    for (const auto childId : hdlrStruct->children()) {
+        const auto child = tree.node(childId);
+        if (child) {
+            hdlrFieldNames.push_back(child->name());
+        }
+    }
+    const std::vector<QString> expectedHdlrFields = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("hdlr_version"),
+        QStringLiteral("hdlr_flags"),
+        QStringLiteral("hdlr_pre_defined"),
+        QStringLiteral("hdlr_handler_type"),
+        QStringLiteral("hdlr_reserved_0"),
+        QStringLiteral("hdlr_reserved_1"),
+        QStringLiteral("hdlr_reserved_2"),
+        QStringLiteral("hdlr_name_bytes"),
+        QStringLiteral("hdlr_name")
+    };
+    QCOMPARE(hdlrFieldNames, expectedHdlrFields);
+    const auto handlerTypeNode = tree.node(hdlrStruct->children()[5]);
+    QCOMPARE(handlerTypeNode->value().toULongLong(), quint64{0x76696465});
+
+    // 2.3.3 minf (48 bytes) -> contains stbl (40 bytes) -> contains stsd, stts
+    const auto minfStruct = tree.node(mdiaPayloadNode->children()[2]);
+    QVERIFY(minfStruct.has_value());
+    const auto minfPayloadNode = tree.node(minfStruct->children()[3]);
+    QVERIFY(minfPayloadNode.has_value());
+    QCOMPARE(minfPayloadNode->children().size(), std::size_t{1});
+
+    const auto stblStruct = tree.node(minfPayloadNode->children()[0]);
+    QVERIFY(stblStruct.has_value());
+    const auto stblPayloadNode = tree.node(stblStruct->children()[3]);
+    QVERIFY(stblPayloadNode.has_value());
+    // stbl contains 2 opaque child boxes: stsd and stts
+    QCOMPARE(stblPayloadNode->children().size(), std::size_t{2});
+
+    const auto stsdStruct = tree.node(stblPayloadNode->children()[0]);
+    QVERIFY(stsdStruct.has_value());
+    const auto stsdType = tree.node(stsdStruct->children()[1]);
+    QCOMPARE(stsdType->value().toULongLong(), quint64{0x73747364});
+
+    const auto sttsStruct = tree.node(stblPayloadNode->children()[1]);
+    QVERIFY(sttsStruct.has_value());
+    const auto sttsType = tree.node(sttsStruct->children()[1]);
+    QCOMPARE(sttsType->value().toULongLong(), quint64{0x73747473});
+
+    // Box 2: mdat (24 bytes)
+    const auto box2 = tree.node(batch.boxNodes[2]);
+    QVERIFY(box2.has_value());
+    const auto struct2 = tree.node(box2->children().front());
+    QVERIFY(struct2.has_value());
+    const auto mdatType = tree.node(struct2->children()[1]);
+    QCOMPARE(mdatType->value().toULongLong(), quint64{0x6D646174});
+
+    QCOMPARE(analyzer->tree().node(analyzer->tree().rootId())->diagnostics().size(), std::size_t{0});
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesFullBoxVersion1TimeHeadersAndEditList() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5f_time_headers_v1.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+    QCOMPARE(batch.boxNodes.size(), std::size_t{3});
+
+    const auto& tree = analyzer->tree();
+    const auto box1 = tree.node(batch.boxNodes[1]);
+    QVERIFY(box1.has_value());
+    const auto struct1 = tree.node(box1->children().front());
+    QVERIFY(struct1.has_value());
+    const auto moovPayloadNode = tree.node(struct1->children()[3]);
+    QVERIFY(moovPayloadNode.has_value());
+
+    // 1. mvhd (v1)
+    const auto mvhdStruct = tree.node(moovPayloadNode->children()[0]);
+    QVERIFY(mvhdStruct.has_value());
+
+    const auto mvhdVersion = tree.node(mvhdStruct->children()[2]);
+    QCOMPARE(mvhdVersion->value().toULongLong(), quint64{1});
+    const auto mvhdCreationTime = tree.node(mvhdStruct->children()[4]);
+    QCOMPARE(mvhdCreationTime->value().toULongLong(), quint64{0x100000000});
+    const auto mvhdModTime = tree.node(mvhdStruct->children()[5]);
+    QCOMPARE(mvhdModTime->value().toULongLong(), quint64{0x100000001});
+    const auto mvhdTimescale = tree.node(mvhdStruct->children()[6]);
+    QCOMPARE(mvhdTimescale->value().toULongLong(), quint64{48000});
+    const auto mvhdDuration = tree.node(mvhdStruct->children()[7]);
+    QCOMPARE(mvhdDuration->value().toULongLong(), quint64{0x200000000});
+    const auto mvhdNextTrackId = tree.node(mvhdStruct->children()[29]);
+    QCOMPARE(mvhdNextTrackId->value().toULongLong(), quint64{3});
+
+    // 2. trak -> tkhd (v1), edts -> elst (v1), mdia -> mdhd (v1), hdlr
+    const auto trakStruct = tree.node(moovPayloadNode->children()[1]);
+    QVERIFY(trakStruct.has_value());
+    const auto trakPayloadNode = tree.node(trakStruct->children()[3]);
+    QVERIFY(trakPayloadNode.has_value());
+
+    // 2.1 tkhd (v1)
+    const auto tkhdStruct = tree.node(trakPayloadNode->children()[0]);
+    QVERIFY(tkhdStruct.has_value());
+    const auto tkhdVersion = tree.node(tkhdStruct->children()[2]);
+    QCOMPARE(tkhdVersion->value().toULongLong(), quint64{1});
+    const auto tkhdCreationTime = tree.node(tkhdStruct->children()[4]);
+    QCOMPARE(tkhdCreationTime->value().toULongLong(), quint64{0x100000000});
+    const auto tkhdTrackId = tree.node(tkhdStruct->children()[6]);
+    QCOMPARE(tkhdTrackId->value().toULongLong(), quint64{2});
+    const auto tkhdDuration = tree.node(tkhdStruct->children()[8]);
+    QCOMPARE(tkhdDuration->value().toULongLong(), quint64{0x200000000});
+
+    // 2.2 edts -> elst (v1 with 2 entries)
+    const auto edtsStruct = tree.node(trakPayloadNode->children()[1]);
+    QVERIFY(edtsStruct.has_value());
+    const auto edtsPayloadNode = tree.node(edtsStruct->children()[3]);
+    QVERIFY(edtsPayloadNode.has_value());
+    QCOMPARE(edtsPayloadNode->children().size(), std::size_t{1});
+
+    const auto elstStruct = tree.node(edtsPayloadNode->children()[0]);
+    QVERIFY(elstStruct.has_value());
+
+    const auto elstVersion = tree.node(elstStruct->children()[2]);
+    QCOMPARE(elstVersion->value().toULongLong(), quint64{1});
+    const auto elstEntryCount = tree.node(elstStruct->children()[4]);
+    QCOMPARE(elstEntryCount->value().toULongLong(), quint64{2});
+
+    const auto elstSegDur0 = tree.node(elstStruct->children()[5]);
+    QCOMPARE(elstSegDur0->value().toULongLong(), quint64{0x100000000});
+    const auto elstMediaTime0 = tree.node(elstStruct->children()[6]);
+    QCOMPARE(elstMediaTime0->value().toULongLong(), quint64{0xFFFFFFFFFFFFFFFF});
+
+    const auto elstSegDur1 = tree.node(elstStruct->children()[9]);
+    QCOMPARE(elstSegDur1->value().toULongLong(), quint64{0x100000000});
+    const auto elstMediaTime1 = tree.node(elstStruct->children()[10]);
+    QCOMPARE(elstMediaTime1->value().toULongLong(), quint64{0});
+
+    // 2.3 mdia -> mdhd (v1)
+    const auto mdiaStruct = tree.node(trakPayloadNode->children()[2]);
+    QVERIFY(mdiaStruct.has_value());
+    const auto mdiaPayloadNode = tree.node(mdiaStruct->children()[3]);
+    QVERIFY(mdiaPayloadNode.has_value());
+
+    const auto mdhdStruct = tree.node(mdiaPayloadNode->children()[0]);
+    QVERIFY(mdhdStruct.has_value());
+    const auto mdhdVersion = tree.node(mdhdStruct->children()[2]);
+    QCOMPARE(mdhdVersion->value().toULongLong(), quint64{1});
+    const auto mdhdCreationTime = tree.node(mdhdStruct->children()[4]);
+    QCOMPARE(mdhdCreationTime->value().toULongLong(), quint64{0x100000000});
+    const auto mdhdTimescale = tree.node(mdhdStruct->children()[6]);
+    QCOMPARE(mdhdTimescale->value().toULongLong(), quint64{48000});
+    const auto mdhdDuration = tree.node(mdhdStruct->children()[7]);
+    QCOMPARE(mdhdDuration->value().toULongLong(), quint64{0x200000000});
+
+    // 2.4 hdlr ('soun')
+    const auto hdlrStruct = tree.node(mdiaPayloadNode->children()[1]);
+    QVERIFY(hdlrStruct.has_value());
+    const auto hdlrType = tree.node(hdlrStruct->children()[5]);
+    QCOMPARE(hdlrType->value().toULongLong(), quint64{0x736F756E});
+
+    QCOMPARE(analyzer->tree().node(analyzer->tree().rootId())->diagnostics().size(), std::size_t{0});
+}
+
 QTEST_MAIN(Mp4IsobmffAnalyzerTest)
 #include "mp4_isobmff_analyzer_test.moc"
-

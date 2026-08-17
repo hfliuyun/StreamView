@@ -1,5 +1,5 @@
 @spec("ISO/IEC 14496-12:2015", "4.2")
-@description("Top-level ISO Base Media File Format box.")
+@description("ISO Base Media File Format box.")
 struct Box {
     bits<32> size
         @description("Box size in bytes. 1 indicates 64-bit largesize; 0 indicates extends to EOF.");
@@ -42,24 +42,291 @@ struct Box {
             }
         }
     } else {
-        if (type == 0x6D6F6F66) {
-            unsupported("fragmented MP4 (moof/traf) is outside the v0.1 subset") at type;
-        } else {
+        if (type == 0x6D6F6F76) {
             if (size == 1) {
-                bits<64> largesize
-                    @description("64-bit box size in bytes.");
-                computed<u64> large_payload_bytes = largesize - 16;
-                @lazy(large_payload_bytes) bytes large_payload
-                    @description("Box payload data.");
+                bits<64> moov_largesize;
+                computed<u64> moov_large_payload_bytes = moov_largesize - 16;
+                @lazy(moov_large_payload_bytes) bytes moov_large_payload @container(Box);
             } else {
                 if (size == 0) {
-                    computed<u64> eof_payload_bytes = available_bytes();
-                    @lazy(eof_payload_bytes) bytes eof_payload
-                        @description("Box payload data extending to EOF.");
+                    computed<u64> moov_eof_payload_bytes = available_bytes();
+                    @lazy(moov_eof_payload_bytes) bytes moov_eof_payload @container(Box);
                 } else {
-                    computed<u64> payload_bytes = size - 8;
-                    @lazy(payload_bytes) bytes payload
-                        @description("Box payload data.");
+                    computed<u64> moov_payload_bytes = size - 8;
+                    @lazy(moov_payload_bytes) bytes moov_payload @container(Box);
+                }
+            }
+        } else {
+            if (type == 0x6D766864) {
+                bits<8> mvhd_version
+                    @description("Version of movie header box (0 or 1).");
+                bits<24> mvhd_flags
+                    @description("Flags (reserved).");
+                if (mvhd_version == 1) {
+                    bits<64> mvhd_v1_creation_time
+                        @description("Creation time (seconds since 1904-01-01).");
+                    bits<64> mvhd_v1_modification_time
+                        @description("Modification time (seconds since 1904-01-01).");
+                    bits<32> mvhd_v1_timescale
+                        @description("Time scale units per second.");
+                    bits<64> mvhd_v1_duration
+                        @description("Duration of movie in timescale units.");
+                } else {
+                    bits<32> mvhd_v0_creation_time
+                        @description("Creation time (seconds since 1904-01-01).");
+                    bits<32> mvhd_v0_modification_time
+                        @description("Modification time (seconds since 1904-01-01).");
+                    bits<32> mvhd_v0_timescale
+                        @description("Time scale units per second.");
+                    bits<32> mvhd_v0_duration
+                        @description("Duration of movie in timescale units.");
+                }
+                bits<32> mvhd_rate
+                    @description("Playback rate (fixed-point 16.16, 0x00010000 is 1.0).");
+                bits<16> mvhd_volume
+                    @description("Audio volume (fixed-point 8.8, 0x0100 is full).");
+                bits<16> mvhd_reserved;
+                bits<64> mvhd_reserved_2;
+                computed<u64> mvhd_matrix_count = 9;
+                repeat (mvhd_matrix_count, 9) {
+                    bits<32> mvhd_matrix;
+                }
+                computed<u64> mvhd_pre_defined_count = 6;
+                repeat (mvhd_pre_defined_count, 6) {
+                    bits<32> mvhd_pre_defined;
+                }
+                bits<32> mvhd_next_track_id
+                    @description("Next track ID to assign.");
+            } else {
+                if (type == 0x7472616B) {
+                    if (size == 1) {
+                        bits<64> trak_largesize;
+                        computed<u64> trak_large_payload_bytes = trak_largesize - 16;
+                        @lazy(trak_large_payload_bytes) bytes trak_large_payload @container(Box);
+                    } else {
+                        if (size == 0) {
+                            computed<u64> trak_eof_payload_bytes = available_bytes();
+                            @lazy(trak_eof_payload_bytes) bytes trak_eof_payload @container(Box);
+                        } else {
+                            computed<u64> trak_payload_bytes = size - 8;
+                            @lazy(trak_payload_bytes) bytes trak_payload @container(Box);
+                        }
+                    }
+                } else {
+                    if (type == 0x746B6864) {
+                        bits<8> tkhd_version
+                            @description("Version of track header box (0 or 1).");
+                        bits<24> tkhd_flags
+                            @description("Flags (track enabled, in movie, in preview).");
+                        if (tkhd_version == 1) {
+                            bits<64> tkhd_v1_creation_time
+                                @description("Creation time (seconds since 1904-01-01).");
+                            bits<64> tkhd_v1_modification_time
+                                @description("Modification time (seconds since 1904-01-01).");
+                            bits<32> tkhd_v1_track_id
+                                @description("Track identifier.");
+                            bits<32> tkhd_v1_reserved;
+                            bits<64> tkhd_v1_duration
+                                @description("Track duration in movie timescale.");
+                        } else {
+                            bits<32> tkhd_v0_creation_time
+                                @description("Creation time (seconds since 1904-01-01).");
+                            bits<32> tkhd_v0_modification_time
+                                @description("Modification time (seconds since 1904-01-01).");
+                            bits<32> tkhd_v0_track_id
+                                @description("Track identifier.");
+                            bits<32> tkhd_v0_reserved;
+                            bits<32> tkhd_v0_duration
+                                @description("Track duration in movie timescale.");
+                        }
+                        bits<64> tkhd_reserved_2;
+                        bits<16> tkhd_layer
+                            @description("Front-to-back ordering layer.");
+                        bits<16> tkhd_alternate_group
+                            @description("Track alternate group identifier.");
+                        bits<16> tkhd_volume
+                            @description("Audio volume (fixed-point 8.8).");
+                        bits<16> tkhd_reserved_3;
+                        computed<u64> tkhd_matrix_count = 9;
+                        repeat (tkhd_matrix_count, 9) {
+                            bits<32> tkhd_matrix;
+                        }
+                        bits<32> tkhd_width
+                            @description("Visual presentation width (fixed-point 16.16).");
+                        bits<32> tkhd_height
+                            @description("Visual presentation height (fixed-point 16.16).");
+                    } else {
+                        if (type == 0x65647473) {
+                            if (size == 1) {
+                                bits<64> edts_largesize;
+                                computed<u64> edts_large_payload_bytes = edts_largesize - 16;
+                                @lazy(edts_large_payload_bytes) bytes edts_large_payload @container(Box);
+                            } else {
+                                if (size == 0) {
+                                    computed<u64> edts_eof_payload_bytes = available_bytes();
+                                    @lazy(edts_eof_payload_bytes) bytes edts_eof_payload @container(Box);
+                                } else {
+                                    computed<u64> edts_payload_bytes = size - 8;
+                                    @lazy(edts_payload_bytes) bytes edts_payload @container(Box);
+                                }
+                            }
+                        } else {
+                            if (type == 0x656C7374) {
+                                bits<8> elst_version
+                                    @description("Version of edit list box (0 or 1).");
+                                bits<24> elst_flags
+                                    @description("Flags.");
+                                bits<32> elst_entry_count
+                                    @description("Number of edit list entries.");
+                                repeat (elst_entry_count, 64) {
+                                    if (elst_version == 1) {
+                                        bits<64> elst_v1_segment_duration
+                                            @description("Segment duration in movie timescale.");
+                                        bits<64> elst_v1_media_time
+                                            @description("Starting media time (-1 for empty edit).");
+                                    } else {
+                                        bits<32> elst_v0_segment_duration
+                                            @description("Segment duration in movie timescale.");
+                                        bits<32> elst_v0_media_time
+                                            @description("Starting media time (-1 for empty edit).");
+                                    }
+                                    bits<16> elst_media_rate_integer
+                                        @description("Playback rate integer portion (1 is normal).");
+                                    bits<16> elst_media_rate_fraction
+                                        @description("Playback rate fractional portion.");
+                                }
+                            } else {
+                                if (type == 0x6D646961) {
+                                    if (size == 1) {
+                                        bits<64> mdia_largesize;
+                                        computed<u64> mdia_large_payload_bytes = mdia_largesize - 16;
+                                        @lazy(mdia_large_payload_bytes) bytes mdia_large_payload @container(Box);
+                                    } else {
+                                        if (size == 0) {
+                                            computed<u64> mdia_eof_payload_bytes = available_bytes();
+                                            @lazy(mdia_eof_payload_bytes) bytes mdia_eof_payload @container(Box);
+                                        } else {
+                                            computed<u64> mdia_payload_bytes = size - 8;
+                                            @lazy(mdia_payload_bytes) bytes mdia_payload @container(Box);
+                                        }
+                                    }
+                                } else {
+                                    if (type == 0x6D646864) {
+                                        bits<8> mdhd_version
+                                            @description("Version of media header box (0 or 1).");
+                                        bits<24> mdhd_flags
+                                            @description("Flags.");
+                                        if (mdhd_version == 1) {
+                                            bits<64> mdhd_v1_creation_time
+                                                @description("Creation time (seconds since 1904-01-01).");
+                                            bits<64> mdhd_v1_modification_time
+                                                @description("Modification time (seconds since 1904-01-01).");
+                                            bits<32> mdhd_v1_timescale
+                                                @description("Media timescale units per second.");
+                                            bits<64> mdhd_v1_duration
+                                                @description("Media duration in media timescale units.");
+                                        } else {
+                                            bits<32> mdhd_v0_creation_time
+                                                @description("Creation time (seconds since 1904-01-01).");
+                                            bits<32> mdhd_v0_modification_time
+                                                @description("Modification time (seconds since 1904-01-01).");
+                                            bits<32> mdhd_v0_timescale
+                                                @description("Media timescale units per second.");
+                                            bits<32> mdhd_v0_duration
+                                                @description("Media duration in media timescale units.");
+                                        }
+                                        bits<1> mdhd_pad;
+                                        bits<15> mdhd_language
+                                            @description("ISO-639-2/T 3-character language code (packed 3x5-bit).");
+                                        bits<16> mdhd_pre_defined;
+                                    } else {
+                                        if (type == 0x68646C72) {
+                                            bits<8> hdlr_version
+                                                @description("Version of handler box.");
+                                            bits<24> hdlr_flags
+                                                @description("Flags.");
+                                            bits<32> hdlr_pre_defined;
+                                            bits<32> hdlr_handler_type
+                                                @description("Handler type FourCC (vide, soun, hint, etc.).");
+                                            bits<32> hdlr_reserved_0;
+                                            bits<32> hdlr_reserved_1;
+                                            bits<32> hdlr_reserved_2;
+                                            if (size == 1) {
+                                                bits<64> hdlr_largesize;
+                                                computed<u64> hdlr_large_name_bytes = hdlr_largesize - 40;
+                                                @lazy(hdlr_large_name_bytes) bytes hdlr_large_name
+                                                    @description("Handler component name string.");
+                                            } else {
+                                                if (size == 0) {
+                                                    computed<u64> hdlr_eof_name_bytes = available_bytes();
+                                                    @lazy(hdlr_eof_name_bytes) bytes hdlr_eof_name
+                                                        @description("Handler component name string.");
+                                                } else {
+                                                    computed<u64> hdlr_name_bytes = size - 32;
+                                                    @lazy(hdlr_name_bytes) bytes hdlr_name
+                                                        @description("Handler component name string.");
+                                                }
+                                            }
+                                        } else {
+                                            if (type == 0x6D696E66) {
+                                                if (size == 1) {
+                                                    bits<64> minf_largesize;
+                                                    computed<u64> minf_large_payload_bytes = minf_largesize - 16;
+                                                    @lazy(minf_large_payload_bytes) bytes minf_large_payload @container(Box);
+                                                } else {
+                                                    if (size == 0) {
+                                                        computed<u64> minf_eof_payload_bytes = available_bytes();
+                                                        @lazy(minf_eof_payload_bytes) bytes minf_eof_payload @container(Box);
+                                                    } else {
+                                                        computed<u64> minf_payload_bytes = size - 8;
+                                                        @lazy(minf_payload_bytes) bytes minf_payload @container(Box);
+                                                    }
+                                                }
+                                            } else {
+                                                if (type == 0x7374626C) {
+                                                    if (size == 1) {
+                                                        bits<64> stbl_largesize;
+                                                        computed<u64> stbl_large_payload_bytes = stbl_largesize - 16;
+                                                        @lazy(stbl_large_payload_bytes) bytes stbl_large_payload @container(Box);
+                                                    } else {
+                                                        if (size == 0) {
+                                                            computed<u64> stbl_eof_payload_bytes = available_bytes();
+                                                            @lazy(stbl_eof_payload_bytes) bytes stbl_eof_payload @container(Box);
+                                                        } else {
+                                                            computed<u64> stbl_payload_bytes = size - 8;
+                                                            @lazy(stbl_payload_bytes) bytes stbl_payload @container(Box);
+                                                        }
+                                                    }
+                                                } else {
+                                                    if (type == 0x6D6F6F66) {
+                                                        unsupported("fragmented MP4 (moof/traf) is outside the v0.1 subset") at type;
+                                                    } else {
+                                                        if (size == 1) {
+                                                            bits<64> largesize
+                                                                @description("64-bit box size in bytes.");
+                                                            computed<u64> large_payload_bytes = largesize - 16;
+                                                            @lazy(large_payload_bytes) bytes large_payload
+                                                                @description("Box payload data.");
+                                                        } else {
+                                                            if (size == 0) {
+                                                                computed<u64> eof_payload_bytes = available_bytes();
+                                                                @lazy(eof_payload_bytes) bytes eof_payload
+                                                                    @description("Box payload data extending to EOF.");
+                                                            } else {
+                                                                computed<u64> payload_bytes = size - 8;
+                                                                @lazy(payload_bytes) bytes payload
+                                                                    @description("Box payload data.");
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
