@@ -1825,6 +1825,19 @@ private slots:
         QCOMPARE(parsed.program.scans.front().scannerName, QStringLiteral("adts_frame"));
     }
 
+    void parsesMp4BoxScanSequence() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Box { bits<32> size; bits<32> type; }
+            @index(progressive) sequence<Box> boxes = scan(mp4_box);
+            entry boxes;
+        )"));
+        QVERIFY(parsed.succeeded());
+        QCOMPARE(parsed.program.scans.size(), std::size_t(1));
+        QCOMPARE(parsed.program.scans.front().name, QStringLiteral("boxes"));
+        QCOMPARE(parsed.program.scans.front().elementType, QStringLiteral("Box"));
+        QCOMPARE(parsed.program.scans.front().scannerName, QStringLiteral("mp4_box"));
+    }
+
     void parsesPayloadDispatchDeclaration() {
         const auto result = DslParser::parse(kPayloadDispatchSource);
 

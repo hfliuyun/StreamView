@@ -14,6 +14,8 @@ add_library(streamview_rules STATIC
     h264_ebsp_rbsp_mapper.cpp
     h264_start_code_prefix.h
     h264_start_code_scanner.cpp
+    mp4_box_detector.cpp
+    mp4_box_scanner.cpp
     rule_catalog.cpp
     rule_package_archive.cpp
     rule_package_directory.cpp
@@ -35,6 +37,8 @@ add_library(streamview_rules STATIC
     include/streamview/rules/h264_ebsp_rbsp_mapper.h
     include/streamview/rules/h264_start_code_scanner.h
     include/streamview/rules/language_version.h
+    include/streamview/rules/mp4_box_detector.h
+    include/streamview/rules/mp4_box_scanner.h
     include/streamview/rules/rule_catalog.h
     include/streamview/rules/rule_package.h
     include/streamview/rules/rule_package_store.h

@@ -3563,9 +3563,10 @@ private:
                                                scan.range});
             }
             if (scan.scannerName != QStringLiteral("h264_start_code") &&
-                scan.scannerName != QStringLiteral("adts_frame")) {
+                scan.scannerName != QStringLiteral("adts_frame") &&
+                scan.scannerName != QStringLiteral("mp4_box")) {
                 result_.diagnostics.push_back({DslDiagnosticCode::UnsupportedScanner,
-                                               QStringLiteral("Only h264_start_code and adts_frame are supported"),
+                                               QStringLiteral("Only h264_start_code, adts_frame, and mp4_box are supported"),
                                                scan.range});
             }
             validateAnnotations(scan.annotations, DslAnnotationTarget::Scan);
