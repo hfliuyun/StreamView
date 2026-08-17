@@ -78,6 +78,47 @@ private:
     quint64 overrideSizeBytes_ = 0;
 };
 
+class FailOnceMemorySource final : public RandomAccessSource {
+public:
+    explicit FailOnceMemorySource(std::vector<std::byte> data)
+        : data_(std::move(data)) {}
+
+    [[nodiscard]] quint64 sizeBytes() const noexcept override {
+        return static_cast<quint64>(data_.size());
+    }
+
+    [[nodiscard]] QString identity() const override { return QStringLiteral("fail-once"); }
+
+    [[nodiscard]] SourceReadResult
+    readAt(quint64 byteOffset, std::span<std::byte> destination) const override {
+        ++readCount_;
+        if (readCount_ == 1) {
+            return {SourceReadStatus::Error, 0, QStringLiteral("Initial transient read failure")};
+        }
+        if (destination.empty()) {
+            return {SourceReadStatus::Complete, 0, {}};
+        }
+        if (byteOffset >= data_.size()) {
+            return {SourceReadStatus::EndOfSource, 0, {}};
+        }
+        const auto offset = static_cast<std::size_t>(byteOffset);
+        const std::size_t count = std::min(destination.size(), data_.size() - offset);
+        std::copy_n(data_.begin() + static_cast<std::ptrdiff_t>(offset),
+                    static_cast<std::ptrdiff_t>(count),
+                    destination.begin());
+        return {count == destination.size() ? SourceReadStatus::Complete
+                                            : SourceReadStatus::EndOfSource,
+                count,
+                {}};
+    }
+
+    [[nodiscard]] std::size_t readCount() const noexcept { return readCount_; }
+
+private:
+    std::vector<std::byte> data_;
+    mutable std::size_t readCount_ = 0;
+};
+
 [[nodiscard]] std::vector<std::byte> makeNormalBox(quint32 size, quint32 type, std::byte fill = std::byte{0x00}) {
     std::vector<std::byte> box(size >= 8 ? size : 8, fill);
     box[0] = static_cast<std::byte>((size >> 24) & 0xFF);
@@ -292,10 +333,12 @@ private slots:
     }
 
     void handlesHeaderCrossingBufferBoundary() {
-        // Construct Box 1 of size 65532 (64KiB - 4)
-        // Box 2 (8 bytes) starts at offset 65532, crossing the 64KiB boundary (bytes 0..3 in chunk 0, bytes 4..7 in chunk 1)
+        // Construct Box 1 of size 65533 (offset 0..65532)
+        // Box 2 (16 bytes) starts at offset 65533.
+        // Bytes 65533..65535 (3 bytes) are in chunk 0; byte 65536 (4th byte of size) and beyond are in chunk 1.
+        // The 4-byte size field itself crosses the 64 KiB boundary.
         std::vector<std::byte> data;
-        const auto b1 = makeNormalBox(65532, 0x66747970);
+        const auto b1 = makeNormalBox(65533, 0x66747970);
         const auto b2 = makeNormalBox(16,    0x6D6F6F76);
         data.insert(data.end(), b1.begin(), b1.end());
         data.insert(data.end(), b2.begin(), b2.end());
@@ -307,18 +350,20 @@ private slots:
         QCOMPARE(batch.status, Mp4BoxScanStatus::Complete);
         QCOMPARE(batch.records.size(), std::size_t(2));
         QCOMPARE(batch.records[0].boxOffset, quint64(0));
-        QCOMPARE(batch.records[0].declaredBoxSize, quint64(65532));
-        QCOMPARE(batch.records[1].boxOffset, quint64(65532));
+        QCOMPARE(batch.records[0].declaredBoxSize, quint64(65533));
+        QCOMPARE(batch.records[1].boxOffset, quint64(65533));
         QCOMPARE(batch.records[1].declaredBoxSize, quint64(16));
         QVERIFY(scanner.finished());
-        QCOMPARE(scanner.cursor(), quint64(65532 + 16));
+        QCOMPARE(scanner.cursor(), quint64(65533 + 16));
     }
 
     void handlesLargeHeaderCrossingBufferBoundary() {
-        // Construct Box 1 of size 65530
-        // Box 2 is a large header (16 bytes header) starting at 65530, crossing 65536
+        // Construct Box 1 of size 65524 (offset 0..65523)
+        // Box 2 is a large header box starting at offset 65524.
+        // Header bytes 0..7 (size=1, type='mdat') are at 65524..65531.
+        // largesize (8 bytes) is at start+8 = 65532..65539, which spans across 65536.
         std::vector<std::byte> data;
-        const auto b1 = makeNormalBox(65530, 0x66747970);
+        const auto b1 = makeNormalBox(65524, 0x66747970);
         const auto b2 = makeLargeBox(100,    0x6D646174);
         data.insert(data.end(), b1.begin(), b1.end());
         data.insert(data.end(), b2.begin(), b2.end());
@@ -330,11 +375,11 @@ private slots:
         QCOMPARE(batch.status, Mp4BoxScanStatus::Complete);
         QCOMPARE(batch.records.size(), std::size_t(2));
         QCOMPARE(batch.records[0].boxOffset, quint64(0));
-        QCOMPARE(batch.records[0].declaredBoxSize, quint64(65530));
-        QCOMPARE(batch.records[1].boxOffset, quint64(65530));
+        QCOMPARE(batch.records[0].declaredBoxSize, quint64(65524));
+        QCOMPARE(batch.records[1].boxOffset, quint64(65524));
         QCOMPARE(batch.records[1].declaredBoxSize, quint64(100));
         QVERIFY(scanner.finished());
-        QCOMPARE(scanner.cursor(), quint64(65530 + 100));
+        QCOMPARE(scanner.cursor(), quint64(65524 + 100));
     }
 
     void handlesZeroMaximumInspectedPositions() {
@@ -349,22 +394,24 @@ private slots:
 
     void persistsSourceErrorStateOnSubsequentCalls() {
         std::vector<std::byte> data = makeNormalBox(16, 0x66747970);
-        MemorySource source(data, /*failReads=*/true);
+        FailOnceMemorySource source(data);
         Mp4BoxScanner scanner(source);
 
+        // First call fails with transient SourceError
         const auto batch1 = scanner.scanBatch();
         QCOMPARE(batch1.status, Mp4BoxScanStatus::SourceError);
-        const QString savedError = batch1.errorMessage;
-        QVERIFY(!savedError.isEmpty());
+        QCOMPARE(batch1.errorMessage, QStringLiteral("Initial transient read failure"));
+        QCOMPARE(source.readCount(), std::size_t(1));
 
-        // Subsequent call must return SourceError with preserved message
+        // Subsequent valid call must persistently return SourceError without performing further reads
         const auto batch2 = scanner.scanBatch();
         QCOMPARE(batch2.status, Mp4BoxScanStatus::SourceError);
-        QCOMPARE(batch2.errorMessage, savedError);
+        QCOMPARE(batch2.errorMessage, QStringLiteral("Initial transient read failure"));
+        QCOMPARE(source.readCount(), std::size_t(1));
     }
 
     void handlesBitCoordinateOverflowWithOverrideSize() {
-        // Size 0 box with synthetic huge source size
+        // Defensive coverage: size 0 box with synthetic huge source size exceeding 64-bit bit limit
         const auto b = makeNormalBox(0, 0x6D646174);
         constexpr quint64 hugeSize = (std::numeric_limits<quint64>::max() / 8U) + 100U;
         MemorySource source(b, /*failReads=*/false, /*overrideSizeBytes=*/hugeSize);
