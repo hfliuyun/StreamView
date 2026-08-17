@@ -558,7 +558,7 @@ The static rules for this subset are:
   computed fields guaranteed on every path reaching the declaration. Arrays,
   `se`, unknown or future fields, and unavailable branch-local values are
   rejected. Its expression may also include the reserved `context_value(...)`,
-  `header_value(...)`, `optional_value(...)`, and `more_rbsp_data()` leaves under
+  `header_value(...)`, `optional_value(...)`, `more_rbsp_data()`, and `available_bytes()` leaves under
   the full expression grammar, each keeping every constraint it carries
   elsewhere; a computed
   initializer in a structure that declares no matching `@context_import` is
@@ -578,10 +578,22 @@ The static rules for this subset are:
   grammar rather than the integer/string/identifier argument grammar of a
   normal annotation. Generic annotations cannot precede it.
 - `bytes` is accepted only in that dedicated lazy form. A lazy region has no
-  array suffix and accepts only trailing `@description` and `@spec`
-  annotations. It inherits enclosing conditional, switch, and repeat guards;
-  repeat projection appends the same indexes to its materialized name. Every
-  projected region counts toward the 99,999-item structure limit.
+  array suffix and accepts trailing `@description`, `@spec`, `@container`,
+  `@target_format`, and `@window` annotations.
+  - `@container(ChildStruct)` takes exactly one identifier naming a declared
+    structure. It marks the lazy region as containing a sequence of child
+    elements decoded using `ChildStruct`.
+  - `@target_format("format")` takes exactly one non-empty string literal. It
+    attaches target format metadata to the lazy region for cross-format payload
+    navigation.
+  - `@window(EntryStruct, count_field)` takes two identifiers: `EntryStruct`
+    (which must name a declared fixed-width structure composed solely of
+    unconditional static `bits<N>` fields or fixed arrays with a positive,
+    byte-aligned total bit width) and `count_field` (which must name an earlier
+    unconditional unsigned scalar integer field in the enclosing structure).
+  It inherits enclosing conditional, switch, and repeat guards; repeat
+  projection appends the same indexes to its materialized name. Every projected
+  region counts toward the 99,999-item structure limit.
 - A lazy region must begin at a statically known byte boundary relative to its
   structure. Its runtime-sized byte count makes the following exact static
   offset unknown, so a later little-endian field or lazy byte region is
@@ -602,7 +614,10 @@ The static rules for this subset are:
   imported equality conditional, inside a source-anchored assertion condition,
   and inside a computed field initializer. It counts against the same node and
   depth limits. `power_of_two` accepts only an unsigned operand and counts its
-  operand as one additional expression node. The complete
+  operand as one additional expression node. `available_bytes()` takes zero
+  arguments and returns the remaining byte count in the current source reader
+  from the current bit position (`remainingBits() / 8`) as an unsigned `u64`
+  scalar value. The complete
   width or assertion expression remains subject to the shared expansion-work
   limit. Enum fields contribute their decoded `u64`; enum member names are not
   expression values.
