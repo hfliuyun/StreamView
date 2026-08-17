@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5e — 官方 MP4 规则包 org.streamview.mp4 v0.1.0、顶层 box 遍历、ftyp、mdat lazy 与 MP4 激活
-Next Action: 经 P5e 复审后下发 Task P5f；实现 moov/trak/mdia/minf/stbl 容器层级规则
-Last Verification: P5e — Docs commit b51dcc3e1bc6386bf2da32ae6fdbdd0412852230, Feat commit db499b02fddc3b4811baa36c68ea82c349e7dcd3; Hosted CI Run 32052352474 (Ubuntu-24.04 job 95454504329, Windows-2022 job 95454504390, macOS-15 job 95454504630: all success); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed; sanitize zero reports; svtool rule check passed; svtool analyze end-to-end verified on all 4 fixtures; markdown_hygiene passed; git diff --check clean
+Last Completed Step: Task P5e-R — 主 Agent 深审补正（官方 MP4 规则包资源初始化）
+Next Action: 下发 Task P5f；实现 moov/trak/mdia/minf/stbl 容器层级规则
+Last Verification: P5e-R — Fix commit 154ebc0ed4b48ba48d50f908e222dddd04fe61a5; Hosted CI Run 32054646988 (Ubuntu-24.04 job 95461876053, Windows-2022 job 95461876031, macOS-15 job 95461876023: all success); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed; sanitize zero reports; markdown_hygiene passed; git diff --check clean
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2240,3 +2240,8 @@ Blockers: None
      - `markdown_hygiene` 通过，`git diff --check` 干净；
      - Hosted CI Run `32052352474`：Ubuntu-24.04 job `95454504329`、Windows-2022 job `95454504390`、macOS-15 job `95454504630` 全部 success。
   终审结论：P5e 交付完成并闭环。Next Action 切换为经 P5e 复审后下发 Task P5f；未经 P5e 复审不得开始 P5f。
+
+- 2026-08-18：完成 Task P5e-R —— 主 Agent 深审补正（基线 `4bdb14ee7e6b27dc7a2a0a7eb82614d275e57b3e`，修复 commit `154ebc0ed4b48ba48d50f908e222dddd04fe61a5`）。深审确认 P5e 的规则包合同、DSL 边界、激活路径、fixture 证据与 P5f 延后边界均符合要求；发现 `mp4_isobmff_analyzer.cpp` 的 Qt 资源初始化使用了永真预处理条件并偏离既有资源注册模式。修正为全局作用域的 `Q_INIT_RESOURCE(streamview_official_rules_mp4)` 初始化函数，避免命名空间作用域导致的资源符号链接错误，并保持与 AAC/H.264 analyzer 一致。
+  1. 本地验证：dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套构建与全量 CTest 均 `40/40` 通过；sanitize 零报告；`markdown_hygiene` 通过；`git diff --check` 干净。
+  2. Hosted CI：Run `32054646988` 的 macOS-15 job `95461876023`、Ubuntu-24.04 job `95461876053`、Windows-2022 job `95461876031` 全部 success。
+  终审结论：P5e-R 通过。P5e 规则包与激活链路可进入 Task P5f；P5f 不得提前实现 P5g 及之后的样本表分页或媒体解码能力。
