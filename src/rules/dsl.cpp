@@ -1861,8 +1861,9 @@ private:
              static_cast<quint32>(DslAnnotationTarget::ComputedField)},
         {u"context_import", static_cast<quint32>(DslAnnotationTarget::Struct)},
         {u"context_dependency", static_cast<quint32>(DslAnnotationTarget::Struct)},
-        // Reserved for Task P5h: @target_format on LazyRegion.
-        {u"target_format", 0U},
+        {u"container", static_cast<quint32>(DslAnnotationTarget::LazyRegion)},
+        {u"target_format", static_cast<quint32>(DslAnnotationTarget::LazyRegion)},
+        {u"window", static_cast<quint32>(DslAnnotationTarget::LazyRegion)},
     };
 
     void validateAnnotations(const std::vector<DslAnnotation>& annotations,
@@ -1892,7 +1893,7 @@ private:
                 } else if (host == DslAnnotationTarget::LazyRegion) {
                     result_.diagnostics.push_back(
                         {DslDiagnosticCode::InvalidAnnotation,
-                         QStringLiteral("Lazy byte regions accept only @description and @spec"),
+                         QStringLiteral("Lazy byte regions accept only @description, @spec, @container, @target_format, and @window"),
                          annotation.range});
                 } else if (host == DslAnnotationTarget::CompressedPayload) {
                     result_.diagnostics.push_back(
@@ -1925,6 +1926,32 @@ private:
                 result_.diagnostics.push_back(
                     {DslDiagnosticCode::InvalidAnnotation,
                      QStringLiteral("@description requires one string argument"),
+                     annotation.range});
+            }
+            if (annotation.name == QStringLiteral("container") &&
+                (annotation.arguments.size() != 1 ||
+                 annotation.arguments.front().kind != DslAnnotationValueKind::Identifier)) {
+                result_.diagnostics.push_back(
+                    {DslDiagnosticCode::InvalidAnnotation,
+                     QStringLiteral("@container requires one struct identifier argument"),
+                     annotation.range});
+            }
+            if (annotation.name == QStringLiteral("target_format") &&
+                (annotation.arguments.size() != 1 ||
+                 annotation.arguments.front().kind != DslAnnotationValueKind::String ||
+                 annotation.arguments.front().text.isEmpty())) {
+                result_.diagnostics.push_back(
+                    {DslDiagnosticCode::InvalidAnnotation,
+                     QStringLiteral("@target_format requires one non-empty string argument"),
+                     annotation.range});
+            }
+            if (annotation.name == QStringLiteral("window") &&
+                (annotation.arguments.size() != 2 ||
+                 annotation.arguments.at(0).kind != DslAnnotationValueKind::Identifier ||
+                 annotation.arguments.at(1).kind != DslAnnotationValueKind::Identifier)) {
+                result_.diagnostics.push_back(
+                    {DslDiagnosticCode::InvalidAnnotation,
+                     QStringLiteral("@window requires two identifier arguments: entry struct and count field"),
                      annotation.range});
             }
         }
@@ -2037,6 +2064,24 @@ private:
                         return std::nullopt;
                     }
                     return DslScalarType::Bool;
+                }
+                if (expression.name == QStringLiteral("available_bytes")) {
+                    if (!allowSourceStateReference) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::UnknownReference,
+                             QStringLiteral(
+                                 "available_bytes is unavailable in pure functions"),
+                             expression.range});
+                        return std::nullopt;
+                    }
+                    if (!expression.operands.empty()) {
+                        result_.diagnostics.push_back(
+                            {DslDiagnosticCode::InvalidExpression,
+                             QStringLiteral("available_bytes requires no arguments"),
+                             expression.range});
+                        return std::nullopt;
+                    }
+                    return DslScalarType::U64;
                 }
                 if (allowImportedContextReference &&
                     expression.name == QStringLiteral("context_value")) {
@@ -2286,7 +2331,8 @@ private:
             const bool conflictsWithReservedExpression =
                 function.name == QStringLiteral("power_of_two") ||
                 function.name == QStringLiteral("more_rbsp_data") ||
-                function.name == QStringLiteral("byte_aligned");
+                function.name == QStringLiteral("byte_aligned") ||
+                function.name == QStringLiteral("available_bytes");
             if (duplicateFunction || conflictsWithDeclaration ||
                 conflictsWithReservedExpression) {
                 result_.diagnostics.push_back(
@@ -3323,7 +3369,7 @@ private:
                             resolveLazyIdentifier,
                             result_.program.pureFunctions.size(),
                             false,
-                            false,
+                            true,
                             resolveOptionalDependency,
                             1,
                             nodeCount);

@@ -638,6 +638,32 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 byteAlignedExpr.type = DslScalarType::Bool;
                 return byteAlignedExpr;
             }
+            if (expression.name == QStringLiteral("available_bytes")) {
+                if (!claimExpressionNode(state, depth, expression.range)) {
+                    return std::nullopt;
+                }
+                if (!state.allowSourceStateExpressions) {
+                    addDiagnostic(
+                        result.diagnostics,
+                        DslDiagnosticCode::UnknownReference,
+                        QStringLiteral(
+                            "available_bytes is unavailable in pure functions"),
+                        expression.range);
+                    return std::nullopt;
+                }
+                if (!expression.operands.empty()) {
+                    addDiagnostic(result.diagnostics,
+                                  DslDiagnosticCode::InvalidExpression,
+                                  QStringLiteral(
+                                      "available_bytes requires no arguments"),
+                                  expression.range);
+                    return std::nullopt;
+                }
+                DslTypedExpression availableBytes;
+                availableBytes.kind = DslTypedExpressionKind::AvailableBytes;
+                availableBytes.type = DslScalarType::U64;
+                return availableBytes;
+            }
             if (expression.name == QStringLiteral("power_of_two")) {
                 if (!claimExpressionNode(state, depth, expression.range)) {
                     return std::nullopt;
@@ -1015,7 +1041,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         const bool conflictsWithReservedExpression =
             function.name == QStringLiteral("power_of_two") ||
             function.name == QStringLiteral("more_rbsp_data") ||
-            function.name == QStringLiteral("byte_aligned");
+            function.name == QStringLiteral("byte_aligned") ||
+            function.name == QStringLiteral("available_bytes");
         if (duplicateName || conflictsWithTopLevel || conflictsWithReservedExpression) {
             addDiagnostic(result.diagnostics,
                           DslDiagnosticCode::DuplicateName,
@@ -2473,8 +2500,156 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                 tracker.byteAligned = false;
                 return tracker;
             }
-            validatePresentationOnlyAnnotations(
-                region.annotations, QStringLiteral("Lazy byte regions"));
+            std::optional<quint32> containerChildStructIndex;
+            std::optional<QString> targetFormat;
+            std::optional<quint32> windowEntryStructIndex;
+            std::optional<quint32> windowEntryCountFieldIndex;
+            std::optional<quint64> windowEntrySizeBits;
+
+            for (const DslAnnotation& annotation : region.annotations) {
+                if (annotation.name == QStringLiteral("description")) {
+                    if (annotation.arguments.size() != 1 ||
+                        annotation.arguments.front().kind != DslAnnotationValueKind::String) {
+                        addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidAnnotation,
+                                      QStringLiteral("@description requires one string argument"),
+                                      annotation.range);
+                    }
+                } else if (annotation.name == QStringLiteral("spec")) {
+                    if (annotation.arguments.size() != 2 ||
+                        annotation.arguments.at(0).kind != DslAnnotationValueKind::String ||
+                        annotation.arguments.at(1).kind != DslAnnotationValueKind::String) {
+                        addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidAnnotation,
+                                      QStringLiteral("@spec requires two string arguments"),
+                                      annotation.range);
+                    }
+                } else if (annotation.name == QStringLiteral("container")) {
+                    if (annotation.arguments.size() != 1 ||
+                        annotation.arguments.front().kind != DslAnnotationValueKind::Identifier) {
+                        addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidAnnotation,
+                                      QStringLiteral("@container requires one struct identifier argument"),
+                                      annotation.range);
+                    } else {
+                        const QString& childName = annotation.arguments.front().text;
+                        const auto childIt = std::find_if(
+                            program.structs.begin(), program.structs.end(),
+                            [&childName](const DslStruct& s) { return s.name == childName; });
+                        if (childIt == program.structs.end()) {
+                            addDiagnostic(result.diagnostics, DslDiagnosticCode::UnknownReference,
+                                          QStringLiteral("Unknown structure '%1'").arg(childName),
+                                          annotation.range);
+                        } else {
+                            containerChildStructIndex = static_cast<quint32>(
+                                std::distance(program.structs.begin(), childIt));
+                        }
+                    }
+                } else if (annotation.name == QStringLiteral("target_format")) {
+                    if (annotation.arguments.size() != 1 ||
+                        annotation.arguments.front().kind != DslAnnotationValueKind::String ||
+                        annotation.arguments.front().text.isEmpty()) {
+                        addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidAnnotation,
+                                      QStringLiteral("@target_format requires one non-empty string argument"),
+                                      annotation.range);
+                    } else {
+                        targetFormat = annotation.arguments.front().text;
+                    }
+                } else if (annotation.name == QStringLiteral("window")) {
+                    if (annotation.arguments.size() != 2 ||
+                        annotation.arguments.at(0).kind != DslAnnotationValueKind::Identifier ||
+                        annotation.arguments.at(1).kind != DslAnnotationValueKind::Identifier) {
+                        addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidAnnotation,
+                                      QStringLiteral("@window requires two identifier arguments: entry struct and count field"),
+                                      annotation.range);
+                    } else {
+                        const QString& entryStructName = annotation.arguments.at(0).text;
+                        const QString& countFieldName = annotation.arguments.at(1).text;
+                        const auto entryIt = std::find_if(
+                            program.structs.begin(), program.structs.end(),
+                            [&entryStructName](const DslStruct& s) { return s.name == entryStructName; });
+                        if (entryIt == program.structs.end()) {
+                            addDiagnostic(result.diagnostics, DslDiagnosticCode::UnknownReference,
+                                          QStringLiteral("Unknown structure '%1'").arg(entryStructName),
+                                          annotation.range);
+                        } else {
+                            quint64 totalBits = 0;
+                            bool entryStructValid = true;
+                            if (entryIt->items.empty()) {
+                                entryStructValid = false;
+                            }
+                            for (const DslStructItem& item : entryIt->items) {
+                                if (item.kind != DslStructItemKind::Field) {
+                                    entryStructValid = false;
+                                    break;
+                                }
+                                const DslBitField& bitField = item.field;
+                                if (bitField.encoding != DslFieldEncoding::Bits ||
+                                    bitField.widthExpression.has_value() ||
+                                    bitField.width == 0) {
+                                    entryStructValid = false;
+                                    break;
+                                }
+                                for (const DslAnnotation& ann : bitField.annotations) {
+                                    if (ann.name != QStringLiteral("description") &&
+                                        ann.name != QStringLiteral("spec")) {
+                                        entryStructValid = false;
+                                        break;
+                                    }
+                                }
+                                if (!entryStructValid) {
+                                    break;
+                                }
+                                const quint64 arrayCount = bitField.arrayLength.value_or(1U);
+                                if (arrayCount == 0 ||
+                                    arrayCount > std::numeric_limits<quint64>::max() / bitField.width) {
+                                    entryStructValid = false;
+                                    break;
+                                }
+                                const quint64 fieldBits = arrayCount * bitField.width;
+                                if (totalBits > std::numeric_limits<quint64>::max() - fieldBits) {
+                                    entryStructValid = false;
+                                    break;
+                                }
+                                totalBits += fieldBits;
+                            }
+                            if (!entryStructValid || totalBits == 0 || totalBits % 8 != 0) {
+                                addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidType,
+                                              QStringLiteral("Window entry struct must be a non-empty, byte-aligned fixed-width struct of static bits fields"),
+                                              annotation.range);
+                            } else {
+                                windowEntryStructIndex = static_cast<quint32>(
+                                    std::distance(program.structs.begin(), entryIt));
+                                windowEntrySizeBits = totalBits;
+                            }
+                        }
+
+                        const auto fieldIt = std::find_if(
+                            declaredFields.begin(), declaredFields.end(),
+                            [&countFieldName](const DeclaredField& df) { return df.name == countFieldName; });
+                        if (fieldIt == declaredFields.end()) {
+                            addDiagnostic(result.diagnostics, DslDiagnosticCode::UnknownReference,
+                                          QStringLiteral("Unknown count field '%1'").arg(countFieldName),
+                                          annotation.range);
+                        } else {
+                            if (!fieldIt->conditions.empty()) {
+                                addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidType,
+                                              QStringLiteral("Window count field '%1' must be unconditional").arg(countFieldName),
+                                              annotation.range);
+                            } else if (fieldIt->scalarType != DslScalarType::U64 ||
+                                       (!fieldIt->source && !fieldIt->computed) ||
+                                       (fieldIt->source && fieldIt->source->encoding == DslFieldEncoding::SignedExpGolomb)) {
+                                addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidType,
+                                              QStringLiteral("Window count field '%1' must be an unsigned scalar integer").arg(countFieldName),
+                                              annotation.range);
+                            } else if (fieldIt->typedIndex.has_value()) {
+                                windowEntryCountFieldIndex = *fieldIt->typedIndex;
+                            }
+                        }
+                    }
+                } else {
+                    addDiagnostic(result.diagnostics, DslDiagnosticCode::InvalidAnnotation,
+                                  QStringLiteral("Lazy byte regions accept only @description, @spec, @container, @target_format, and @window"),
+                                  annotation.range);
+                }
+            }
             if (!tracker.byteAligned) {
                 addDiagnostic(
                     result.diagnostics, DslDiagnosticCode::InvalidEndian,
@@ -2501,6 +2676,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     false);
             };
             ExpressionBuildState state;
+            state.allowSourceStateExpressions = true;
             const auto expression = compileExpression(region.byteCountExpression,
                                                       resolveField,
                                                       program.pureFunctions.size(),
@@ -2528,9 +2704,16 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                std::nullopt};
             typedField.conditions = conditions;
             typedField.lazyByteCountExpression = expression;
+            typedField.containerChildStructIndex = containerChildStructIndex;
+            typedField.targetFormat = targetFormat;
+            typedField.windowEntryStructIndex = windowEntryStructIndex;
+            typedField.windowEntryCountFieldIndex = windowEntryCountFieldIndex;
+            typedField.windowEntrySizeBits = windowEntrySizeBits;
             typedField.metadata =
                 metadataForAnnotations(region.annotations, typedStruct.metadata.specification);
             typedField.metadata.typeName = QStringLiteral("bytes");
+            typedField.metadata.containerChildStructIndex = containerChildStructIndex;
+            typedField.metadata.targetFormat = targetFormat;
             typedField.range = region.range;
             typedStruct.fields.push_back(std::move(typedField));
             tracker.exactBitOffset = std::nullopt;

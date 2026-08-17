@@ -3594,6 +3594,180 @@ private slots:
         QCOMPARE(compiled.diagnostics.front().message,
                  QStringLiteral("Unsupported statements cannot be repeat-local items"));
     }
+    void compilesAvailableBytesExpression() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct S {
+                computed<u64> rem = available_bytes();
+                @lazy(available_bytes()) bytes payload;
+            }
+            entry S;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const auto& s = compiled.program->structs.front();
+        QCOMPARE(s.fields.size(), std::size_t(2));
+        QVERIFY(s.fields.at(0).computedExpression.has_value());
+        QCOMPARE(s.fields.at(0).computedExpression->kind, DslTypedExpressionKind::AvailableBytes);
+        QCOMPARE(s.fields.at(0).computedExpression->type, DslScalarType::U64);
+        QVERIFY(s.fields.at(1).lazyByteCountExpression.has_value());
+        QCOMPARE(s.fields.at(1).lazyByteCountExpression->kind, DslTypedExpressionKind::AvailableBytes);
+        QCOMPARE(s.fields.at(1).lazyByteCountExpression->type, DslScalarType::U64);
+    }
+
+    void compilesContainerAnnotationAndResolvesChildStructIndex() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Child { bits<8> val; }
+            struct Parent {
+                @lazy(10) bytes payload @container(Child);
+            }
+            entry Parent;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const auto& parent = compiled.program->structs.at(1);
+        QCOMPARE(parent.fields.size(), std::size_t(1));
+        QVERIFY(parent.fields.front().containerChildStructIndex.has_value());
+        QCOMPARE(*parent.fields.front().containerChildStructIndex, quint32(0));
+        QCOMPARE(parent.fields.front().metadata.containerChildStructIndex, std::optional<quint32>(0));
+
+        // Unknown child struct
+        const auto unknown = DslParser::parse(QStringLiteral(R"(
+            struct Parent {
+                @lazy(10) bytes payload @container(MissingChild);
+            }
+            entry Parent;
+        )"));
+        QVERIFY(unknown.succeeded());
+        const auto unknownCompiled = DslCompiler::compile(unknown.program);
+        QVERIFY(!unknownCompiled.succeeded());
+        QVERIFY(hasDiagnostic(unknownCompiled, DslDiagnosticCode::UnknownReference));
+    }
+
+    void compilesTargetFormatAnnotationAndAttachesMetadata() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct S {
+                @lazy(10) bytes payload @target_format("video/mp4");
+            }
+            entry S;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const auto& s = compiled.program->structs.front();
+        QCOMPARE(s.fields.front().targetFormat, std::optional<QString>(QStringLiteral("video/mp4")));
+        QCOMPARE(s.fields.front().metadata.targetFormat, std::optional<QString>(QStringLiteral("video/mp4")));
+    }
+
+    void compilesWindowAnnotationAndValidatesEntryStruct() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Entry {
+                bits<16> id;
+                bits<8> flags[2];
+            }
+            struct Table {
+                bits<32> count;
+                @lazy(100) bytes entries @window(Entry, count);
+            }
+            entry Table;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        const auto& table = compiled.program->structs.at(1);
+        QCOMPARE(table.fields.size(), std::size_t(2));
+        const auto& lazyField = table.fields.at(1);
+        QCOMPARE(lazyField.windowEntryStructIndex, std::optional<quint32>(0));
+        QCOMPARE(lazyField.windowEntryCountFieldIndex, std::optional<quint32>(0));
+        QCOMPARE(lazyField.windowEntrySizeBits, std::optional<quint64>(32));
+
+        // Undeclared entry struct
+        const auto undeclaredEntry = DslParser::parse(QStringLiteral(R"(
+            struct Table {
+                bits<32> count;
+                @lazy(100) bytes entries @window(MissingEntry, count);
+            }
+            entry Table;
+        )"));
+        QVERIFY(undeclaredEntry.succeeded());
+        const auto undeclaredCompiled = DslCompiler::compile(undeclaredEntry.program);
+        QVERIFY(!undeclaredCompiled.succeeded());
+        QVERIFY(hasDiagnostic(undeclaredCompiled, DslDiagnosticCode::UnknownReference));
+
+        // Count field declared after lazy region
+        const auto afterCount = DslParser::parse(QStringLiteral(R"(
+            struct Entry { bits<8> val; }
+            struct Table {
+                @lazy(100) bytes entries @window(Entry, count);
+                bits<32> count;
+            }
+            entry Table;
+        )"));
+        QVERIFY(afterCount.succeeded());
+        const auto afterCompiled = DslCompiler::compile(afterCount.program);
+        QVERIFY(!afterCompiled.succeeded());
+        QVERIFY(hasDiagnostic(afterCompiled, DslDiagnosticCode::UnknownReference));
+
+        // Count field is conditional
+        const auto condCount = DslParser::parse(QStringLiteral(R"(
+            struct Entry { bits<8> val; }
+            struct Table {
+                bits<8> ctrl;
+                if (ctrl == 1) {
+                    bits<32> count;
+                }
+                @lazy(100) bytes entries @window(Entry, count);
+            }
+            entry Table;
+        )"));
+        QVERIFY(condCount.succeeded());
+        const auto condCompiled = DslCompiler::compile(condCount.program);
+        QVERIFY(!condCompiled.succeeded());
+        QVERIFY(hasDiagnostic(condCompiled, DslDiagnosticCode::UnknownReference) ||
+                hasDiagnostic(condCompiled, DslDiagnosticCode::InvalidType));
+
+        // Entry struct with non-byte-aligned bits
+        const auto unalignedEntry = DslParser::parse(QStringLiteral(R"(
+            struct Entry { bits<13> val; }
+            struct Table {
+                bits<32> count;
+                @lazy(100) bytes entries @window(Entry, count);
+            }
+            entry Table;
+        )"));
+        QVERIFY(unalignedEntry.succeeded());
+        const auto unalignedCompiled = DslCompiler::compile(unalignedEntry.program);
+        QVERIFY(!unalignedCompiled.succeeded());
+        QVERIFY(hasDiagnostic(unalignedCompiled, DslDiagnosticCode::InvalidType));
+
+        // Entry struct with unsupported features (computed, ue, conditional)
+        const auto invalidEntry1 = DslParser::parse(QStringLiteral(R"(
+            struct Entry { ue code; }
+            struct Table {
+                bits<32> count;
+                @lazy(100) bytes entries @window(Entry, count);
+            }
+            entry Table;
+        )"));
+        QVERIFY(invalidEntry1.succeeded());
+        const auto invalidCompiled1 = DslCompiler::compile(invalidEntry1.program);
+        QVERIFY(!invalidCompiled1.succeeded());
+        QVERIFY(hasDiagnostic(invalidCompiled1, DslDiagnosticCode::InvalidType));
+
+        const auto invalidEntry2 = DslParser::parse(QStringLiteral(R"(
+            struct Entry { bits<8> a; computed<u64> b = a + 1; }
+            struct Table {
+                bits<32> count;
+                @lazy(100) bytes entries @window(Entry, count);
+            }
+            entry Table;
+        )"));
+        QVERIFY(invalidEntry2.succeeded());
+        const auto invalidCompiled2 = DslCompiler::compile(invalidEntry2.program);
+        QVERIFY(!invalidCompiled2.succeeded());
+        QVERIFY(hasDiagnostic(invalidCompiled2, DslDiagnosticCode::InvalidType));
+    }
 };
 
 QTEST_GUILESS_MAIN(DslIrTest)

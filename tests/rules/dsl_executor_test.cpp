@@ -7915,6 +7915,145 @@ private slots:
         QCOMPARE(structure->diagnostics().front().location->logicalRange().bitLength(),
                  quint64(24));
     }
+    void evaluatesAvailableBytesInComputedAndLazyRegions() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct S {
+                bits<8> header;
+                computed<u64> rem = available_bytes();
+                @lazy(available_bytes()) bytes rest;
+            }
+            entry S;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0x01, 0x02, 0x03, 0x04, 0x05}));
+        const auto mapping = mappingForBytes(5);
+        const auto range = SourceSpan::create(
+            streamview::core::SourceBitAddress(0), 40);
+        auto tree = AnalysisTree::create(QStringLiteral("available-bytes-test"));
+        QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+        BitReader reader(source, *range);
+
+        const auto result = DslExecutor::decodeStruct(
+            *compiled.program, quint32(0), reader, *mapping, 0, *tree, tree->rootId());
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        const auto structure = tree->node(*result.structureNode);
+        QVERIFY(structure.has_value());
+        QCOMPARE(structure->children().size(), std::size_t(3));
+
+        // computed rem
+        const auto remNode = tree->node(structure->children().at(1));
+        QVERIFY(remNode.has_value());
+        QCOMPARE(remNode->value().toULongLong(), quint64(4));
+
+        // lazy rest
+        const auto restNode = tree->node(structure->children().at(2));
+        QVERIFY(restNode.has_value());
+        QCOMPARE(restNode->state(), MaterializationState::Lazy);
+        QVERIFY(restNode->location().has_value());
+        QCOMPARE(restNode->location()->logicalRange().bitLength(), quint64(32));
+    }
+
+    void propagatesContainerAndTargetFormatAndWindowMetadataToLazyNode() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Child { bits<8> b; }
+            struct Entry { bits<16> item; }
+            struct CStruct {
+                @lazy(10) bytes container_data @container(Child);
+            }
+            struct TStruct {
+                @lazy(20) bytes target_data @target_format("audio/aac");
+            }
+            struct WStruct {
+                bits<32> entry_count;
+                @lazy(40) bytes window_data @window(Entry, entry_count);
+            }
+            entry CStruct;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        // Test CStruct (structIndex = 2)
+        {
+            std::vector<std::byte> data(10, std::byte{0});
+            MemorySource source(data);
+            const auto mapping = mappingForBytes(10);
+            const auto range = SourceSpan::create(
+                streamview::core::SourceBitAddress(0), 10 * 8);
+            auto tree = AnalysisTree::create(QStringLiteral("container-metadata-test"));
+            QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+            BitReader reader(source, *range);
+
+            const auto result = DslExecutor::decodeStruct(
+                *compiled.program, quint32(2), reader, *mapping, 0, *tree, tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::Materialized);
+            const auto structure = tree->node(*result.structureNode);
+            QVERIFY(structure.has_value());
+            QCOMPARE(structure->children().size(), std::size_t(1));
+
+            const auto cNode = tree->node(structure->children().at(0));
+            QVERIFY(cNode.has_value());
+            QCOMPARE(cNode->metadata().containerChildStructIndex, std::optional<quint32>(0));
+        }
+
+        // Test TStruct (structIndex = 3)
+        {
+            std::vector<std::byte> data(20, std::byte{0});
+            MemorySource source(data);
+            const auto mapping = mappingForBytes(20);
+            const auto range = SourceSpan::create(
+                streamview::core::SourceBitAddress(0), 20 * 8);
+            auto tree = AnalysisTree::create(QStringLiteral("target-format-test"));
+            QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+            BitReader reader(source, *range);
+
+            const auto result = DslExecutor::decodeStruct(
+                *compiled.program, quint32(3), reader, *mapping, 0, *tree, tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::Materialized);
+            const auto structure = tree->node(*result.structureNode);
+            QVERIFY(structure.has_value());
+            QCOMPARE(structure->children().size(), std::size_t(1));
+
+            const auto tNode = tree->node(structure->children().at(0));
+            QVERIFY(tNode.has_value());
+            QCOMPARE(tNode->metadata().targetFormat, std::optional<QString>(QStringLiteral("audio/aac")));
+        }
+
+        // Test WStruct (structIndex = 4)
+        {
+            std::vector<std::byte> data(44, std::byte{0});
+            data[0] = std::byte{0};
+            data[1] = std::byte{0};
+            data[2] = std::byte{0};
+            data[3] = std::byte{5}; // entry_count = 5
+
+            MemorySource source(data);
+            const auto mapping = mappingForBytes(44);
+            const auto range = SourceSpan::create(
+                streamview::core::SourceBitAddress(0), 44 * 8);
+            auto tree = AnalysisTree::create(QStringLiteral("window-metadata-test"));
+            QVERIFY(mapping.has_value() && range.has_value() && tree.has_value());
+            BitReader reader(source, *range);
+
+            const auto result = DslExecutor::decodeStruct(
+                *compiled.program, quint32(4), reader, *mapping, 0, *tree, tree->rootId());
+            QCOMPARE(result.status, DslExecutionStatus::Materialized);
+            const auto structure = tree->node(*result.structureNode);
+            QVERIFY(structure.has_value());
+            QCOMPARE(structure->children().size(), std::size_t(2));
+
+            const auto wNode = tree->node(structure->children().at(1));
+            QVERIFY(wNode.has_value());
+            QVERIFY(wNode->metadata().window.has_value());
+            QCOMPARE(wNode->metadata().window->entryStructIndex, quint32(1));
+            QCOMPARE(wNode->metadata().window->entryCountFieldIndex, quint32(0));
+            QCOMPARE(wNode->metadata().window->entrySizeBits, quint64(16));
+            QCOMPARE(wNode->metadata().window->entryCount, quint64(5));
+        }
+    }
 };
 
 QTEST_GUILESS_MAIN(DslExecutorTest)

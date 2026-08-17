@@ -596,7 +596,7 @@ private slots:
                      .status,
                  AnalysisCacheBodyDecodeStatus::UnsupportedValue);
         auto invalidFlags = encoded.bytes;
-        write32(&invalidFlags, 68, 4U);
+        write32(&invalidFlags, 68, 16U);
         QCOMPARE(AnalysisCachePageBodyCodec::decodeMaterializedResult(page.key, invalidFlags)
                      .status,
                  AnalysisCacheBodyDecodeStatus::InvalidBody);
@@ -626,6 +626,66 @@ private slots:
             AnalysisCachePayloadEnvelope::maximumPayloadBytes() + 1U);
         QCOMPARE(AnalysisCachePageBodyCodec::decodeMaterializedResult(page.key, oversized).status,
                  AnalysisCacheBodyDecodeStatus::InvalidBody);
+    }
+    void encodesAndDecodesTargetFormatAndWindowMetadata() {
+        MaterializedResultCachePage page;
+        page.key = {PagedCachePageKind::MaterializedResult, 1, 0};
+
+        MaterializedResultCacheNode node1;
+        node1.id = AnalysisNodeId(2);
+        node1.parentId = AnalysisNodeId(1);
+        node1.spec.kind = AnalysisNodeKind::Region;
+        node1.spec.name = QStringLiteral("payload");
+        node1.spec.state = MaterializationState::Lazy;
+        node1.spec.metadata.typeName = QStringLiteral("bytes");
+        node1.spec.metadata.targetFormat = QStringLiteral("video/mp4");
+
+        MaterializedResultCacheNode node2;
+        node2.id = AnalysisNodeId(3);
+        node2.parentId = AnalysisNodeId(1);
+        node2.spec.kind = AnalysisNodeKind::Region;
+        node2.spec.name = QStringLiteral("entries");
+        node2.spec.state = MaterializationState::Lazy;
+        node2.spec.metadata.typeName = QStringLiteral("bytes");
+        streamview::core::AnalysisNodeWindowMetadata windowMeta;
+        windowMeta.entryStructIndex = 3;
+        windowMeta.entryCountFieldIndex = 1;
+        windowMeta.entrySizeBits = 64;
+        windowMeta.entryCount = 1000;
+        node2.spec.metadata.window = windowMeta;
+
+        MaterializedResultCacheNode node3;
+        node3.id = AnalysisNodeId(4);
+        node3.parentId = AnalysisNodeId(1);
+        node3.spec.kind = AnalysisNodeKind::Region;
+        node3.spec.name = QStringLiteral("combined");
+        node3.spec.state = MaterializationState::Lazy;
+        node3.spec.metadata.typeName = QStringLiteral("bytes");
+        node3.spec.metadata.targetFormat = QStringLiteral("audio/aac");
+        node3.spec.metadata.window = windowMeta;
+
+        page.nodes = {rootNode(), node1, node2, node3};
+
+        const auto encoded = AnalysisCachePageBodyCodec::encodeMaterializedResult(page);
+        QVERIFY(encoded.succeeded());
+
+        const auto decoded = AnalysisCachePageBodyCodec::decodeMaterializedResult(page.key, encoded.bytes);
+        QVERIFY(decoded.succeeded());
+        QCOMPARE(decoded.page->nodes.size(), std::size_t(4));
+
+        QCOMPARE(decoded.page->nodes.at(1).spec.metadata.targetFormat, std::optional<QString>(QStringLiteral("video/mp4")));
+        QCOMPARE(decoded.page->nodes.at(1).spec.metadata.window, std::nullopt);
+
+        QCOMPARE(decoded.page->nodes.at(2).spec.metadata.targetFormat, std::nullopt);
+        QVERIFY(decoded.page->nodes.at(2).spec.metadata.window.has_value());
+        QCOMPARE(decoded.page->nodes.at(2).spec.metadata.window->entryStructIndex, quint32(3));
+        QCOMPARE(decoded.page->nodes.at(2).spec.metadata.window->entryCountFieldIndex, quint32(1));
+        QCOMPARE(decoded.page->nodes.at(2).spec.metadata.window->entrySizeBits, quint64(64));
+        QCOMPARE(decoded.page->nodes.at(2).spec.metadata.window->entryCount, quint64(1000));
+
+        QCOMPARE(decoded.page->nodes.at(3).spec.metadata.targetFormat, std::optional<QString>(QStringLiteral("audio/aac")));
+        QVERIFY(decoded.page->nodes.at(3).spec.metadata.window.has_value());
+        QCOMPARE(decoded.page->nodes.at(3).spec.metadata.window->entryCount, quint64(1000));
     }
 };
 

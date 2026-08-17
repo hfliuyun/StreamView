@@ -501,6 +501,10 @@ struct TypedExpressionValidationState final {
         return expression.type == DslScalarType::Bool && expression.operands.empty()
                    ? true
                    : fail(QStringLiteral("Typed byte_aligned expression is invalid"));
+    case DslTypedExpressionKind::AvailableBytes:
+        return expression.type == DslScalarType::U64 && expression.operands.empty()
+                   ? true
+                   : fail(QStringLiteral("Typed available_bytes expression is invalid"));
     case DslTypedExpressionKind::OptionalFieldReference: {
         // Deliberately omits the branch-guarantee check that a plain field
         // reference applies: naming a field the path may not materialize is the
@@ -781,6 +785,10 @@ struct ComputedEvaluationResult final {
     case DslTypedExpressionKind::ByteAligned: {
         const bool aligned = reader.position() % 8U == 0U;
         return booleanResult(aligned);
+    }
+    case DslTypedExpressionKind::AvailableBytes: {
+        const quint64 remainingBytes = reader.remainingBits() / 8U;
+        return unsignedResult(remainingBytes);
     }
     case DslTypedExpressionKind::OptionalFieldReference: {
         // A slot holding no value means the executed path never materialized the
@@ -1349,6 +1357,33 @@ DslExecutionResult DslVirtualMachine::execute(
                             std::nullopt,
                             false);
                 return result;
+            }
+            if (field.containerChildStructIndex &&
+                *field.containerChildStructIndex >= program.structs.size()) {
+                markFailure(DslExecutionStatus::InvalidDefinition,
+                            QStringLiteral("Typed lazy byte container child struct index is invalid"),
+                            &field,
+                            std::nullopt,
+                            std::nullopt,
+                            false);
+                return result;
+            }
+            if (field.windowEntryStructIndex || field.windowEntryCountFieldIndex ||
+                field.windowEntrySizeBits) {
+                if (!field.windowEntryStructIndex || !field.windowEntryCountFieldIndex ||
+                    !field.windowEntrySizeBits ||
+                    *field.windowEntryStructIndex >= program.structs.size() ||
+                    *field.windowEntryCountFieldIndex >= structure.fields.size() ||
+                    *field.windowEntrySizeBits == 0 ||
+                    *field.windowEntrySizeBits % 8 != 0) {
+                    markFailure(DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Typed lazy byte window definition is invalid"),
+                                &field,
+                                std::nullopt,
+                                std::nullopt,
+                                false);
+                    return result;
+                }
             }
             TypedExpressionValidationState validation;
             if (!validateTypedExpression(*field.lazyByteCountExpression,
@@ -3296,6 +3331,20 @@ DslExecutionResult DslVirtualMachine::execute(
                                             : core::MaterializationState::Lazy;
             fieldSpec.location = *location;
             fieldSpec.metadata = field.metadata;
+            if (field.windowEntryStructIndex && field.windowEntryCountFieldIndex &&
+                field.windowEntrySizeBits) {
+                quint64 count = 0;
+                if (*field.windowEntryCountFieldIndex < fieldValues.size() &&
+                    fieldValues.at(*field.windowEntryCountFieldIndex).has_value()) {
+                    count = *fieldValues.at(*field.windowEntryCountFieldIndex);
+                }
+                core::AnalysisNodeWindowMetadata window;
+                window.entryStructIndex = *field.windowEntryStructIndex;
+                window.entryCountFieldIndex = *field.windowEntryCountFieldIndex;
+                window.entrySizeBits = *field.windowEntrySizeBits;
+                window.entryCount = count;
+                fieldSpec.metadata.window = window;
+            }
             if (!tree.appendChild(*result.structureNode, std::move(fieldSpec))) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Unable to append lazy byte region node"),
