@@ -10,6 +10,21 @@
 
 namespace streamview::rules {
 
+namespace {
+
+[[nodiscard]] constexpr bool addWouldOverflow(quint64 left, quint64 right) noexcept {
+    return std::numeric_limits<quint64>::max() - left < right;
+}
+
+[[nodiscard]] constexpr bool multiplyWouldOverflow(quint64 left, quint64 right) noexcept {
+    if (left == 0 || right == 0) {
+        return false;
+    }
+    return left > std::numeric_limits<quint64>::max() / right;
+}
+
+} // namespace
+
 WindowDecoder::WindowDecoder(
     const DslTypedProgram& program,
     const core::RandomAccessSource& source,
@@ -80,12 +95,12 @@ WindowDecodeResult WindowDecoder::decodeWindow(const WindowDecodeRequest& reques
     const quint64 entrySizeBytes = windowMeta.entrySizeBits / 8U;
     const quint64 clampedCount = std::min(windowMeta.entryCount, availableRegionBytes / entrySizeBytes);
 
-    quint64 startIndex = 0;
-    if (__builtin_mul_overflow(request.pageIndex, request.pageSize, &startIndex)) {
+    if (multiplyWouldOverflow(request.pageIndex, request.pageSize)) {
         result.status = DslExecutionStatus::TruncatedSource;
         result.decodedEntryCount = 0;
         return result;
     }
+    const quint64 startIndex = request.pageIndex * request.pageSize;
 
     if (startIndex >= clampedCount) {
         result.status = DslExecutionStatus::TruncatedSource;
@@ -118,19 +133,19 @@ WindowDecodeResult WindowDecoder::decodeWindow(const WindowDecodeRequest& reques
         }
 
         const quint64 entryIndex = startIndex + i;
-        quint64 entryBitOffset = 0;
-        if (__builtin_mul_overflow(entryIndex, windowMeta.entrySizeBits, &entryBitOffset)) {
+        if (multiplyWouldOverflow(entryIndex, windowMeta.entrySizeBits)) {
             result.status = DslExecutionStatus::SourceError;
             result.errorMessage = QStringLiteral("Entry bit offset calculation overflow");
             return result;
         }
+        const quint64 entryBitOffset = entryIndex * windowMeta.entrySizeBits;
 
-        quint64 entryLogicalStart = 0;
-        if (__builtin_add_overflow(locationOpt->logicalRange().start().bitOffset(), entryBitOffset, &entryLogicalStart)) {
+        if (addWouldOverflow(locationOpt->logicalRange().start().bitOffset(), entryBitOffset)) {
             result.status = DslExecutionStatus::SourceError;
             result.errorMessage = QStringLiteral("Entry logical address calculation overflow");
             return result;
         }
+        const quint64 entryLogicalStart = locationOpt->logicalRange().start().bitOffset() + entryBitOffset;
 
         auto entryLogicalRange = core::LogicalRange::create(
             core::LogicalBitAddress(sourceMapping_.viewId(), entryLogicalStart), windowMeta.entrySizeBits);
