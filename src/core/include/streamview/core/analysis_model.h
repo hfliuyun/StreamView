@@ -150,6 +150,28 @@ private:
     std::vector<ParseDiagnostic> diagnostics_;
 };
 
+class AnalysisTreeSnapshot final {
+public:
+    AnalysisTreeSnapshot(const AnalysisTreeSnapshot&) = delete;
+    AnalysisTreeSnapshot(AnalysisTreeSnapshot&&) noexcept = default;
+    AnalysisTreeSnapshot& operator=(const AnalysisTreeSnapshot&) = delete;
+    AnalysisTreeSnapshot& operator=(AnalysisTreeSnapshot&&) noexcept = default;
+
+private:
+    friend class AnalysisTree;
+
+    AnalysisTreeSnapshot(quint64 treeIdentity,
+                         std::size_t nodeCount,
+                         std::vector<AnalysisNode> preservedNodes)
+        : treeIdentity_(treeIdentity)
+        , nodeCount_(nodeCount)
+        , preservedNodes_(std::move(preservedNodes)) {}
+
+    quint64 treeIdentity_ = 0;
+    std::size_t nodeCount_ = 0;
+    std::vector<AnalysisNode> preservedNodes_;
+};
+
 class AnalysisTree final {
 public:
     [[nodiscard]] static std::optional<AnalysisTree> create(const QString& rootName);
@@ -176,6 +198,10 @@ public:
                                    MaterializationState terminalState,
                                    ParseDiagnostic diagnostic);
     [[nodiscard]] bool resumeCancelled(AnalysisNodeId id) noexcept;
+
+    [[nodiscard]] AnalysisTreeSnapshot snapshot(
+        std::optional<AnalysisNodeId> preservedNode = std::nullopt) const;
+    [[nodiscard]] bool restore(AnalysisTreeSnapshot snapshot) noexcept;
 
     [[nodiscard]] bool hasPartialResults() const noexcept;
     [[nodiscard]] bool isFullyMaterialized() const noexcept;

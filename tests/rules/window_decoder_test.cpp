@@ -64,6 +64,45 @@ private:
     quint64 sizeBytes_ = 1024;
 };
 
+class FailingRangeSource final : public streamview::core::RandomAccessSource {
+public:
+    FailingRangeSource(std::vector<std::byte> data, quint64 failureOffset)
+        : data_(std::move(data)), failureOffset_(failureOffset) {}
+
+    [[nodiscard]] quint64 sizeBytes() const noexcept override {
+        return static_cast<quint64>(data_.size());
+    }
+    [[nodiscard]] QString identity() const override { return QStringLiteral("failing-range"); }
+
+    [[nodiscard]] streamview::core::SourceReadResult
+    readAt(quint64 byteOffset, std::span<std::byte> destination) const override {
+        if (destination.empty()) {
+            return {streamview::core::SourceReadStatus::Complete, 0, {}};
+        }
+        if (byteOffset <= failureOffset_ &&
+            failureOffset_ - byteOffset < destination.size()) {
+            return {streamview::core::SourceReadStatus::Error,
+                    0,
+                    QStringLiteral("injected entry read failure")};
+        }
+        if (byteOffset >= data_.size()) {
+            return {streamview::core::SourceReadStatus::EndOfSource, 0, {}};
+        }
+        const auto offset = static_cast<std::size_t>(byteOffset);
+        const auto count = std::min(destination.size(), data_.size() - offset);
+        std::copy_n(data_.data() + offset, count, destination.data());
+        return {count == destination.size()
+                    ? streamview::core::SourceReadStatus::Complete
+                    : streamview::core::SourceReadStatus::EndOfSource,
+                count,
+                {}};
+    }
+
+private:
+    std::vector<std::byte> data_;
+    quint64 failureOffset_ = 0;
+};
+
 [[nodiscard]] streamview::rules::DslTypedProgram compileProgram(const QString& sourceText) {
     auto parseResult = streamview::rules::DslParser::parse(sourceText);
     if (!parseResult.succeeded()) {
@@ -99,6 +138,8 @@ private slots:
     void exhaustsSharedBudgetAndReturnsResourceLimit();
     void abortsAndReturnsCancelledOnCancellationToken();
     void returnsSourceErrorOnSourceReadFailure();
+    void decodesMultiplePagesAndReusesEntryNodes();
+    void rollsBackFailedWindowEntry();
 };
 
 void WindowDecoderTest::decodesCompletePageSuccessfully() {
@@ -553,6 +594,100 @@ void WindowDecoderTest::returnsSourceErrorOnSourceReadFailure() {
     auto res = decoder.decodeWindow(req);
 
     QCOMPARE(res.status, streamview::rules::DslExecutionStatus::SourceError);
+}
+
+void WindowDecoderTest::decodesMultiplePagesAndReusesEntryNodes() {
+    const QString dsl = QStringLiteral(
+        "struct SampleEntry {\n"
+        "    bits<32> entry_size;\n"
+        "}\n"
+        "struct SampleTable {\n"
+        "    bits<32> entry_count;\n"
+        "    computed<u64> table_bytes = entry_count * 4;\n"
+        "    @lazy(table_bytes) bytes entries @window(SampleEntry, entry_count);\n"
+        "}\n"
+        "entry SampleTable;\n");
+    const auto program = compileProgram(dsl);
+
+    std::vector<std::byte> raw(4 + 300 * 4);
+    raw[3] = std::byte{static_cast<unsigned char>(300)};
+    raw[2] = std::byte{static_cast<unsigned char>(300 >> 8)};
+    MemorySource source(raw);
+    const auto span = *streamview::core::SourceSpan::create(
+        streamview::core::SourceBitAddress(0), static_cast<quint64>(raw.size()) * 8U);
+    const auto mapping = *streamview::core::SourceMapping::create(
+        streamview::core::LogicalViewId(1), {span});
+    streamview::core::BitReader reader(source, mapping);
+    auto tree = makeTestTree();
+    const auto execResult = streamview::rules::DslExecutor::decodeStruct(
+        program, 1, reader, mapping, 0, *tree, tree->rootId());
+    QVERIFY2(execResult.structureNode.has_value(), qUtf8Printable(execResult.errorMessage));
+
+    const auto tableNode = tree->node(tree->node(tree->rootId())->children().front());
+    QVERIFY(tableNode.has_value());
+    const auto windowNodeId = tableNode->children().back();
+    auto budget = std::make_shared<streamview::rules::RunnerExecutionBudget>();
+    streamview::rules::WindowDecoder decoder(program, source, mapping, tree, windowNodeId, budget);
+
+    streamview::rules::WindowDecodeRequest firstPage{0, 256};
+    const auto first = decoder.decodeWindow(firstPage);
+    QCOMPARE(first.status, streamview::rules::DslExecutionStatus::Materialized);
+    QCOMPARE(first.decodedEntryCount, 256ULL);
+
+    streamview::rules::WindowDecodeRequest secondPage{1, 256};
+    const auto second = decoder.decodeWindow(secondPage);
+    QCOMPARE(second.status, streamview::rules::DslExecutionStatus::Materialized);
+    QCOMPARE(second.decodedEntryCount, 44ULL);
+    const auto nodeCountAfterPages = tree->nodeCount();
+
+    const auto repeated = decoder.decodeWindow(firstPage);
+    QCOMPARE(repeated.status, streamview::rules::DslExecutionStatus::Materialized);
+    QCOMPARE(repeated.decodedEntryCount, 256ULL);
+    QCOMPARE(repeated.entryNodes, first.entryNodes);
+    QCOMPARE(tree->nodeCount(), nodeCountAfterPages);
+}
+
+void WindowDecoderTest::rollsBackFailedWindowEntry() {
+    const QString dsl = QStringLiteral(
+        "struct SampleEntry {\n"
+        "    bits<16> first;\n"
+        "    bits<16> second;\n"
+        "}\n"
+        "struct SampleTable {\n"
+        "    bits<32> entry_count;\n"
+        "    computed<u64> table_bytes = entry_count * 4;\n"
+        "    @lazy(table_bytes) bytes entries @window(SampleEntry, entry_count);\n"
+        "}\n"
+        "entry SampleTable;\n");
+    const auto program = compileProgram(dsl);
+    std::vector<std::byte> raw(12);
+    raw[3] = std::byte{2};
+    FailingRangeSource source(raw, 10);
+    const auto span = *streamview::core::SourceSpan::create(
+        streamview::core::SourceBitAddress(0), 12 * 8U);
+    const auto mapping = *streamview::core::SourceMapping::create(
+        streamview::core::LogicalViewId(1), {span});
+    streamview::core::BitReader reader(source, mapping);
+    auto tree = makeTestTree();
+    const auto execResult = streamview::rules::DslExecutor::decodeStruct(
+        program, 1, reader, mapping, 0, *tree, tree->rootId());
+    QVERIFY2(execResult.structureNode.has_value(), qUtf8Printable(execResult.errorMessage));
+    const auto tableNode = tree->node(tree->node(tree->rootId())->children().front());
+    QVERIFY(tableNode.has_value());
+    const auto windowNodeId = tableNode->children().back();
+    const auto nodeCountBeforeEntries = tree->nodeCount();
+
+    auto budget = std::make_shared<streamview::rules::RunnerExecutionBudget>();
+    streamview::rules::WindowDecoder decoder(program, source, mapping, tree, windowNodeId, budget);
+    const auto result = decoder.decodeWindow({0, 2});
+
+    QCOMPARE(result.status, streamview::rules::DslExecutionStatus::SourceError);
+    QCOMPARE(result.decodedEntryCount, 1ULL);
+    QCOMPARE(result.entryNodes.size(), std::size_t{1});
+    const auto windowNode = tree->node(windowNodeId);
+    QVERIFY(windowNode.has_value());
+    QCOMPARE(windowNode->children().size(), std::size_t{1});
+    QCOMPARE(tree->nodeCount(), nodeCountBeforeEntries + 3);
 }
 
 QTEST_MAIN(WindowDecoderTest)

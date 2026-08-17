@@ -17,6 +17,8 @@
 
 namespace streamview::rules {
 
+class Mp4IsobmffAnalyzer;
+
 struct RunnerExecutionBudget final {
     quint64 remainingNodes = 100'000;
     quint64 remainingInstructions = 1'000'000;
@@ -59,12 +61,29 @@ public:
     [[nodiscard]] core::AnalysisNodeId windowNodeId() const noexcept { return windowNodeId_; }
 
 private:
+    friend class Mp4IsobmffAnalyzer;
+
+    struct State;
+
+    [[nodiscard]] static std::shared_ptr<State> createState();
+
+    WindowDecoder(
+        const DslTypedProgram& program,
+        const core::RandomAccessSource& source,
+        core::SourceMapping sourceMapping,
+        std::shared_ptr<core::AnalysisTree> tree,
+        core::AnalysisNodeId windowNodeId,
+        std::shared_ptr<RunnerExecutionBudget> budget,
+        std::shared_ptr<State> state,
+        std::optional<core::CancellationToken> cancellation);
+
     const DslTypedProgram* program_ = nullptr;
     const core::RandomAccessSource* source_ = nullptr;
     core::SourceMapping sourceMapping_;
     std::shared_ptr<core::AnalysisTree> tree_;
     core::AnalysisNodeId windowNodeId_{0};
     std::shared_ptr<RunnerExecutionBudget> budget_;
+    std::shared_ptr<State> state_;
     std::optional<core::CancellationToken> cancellation_;
 };
 

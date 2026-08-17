@@ -12,8 +12,10 @@
 #include <QtGlobal>
 
 #include <cstddef>
+#include <deque>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 namespace streamview::rules {
@@ -37,8 +39,6 @@ struct Mp4IsobmffAnalysisBatch final {
         return status == Mp4IsobmffAnalysisStatus::Complete;
     }
 };
-
-[[nodiscard]] RulePackageLoadResult loadMp4IsobmffRulePackage();
 
 class Mp4IsobmffAnalyzer final {
 public:
@@ -91,13 +91,10 @@ private:
 
     [[nodiscard]] bool publishRecord(const Mp4BoxRecord& record,
                                      Mp4IsobmffAnalysisBatch& batch,
-                                     bool allowExecutionCancellation,
                                      Mp4IsobmffAnalysisStatus* failureStatus,
                                      QString* errorMessage);
 
     [[nodiscard]] bool recursivelyDrillContainer(core::AnalysisNodeId containerNodeId,
-                                                quint32 childStructIndex,
-                                                const core::FieldLocation& containerLocation,
                                                 Mp4IsobmffAnalysisStatus* failureStatus,
                                                 QString* errorMessage);
 
@@ -113,9 +110,19 @@ private:
     std::shared_ptr<core::AnalysisTree> tree_;
     std::shared_ptr<RunnerExecutionBudget> budget_;
     std::optional<core::CancellationToken> cancellation_;
+    struct QueuedRecord final {
+        Mp4BoxRecord record;
+    };
+    std::deque<QueuedRecord> queuedRecords_;
+    std::optional<Mp4BoxScanStatus> deferredScanStatus_;
+    QString deferredScanErrorMessage_;
+    mutable std::unordered_map<quint64, std::shared_ptr<WindowDecoder::State>>
+        windowDecoderStates_;
     quint64 nextBoxIndex_ = 0;
     quint64 nextViewId_ = 1;
     bool terminal_ = false;
+    Mp4IsobmffAnalysisStatus terminalStatus_ = Mp4IsobmffAnalysisStatus::InProgress;
+    QString terminalErrorMessage_;
 };
 
 } // namespace streamview::rules

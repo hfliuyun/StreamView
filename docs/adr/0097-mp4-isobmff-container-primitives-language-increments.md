@@ -212,8 +212,6 @@ struct Mp4IsobmffAnalysisBatch final {
     }
 };
 
-[[nodiscard]] RulePackageLoadResult loadMp4IsobmffRulePackage();
-
 class Mp4IsobmffAnalyzer final {
 public:
     [[nodiscard]] static std::optional<Mp4IsobmffAnalyzer>
@@ -249,6 +247,20 @@ public:
 - After VM `execute` returns (regardless of success, truncation, or error), the runner performs checked subtraction: `budget.remainingNodes = (result.nodesCreated >= budget.remainingNodes) ? 0 : (budget.remainingNodes - result.nodesCreated)` and `budget.remainingInstructions = (result.instructionsExecuted >= budget.remainingInstructions) ? 0 : (budget.remainingInstructions - result.instructionsExecuted)`.
 - `maximumViewDepth = 64` and `maximumCallDepth = 64` are per-invocation VM stack limits, not cumulative budgets.
 - `currentNestingDepth` is incremented before child scan re-entry and decremented upon return; exceeding `maximumNodeDepth = 256` marks the container node as `ResourceLimit`.
+- Scanner batches are retained by the analyzer until every record is published. A
+  cancellation or terminal VM failure therefore cannot discard records that the
+  scanner has already advanced past. Publishing one record is transactional for
+  the analysis tree and runner-owned indices: terminal failure restores the
+  pre-record checkpoint while preserving instruction/node work already charged
+  to the shared budget. The checkpoint is append-only and retains only the
+  affected parent node, rather than copying the complete tree.
+- VM content-level outcomes (`Unsupported`, `InvalidSyntax`, `TruncatedSource`,
+  `DependencyUnavailable`) preserve the partial structure and continue with
+  subsequent boxes; they do not trigger container re-entry for that structure.
+- Region nodes appended directly by the runner, outside a VM invocation, consume
+  one unit from `remainingNodes`. A recursive VM `InvalidDefinition` is propagated
+  as `Mp4IsobmffAnalysisStatus::InvalidRule` and never converted to a materialized
+  container.
 
 **Core/runner neutrality**: Child struct is referenced by IR index only; **no FourCC literal enters core or runner code**.
 
@@ -452,6 +464,19 @@ Window decoding returns a subset of these states:
 - Checked addition `pageStartIndex + pageCount` with overflow check;
 - Checked multiplication `entryIndex * entrySizeBits` and byte offset/length mapping;
 - Lazy region boundary check: if requested page exceeds available range, decodes only available entries and returns `TruncatedSource`;
+- The decoder normalizes the window node's source spans into a window-local
+  logical mapping whose first bit is offset `0`; entry offsets are relative to
+  that mapping, independent of the window node's offset in its enclosing view;
+- Decoded entry indices are retained by the analyzer-owned decoder state. Repeated
+  or overlapping page requests reuse existing node IDs rather than appending
+  duplicates, and the window node remains `Indexing` until all clamped entries
+  have been decoded;
+- Each new entry is appended transactionally. A failed entry restores the tree to
+  its pre-entry snapshot while preserving prior successful entries and shared
+  budget deductions;
+- A `WindowDecoder` returned by `Mp4IsobmffAnalyzer::windowDecoder` is bound to the
+  analyzer/session that owns its program and source and must not outlive that
+  owner;
 - **Window metadata cache serialization (P5d-2)**:
   - Cache flag `nodeWindowMetadataFlag = 8U` in `analysis_cache_payload.cpp`;
   - Encodes `windowEntryStructIndex` (`quint32`), `windowEntryCountFieldIndex` (`quint32`), `windowEntrySizeBits` (`quint64`), `entryCount` (`quint64`);

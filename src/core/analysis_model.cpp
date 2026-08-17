@@ -181,6 +181,35 @@ bool AnalysisTree::resumeCancelled(AnalysisNodeId id) noexcept {
     return true;
 }
 
+AnalysisTreeSnapshot AnalysisTree::snapshot(std::optional<AnalysisNodeId> preservedNode) const {
+    const AnalysisNodeId nodeToPreserve = preservedNode.value_or(rootId());
+    std::vector<AnalysisNode> preservedNodes;
+    if (const AnalysisNode* node = nodeForRead(nodeToPreserve); node != nullptr) {
+        preservedNodes.push_back(*node);
+    }
+    return AnalysisTreeSnapshot(instanceIdentity_, nodes_.size(), std::move(preservedNodes));
+}
+
+bool AnalysisTree::restore(AnalysisTreeSnapshot snapshot) noexcept {
+    if (snapshot.treeIdentity_ != instanceIdentity_ || snapshot.nodeCount_ == 0 ||
+        snapshot.nodeCount_ > nodes_.size() || snapshot.preservedNodes_.empty()) {
+        return false;
+    }
+    for (const auto& preservedNode : snapshot.preservedNodes_) {
+        if (preservedNode.id_.value() == 0 ||
+            preservedNode.id_.value() > snapshot.nodeCount_) {
+            return false;
+        }
+    }
+    nodes_.erase(nodes_.begin() + static_cast<std::ptrdiff_t>(snapshot.nodeCount_),
+                 nodes_.end());
+    for (auto& preservedNode : snapshot.preservedNodes_) {
+        nodes_.at(static_cast<std::size_t>(preservedNode.id_.value() - 1)) =
+            std::move(preservedNode);
+    }
+    return true;
+}
+
 bool AnalysisTree::hasPartialResults() const noexcept {
     for (const AnalysisNode& node : nodes_) {
         if (node.state_ == MaterializationState::Cancelled ||
