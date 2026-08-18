@@ -16,6 +16,8 @@
 namespace streamview::rules {
 
 struct CompoundTransactionHooks final {
+    // Hooks run before tree nodes enter their terminal success states. Unexpected
+    // exceptions fail the compound operation and trigger best-effort rollback.
     std::function<void()> onCommit;
     std::function<void()> onRollback;
 };
