@@ -1621,7 +1621,7 @@ private slots:
             {QStringLiteral("struct Header { bits<8> selector; if (selector == 1) { bits<1> odd; } "
                             "@lazy(1) bytes payload; } entry Header;"),
              DslDiagnosticCode::InvalidEndian},
-            {QStringLiteral("struct Header { @lazy(1) bytes first; @lazy(1) bytes second; } "
+            {QStringLiteral("struct Header { bits<1> odd; @lazy(1) bytes first; @lazy(1) bytes second; } "
                             "entry Header;"),
              DslDiagnosticCode::InvalidEndian},
             {QStringLiteral(

@@ -2887,6 +2887,7 @@ private:
             };
             struct OffsetTracker {
                 std::optional<quint64> exactBitOffset = 0;
+                std::optional<quint8> bitOffsetModulo = 0;
                 bool byteAligned = true;
             };
             const auto validateItems = [&](const auto& self,
@@ -3051,6 +3052,9 @@ private:
                         tracker.exactBitOffset = thenTracker.exactBitOffset && elseTracker.exactBitOffset && *thenTracker.exactBitOffset == *elseTracker.exactBitOffset
                                           ? thenTracker.exactBitOffset
                                           : std::nullopt;
+                        tracker.bitOffsetModulo = thenTracker.bitOffsetModulo && elseTracker.bitOffsetModulo && *thenTracker.bitOffsetModulo == *elseTracker.bitOffsetModulo
+                                          ? thenTracker.bitOffsetModulo
+                                          : std::nullopt;
                         tracker.byteAligned =
                             thenTracker.byteAligned && elseTracker.byteAligned;
                         continue;
@@ -3153,6 +3157,25 @@ private:
                         } else {
                             tracker.exactBitOffset = firstKnown->exactBitOffset;
                         }
+                        const auto firstKnownModulo = std::find_if(
+                            armTrackers.begin(),
+                            armTrackers.end(),
+                            [](const OffsetTracker& t) {
+                                return t.bitOffsetModulo.has_value();
+                            });
+                        if (firstKnownModulo == armTrackers.end() ||
+                            std::any_of(
+                                armTrackers.begin(),
+                                armTrackers.end(),
+                                [&firstKnownModulo](const OffsetTracker& t) {
+                                    return !t.bitOffsetModulo ||
+                                           *t.bitOffsetModulo !=
+                                               *firstKnownModulo->bitOffsetModulo;
+                                })) {
+                            tracker.bitOffsetModulo = std::nullopt;
+                        } else {
+                            tracker.bitOffsetModulo = firstKnownModulo->bitOffsetModulo;
+                        }
                         tracker.byteAligned = std::all_of(
                             armTrackers.begin(),
                             armTrackers.end(),
@@ -3192,10 +3215,10 @@ private:
                                  item.range});
                         }
                         const std::size_t scopeStart = declaredFields.size();
-                        (void)self(self, item.repeatItems, active, tracker);
+                        tracker = self(self, item.repeatItems, active, tracker);
                         declaredFields.resize(scopeStart);
                         tracker.exactBitOffset = std::nullopt;
-                        tracker.byteAligned = false;
+                        // tracker.byteAligned is maintained from repeat items
                         continue;
                     }
                     if (item.kind == DslStructItemKind::SentinelRepeat) {
@@ -3389,7 +3412,7 @@ private:
                         }
                         declaredFieldNames.push_back(region.name);
                         tracker.exactBitOffset = std::nullopt;
-                        tracker.byteAligned = false;
+                        // tracker.byteAligned is unchanged because lazy regions have whole byte counts
                         continue;
                     }
 
@@ -3552,17 +3575,21 @@ private:
                         *tracker.exactBitOffset <=
                             std::numeric_limits<quint64>::max() - totalWidth) {
                         *tracker.exactBitOffset += totalWidth;
-                        tracker.byteAligned = (*tracker.exactBitOffset % 8 == 0);
+                        tracker.bitOffsetModulo = static_cast<quint8>(*tracker.exactBitOffset % 8U);
+                        tracker.byteAligned = (*tracker.bitOffsetModulo == 0);
                     } else {
                         tracker.exactBitOffset = std::nullopt;
-                        if (totalWidth % 8 != 0) {
+                        if (tracker.bitOffsetModulo) {
+                            tracker.bitOffsetModulo = static_cast<quint8>((*tracker.bitOffsetModulo + (totalWidth % 8U)) % 8U);
+                            tracker.byteAligned = (*tracker.bitOffsetModulo == 0);
+                        } else if (totalWidth % 8U != 0) {
                             tracker.byteAligned = false;
                         }
                     }
                 }
                 return tracker;
             };
-            (void)validateItems(validateItems, structure.items, {}, OffsetTracker{quint64(0), true});
+            (void)validateItems(validateItems, structure.items, {}, OffsetTracker{});
             if (!structure.items.empty() && declaredFieldNames.empty() &&
                 !containsField(containsField, structure.items)) {
                 result_.diagnostics.push_back(

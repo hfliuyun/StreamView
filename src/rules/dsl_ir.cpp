@@ -1937,6 +1937,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         sequenceElementResolver = resolveHeaderValue;
         struct OffsetTracker {
             std::optional<quint64> exactBitOffset = 0;
+            std::optional<quint8> bitOffsetModulo = 0;
             bool byteAligned = true;
         };
         const auto compileField = [&](const DslBitField& field,
@@ -2343,7 +2344,8 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             if (tracker.exactBitOffset &&
                 *tracker.exactBitOffset <= std::numeric_limits<quint64>::max() - totalWidth) {
                 *tracker.exactBitOffset += totalWidth;
-                tracker.byteAligned = (*tracker.exactBitOffset % 8 == 0);
+                tracker.bitOffsetModulo = static_cast<quint8>(*tracker.exactBitOffset % 8U);
+                tracker.byteAligned = (*tracker.bitOffsetModulo == 0);
             } else {
                 if (tracker.exactBitOffset &&
                     *tracker.exactBitOffset > std::numeric_limits<quint64>::max() - totalWidth) {
@@ -2353,7 +2355,10 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                   structure.range);
                 }
                 tracker.exactBitOffset = std::nullopt;
-                if (totalWidth % 8 != 0) {
+                if (tracker.bitOffsetModulo) {
+                    tracker.bitOffsetModulo = static_cast<quint8>((*tracker.bitOffsetModulo + (totalWidth % 8U)) % 8U);
+                    tracker.byteAligned = (*tracker.bitOffsetModulo == 0);
+                } else if (totalWidth % 8U != 0) {
                     tracker.byteAligned = false;
                 }
             }
@@ -2725,7 +2730,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             typedField.range = region.range;
             typedStruct.fields.push_back(std::move(typedField));
             tracker.exactBitOffset = std::nullopt;
-            tracker.byteAligned = false;
+            // tracker.byteAligned is unchanged because lazy regions have whole byte counts
             return tracker;
         };
         const auto compileCompressedPayload =
@@ -3089,6 +3094,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                         typedStruct.fields.push_back(std::move(typedField));
                     }
                     tracker.exactBitOffset = std::nullopt;
+                    tracker.bitOffsetModulo = 0;
                     tracker.byteAligned = true;
                     continue;
                 }
@@ -3112,6 +3118,9 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                                        tracker);
                     tracker.exactBitOffset = thenTracker.exactBitOffset && elseTracker.exactBitOffset && *thenTracker.exactBitOffset == *elseTracker.exactBitOffset
                                       ? thenTracker.exactBitOffset
+                                      : std::nullopt;
+                    tracker.bitOffsetModulo = thenTracker.bitOffsetModulo && elseTracker.bitOffsetModulo && *thenTracker.bitOffsetModulo == *elseTracker.bitOffsetModulo
+                                      ? thenTracker.bitOffsetModulo
                                       : std::nullopt;
                     tracker.byteAligned =
                         thenTracker.byteAligned && elseTracker.byteAligned;
@@ -3192,7 +3201,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                         }
                     }
                     tracker.exactBitOffset = std::nullopt;
-                    tracker.byteAligned = false;
+                    // tracker.byteAligned is maintained from repeat loop iterations
                     continue;
                 }
                 if (item.kind == DslStructItemKind::SentinelRepeat) {
@@ -3286,6 +3295,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                         typedRepeat.range = item.range;
                         std::vector<DslTypedFieldCondition> iterationConditions =
                             conditions;
+                        const auto initialTracker = tracker;
                         for (quint64 iteration = 0;
                              iteration < item.repeatMaximum;
                              ++iteration) {
@@ -3293,10 +3303,10 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                             typedRepeat.firstFieldIndices.push_back(
                                 static_cast<quint32>(typedStruct.fields.size()));
                             repeatIndices.push_back(iteration);
-                            tracker = self(self,
-                                           item.repeatItems,
-                                           iterationConditions,
-                                           tracker);
+                            (void)self(self,
+                                       item.repeatItems,
+                                       iterationConditions,
+                                       initialTracker);
                             repeatIndices.pop_back();
                             if (validSentinel) {
                                 const auto projectedSentinel = std::find_if(
@@ -3402,7 +3412,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                             (void)self(self,
                                        item.repeatItems,
                                        iterationConditions,
-                                       OffsetTracker{std::nullopt, true});
+                                       OffsetTracker{std::nullopt, quint8(0), true});
                             repeatIndices.pop_back();
                             declaredFields.resize(scopeStart);
                         }
@@ -3544,7 +3554,7 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
             }
             return tracker;
         };
-        (void)compileItems(compileItems, structure.items, {}, OffsetTracker{quint64(0), true});
+        (void)compileItems(compileItems, structure.items, {}, OffsetTracker{});
 
         if (dependencyAnnotations.size() >
             DslTypedContextDefinition::maximumDependencies()) {

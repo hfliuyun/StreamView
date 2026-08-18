@@ -277,6 +277,12 @@ private slots:
     void decodesSampleTableWindowsWithPagingAndBudget();
     void handlesSampleTableWindowFailures();
     void handlesUnsupportedSampleTableVersions();
+    void analyzesAvc1AndAvcCDecoderConfiguration();
+    void analyzesMp4aAndEsdsDecoderConfiguration();
+    void analyzesEsdsMultiByteDescriptorLength();
+    void analyzesLargesizeSampleDescriptionBoxes();
+    void handlesUnsupportedCodecConfigurationVersions();
+    void handlesTruncatedAvcConfigurationBox();
 };
 
 void Mp4IsobmffAnalyzerTest::failsCleanlyWhenNoRulePackageInstalled() {
@@ -847,7 +853,7 @@ void Mp4IsobmffAnalyzerTest::loadsBundledMp4PackageSuccessfully() {
     QVERIFY(loaded.succeeded());
     QVERIFY(loaded.package.has_value());
     QCOMPARE(loaded.package->identity().packageId(), QStringLiteral("org.streamview.mp4"));
-    QCOMPARE(loaded.package->identity().packageVersion(), QStringLiteral("0.1.2"));
+    QCOMPARE(loaded.package->identity().packageVersion(), QStringLiteral("0.1.3"));
     const auto* mp4Source = loaded.package->fileContents(QStringLiteral("src/mp4_isobmff.svfmt"));
     QVERIFY(mp4Source != nullptr);
     QVERIFY(!mp4Source->isEmpty());
@@ -2213,6 +2219,509 @@ void Mp4IsobmffAnalyzerTest::handlesUnsupportedSampleTableVersions() {
         }
         QVERIFY2(foundUnsupported, qPrintable(QStringLiteral("Missing UnsupportedSyntax diagnostic for %1").arg(expectedFieldPaths[i])));
     }
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesAvc1AndAvcCDecoderConfiguration() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5h_avc1_avcC.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    const auto moov = tree.node(batch.boxNodes[1]);
+    QVERIFY(moov.has_value());
+    const auto moovStruct = tree.node(moov->children().front());
+    QVERIFY(moovStruct.has_value());
+    const auto moovPayload = tree.node(moovStruct->children().back());
+    QVERIFY(moovPayload.has_value());
+
+    const auto trakStruct = tree.node(moovPayload->children().front());
+    QVERIFY(trakStruct.has_value());
+    const auto trakPayload = tree.node(trakStruct->children().back());
+    QVERIFY(trakPayload.has_value());
+
+    const auto mdiaStruct = tree.node(trakPayload->children().front());
+    QVERIFY(mdiaStruct.has_value());
+    const auto mdiaPayload = tree.node(mdiaStruct->children().back());
+    QVERIFY(mdiaPayload.has_value());
+
+    const auto minfStruct = tree.node(mdiaPayload->children().front());
+    QVERIFY(minfStruct.has_value());
+    const auto minfPayload = tree.node(minfStruct->children().back());
+    QVERIFY(minfPayload.has_value());
+
+    const auto stblStruct = tree.node(minfPayload->children().front());
+    QVERIFY(stblStruct.has_value());
+    const auto stblPayload = tree.node(stblStruct->children().back());
+    QVERIFY(stblPayload.has_value());
+
+    // 1. stsd Box
+    const auto stsdBox = tree.node(stblPayload->children().front());
+    QVERIFY(stsdBox.has_value());
+    std::vector<QString> stsdFieldNames;
+    for (const auto childId : stsdBox->children()) {
+        stsdFieldNames.push_back(tree.node(childId)->name());
+    }
+    const std::vector<QString> expectedStsdFieldNames = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("stsd_version"),
+        QStringLiteral("stsd_flags"),
+        QStringLiteral("stsd_entry_count"),
+        QStringLiteral("stsd_entries_bytes"),
+        QStringLiteral("stsd_entries"),
+    };
+    QCOMPARE(stsdFieldNames, expectedStsdFieldNames);
+    QCOMPARE(tree.node(stsdBox->children()[2])->value().toULongLong(), quint64{0}); // stsd_version
+    QCOMPARE(tree.node(stsdBox->children()[3])->value().toULongLong(), quint64{0}); // stsd_flags
+    QCOMPARE(tree.node(stsdBox->children()[4])->value().toULongLong(), quint64{1}); // stsd_entry_count
+
+    // 2. avc1 Box inside stsd_entries
+    const auto stsdEntries = tree.node(stsdBox->children()[6]);
+    QVERIFY(stsdEntries.has_value());
+    QCOMPARE(stsdEntries->children().size(), std::size_t{1});
+    const auto avc1Box = tree.node(stsdEntries->children().front());
+    QVERIFY(avc1Box.has_value());
+    std::vector<QString> avc1FieldNames;
+    for (const auto childId : avc1Box->children()) {
+        avc1FieldNames.push_back(tree.node(childId)->name());
+    }
+    const std::vector<QString> expectedAvc1FieldNames = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("avc1_reserved_entry"),
+        QStringLiteral("avc1_data_reference_index"),
+        QStringLiteral("avc1_pre_defined"),
+        QStringLiteral("avc1_reserved_1"),
+        QStringLiteral("avc1_pre_defined_1_0"),
+        QStringLiteral("avc1_pre_defined_1_1"),
+        QStringLiteral("avc1_pre_defined_1_2"),
+        QStringLiteral("avc1_width"),
+        QStringLiteral("avc1_height"),
+        QStringLiteral("avc1_horizresolution"),
+        QStringLiteral("avc1_vertresolution"),
+        QStringLiteral("avc1_reserved_2"),
+        QStringLiteral("avc1_frame_count"),
+        QStringLiteral("avc1_compressorname_0"),
+        QStringLiteral("avc1_compressorname_1"),
+        QStringLiteral("avc1_compressorname_2"),
+        QStringLiteral("avc1_compressorname_3"),
+        QStringLiteral("avc1_depth"),
+        QStringLiteral("avc1_pre_defined_2"),
+        QStringLiteral("avc1_children_bytes"),
+        QStringLiteral("avc1_children"),
+    };
+    QCOMPARE(avc1FieldNames, expectedAvc1FieldNames);
+    QCOMPARE(tree.node(avc1Box->children()[9])->value().toULongLong(), quint64{1920}); // avc1_width
+    QCOMPARE(tree.node(avc1Box->children()[10])->value().toULongLong(), quint64{1080}); // avc1_height
+    QCOMPARE(tree.node(avc1Box->children()[19])->value().toULongLong(), quint64{24}); // avc1_depth
+
+    // 3. avcC Box inside avc1_children
+    const auto avc1Children = tree.node(avc1Box->children().back());
+    QVERIFY(avc1Children.has_value());
+    QCOMPARE(avc1Children->children().size(), std::size_t{1});
+    const auto avcCBox = tree.node(avc1Children->children().front());
+    QVERIFY(avcCBox.has_value());
+    std::vector<QString> avcCFieldNames;
+    for (const auto childId : avcCBox->children()) {
+        avcCFieldNames.push_back(tree.node(childId)->name());
+    }
+    const std::vector<QString> expectedAvcCFieldNames = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("configurationVersion"),
+        QStringLiteral("avcProfileIndication"),
+        QStringLiteral("profile_compatibility"),
+        QStringLiteral("avcLevelIndication"),
+        QStringLiteral("reserved_6bits"),
+        QStringLiteral("lengthSizeMinusOne"),
+        QStringLiteral("reserved_3bits"),
+        QStringLiteral("numOfSequenceParameterSets"),
+        QStringLiteral("sequenceParameterSetLength[0]"),
+        QStringLiteral("sequenceParameterSetNALUnit[0]"),
+        QStringLiteral("numOfPictureParameterSets"),
+        QStringLiteral("pictureParameterSetLength[0]"),
+        QStringLiteral("pictureParameterSetNALUnit[0]"),
+    };
+    QCOMPARE(avcCFieldNames, expectedAvcCFieldNames);
+    QCOMPARE(tree.node(avcCBox->children()[2])->value().toULongLong(), quint64{1}); // configurationVersion
+    QCOMPARE(tree.node(avcCBox->children()[3])->value().toULongLong(), quint64{100}); // avcProfileIndication (0x64)
+    QCOMPARE(tree.node(avcCBox->children()[4])->value().toULongLong(), quint64{0}); // profile_compatibility
+    QCOMPARE(tree.node(avcCBox->children()[5])->value().toULongLong(), quint64{41}); // avcLevelIndication (0x29)
+    QCOMPARE(tree.node(avcCBox->children()[7])->value().toULongLong(), quint64{3}); // lengthSizeMinusOne
+    QCOMPARE(tree.node(avcCBox->children()[9])->value().toULongLong(), quint64{1}); // numOfSequenceParameterSets
+    QCOMPARE(tree.node(avcCBox->children()[10])->value().toULongLong(), quint64{25}); // sequenceParameterSetLength[0]
+
+    // SPS lazy target format & location
+    const auto spsNode = tree.node(avcCBox->children()[11]);
+    QVERIFY(spsNode.has_value());
+    QCOMPARE(spsNode->metadata().targetFormat, QStringLiteral("video.h264.nal"));
+    QVERIFY(spsNode->location().has_value());
+    QCOMPARE(spsNode->location()->logicalRange().bitLength(), quint64{200}); // 25 bytes * 8
+    QVERIFY(!spsNode->location()->sourceSpans().empty());
+
+    // PPS lazy target format & location
+    QCOMPARE(tree.node(avcCBox->children()[12])->value().toULongLong(), quint64{1}); // numOfPictureParameterSets
+    QCOMPARE(tree.node(avcCBox->children()[13])->value().toULongLong(), quint64{4}); // pictureParameterSetLength[0]
+    const auto ppsNode = tree.node(avcCBox->children()[14]);
+    QVERIFY(ppsNode.has_value());
+    QCOMPARE(ppsNode->metadata().targetFormat, QStringLiteral("video.h264.nal"));
+    QVERIFY(ppsNode->location().has_value());
+    QCOMPARE(ppsNode->location()->logicalRange().bitLength(), quint64{32}); // 4 bytes * 8
+    QVERIFY(!ppsNode->location()->sourceSpans().empty());
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesMp4aAndEsdsDecoderConfiguration() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5h_mp4a_esds.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    const auto moov = tree.node(batch.boxNodes[1]);
+    const auto moovStruct = tree.node(moov->children().front());
+    const auto moovPayload = tree.node(moovStruct->children().back());
+    const auto trakStruct = tree.node(moovPayload->children().front());
+    const auto trakPayload = tree.node(trakStruct->children().back());
+    const auto mdiaStruct = tree.node(trakPayload->children().front());
+    const auto mdiaPayload = tree.node(mdiaStruct->children().back());
+    const auto minfStruct = tree.node(mdiaPayload->children().front());
+    const auto minfPayload = tree.node(minfStruct->children().back());
+    const auto stblStruct = tree.node(minfPayload->children().front());
+    const auto stblPayload = tree.node(stblStruct->children().back());
+
+    const auto stsdBox = tree.node(stblPayload->children().front());
+    const auto stsdEntries = tree.node(stsdBox->children()[6]);
+    const auto mp4aBox = tree.node(stsdEntries->children().front());
+    QVERIFY(mp4aBox.has_value());
+
+    std::vector<QString> mp4aFieldNames;
+    for (const auto childId : mp4aBox->children()) {
+        mp4aFieldNames.push_back(tree.node(childId)->name());
+    }
+    const std::vector<QString> expectedMp4aFieldNames = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("mp4a_reserved_entry"),
+        QStringLiteral("mp4a_data_reference_index"),
+        QStringLiteral("mp4a_reserved_1"),
+        QStringLiteral("mp4a_channelcount"),
+        QStringLiteral("mp4a_samplesize"),
+        QStringLiteral("mp4a_pre_defined"),
+        QStringLiteral("mp4a_reserved_2"),
+        QStringLiteral("mp4a_samplerate"),
+        QStringLiteral("mp4a_children_bytes"),
+        QStringLiteral("mp4a_children"),
+    };
+    QCOMPARE(mp4aFieldNames, expectedMp4aFieldNames);
+    QCOMPARE(tree.node(mp4aBox->children()[5])->value().toULongLong(), quint64{2}); // channelcount
+    QCOMPARE(tree.node(mp4aBox->children()[6])->value().toULongLong(), quint64{16}); // samplesize
+    QCOMPARE(tree.node(mp4aBox->children()[9])->value().toULongLong(), quint64{44100ULL << 16}); // samplerate
+
+    // esds Box inside mp4a_children
+    const auto mp4aChildren = tree.node(mp4aBox->children().back());
+    QVERIFY(mp4aChildren.has_value());
+    const auto esdsBox = tree.node(mp4aChildren->children().front());
+    QVERIFY(esdsBox.has_value());
+
+    std::vector<QString> esdsFieldNames;
+    for (const auto childId : esdsBox->children()) {
+        esdsFieldNames.push_back(tree.node(childId)->name());
+    }
+    const std::vector<QString> expectedEsdsFieldNames = {
+        QStringLiteral("size"),
+        QStringLiteral("type"),
+        QStringLiteral("esds_version"),
+        QStringLiteral("esds_flags"),
+        QStringLiteral("es_tag"),
+        QStringLiteral("es_len_more0"),
+        QStringLiteral("es_len_val0"),
+        QStringLiteral("es_id"),
+        QStringLiteral("streamDependenceFlag"),
+        QStringLiteral("urlFlag"),
+        QStringLiteral("ocrStreamFlag"),
+        QStringLiteral("streamPriority"),
+        QStringLiteral("dc_tag"),
+        QStringLiteral("dc_len_more0"),
+        QStringLiteral("dc_len_val0"),
+        QStringLiteral("objectTypeIndication"),
+        QStringLiteral("streamType"),
+        QStringLiteral("upStream"),
+        QStringLiteral("reserved_1bit"),
+        QStringLiteral("bufferSizeDB"),
+        QStringLiteral("maxBitrate"),
+        QStringLiteral("avgBitrate"),
+        QStringLiteral("dsi_tag"),
+        QStringLiteral("dsi_len_more0"),
+        QStringLiteral("dsi_len_val0"),
+        QStringLiteral("asc_len1"),
+        QStringLiteral("asc_bytes1"),
+    };
+    QCOMPARE(esdsFieldNames, expectedEsdsFieldNames);
+    QCOMPARE(tree.node(esdsBox->children()[2])->value().toULongLong(), quint64{0}); // esds_version
+    QCOMPARE(tree.node(esdsBox->children()[4])->value().toULongLong(), quint64{3}); // es_tag
+    QCOMPARE(tree.node(esdsBox->children()[7])->value().toULongLong(), quint64{1}); // es_id
+    QCOMPARE(tree.node(esdsBox->children()[12])->value().toULongLong(), quint64{4}); // dc_tag
+    QCOMPARE(tree.node(esdsBox->children()[15])->value().toULongLong(), quint64{0x40}); // objectTypeIndication (AAC)
+    QCOMPARE(tree.node(esdsBox->children()[16])->value().toULongLong(), quint64{5}); // streamType (AudioStream)
+    QCOMPARE(tree.node(esdsBox->children()[19])->value().toULongLong(), quint64{0x018000}); // bufferSizeDB
+    QCOMPARE(tree.node(esdsBox->children()[20])->value().toULongLong(), quint64{128000}); // maxBitrate
+    QCOMPARE(tree.node(esdsBox->children()[21])->value().toULongLong(), quint64{128000}); // avgBitrate
+    QCOMPARE(tree.node(esdsBox->children()[22])->value().toULongLong(), quint64{5}); // dsi_tag
+    QCOMPARE(tree.node(esdsBox->children()[25])->value().toULongLong(), quint64{2}); // asc_len1
+
+    // AudioSpecificConfig lazy target format & location
+    const auto ascNode = tree.node(esdsBox->children()[26]);
+    QVERIFY(ascNode.has_value());
+    QCOMPARE(ascNode->metadata().targetFormat, QStringLiteral("audio.aac.asc"));
+    QVERIFY(ascNode->location().has_value());
+    QCOMPARE(ascNode->location()->logicalRange().bitLength(), quint64{16}); // 2 bytes * 8
+    QVERIFY(!ascNode->location()->sourceSpans().empty());
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesEsdsMultiByteDescriptorLength() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5h_esds_multibyte_len.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    const auto moov = tree.node(batch.boxNodes[1]);
+    const auto moovStruct = tree.node(moov->children().front());
+    const auto moovPayload = tree.node(moovStruct->children().back());
+    const auto trakStruct = tree.node(moovPayload->children().front());
+    const auto trakPayload = tree.node(trakStruct->children().back());
+    const auto mdiaStruct = tree.node(trakPayload->children().front());
+    const auto mdiaPayload = tree.node(mdiaStruct->children().back());
+    const auto minfStruct = tree.node(mdiaPayload->children().front());
+    const auto minfPayload = tree.node(minfStruct->children().back());
+    const auto stblStruct = tree.node(minfPayload->children().front());
+    const auto stblPayload = tree.node(stblStruct->children().back());
+
+    const auto stsdBox = tree.node(stblPayload->children().front());
+    const auto stsdEntries = tree.node(stsdBox->children()[6]);
+    const auto mp4aBox = tree.node(stsdEntries->children().front());
+    const auto mp4aChildren = tree.node(mp4aBox->children().back());
+    const auto esdsBox = tree.node(mp4aChildren->children().front());
+    QVERIFY(esdsBox.has_value());
+
+    // Check 3-byte length continuation fields
+    const auto ascLenNode = tree.node(esdsBox->children()[esdsBox->children().size() - 2]);
+    QVERIFY(ascLenNode.has_value());
+    QCOMPARE(ascLenNode->name(), QStringLiteral("asc_len3"));
+    QCOMPARE(ascLenNode->value().toULongLong(), quint64{2});
+
+    const auto ascBytesNode = tree.node(esdsBox->children().back());
+    QVERIFY(ascBytesNode.has_value());
+    QCOMPARE(ascBytesNode->name(), QStringLiteral("asc_bytes3"));
+    QCOMPARE(ascBytesNode->metadata().targetFormat, QStringLiteral("audio.aac.asc"));
+    QVERIFY(ascBytesNode->location().has_value());
+    QCOMPARE(ascBytesNode->location()->logicalRange().bitLength(), quint64{16});
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesLargesizeSampleDescriptionBoxes() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5h_largesize_boxes.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    const auto moov = tree.node(batch.boxNodes[1]);
+    const auto moovStruct = tree.node(moov->children().front());
+    const auto moovPayload = tree.node(moovStruct->children().back());
+    const auto trakStruct = tree.node(moovPayload->children().front());
+    const auto trakPayload = tree.node(trakStruct->children().back());
+    const auto mdiaStruct = tree.node(trakPayload->children().front());
+    const auto mdiaPayload = tree.node(mdiaStruct->children().back());
+    const auto minfStruct = tree.node(mdiaPayload->children().front());
+    const auto minfPayload = tree.node(minfStruct->children().back());
+    const auto stblStruct = tree.node(minfPayload->children().front());
+    const auto stblPayload = tree.node(stblStruct->children().back());
+
+    // 1. stsd with largesize
+    const auto stsdBox = tree.node(stblPayload->children().front());
+    QVERIFY(stsdBox.has_value());
+    QCOMPARE(tree.node(stsdBox->children()[0])->value().toULongLong(), quint64{1}); // size == 1
+    QCOMPARE(tree.node(stsdBox->children()[2])->name(), QStringLiteral("stsd_largesize"));
+    QCOMPARE(tree.node(stsdBox->children()[2])->value().toULongLong(), quint64{174});
+
+    // 2. avc1 with largesize
+    const auto stsdLargeEntries = tree.node(stsdBox->children()[7]);
+    QVERIFY(stsdLargeEntries.has_value());
+    const auto avc1Box = tree.node(stsdLargeEntries->children().front());
+    QVERIFY(avc1Box.has_value());
+    QCOMPARE(tree.node(avc1Box->children()[0])->value().toULongLong(), quint64{1}); // size == 1
+    QCOMPARE(tree.node(avc1Box->children()[2])->name(), QStringLiteral("avc1_largesize"));
+    QCOMPARE(tree.node(avc1Box->children()[2])->value().toULongLong(), quint64{150});
+
+    // 3. avcC with largesize
+    const auto avc1LargeChildren = tree.node(avc1Box->children().back());
+    QVERIFY(avc1LargeChildren.has_value());
+    const auto avcCBox = tree.node(avc1LargeChildren->children().front());
+    QVERIFY(avcCBox.has_value());
+    QCOMPARE(tree.node(avcCBox->children()[0])->value().toULongLong(), quint64{1}); // size == 1
+    QCOMPARE(tree.node(avcCBox->children()[2])->name(), QStringLiteral("avcC_largesize"));
+    QCOMPARE(tree.node(avcCBox->children()[2])->value().toULongLong(), quint64{56});
+    QCOMPARE(tree.node(avcCBox->children()[3])->value().toULongLong(), quint64{1}); // configurationVersion
+}
+
+void Mp4IsobmffAnalyzerTest::handlesUnsupportedCodecConfigurationVersions() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5h_unsupported_versions.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    const auto moov = tree.node(batch.boxNodes[1]);
+    const auto moovStruct = tree.node(moov->children().front());
+    const auto moovPayload = tree.node(moovStruct->children().back());
+    QCOMPARE(moovPayload->children().size(), std::size_t{3}); // All 3 tracks materialized
+
+    // Track 1: unsupported stsd version
+    {
+        const auto trak1 = tree.node(moovPayload->children()[0]);
+        const auto trak1Payload = tree.node(trak1->children().back());
+        const auto mdia1 = tree.node(trak1Payload->children().front());
+        const auto mdia1Payload = tree.node(mdia1->children().back());
+        const auto minf1 = tree.node(mdia1Payload->children().front());
+        const auto minf1Payload = tree.node(minf1->children().back());
+        const auto stbl1 = tree.node(minf1Payload->children().front());
+        const auto stbl1Payload = tree.node(stbl1->children().back());
+        const auto stsdBox = tree.node(stbl1Payload->children().front());
+        QVERIFY(stsdBox.has_value());
+        QCOMPARE(stsdBox->state(), streamview::core::MaterializationState::Unsupported);
+        bool foundUnsupported = false;
+        for (const auto& diag : stsdBox->diagnostics()) {
+            if (diag.code == streamview::core::DiagnosticCode::UnsupportedSyntax &&
+                diag.fieldPath == QStringLiteral("Box.stsd_version")) {
+                foundUnsupported = true;
+                break;
+            }
+        }
+        QVERIFY2(foundUnsupported, "Missing Box.stsd_version unsupported diagnostic");
+    }
+
+    // Track 2: unsupported avcC configurationVersion
+    {
+        const auto trak2 = tree.node(moovPayload->children()[1]);
+        const auto trak2Payload = tree.node(trak2->children().back());
+        const auto mdia2 = tree.node(trak2Payload->children().front());
+        const auto mdia2Payload = tree.node(mdia2->children().back());
+        const auto minf2 = tree.node(mdia2Payload->children().front());
+        const auto minf2Payload = tree.node(minf2->children().back());
+        const auto stbl2 = tree.node(minf2Payload->children().front());
+        const auto stbl2Payload = tree.node(stbl2->children().back());
+        const auto stsdBox = tree.node(stbl2Payload->children().front());
+        const auto stsdEntries = tree.node(stsdBox->children()[6]);
+        const auto avc1Box = tree.node(stsdEntries->children().front());
+        const auto avc1Children = tree.node(avc1Box->children().back());
+        const auto avcCBox = tree.node(avc1Children->children().front());
+        QVERIFY(avcCBox.has_value());
+        QCOMPARE(avcCBox->state(), streamview::core::MaterializationState::Unsupported);
+        bool foundUnsupported = false;
+        for (const auto& diag : avcCBox->diagnostics()) {
+            if (diag.code == streamview::core::DiagnosticCode::UnsupportedSyntax &&
+                diag.fieldPath == QStringLiteral("Box.configurationVersion")) {
+                foundUnsupported = true;
+                break;
+            }
+        }
+        QVERIFY2(foundUnsupported, "Missing Box.configurationVersion unsupported diagnostic");
+    }
+
+    // Track 3: unsupported esds version
+    {
+        const auto trak3 = tree.node(moovPayload->children()[2]);
+        const auto trak3Payload = tree.node(trak3->children().back());
+        const auto mdia3 = tree.node(trak3Payload->children().front());
+        const auto mdia3Payload = tree.node(mdia3->children().back());
+        const auto minf3 = tree.node(mdia3Payload->children().front());
+        const auto minf3Payload = tree.node(minf3->children().back());
+        const auto stbl3 = tree.node(minf3Payload->children().front());
+        const auto stbl3Payload = tree.node(stbl3->children().back());
+        const auto stsdBox = tree.node(stbl3Payload->children().front());
+        const auto stsdEntries = tree.node(stsdBox->children()[6]);
+        const auto mp4aBox = tree.node(stsdEntries->children().front());
+        const auto mp4aChildren = tree.node(mp4aBox->children().back());
+        const auto esdsBox = tree.node(mp4aChildren->children().front());
+        QVERIFY(esdsBox.has_value());
+        QCOMPARE(esdsBox->state(), streamview::core::MaterializationState::Unsupported);
+        bool foundUnsupported = false;
+        for (const auto& diag : esdsBox->diagnostics()) {
+            if (diag.code == streamview::core::DiagnosticCode::UnsupportedSyntax &&
+                diag.fieldPath == QStringLiteral("Box.esds_version")) {
+                foundUnsupported = true;
+                break;
+            }
+        }
+        QVERIFY2(foundUnsupported, "Missing Box.esds_version unsupported diagnostic");
+    }
+}
+
+void Mp4IsobmffAnalyzerTest::handlesTruncatedAvcConfigurationBox() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5h_truncated_avcC.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    const auto moov = tree.node(batch.boxNodes[1]);
+    const auto moovStruct = tree.node(moov->children().front());
+    const auto moovPayload = tree.node(moovStruct->children().back());
+    const auto trak = tree.node(moovPayload->children().front());
+    const auto trakPayload = tree.node(trak->children().back());
+    const auto mdia = tree.node(trakPayload->children().front());
+    const auto mdiaPayload = tree.node(mdia->children().back());
+    const auto minf = tree.node(mdiaPayload->children().front());
+    const auto minfPayload = tree.node(minf->children().back());
+    const auto stbl = tree.node(minfPayload->children().front());
+    const auto stblPayload = tree.node(stbl->children().back());
+
+    const auto stsdBox = tree.node(stblPayload->children().front());
+    const auto stsdEntries = tree.node(stsdBox->children()[6]);
+    const auto avc1Box = tree.node(stsdEntries->children().front());
+    const auto avc1Children = tree.node(avc1Box->children().back());
+    const auto avcCBox = tree.node(avc1Children->children().front());
+    QVERIFY(avcCBox.has_value());
+    QVERIFY(!avcCBox->diagnostics().empty());
+    bool foundTruncated = false;
+    for (const auto& diag : avcCBox->diagnostics()) {
+        if (diag.code == streamview::core::DiagnosticCode::TruncatedSource) {
+            foundTruncated = true;
+            break;
+        }
+    }
+    QVERIFY2(foundTruncated, "Missing TruncatedSource diagnostic on truncated avcC box");
 }
 
 QTEST_MAIN(Mp4IsobmffAnalyzerTest)
