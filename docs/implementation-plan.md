@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5f-R — 主 Agent 深审补正（large-size wire order 与 FullBox 版本边界）
-Next Action: 下发 Task P5g；实现 stts/stsc/stsz/stco/co64 样本表索引分页规则 v0.1.2
-Last Verification: P5f-R — Fix commit 0e8d0ccde39ac7208b0bab29ee94c3976e94af2a; Hosted CI Run 32059144201 (Ubuntu-24.04 job 95476148015, Windows-2022 job 95476147998, macOS-15 job 95476148208: all success); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed; sanitize zero reports; all four official svtool rule checks OK; markdown_hygiene passed; git diff --check clean
+Last Completed Step: Task P5g — org.streamview.mp4 v0.1.2 样本表索引分页（stts/stsc/stsz/stco/co64）
+Next Action: 等待主 Agent 复审 Task P5g；未经复审不得开始 Task P5h
+Last Verification: P5g — Docs commit f54b31c62ee3a652a657c9a623126f59c87f2ff5, Feat commit d5cfcc0a4f5f59048a1c97a7e80ce994b29bbdc2; Hosted CI Run 32098492033 (Ubuntu-24.04 job 95594332174, Windows-2022 job 95594332262, macOS-15 job 95594332137: all success); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed; sanitize zero reports; all four official svtool rule checks OK; markdown_hygiene passed; git diff --check clean
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -229,7 +229,7 @@ Blockers: None
 - [x] 支持普通、64 位、size=0 和未知 box；`mdat` 默认 lazy。
 - [ ] 实现 `ftyp`、movie/track/media 层级、sample descriptions、时间与 sample tables、编辑列表。
 - [ ] 实现 `avcC`、`esds`、AVC/AAC sample entry。
-- [ ] 根据 `stsc`、`stsz`、`stco/co64` 建立分页 sample 索引。
+- [x] 根据 `stsc`、`stsz`、`stco/co64` 建立分页 sample 索引。
 - [ ] 从 MP4 sample 进入 H.264/AAC 规则，并可返回容器字段。
 - [x] 对 `moof` 明确报告 fragmented MP4 不在首版范围。
 - [ ] 使用参考工具交叉验证 sample offset、时间戳和关键帧。
@@ -2273,3 +2273,30 @@ Blockers: None
   4. 本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套全量 CTest 均 `40/40` 通过，sanitize 零报告；MP4、AAC ADTS、AAC ASC、H.264 官方规则均 `Rule OK`；`markdown_hygiene` 与 `git diff --check` 通过。
   5. Hosted CI Run `32059144201`：Ubuntu-24.04 job `95476148015`、Windows-2022 job `95476147998`、macOS-15 job `95476148208` 全部 success。
   终审结论：P5f-R 通过。P5f 规则可进入 Task P5g；P5g 只实现 `stts`/`stsc`/`stsz`/`stco`/`co64` 样本表索引分页，不得提前实现 P5h 编解码配置或 P5i 跨层导航。
+- 2026-08-18：完成 Task P5g —— `org.streamview.mp4` v0.1.2 样本表索引分页（基线 `253f9b75d3c5347dd788b1c01f0de5d678e289d6`，Docs commit `f54b31c62ee3a652a657c9a623126f59c87f2ff5`，Feat commit `d5cfcc0a4f5f59048a1c97a7e80ce994b29bbdc2`）。
+  1. 规范先行（Docs-First）：
+     - 编写双语 ADR-0101（`docs/adr/0101-mp4-sample-table-indexing-and-window-paging.md` 与 `docs/zh-CN/adr/0101-mp4-sample-table-indexing-and-window-paging.md`）；
+     - 升级 `org.streamview.mp4` 规则包版本至 `0.1.2`；
+     - 规范 5 种样本表条目结构体及 Box 模式：
+       - `TimeToSampleEntry` / `TimeToSampleBox`（`stts` / `0x73747473`，`@window(TimeToSampleEntry, entry_count)`）；
+       - `SampleToChunkEntry` / `SampleToChunkBox`（`stsc` / `0x73747363`，`@window(SampleToChunkEntry, entry_count)`）；
+       - `SampleSizeEntry` / `SampleSizeBox`（`stsz` / `0x7374737A`，`sample_size == 0` 时采用 `@window(SampleSizeEntry, sample_count)`，`sample_size > 0` 时采用标量统一样本尺寸）；
+       - `ChunkOffsetEntry` / `ChunkOffsetBox`（`stco` / `0x7374636F`，`@window(ChunkOffsetEntry, entry_count)`，32 位偏移）；
+       - `ChunkLargeOffsetEntry` / `ChunkLargeOffsetBox`（`co64` / `0x636F3634`，`@window(ChunkLargeOffsetEntry, entry_count)`，64 位偏移）；
+     - 规范 FullBox version 0 检查与非 0 版本 `UnsupportedSyntax` 诊断；规范计数变量顶层无条件声明约束以满足 `@window` 编译器支配分析；
+     - 严格划定边界：编解码配置 Box（`stsd`、`avc1`、`avcC`、`mp4a`、`esds`）延后至 P5h，跨层导航延后至 P5i。
+  2. 规则与测试实现：
+     - 更新 `src/rules/official/org.streamview.mp4/rule.toml` 版本至 `0.1.2`；
+     - 更新 `src/rules/official/org.streamview.mp4/src/mp4_isobmff.svfmt`，由 DSL 规则完整表达 5 种样本表索引与窗口分页；
+     - 编写 Python 真实二进制码流生成脚本 `tests/fixtures/generate_mp4_p5g_fixtures.py` 并装配 4 套真实 MP4 文件：
+       1. `mp4_p5g_sample_tables_v0.mp4`（包含 `stts`、`stsc`、`stsz` 变长样本、`stco` 32 位偏移与 `co64` 64 位偏移）；
+       2. `mp4_p5g_stsz_uniform.mp4`（包含 `sample_size=1024` 定长统一尺寸，无条目表）；
+       3. `mp4_p5g_large_sample_table.mp4`（包含 200 条目大表，用于验证多页分页、跨页边界与节点复用）；
+       4. `mp4_p5g_unsupported_stbl_versions.mp4`（包含 version 1 的 5 种样本表 Box，验证非 0 版本的 `UnsupportedSyntax` 诊断）。
+     - 在 `tests/rules/mp4_isobmff_analyzer_test.cpp` 中追加 `analyzesSampleTableBoxesV0`、`analyzesSampleSizeUniformWithoutTable`、`decodesSampleTableWindowsWithPagingAndBudget`、`handlesUnsupportedSampleTableVersions`，严格断言完整有序 child 字段名、精确 bit span、值、`WindowDecoder` 分页与节点复用、以及诊断状态。
+  3. 本地与 Hosted CI 验证：
+     - 规则静态校验：`svtool rule check` 针对所有官方规则（`mp4_isobmff.svfmt`、`aac_adts.svfmt`、`aac_asc.svfmt`、`h264_annex_b.svfmt`）均输出 `Rule OK`；
+     - 本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套完整构建全量 CTest 均 `40/40` 通过，ASan/UBSan 零警告/零报告；
+     - `markdown_hygiene` 通过，`git diff --check` 干净；
+     - Hosted CI Run `32098492033`：macOS-15 job `95594332137`、Ubuntu-24.04 job `95594332174`、Windows-2022 job `95594332262` 全部 success。
+  终审结论：P5g 交付完成。Next Action 切换为等待主 Agent 复审 Task P5g；未经复审不得开始 Task P5h。
