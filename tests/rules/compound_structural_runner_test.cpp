@@ -259,6 +259,60 @@ public:
     }
 };
 
+class MalformedTransformProvider final : public PayloadTransformProvider {
+public:
+    [[nodiscard]] QString identifier() const override {
+        return QStringLiteral("malformed_transform");
+    }
+
+    [[nodiscard]] PayloadTransformResult transform(
+        const PayloadTransformRequest& request) const override {
+        PayloadTransformResult result;
+        result.status = DslExecutionStatus::Materialized;
+        if (request.inputMapping == nullptr || request.inputMapping->sourceSpans().empty()) {
+            result.status = DslExecutionStatus::InvalidDefinition;
+            result.errorMessage = QStringLiteral("Missing input mapping");
+            return result;
+        }
+        // Omit one input byte without an excluded record. The runner must reject
+        // the result before handing a shorter range to the payload VM.
+        const auto firstByteRange = LogicalRange::create(
+            LogicalBitAddress(request.inputMapping->viewId(), request.logicalBitStart), 8U);
+        const auto firstByte = firstByteRange
+            ? request.inputMapping->locate(*firstByteRange)
+            : std::nullopt;
+        if (!firstByte) {
+            result.status = DslExecutionStatus::InvalidDefinition;
+            result.errorMessage = QStringLiteral("Unable to build malformed mapping");
+            return result;
+        }
+        result.forwardedMapping = SourceMapping::create(
+            request.inputMapping->viewId(), firstByte->sourceSpans());
+        return result;
+    }
+};
+
+class DiagnosticTransformProvider final : public PayloadTransformProvider {
+public:
+    [[nodiscard]] QString identifier() const override {
+        return QStringLiteral("diagnostic_transform");
+    }
+
+    [[nodiscard]] PayloadTransformResult transform(
+        const PayloadTransformRequest& request) const override {
+        IdentityPayloadTransformProvider identity;
+        auto result = identity.transform(request);
+        if (result.succeeded()) {
+            ParseDiagnostic diagnostic;
+            diagnostic.code = DiagnosticCode::UnsupportedSyntax;
+            diagnostic.severity = DiagnosticSeverity::Warning;
+            diagnostic.message = QStringLiteral("Transform provider warning");
+            result.diagnostics.push_back(std::move(diagnostic));
+        }
+        return result;
+    }
+};
+
 } // namespace
 
 class CompoundStructuralRunnerTest : public QObject {
@@ -318,6 +372,9 @@ private slots:
     void compoundPropagatesTransformCancellation();
     void compoundPropagatesTransformInspectionBudgetExceeded();
     void compoundRejectsZeroLengthPayloadInput();
+    void compoundRejectsMalformedTransformResult();
+    void compoundPublishesTransformDiagnostics();
+    void rejectsInspectionBudgetAboveSandboxBound();
 
 private:
     std::shared_ptr<DslTypedProgram> testProgram_;
@@ -1645,6 +1702,103 @@ void CompoundStructuralRunnerTest::compoundRejectsZeroLengthPayloadInput() {
 
     QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
     QVERIFY(rolledBack);
+}
+
+void CompoundStructuralRunnerTest::compoundRejectsMalformedTransformResult() {
+    const auto data = toBytes({0x67, 0x12, 0x34});
+    const MemorySource source(data);
+    const auto headerMapping = makeMapping(0, 1, 1);
+    const auto payloadMapping = makeMapping(1, 2, 2);
+
+    auto treeOpt = AnalysisTree::create(QStringLiteral("Root"));
+    QVERIFY(treeOpt.has_value());
+    AnalysisTree tree = std::move(*treeOpt);
+
+    PayloadTransformRegistry registry;
+    QVERIFY(registry.registerProvider(std::make_shared<MalformedTransformProvider>()));
+
+    CompoundStructuralExecutionRequest request;
+    request.source = &source;
+    request.headerMapping = &headerMapping;
+    request.headerStructureIndex = *testProgram_->structureIndex(QStringLiteral("Header"));
+    request.payloadStructureIndex = *testProgram_->structureIndex(QStringLiteral("PayloadA"));
+    request.payloadMapping = &payloadMapping;
+    request.transformProviderId = QStringLiteral("malformed_transform");
+    request.transformRegistry = &registry;
+    request.tree = &tree;
+    request.parentId = tree.rootId();
+
+    const auto result = CompoundStructuralRunner::execute(*testProgram_, request);
+
+    QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+    QVERIFY(result.headerNodeId.has_value());
+    QCOMPARE(result.payloadNodeId, std::nullopt);
+    const auto headerNode = tree.node(*result.headerNodeId);
+    QVERIFY(headerNode.has_value());
+    QCOMPARE(headerNode->state(), MaterializationState::Invalid);
+    QVERIFY(result.errorMessage.contains(QStringLiteral("cover the input logical range")));
+}
+
+void CompoundStructuralRunnerTest::compoundPublishesTransformDiagnostics() {
+    const auto data = toBytes({0x67, 0x12, 0x34});
+    const MemorySource source(data);
+    const auto headerMapping = makeMapping(0, 1, 1);
+    const auto payloadMapping = makeMapping(1, 2, 2);
+
+    auto treeOpt = AnalysisTree::create(QStringLiteral("Root"));
+    QVERIFY(treeOpt.has_value());
+    AnalysisTree tree = std::move(*treeOpt);
+
+    PayloadTransformRegistry registry;
+    QVERIFY(registry.registerProvider(std::make_shared<DiagnosticTransformProvider>()));
+
+    CompoundStructuralExecutionRequest request;
+    request.source = &source;
+    request.headerMapping = &headerMapping;
+    request.headerStructureIndex = *testProgram_->structureIndex(QStringLiteral("Header"));
+    request.payloadStructureIndex = *testProgram_->structureIndex(QStringLiteral("PayloadA"));
+    request.payloadMapping = &payloadMapping;
+    request.transformProviderId = QStringLiteral("diagnostic_transform");
+    request.transformRegistry = &registry;
+    request.tree = &tree;
+    request.parentId = tree.rootId();
+
+    const auto result = CompoundStructuralRunner::execute(*testProgram_, request);
+
+    QVERIFY(result.materialized());
+    QCOMPARE(result.transformDiagnostics.size(), std::size_t(1));
+    QCOMPARE(result.transformDiagnostics.front().code, DiagnosticCode::UnsupportedSyntax);
+    QVERIFY(result.headerNodeId.has_value());
+    const auto headerNode = tree.node(*result.headerNodeId);
+    QVERIFY(headerNode.has_value());
+    QCOMPARE(headerNode->diagnostics().size(), std::size_t(1));
+    QCOMPARE(headerNode->diagnostics().front().message,
+             QStringLiteral("Transform provider warning"));
+}
+
+void CompoundStructuralRunnerTest::rejectsInspectionBudgetAboveSandboxBound() {
+    const auto data = toBytes({0x67});
+    const MemorySource source(data);
+    const auto headerMapping = makeMapping(0, 1, 1);
+
+    auto treeOpt = AnalysisTree::create(QStringLiteral("Root"));
+    QVERIFY(treeOpt.has_value());
+    AnalysisTree tree = std::move(*treeOpt);
+
+    CompoundStructuralExecutionRequest request;
+    request.source = &source;
+    request.headerMapping = &headerMapping;
+    request.headerStructureIndex = *testProgram_->structureIndex(QStringLiteral("Header"));
+    request.tree = &tree;
+    request.parentId = tree.rootId();
+    request.options.limits.maximumInspectedBytes =
+        DslExecutionLimits::defaultMaximumInspectedBytes() + 1U;
+
+    const auto result = CompoundStructuralRunner::execute(*testProgram_, request);
+
+    QCOMPARE(result.status, DslExecutionStatus::ResourceLimit);
+    QCOMPARE(result.headerNodeId, std::nullopt);
+    QCOMPARE(tree.nodeCount(), std::size_t(1));
 }
 
 QTEST_MAIN(CompoundStructuralRunnerTest)

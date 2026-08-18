@@ -54,6 +54,7 @@ struct CompoundStructuralExecutionResult final {
     quint64 inspectedByteCount = 0;
     std::vector<PayloadExcludedSpan> excludedSpans;
     std::optional<core::SourceMapping> forwardedPayloadMapping;
+    std::vector<core::ParseDiagnostic> transformDiagnostics;
     std::vector<std::optional<quint64>> headerFieldValues;
     QString errorMessage;
 

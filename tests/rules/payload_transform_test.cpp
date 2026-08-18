@@ -93,6 +93,49 @@ private:
     quint64 failAtOffset_ = 0;
 };
 
+class CancellingSource final : public RandomAccessSource {
+public:
+    CancellingSource(std::vector<std::byte> data,
+                     quint64 cancelAtOffset,
+                     CancellationSource& cancellation)
+        : data_(std::move(data)), cancelAtOffset_(cancelAtOffset),
+          cancellation_(&cancellation) {}
+
+    [[nodiscard]] quint64 sizeBytes() const noexcept override { return data_.size(); }
+    [[nodiscard]] QString identity() const override { return QStringLiteral("cancelling-source"); }
+
+    [[nodiscard]] SourceReadResult
+    readAt(quint64 byteOffset, std::span<std::byte> destination) const override {
+        if (destination.empty()) {
+            return {SourceReadStatus::Complete, 0, {}};
+        }
+        if (byteOffset >= sizeBytes()) {
+            return {SourceReadStatus::EndOfSource, 0, {}};
+        }
+        const quint64 available = sizeBytes() - byteOffset;
+        const std::size_t count = static_cast<std::size_t>(
+            std::min(static_cast<quint64>(destination.size()), available));
+        std::copy_n(data_.data() + static_cast<std::size_t>(byteOffset),
+                    count,
+                    destination.data());
+        const quint64 readEnd = byteOffset + static_cast<quint64>(count);
+        if (!cancelled_ && cancelAtOffset_ >= byteOffset && cancelAtOffset_ < readEnd) {
+            cancelled_ = true;
+            (void)cancellation_->requestCancellation();
+        }
+        return {count == destination.size() ? SourceReadStatus::Complete
+                                            : SourceReadStatus::EndOfSource,
+                count,
+                {}};
+    }
+
+private:
+    std::vector<std::byte> data_;
+    quint64 cancelAtOffset_ = 0;
+    CancellationSource* cancellation_ = nullptr;
+    mutable bool cancelled_ = false;
+};
+
 [[nodiscard]] SourceMapping makeSingleSpanMapping(quint64 byteOffset, quint64 byteLength) {
     const auto start = SourceBitAddress::fromByteAndBit(byteOffset, 0);
     const auto span = SourceSpan::create(*start, byteLength * 8U);
@@ -594,10 +637,9 @@ void PayloadTransformTest::customProviderWithExcludedRecordsAndLengthInvariant()
 
 void PayloadTransformTest::customProviderMidTransformCancellation() {
     const auto data = toBytes({0x11, 0x22, 0x33, 0x44});
-    const MemorySource source(data);
-    const auto mapping = makeSingleSpanMapping(0, 4);
-
     CancellationSource cancelSource;
+    const CancellingSource source(data, 1, cancelSource);
+    const auto mapping = makeSingleSpanMapping(0, 4);
 
     MockEscapeFilterProvider provider;
     PayloadTransformRequest request;
@@ -607,10 +649,9 @@ void PayloadTransformTest::customProviderMidTransformCancellation() {
     request.logicalBitLength = 32;
     request.cancellation = cancelSource.token();
 
-    (void)cancelSource.requestCancellation();
-
     const auto result = provider.transform(request);
     QCOMPARE(result.status, DslExecutionStatus::Cancelled);
+    QCOMPARE(result.inspectedByteCount, 2ULL);
     QVERIFY(!result.succeeded());
 }
 
