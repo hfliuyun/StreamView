@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-2 — 可复用映射源视图与格式中立 StructuralEntryRunner
-Next Action: 主 Agent 复审 Task P5i-2；未经复审不得开始 Task P5i-3
-Last Verification: Task P5i-2 — Commit aef42682334a97b33c85ddc1438bbae4395b6d2c; Hosted CI Run 32137182843 (Ubuntu 24.04 job 95711151665, Windows 2022 job 95711151774, macOS 15 job 95711151820 all success); local dev/ci/sanitize 41/41 passed, sanitize 0 reports; svtool rule check 4/4 passed; git diff --check clean
+Last Completed Step: Task P5i-2-R — 主 Agent 深审并修正 mapped source 跨 span 错误语义、StructuralEntryRunner 映射合同与覆盖真实性
+Next Action: 下发 Task P5i-3：Docs-first 探测独立 H.264 单 NAL 规则形态；可表达时再增加 `video.h264.nal` 入口，否则停止并申请独立语言能力切片
+Last Verification: P5i-2-R — ADR commit fb901582b7eab1c19b53acaebb4f8418d7918c0e; fix commits 1e0651618d6ad16d112c91a9b357ade239b0698d and 0d2dee6803eb38aa747865e14b8e2ee8ee42f827; Hosted CI Run 32147912029 (Ubuntu job 95746238690, Windows job 95746239092, macOS job 95746240662 all success); local dev/ci/sanitize 41/41 passed; structural runner 19/19; svtool rule check 4/4 passed; git diff --check clean
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2394,3 +2394,12 @@ Blockers: None
      - `markdown_hygiene` 通过，`git diff --check` 干净；
      - Hosted CI Run `32137182843`：Ubuntu-24.04 job `95711151665`、Windows-2022 job `95711151774`、macOS-15 job `95711151820` 全部 success。
   终审结论：P5i-2 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-2；未经复审不得开始 Task P5i-3。
+- 2026-08-18：完成 Task P5i-2-R —— 主 Agent 深审并直接修正可复用映射源与结构型运行器（原始交付 HEAD `ddb8fb2b1999f7a52f93fdef0481e5eb6f13b751`，ADR commit `fb901582b7eab1c19b53acaebb4f8418d7918c0e`，fix commits `1e0651618d6ad16d112c91a9b357ade239b0698d`、`0d2dee6803eb38aa747865e14b8e2ee8ee42f827`）：
+  1. 原实现总体架构与切片边界正确：`BoundedSourceView` 已抽取至 core 并替换 MP4 私有实现，`StructuralEntryRunner` 保持格式中立且未修改官方规则包、manifest、session 或 UI。
+  2. 修复跨不连续 span 读取失败的累计语义：第二段底层读取返回 `EndOfSource`/`Error` 时，`BoundedSourceView::readAt` 现在返回此前 spans 与当前 span 的累计 `bytesRead`，不再丢失已提交前缀；同时拒绝底层源返回 oversized `bytesRead` 或 incomplete `Complete` 的非法成功结果。
+  3. 修正 ADR-0103 的 reader 合同：现有 `core::BitReader(baseSource, sourceMapping)` 已直接消费映射并受 VM reader/mapping 一致性检查保护；`StructuralEntryRunner` 不应再叠加第二层 `BoundedSourceView`。后者保留给 scanner 及其它面向字节的 `RandomAccessSource` 消费者。
+  4. 修正测试覆盖真实性：原报告的“18 项完整测试”实际是 16 个具名测试方法加 Qt Test 的 `initTestCase`/`cleanupTestCase`；`rejectsZeroOrUnalignedLogicalLength` 没有执行零长度 mapping，`rejectsEmptyOrUnalignedSourceSpans` 只覆盖了未对齐 span，AAC 用例也只断言前三个字段位置，并非报告所称的全部子字段。
+  5. 补正后套件包含 17 个具名场景、Qt Test `19/19`：新增 malformed source success-result 防御测试和真实空 mapping 分支；删除由 `SourceMapping` 不变量决定的不可达非空长度/空 spans 检查；AAC ASC 用例锁定完整有序六字段名单，以及 `[1168,1173)`、`[1173,1177)`、`[1177,1181)`、`[1181,1182)`、`[1182,1183)`、`[1183,1184)` 六个绝对 bit spans。
+  6. `executesOfficialAacAscOnEsdsFixture` 直接读取并编译官方 `aac_asc.svfmt` 源文件，证明结构入口与根文件坐标；它不经过 package catalog，也不独立断言 manifest 版本。`resolveByFormat` 与包入口集成仍属于 P5i-3/P5i-4，不在本切片内虚报。
+  7. 验证：本地 dev、ci、sanitize 三套完整构建与 CTest 均 `41/41`，sanitize 零报告；结构运行器 `19/19`；四个官方规则均 `Rule OK`；双语 ADR headings/tables/fences 对称；`markdown_hygiene` 与 `git diff --check` 通过；Hosted CI Run `32147912029` 的 Ubuntu job `95746238690`、Windows job `95746239092`、macOS job `95746240662` 全部 success。
+  终审结论：P5i-2-R 通过。Next Action 切换为 P5i-3 Docs-first 可表达性探测；探测证明现有语言可表达独立单 NAL 后方可修改 H.264 官方规则，否则停止并申请独立能力切片。
