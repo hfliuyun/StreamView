@@ -6,6 +6,7 @@
 #include <streamview/core/source.h>
 #include <streamview/rules/dsl.h>
 #include <streamview/rules/dsl_ir.h>
+#include <streamview/rules/h264_rbsp_payload_transform_provider.h>
 
 #include <QString>
 #include <QtTest>
@@ -405,6 +406,7 @@ private slots:
     void compoundRejectsTransformSpanOutsideRequestedLogicalRange();
     void compoundPublishesTransformDiagnostics();
     void rejectsInspectionBudgetAboveSandboxBound();
+    void executesCompoundWithRegisteredRbspTransformProvider();
 
 private:
     std::shared_ptr<DslTypedProgram> testProgram_;
@@ -421,6 +423,12 @@ struct Header {
 struct PayloadA {
     bits<8> data_byte;
     bits<8> more_byte;
+}
+
+struct Payload3Bytes {
+    bits<8> b1;
+    bits<8> b2;
+    bits<8> b3;
 }
 
 struct PayloadUnsupported {
@@ -1865,6 +1873,64 @@ void CompoundStructuralRunnerTest::rejectsInspectionBudgetAboveSandboxBound() {
     QCOMPARE(result.status, DslExecutionStatus::ResourceLimit);
     QCOMPARE(result.headerNodeId, std::nullopt);
     QCOMPARE(tree.nodeCount(), std::size_t(1));
+}
+
+void CompoundStructuralRunnerTest::executesCompoundWithRegisteredRbspTransformProvider() {
+    // Header (0x67) + EBSP with 0x03 escape (0x00, 0x00, 0x03, 0x01, 0x12) = 6 bytes
+    // Forwarded RBSP: 0x00, 0x00, 0x01, 0x12 -> 4 bytes (32 bits)
+    // We test with PayloadA (first 2 bytes) or Payload3Bytes (3 bytes):
+    // Let's use Payload3Bytes with 4 bytes input unescaping to 3 bytes (0x00, 0x00, 0x03, 0x01 -> 0x00, 0x00, 0x01 = 24 bits)
+    const auto data = toBytes({0x67, 0x00, 0x00, 0x03, 0x01});
+    const MemorySource source(data);
+    const auto headerMapping = makeMapping(0, 1, 1);
+    const auto payloadMapping = makeMapping(1, 4, 2);
+
+    auto treeOpt = AnalysisTree::create(QStringLiteral("Root"));
+    QVERIFY(treeOpt.has_value());
+    AnalysisTree tree = std::move(*treeOpt);
+
+    const auto headerIndex = testProgram_->structureIndex(QStringLiteral("Header"));
+    const auto payloadIndex = testProgram_->structureIndex(QStringLiteral("Payload3Bytes"));
+    QVERIFY(headerIndex.has_value());
+    QVERIFY(payloadIndex.has_value());
+
+    PayloadTransformRegistry registry;
+    auto rbspProvider = std::make_shared<H264RbspPayloadTransformProvider>();
+    QVERIFY(registry.registerProvider(rbspProvider));
+
+    bool committed = false;
+    CompoundStructuralExecutionRequest request;
+    request.source = &source;
+    request.headerMapping = &headerMapping;
+    request.headerStructureIndex = *headerIndex;
+    request.payloadStructureIndex = *payloadIndex;
+    request.payloadMapping = &payloadMapping;
+    request.transformProviderId = QStringLiteral("rbsp");
+    request.transformRegistry = &registry;
+    request.tree = &tree;
+    request.parentId = tree.rootId();
+    request.transactionHooks.onCommit = [&]() { committed = true; };
+
+    const auto result = CompoundStructuralRunner::execute(*testProgram_, request);
+
+    QVERIFY(result.materialized());
+    QVERIFY(committed);
+    QVERIFY(result.headerNodeId.has_value());
+    QVERIFY(result.payloadNodeId.has_value());
+    QCOMPARE(result.inspectedByteCount, 4ULL);
+    QCOMPARE(result.excludedSpans.size(), 1ULL);
+    QCOMPARE(result.excludedSpans[0].sourceSpan.start().byteOffset(), 3ULL); // byte 3 in source is 0x03
+    QCOMPARE(result.excludedSpans[0].outputBitOffset, 16ULL);
+    QVERIFY(result.forwardedPayloadMapping.has_value());
+    QCOMPARE(result.forwardedPayloadMapping->logicalBitLength(), 24ULL);
+
+    const auto headerNode = tree.node(*result.headerNodeId);
+    const auto payloadNode = tree.node(*result.payloadNodeId);
+    QVERIFY(headerNode.has_value());
+    QVERIFY(payloadNode.has_value());
+    QCOMPARE(headerNode->state(), MaterializationState::Materialized);
+    QCOMPARE(payloadNode->state(), MaterializationState::Materialized);
+    QCOMPARE(payloadNode->parentId(), *result.headerNodeId);
 }
 
 QTEST_MAIN(CompoundStructuralRunnerTest)

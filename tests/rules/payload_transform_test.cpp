@@ -1,6 +1,7 @@
 #include <streamview/core/cancellation.h>
 #include <streamview/core/coordinates.h>
 #include <streamview/core/source.h>
+#include <streamview/rules/h264_rbsp_payload_transform_provider.h>
 #include <streamview/rules/payload_transform.h>
 
 #include <QObject>
@@ -298,6 +299,20 @@ private slots:
     void customProviderMidTransformCancellation();
     void customProviderSourceErrorPropagation();
     void customProviderEOFPropagation();
+
+    // 4. Concrete H.264 RBSP Provider Tests
+    void rbspTransformNormalSingleSpan00000301();
+    void rbspTransformMultipleExcludedSpansAndLengthInvariant();
+    void rbspTransformWithNonZeroLogicalStart();
+    void rbspTransformDisjointMappingRejected();
+    void rbspTransformDisjointMappingSubrangeWithinSingleSpanAccepted();
+    void rbspTransformMalformedSequencesEmitDiagnostics();
+    void rbspTransformSourceErrorPropagation();
+    void rbspTransformEndOfSourcePropagation();
+    void rbspTransformMidInspectionCancellation();
+    void rbspTransformInspectionBudgetExceededAndExactBoundary();
+    void rbspTransformUnalignedAndOutOfBoundsRejection();
+    void registryRegisterAndLifecycleRbspProvider();
 };
 
 void PayloadTransformTest::initTestCase() {
@@ -689,6 +704,423 @@ void PayloadTransformTest::customProviderEOFPropagation() {
     const auto result = provider.transform(request);
     QCOMPARE(result.status, DslExecutionStatus::TruncatedSource);
     QVERIFY(!result.succeeded());
+}
+
+void PayloadTransformTest::rbspTransformNormalSingleSpan00000301() {
+    const auto data = toBytes({0x00, 0x00, 0x03, 0x01});
+    const MemorySource source(data);
+    const auto mapping = makeSingleSpanMapping(0, 4);
+
+    H264RbspPayloadTransformProvider provider;
+    QCOMPARE(provider.identifier(), QStringLiteral("rbsp"));
+
+    PayloadTransformRequest request;
+    request.source = &source;
+    request.inputMapping = &mapping;
+    request.logicalBitStart = 0;
+    request.logicalBitLength = 32;
+
+    const auto result = provider.transform(request);
+    QVERIFY(result.succeeded());
+    QCOMPARE(result.status, DslExecutionStatus::Materialized);
+    QVERIFY(result.forwardedMapping.has_value());
+    QCOMPARE(result.forwardedMapping->logicalBitLength(), 24ULL);
+    QCOMPARE(result.inspectedByteCount, 4ULL);
+    QCOMPARE(result.excludedSpans.size(), 1ULL);
+    QCOMPARE(result.excludedSpans[0].sourceSpan.start().byteOffset(), 2ULL);
+    QCOMPARE(result.excludedSpans[0].sourceSpan.bitLength(), 8ULL);
+    QCOMPARE(result.excludedSpans[0].outputBitOffset, 16ULL);
+
+    quint64 totalExcludedBits = 0;
+    for (const auto& excluded : result.excludedSpans) {
+        totalExcludedBits += excluded.sourceSpan.bitLength();
+    }
+    QCOMPARE(result.forwardedMapping->logicalBitLength() + totalExcludedBits, 32ULL);
+    QVERIFY(result.diagnostics.empty());
+}
+
+void PayloadTransformTest::rbspTransformMultipleExcludedSpansAndLengthInvariant() {
+    // 12 bytes with three 0x03 escape bytes: 00 00 03 01 00 00 03 02 00 00 03 03
+    const auto data = toBytes({0x00, 0x00, 0x03, 0x01, 0x00, 0x00, 0x03, 0x02, 0x00, 0x00, 0x03, 0x03});
+    const MemorySource source(data);
+    const auto mapping = makeSingleSpanMapping(0, 12);
+
+    H264RbspPayloadTransformProvider provider;
+    PayloadTransformRequest request;
+    request.source = &source;
+    request.inputMapping = &mapping;
+    request.logicalBitStart = 0;
+    request.logicalBitLength = 96;
+
+    const auto result = provider.transform(request);
+    QVERIFY(result.succeeded());
+    QCOMPARE(result.forwardedMapping->logicalBitLength(), 72ULL);
+    QCOMPARE(result.inspectedByteCount, 12ULL);
+    QCOMPARE(result.excludedSpans.size(), 3ULL);
+
+    QCOMPARE(result.excludedSpans[0].sourceSpan.start().byteOffset(), 2ULL);
+    QCOMPARE(result.excludedSpans[0].outputBitOffset, 16ULL);
+
+    QCOMPARE(result.excludedSpans[1].sourceSpan.start().byteOffset(), 6ULL);
+    QCOMPARE(result.excludedSpans[1].outputBitOffset, 40ULL);
+
+    QCOMPARE(result.excludedSpans[2].sourceSpan.start().byteOffset(), 10ULL);
+    QCOMPARE(result.excludedSpans[2].outputBitOffset, 64ULL);
+
+    quint64 totalExcludedBits = 0;
+    for (const auto& excluded : result.excludedSpans) {
+        totalExcludedBits += excluded.sourceSpan.bitLength();
+    }
+    QCOMPARE(result.forwardedMapping->logicalBitLength() + totalExcludedBits, 96ULL);
+}
+
+void PayloadTransformTest::rbspTransformWithNonZeroLogicalStart() {
+    // 12 bytes: 4 prefix bytes, then 00 00 03 01 EE FF, then 2 trailing bytes
+    const auto data = toBytes({0xAA, 0xBB, 0xCC, 0xDD, 0x00, 0x00, 0x03, 0x01, 0xEE, 0xFF, 0x11, 0x22});
+    const MemorySource source(data);
+    const auto mapping = makeSingleSpanMapping(0, 12);
+
+    H264RbspPayloadTransformProvider provider;
+    PayloadTransformRequest request;
+    request.source = &source;
+    request.inputMapping = &mapping;
+    request.logicalBitStart = 32; // byte 4
+    request.logicalBitLength = 48; // 6 bytes (bytes 4..9)
+
+    const auto result = provider.transform(request);
+    QVERIFY(result.succeeded());
+    QCOMPARE(result.forwardedMapping->logicalBitLength(), 40ULL); // 5 bytes
+    QCOMPARE(result.inspectedByteCount, 6ULL);
+    QCOMPARE(result.excludedSpans.size(), 1ULL);
+    QCOMPARE(result.excludedSpans[0].sourceSpan.start().byteOffset(), 6ULL);
+    QCOMPARE(result.excludedSpans[0].outputBitOffset, 16ULL);
+
+    for (const auto& span : result.forwardedMapping->sourceSpans()) {
+        QVERIFY(span.start().byteOffset() >= 4ULL);
+        QVERIFY(span.endExclusive().byteOffset() <= 10ULL);
+    }
+}
+
+void PayloadTransformTest::rbspTransformDisjointMappingRejected() {
+    const auto data = toBytes({0x00, 0x00, 0xFF, 0xFF, 0x03, 0x01});
+    const MemorySource source(data);
+    const auto mapping = makeDisjointMapping({{0, 2}, {4, 2}});
+
+    H264RbspPayloadTransformProvider provider;
+    PayloadTransformRequest request;
+    request.source = &source;
+    request.inputMapping = &mapping;
+    request.logicalBitStart = 0;
+    request.logicalBitLength = 32;
+
+    const auto result = provider.transform(request);
+    QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+    QVERIFY(!result.succeeded());
+    QVERIFY(result.errorMessage.contains(QStringLiteral("Disjoint EBSP source spans")));
+}
+
+void PayloadTransformTest::rbspTransformDisjointMappingSubrangeWithinSingleSpanAccepted() {
+    // 10 bytes: span 0 [0..4) has 00 00 03 01, gap [4..6), span 1 [6..10)
+    const auto data = toBytes({0x00, 0x00, 0x03, 0x01, 0xFF, 0xFF, 0xAA, 0xBB, 0xCC, 0xDD});
+    const MemorySource source(data);
+    const auto mapping = makeDisjointMapping({{0, 4}, {6, 4}});
+
+    H264RbspPayloadTransformProvider provider;
+    PayloadTransformRequest request;
+    request.source = &source;
+    request.inputMapping = &mapping;
+    request.logicalBitStart = 0;
+    request.logicalBitLength = 32; // spans only span 0
+
+    const auto result = provider.transform(request);
+    QVERIFY(result.succeeded());
+    QCOMPARE(result.forwardedMapping->logicalBitLength(), 24ULL);
+    QCOMPARE(result.excludedSpans.size(), 1ULL);
+    QCOMPARE(result.excludedSpans[0].sourceSpan.start().byteOffset(), 2ULL);
+}
+
+void PayloadTransformTest::rbspTransformMalformedSequencesEmitDiagnostics() {
+    H264RbspPayloadTransformProvider provider;
+
+    // 1. Prohibited 00 00 00
+    {
+        const auto data = toBytes({0x00, 0x00, 0x00, 0x05});
+        const MemorySource source(data);
+        const auto mapping = makeSingleSpanMapping(0, 4);
+        PayloadTransformRequest request;
+        request.source = &source;
+        request.inputMapping = &mapping;
+        request.logicalBitStart = 0;
+        request.logicalBitLength = 32;
+
+        const auto result = provider.transform(request);
+        QVERIFY(result.succeeded());
+        QCOMPARE(result.diagnostics.size(), 1ULL);
+        QCOMPARE(result.diagnostics[0].code, DiagnosticCode::InvalidSyntax);
+        QVERIFY(result.diagnostics[0].message.contains(QStringLiteral("00 00 00")));
+    }
+
+    // 2. Prohibited 00 00 01
+    {
+        const auto data = toBytes({0x00, 0x00, 0x01, 0x05});
+        const MemorySource source(data);
+        const auto mapping = makeSingleSpanMapping(0, 4);
+        PayloadTransformRequest request;
+        request.source = &source;
+        request.inputMapping = &mapping;
+        request.logicalBitStart = 0;
+        request.logicalBitLength = 32;
+
+        const auto result = provider.transform(request);
+        QVERIFY(result.succeeded());
+        QCOMPARE(result.diagnostics.size(), 1ULL);
+        QVERIFY(result.diagnostics[0].message.contains(QStringLiteral("00 00 01")));
+    }
+
+    // 3. Prohibited 00 00 02
+    {
+        const auto data = toBytes({0x00, 0x00, 0x02, 0x05});
+        const MemorySource source(data);
+        const auto mapping = makeSingleSpanMapping(0, 4);
+        PayloadTransformRequest request;
+        request.source = &source;
+        request.inputMapping = &mapping;
+        request.logicalBitStart = 0;
+        request.logicalBitLength = 32;
+
+        const auto result = provider.transform(request);
+        QVERIFY(result.succeeded());
+        QCOMPARE(result.diagnostics.size(), 1ULL);
+        QVERIFY(result.diagnostics[0].message.contains(QStringLiteral("00 00 02")));
+    }
+
+    // 4. Prohibited 00 00 03 xx (xx > 03)
+    {
+        const auto data = toBytes({0x00, 0x00, 0x03, 0x04});
+        const MemorySource source(data);
+        const auto mapping = makeSingleSpanMapping(0, 4);
+        PayloadTransformRequest request;
+        request.source = &source;
+        request.inputMapping = &mapping;
+        request.logicalBitStart = 0;
+        request.logicalBitLength = 32;
+
+        const auto result = provider.transform(request);
+        QVERIFY(result.succeeded());
+        QCOMPARE(result.excludedSpans.size(), 1ULL); // 0x03 still excluded
+        QCOMPARE(result.diagnostics.size(), 1ULL);
+        QVERIFY(result.diagnostics[0].message.contains(QStringLiteral("00 00 03 xx")));
+    }
+
+    // 5. Terminal 00 00 03
+    {
+        const auto data = toBytes({0x00, 0x00, 0x03});
+        const MemorySource source(data);
+        const auto mapping = makeSingleSpanMapping(0, 3);
+        PayloadTransformRequest request;
+        request.source = &source;
+        request.inputMapping = &mapping;
+        request.logicalBitStart = 0;
+        request.logicalBitLength = 24;
+
+        const auto result = provider.transform(request);
+        QVERIFY(result.succeeded());
+        QCOMPARE(result.forwardedMapping->logicalBitLength(), 16ULL);
+        QCOMPARE(result.excludedSpans.size(), 1ULL);
+    }
+
+    // 6. Non-empty input ending in 00
+    {
+        const auto data = toBytes({0x01, 0x02, 0x00});
+        const MemorySource source(data);
+        const auto mapping = makeSingleSpanMapping(0, 3);
+        PayloadTransformRequest request;
+        request.source = &source;
+        request.inputMapping = &mapping;
+        request.logicalBitStart = 0;
+        request.logicalBitLength = 24;
+
+        const auto result = provider.transform(request);
+        QVERIFY(result.succeeded());
+        QCOMPARE(result.diagnostics.size(), 1ULL);
+        QVERIFY(result.diagnostics[0].message.contains(QStringLiteral("final byte must not be 00")));
+    }
+}
+
+void PayloadTransformTest::rbspTransformSourceErrorPropagation() {
+    const auto data = toBytes({0x00, 0x00, 0x03, 0x01});
+    const FaultySource source(data, 2); // Fails reading byte 2
+    const auto mapping = makeSingleSpanMapping(0, 4);
+
+    H264RbspPayloadTransformProvider provider;
+    PayloadTransformRequest request;
+    request.source = &source;
+    request.inputMapping = &mapping;
+    request.logicalBitStart = 0;
+    request.logicalBitLength = 32;
+
+    const auto result = provider.transform(request);
+    QCOMPARE(result.status, DslExecutionStatus::SourceError);
+    QVERIFY(!result.succeeded());
+}
+
+void PayloadTransformTest::rbspTransformEndOfSourcePropagation() {
+    const auto data = toBytes({0x00, 0x00});
+    const MemorySource source(data);
+    const auto mapping = makeSingleSpanMapping(0, 4); // claims 4 bytes on a 2-byte source
+
+    H264RbspPayloadTransformProvider provider;
+    PayloadTransformRequest request;
+    request.source = &source;
+    request.inputMapping = &mapping;
+    request.logicalBitStart = 0;
+    request.logicalBitLength = 32;
+
+    const auto result = provider.transform(request);
+    QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+    QVERIFY(!result.succeeded());
+}
+
+void PayloadTransformTest::rbspTransformMidInspectionCancellation() {
+    std::vector<std::byte> data(2048, std::byte{0x01});
+    CancellationSource cancelSource;
+    CancellingSource source(data, 1024, cancelSource); // Cancels at 1024 bytes (matching kCancellationInterval)
+    const auto mapping = makeSingleSpanMapping(0, 2048);
+
+    H264RbspPayloadTransformProvider provider;
+    PayloadTransformRequest request;
+    request.source = &source;
+    request.inputMapping = &mapping;
+    request.logicalBitStart = 0;
+    request.logicalBitLength = 2048 * 8U;
+    request.cancellation = cancelSource.token();
+
+    const auto result = provider.transform(request);
+    QCOMPARE(result.status, DslExecutionStatus::Cancelled);
+    QVERIFY(!result.succeeded());
+    QCOMPARE(result.inspectedByteCount, 1024ULL);
+}
+
+void PayloadTransformTest::rbspTransformInspectionBudgetExceededAndExactBoundary() {
+    const auto data = toBytes({0x00, 0x00, 0x03, 0x01});
+    const MemorySource source(data);
+    const auto mapping = makeSingleSpanMapping(0, 4);
+
+    H264RbspPayloadTransformProvider provider;
+
+    // Budget = 3 on 4-byte input -> ResourceLimit
+    {
+        PayloadTransformRequest request;
+        request.source = &source;
+        request.inputMapping = &mapping;
+        request.logicalBitStart = 0;
+        request.logicalBitLength = 32;
+        request.maximumInspectedBytes = 3;
+
+        const auto result = provider.transform(request);
+        QCOMPARE(result.status, DslExecutionStatus::ResourceLimit);
+        QCOMPARE(result.inspectedByteCount, 3ULL);
+        QVERIFY(!result.succeeded());
+    }
+
+    // Budget = 4 on 4-byte input -> Materialized
+    {
+        PayloadTransformRequest request;
+        request.source = &source;
+        request.inputMapping = &mapping;
+        request.logicalBitStart = 0;
+        request.logicalBitLength = 32;
+        request.maximumInspectedBytes = 4;
+
+        const auto result = provider.transform(request);
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
+        QCOMPARE(result.inspectedByteCount, 4ULL);
+        QVERIFY(result.succeeded());
+    }
+}
+
+void PayloadTransformTest::rbspTransformUnalignedAndOutOfBoundsRejection() {
+    const auto data = toBytes({0x00, 0x00, 0x03, 0x01});
+    const MemorySource source(data);
+    const auto mapping = makeSingleSpanMapping(0, 4);
+
+    H264RbspPayloadTransformProvider provider;
+
+    // Start unaligned
+    {
+        PayloadTransformRequest req;
+        req.source = &source;
+        req.inputMapping = &mapping;
+        req.logicalBitStart = 3;
+        req.logicalBitLength = 8;
+        QCOMPARE(provider.transform(req).status, DslExecutionStatus::InvalidDefinition);
+    }
+
+    // Length unaligned
+    {
+        PayloadTransformRequest req;
+        req.source = &source;
+        req.inputMapping = &mapping;
+        req.logicalBitStart = 0;
+        req.logicalBitLength = 7;
+        QCOMPARE(provider.transform(req).status, DslExecutionStatus::InvalidDefinition);
+    }
+
+    // Zero length
+    {
+        PayloadTransformRequest req;
+        req.source = &source;
+        req.inputMapping = &mapping;
+        req.logicalBitStart = 0;
+        req.logicalBitLength = 0;
+        QCOMPARE(provider.transform(req).status, DslExecutionStatus::InvalidDefinition);
+    }
+
+    // Null inputs
+    {
+        PayloadTransformRequest req1;
+        req1.source = nullptr;
+        req1.inputMapping = &mapping;
+        QCOMPARE(provider.transform(req1).status, DslExecutionStatus::InvalidDefinition);
+
+        PayloadTransformRequest req2;
+        req2.source = &source;
+        req2.inputMapping = nullptr;
+        QCOMPARE(provider.transform(req2).status, DslExecutionStatus::InvalidDefinition);
+    }
+
+    // Out of bounds
+    {
+        PayloadTransformRequest req;
+        req.source = &source;
+        req.inputMapping = &mapping;
+        req.logicalBitStart = 24;
+        req.logicalBitLength = 16; // exceeds 32 bits
+        QCOMPARE(provider.transform(req).status, DslExecutionStatus::InvalidDefinition);
+    }
+}
+
+void PayloadTransformTest::registryRegisterAndLifecycleRbspProvider() {
+    PayloadTransformRegistry registry;
+    auto rbspProvider = std::make_shared<H264RbspPayloadTransformProvider>();
+
+    QVERIFY(registry.registerProvider(rbspProvider));
+    const auto found = registry.findProvider(QStringLiteral("rbsp"));
+    QVERIFY(found != nullptr);
+    QCOMPARE(found->identifier(), QStringLiteral("rbsp"));
+
+    // Duplicate registration rejected
+    QVERIFY(!registry.registerProvider(std::make_shared<H264RbspPayloadTransformProvider>()));
+
+    // Unregister rbsp
+    QVERIFY(registry.unregisterProvider(QStringLiteral("rbsp")));
+    QCOMPARE(registry.findProvider(QStringLiteral("rbsp")), nullptr);
+
+    // Re-register then reset
+    QVERIFY(registry.registerProvider(rbspProvider));
+    registry.reset();
+    QCOMPARE(registry.findProvider(QStringLiteral("rbsp")), nullptr);
+    QVERIFY(registry.findProvider(QStringLiteral("none")) != nullptr);
 }
 
 } // namespace streamview::rules
