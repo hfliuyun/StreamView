@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-2-R — 主 Agent 深审并修正 mapped source 跨 span 错误语义、StructuralEntryRunner 映射合同与覆盖真实性
-Next Action: 下发 Task P5i-3：Docs-first 探测独立 H.264 单 NAL 规则形态；可表达时再增加 `video.h264.nal` 入口，否则停止并申请独立语言能力切片
-Last Verification: P5i-2-R — ADR commit fb901582b7eab1c19b53acaebb4f8418d7918c0e; fix commits 1e0651618d6ad16d112c91a9b357ade239b0698d and 0d2dee6803eb38aa747865e14b8e2ee8ee42f827; Hosted CI Run 32147912029 (Ubuntu job 95746238690, Windows job 95746239092, macOS job 95746240662 all success); local dev/ci/sanitize 41/41 passed; structural runner 19/19; svtool rule check 4/4 passed; git diff --check clean
+Last Completed Step: Task P5i-3 — 独立 H.264 单 NAL 可表达性探测、规则入口阻断与 AAC ASC 规则验证
+Next Action: 主 Agent 复审 Task P5i-3；未经复审不得开始 Task P5i-4
+Last Verification: Task P5i-3 — Markdown-only (ADR-0019); probes scratch/probe_p5i3_q1.svfmt, probe_p5i3_q2.svfmt, probe_p5i3_q5.svfmt; svtool rule check official 4/4 passed; ctest markdown_hygiene passed; git diff --check clean
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2403,3 +2403,24 @@ Blockers: None
   6. `executesOfficialAacAscOnEsdsFixture` 直接读取并编译官方 `aac_asc.svfmt` 源文件，证明结构入口与根文件坐标；它不经过 package catalog，也不独立断言 manifest 版本。`resolveByFormat` 与包入口集成仍属于 P5i-3/P5i-4，不在本切片内虚报。
   7. 验证：本地 dev、ci、sanitize 三套完整构建与 CTest 均 `41/41`，sanitize 零报告；结构运行器 `19/19`；四个官方规则均 `Rule OK`；双语 ADR headings/tables/fences 对称；`markdown_hygiene` 与 `git diff --check` 通过；Hosted CI Run `32147912029` 的 Ubuntu job `95746238690`、Windows job `95746239092`、macOS job `95746240662` 全部 success。
   终审结论：P5i-2-R 通过。Next Action 切换为 P5i-3 Docs-first 可表达性探测；探测证明现有语言可表达独立单 NAL 后方可修改 H.264 官方规则，否则停止并申请独立能力切片。
+- 2026-08-18：完成 Task P5i-3 —— 独立 H.264 单 NAL 可表达性探测、规则入口阻断与 AAC ASC 规则验证（基线 `85c70a61268608a9783fe4f87ffc3ef20d10eba2`，Markdown-only 规范与探测切片）：
+  1. 五项强制可表达性门禁探测结论与实测证据：
+     - **门禁 1（NAL Header 消费与 switch 分派）**：**否**。探针 `scratch/probe_p5i3_q1.svfmt` 与 `probe_p5i3_q1b.svfmt` 实测表明，DSL 0.1 结构体内部仅支持标量字段（`bits`、`ue`、`se`、`ff_coded`）、计算字段、lazy 区域与保留尾比特，不支持嵌套实例化子结构体或通过 switch 分派结构体；`svtool rule check` 拦截并报错 `Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type`（`src/rules/dsl.cpp:1152-1156`）。
+     - **门禁 2（脱离 scan 触发 EBSP->RBSP 脱壳与坐标保留）**：**否**。探针 `scratch/probe_p5i3_q2.svfmt` 实测表明，`payload<rbsp>` 声明被静态校验闸门（`src/rules/dsl.cpp:3771-3775`、`3778-3782`）硬编码绑定于 `scan` 序列，报错 `A payload dispatch must name a declared sequence` 与 `A payload dispatch requires an entry naming its sequence`；此外 `H264EbspRbspMapper` 仅由流式 `H264AnnexBAnalyzer`（`src/rules/h264_annex_b_analyzer.cpp:688-693`）调用，DSL 缺少字段/切片级声明式脱壳视图语法（如 `@unescape(ebsp)`）。
+     - **门禁 3（独立结构入口下 SPS/PPS context dependency 解析）**：**否**。`StructuralEntryRunner::execute`（`src/rules/structural_entry_runner.cpp:78-95`）调用 `DslExecutor::decodeStruct` 时使用空 `contextValueResolver`；当 PPS 引用 SPS 导出的上下文符号时，VM（`src/rules/dsl_vm.cpp:1423-1440`）因未注入 `ContextDirectory` 返回 `DependencyUnavailable`；各结构化运行器调用为无状态隔离，无法跨执行传递依赖。
+     - **门禁 4（全过程保持格式中立无专属 C++ dispatch）**：**否**。在缺乏声明式 DSL 语法的情况下，强行支持独立 NAL/SPS/PPS 必须向 `StructuralEntryRunner` 植入 H.264 专属 C++ 分派逻辑，直接违反全局第 1 条禁止事项及 ADR-0103 架构中立合同。
+     - **门禁 5（复用现有 H.264 结构定义且不复制/不破坏 Annex-B）**：**否**。`h264_annex_b.svfmt:1225` 已声明 `entry nal_units;`，探针 `scratch/probe_p5i3_q5.svfmt` 证明同文件追加第二个 entry 会被 `src/rules/dsl.cpp:1765-1772` 拦截报错 `A DSL program may contain only one entry`；而由于 DSL 缺乏跨文件结构体导入/共享机制，新建独立文件必须全量重复复制 1200+ 行 H.264 语法定义。
+  2. 门禁分支执行与规范冻结：
+     - 根据停止与上报协议，立即停止生产规则与 C++ 编码实现；
+     - 未修改 `org.streamview.h264`（保留 v0.1.39）与 `org.streamview.aac`（保留 v0.1.4），未升级任何包版本；
+     - 未增加 `video.h264.nal` 结构入口，不声称 H.264 SPS/PPS 独立执行已就绪；
+     - 确认 `org.streamview.aac` v0.1.4 `audio.aac.asc`（`AudioSpecificConfig`）作为格式中立的跨层执行基准，继续服务于 P5i-4 的会话导航栈开发；
+     - 明确将 H.264 独立 NAL 结构执行所需的最小语言能力（子结构体分派、声明式 EBSP 视图脱壳、结构型 context resolver 注入）提报为后续独立的语言能力切片。
+  3. 文档与规范同步：
+     - 同步更新双语 ADR-0103（`docs/adr/0103-cross-layer-structured-entry-execution-and-navigation.md` 与 `docs/zh-CN/adr/0103-cross-layer-structured-entry-execution-and-navigation.md`）Section 6 切片计划与阻断结论；
+     - Markdown-only 变更按 ADR-0019 规则跳过 Hosted CI 矩阵。
+  4. 验证：
+     - 规则静态校验：`svtool rule check` 针对四个官方规则（`h264_annex_b.svfmt`、`aac_adts.svfmt`、`aac_asc.svfmt`、`mp4_isobmff.svfmt`）均 `Rule OK`；
+     - `ctest -R markdown_hygiene --preset dev` 通过，双语 ADR 结构对称；
+     - `git diff --check` 干净无空白或冲突问题。
+  终审结论：P5i-3 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-3；未经复审不得开始 Task P5i-4。

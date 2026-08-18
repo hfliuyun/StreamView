@@ -199,10 +199,16 @@ struct NavigationFrame final {
 [P5i-4 (应用/UI)]: AnalysisSession NavigationStack、MainWindow 面包屑与双向选择
 ```
 
-- **任务 P5i-1**（本任务）：纯 Markdown 双语 ADR-0103 规范。
+- **任务 P5i-1**：纯 Markdown 双语 ADR-0103 规范。
 - **任务 P5i-2**：实现可复用映射源视图与 `StructuralEntryRunner`，使用本地结构型规则和现有 `audio.aac.asc` 入口证明通用路径。本能力切片不得修改官方包 manifest，也不得声称完整 H.264 NAL 解码。
-- **任务 P5i-3**：Docs-first 探测独立单 NAL 规则形态；若可表达，则为 `org.streamview.h264` 增加 `video.h264.nal` 并在规则输出实际变化时从 v0.1.39 升至 v0.1.40。若现有语言无法脱离扫描序列表达 header + RBSP 分派，则停止并申请独立能力切片，禁止增加 H.264 专属 C++ dispatch。现有 `org.streamview.aac` v0.1.4 ASC 入口按原样验证，只有本切片实际修改其 manifest 或解码输出时才升级。
-- **任务 P5i-4**：在 `AnalysisSession` 中实现 `NavigationStack`，连接 `MainWindow` 面包屑导航，并测试树与原始视图的双向坐标同步。
+- **任务 P5i-3**（探测结论与阻断状态）：Docs-first 独立 H.264 单 NAL 可表达性探测证明 DSL 0.1 当前缺少：
+  1. 结构体内部子结构实例化 / switch 结构体分派能力（`src/rules/dsl.cpp:1152-1156`：`Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type`）；
+  2. 结构型入口上的声明式 `payload<rbsp>`（`src/rules/dsl.cpp:3771-3775` 与 `3778-3782`：严格限制于 `scan` 序列）；
+  3. 脱离流式 `H264AnnexBAnalyzer` 的格式中立 EBSP->RBSP 防竞争字节脱壳视图层；
+  4. 独立结构型执行器调用间的上下文依赖传递（SPS->PPS 上下文解析）；
+  5. 单个 `.svfmt` 文件内多 entry 声明支持（`src/rules/dsl.cpp:1765-1772`）或跨文件结构体共享导入。
+  根据停止与上报协议，任务 P5i-3 停止规则与生产代码实现，不修改 `org.streamview.h264`（保持 v0.1.39）且不增加 `video.h264.nal`，申请独立的结构体脱壳/分派语言能力切片，并确认 `org.streamview.aac` v0.1.4 `audio.aac.asc` 作为 P5i-4 的活动跨层入口。
+- **任务 P5i-4**：在 `AnalysisSession` 中实现 `NavigationStack`，连接 `MainWindow` 面包屑导航，并使用 `audio.aac.asc` 测试树与原始视图的双向坐标同步。
 
 ---
 
