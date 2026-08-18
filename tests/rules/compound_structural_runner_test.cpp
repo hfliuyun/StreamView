@@ -292,6 +292,35 @@ public:
     }
 };
 
+class PrefixEscapeTransformProvider final : public PayloadTransformProvider {
+public:
+    [[nodiscard]] QString identifier() const override {
+        return QStringLiteral("prefix_escape_transform");
+    }
+
+    [[nodiscard]] PayloadTransformResult transform(
+        const PayloadTransformRequest& request) const override {
+        PayloadTransformResult result;
+        if (request.inputMapping == nullptr) {
+            result.status = DslExecutionStatus::InvalidDefinition;
+            result.errorMessage = QStringLiteral("Missing input mapping");
+            return result;
+        }
+        const auto range = LogicalRange::create(
+            LogicalBitAddress(request.inputMapping->viewId(), 0), 8U);
+        const auto prefix = range ? request.inputMapping->locate(*range) : std::nullopt;
+        if (!prefix) {
+            result.status = DslExecutionStatus::InvalidDefinition;
+            result.errorMessage = QStringLiteral("Unable to locate prefix");
+            return result;
+        }
+        result.status = DslExecutionStatus::Materialized;
+        result.forwardedMapping = SourceMapping::create(
+            request.inputMapping->viewId(), prefix->sourceSpans());
+        return result;
+    }
+};
+
 class DiagnosticTransformProvider final : public PayloadTransformProvider {
 public:
     [[nodiscard]] QString identifier() const override {
@@ -373,6 +402,7 @@ private slots:
     void compoundPropagatesTransformInspectionBudgetExceeded();
     void compoundRejectsZeroLengthPayloadInput();
     void compoundRejectsMalformedTransformResult();
+    void compoundRejectsTransformSpanOutsideRequestedLogicalRange();
     void compoundPublishesTransformDiagnostics();
     void rejectsInspectionBudgetAboveSandboxBound();
 
@@ -1737,6 +1767,42 @@ void CompoundStructuralRunnerTest::compoundRejectsMalformedTransformResult() {
     QVERIFY(headerNode.has_value());
     QCOMPARE(headerNode->state(), MaterializationState::Invalid);
     QVERIFY(result.errorMessage.contains(QStringLiteral("cover the input logical range")));
+}
+
+void CompoundStructuralRunnerTest::compoundRejectsTransformSpanOutsideRequestedLogicalRange() {
+    const auto data = toBytes({0x67, 0x12, 0x34, 0x56});
+    const MemorySource source(data);
+    const auto headerMapping = makeMapping(0, 1, 1);
+    const auto payloadMapping = makeMapping(1, 3, 2);
+
+    auto treeOpt = AnalysisTree::create(QStringLiteral("Root"));
+    QVERIFY(treeOpt.has_value());
+    AnalysisTree tree = std::move(*treeOpt);
+
+    PayloadTransformRegistry registry;
+    QVERIFY(registry.registerProvider(std::make_shared<PrefixEscapeTransformProvider>()));
+
+    CompoundStructuralExecutionRequest request;
+    request.source = &source;
+    request.headerMapping = &headerMapping;
+    request.headerStructureIndex = *testProgram_->structureIndex(QStringLiteral("Header"));
+    request.payloadStructureIndex = *testProgram_->structureIndex(QStringLiteral("PayloadA"));
+    request.payloadMapping = &payloadMapping;
+    request.payloadLogicalStart = 8;
+    request.transformProviderId = QStringLiteral("prefix_escape_transform");
+    request.transformRegistry = &registry;
+    request.tree = &tree;
+    request.parentId = tree.rootId();
+
+    const auto result = CompoundStructuralRunner::execute(*testProgram_, request);
+
+    QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+    QVERIFY(result.headerNodeId.has_value());
+    QCOMPARE(result.payloadNodeId, std::nullopt);
+    const auto headerNode = tree.node(*result.headerNodeId);
+    QVERIFY(headerNode.has_value());
+    QCOMPARE(headerNode->state(), MaterializationState::Invalid);
+    QVERIFY(result.errorMessage.contains(QStringLiteral("requested payload logical range")));
 }
 
 void CompoundStructuralRunnerTest::compoundPublishesTransformDiagnostics() {
