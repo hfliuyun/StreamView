@@ -1226,6 +1226,7 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
         limits.maximumNodeDepth > DslExecutionLimits::defaultMaximumNodeDepth() ||
         limits.maximumMaterializedNodes == 0 ||
         limits.maximumMaterializedNodes > DslExecutionLimits::defaultMaximumMaterializedNodes() ||
+        limits.maximumInspectedBytes > DslExecutionLimits::defaultMaximumInspectedBytes() ||
         limits.maximumInstructions == 0 ||
         limits.maximumInstructions > DslExecutionLimits::defaultMaximumInstructions() ||
         limits.cancellationCheckInterval == 0 ||

@@ -2,6 +2,7 @@
 
 #include <streamview/core/bit_reader.h>
 
+#include <algorithm>
 #include <exception>
 #include <limits>
 
@@ -39,6 +40,99 @@ namespace {
             *errorMessage = QStringLiteral("Source mapping spans must be byte-aligned");
             return false;
         }
+    }
+    return true;
+}
+
+[[nodiscard]] bool spanContainedInMapping(const core::SourceMapping& mapping,
+                                           const core::SourceSpan& candidate) noexcept {
+    const auto candidateEnd = candidate.endExclusive();
+    for (const auto& span : mapping.sourceSpans()) {
+        if (candidate.start() >= span.start() && candidateEnd <= span.endExclusive()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+[[nodiscard]] bool spansOverlap(const core::SourceSpan& left,
+                                const core::SourceSpan& right) noexcept {
+    return left.start() < right.endExclusive() && right.start() < left.endExclusive();
+}
+
+[[nodiscard]] bool validateTransformResult(const PayloadTransformRequest& request,
+                                           const PayloadTransformResult& transformResult,
+                                           QString* errorMessage) {
+    if (transformResult.status != DslExecutionStatus::Materialized) {
+        return true;
+    }
+    if (!transformResult.forwardedMapping) {
+        *errorMessage = QStringLiteral("Materialized transform did not return a forwarded mapping");
+        return false;
+    }
+    if (request.maximumInspectedBytes != 0 &&
+        transformResult.inspectedByteCount > request.maximumInspectedBytes) {
+        *errorMessage = QStringLiteral("Payload transform exceeded its inspection budget");
+        return false;
+    }
+    if (!validateMapping(*transformResult.forwardedMapping, errorMessage)) {
+        return false;
+    }
+
+    for (const auto& forwardedSpan : transformResult.forwardedMapping->sourceSpans()) {
+        if (!spanContainedInMapping(*request.inputMapping, forwardedSpan)) {
+            *errorMessage = QStringLiteral("Forwarded mapping escapes the input mapping");
+            return false;
+        }
+    }
+
+    quint64 excludedBits = 0;
+    for (const PayloadExcludedSpan& excluded : transformResult.excludedSpans) {
+        if (excluded.sourceSpan.bitLength() == 0 ||
+            excluded.sourceSpan.start().bitOffsetInByte() != 0 ||
+            (excluded.sourceSpan.bitLength() % 8U) != 0) {
+            *errorMessage = QStringLiteral("Excluded spans must be non-empty and byte-aligned");
+            return false;
+        }
+        if (!spanContainedInMapping(*request.inputMapping, excluded.sourceSpan)) {
+            *errorMessage = QStringLiteral("Excluded span escapes the input mapping");
+            return false;
+        }
+        if ((excluded.outputBitOffset % 8U) != 0 ||
+            excluded.outputBitOffset > transformResult.forwardedMapping->logicalBitLength()) {
+            *errorMessage = QStringLiteral("Excluded span output offset is out of range");
+            return false;
+        }
+        if (std::numeric_limits<quint64>::max() - excludedBits <
+            excluded.sourceSpan.bitLength()) {
+            *errorMessage = QStringLiteral("Excluded span length arithmetic overflow");
+            return false;
+        }
+        excludedBits += excluded.sourceSpan.bitLength();
+    }
+
+    for (std::size_t i = 0; i < transformResult.excludedSpans.size(); ++i) {
+        const auto& left = transformResult.excludedSpans[i].sourceSpan;
+        for (std::size_t j = i + 1; j < transformResult.excludedSpans.size(); ++j) {
+            if (spansOverlap(left, transformResult.excludedSpans[j].sourceSpan)) {
+                *errorMessage = QStringLiteral("Excluded spans overlap");
+                return false;
+            }
+        }
+        for (const auto& forwarded : transformResult.forwardedMapping->sourceSpans()) {
+            if (spansOverlap(left, forwarded)) {
+                *errorMessage = QStringLiteral("Excluded span is also forwarded");
+                return false;
+            }
+        }
+    }
+
+    const quint64 forwardedBits = transformResult.forwardedMapping->logicalBitLength();
+    if (std::numeric_limits<quint64>::max() - forwardedBits < excludedBits ||
+        forwardedBits + excludedBits != request.logicalBitLength) {
+        *errorMessage = QStringLiteral(
+            "Forwarded and excluded spans do not cover the input logical range");
+        return false;
     }
     return true;
 }
@@ -327,6 +421,25 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
     const PayloadTransformResult transformRes = provider->transform(transformReq);
     result.inspectedByteCount = transformRes.inspectedByteCount;
     result.excludedSpans = transformRes.excludedSpans;
+    result.transformDiagnostics = transformRes.diagnostics;
+    for (const auto& diagnostic : transformRes.diagnostics) {
+        (void)request.tree->addDiagnostic(*result.headerNodeId, diagnostic);
+    }
+
+    QString transformValidationError;
+    if (transformRes.status == DslExecutionStatus::Materialized &&
+        !validateTransformResult(transformReq, transformRes, &transformValidationError)) {
+        core::ParseDiagnostic diag;
+        diag.code = core::DiagnosticCode::InvalidSyntax;
+        diag.severity = core::DiagnosticSeverity::Error;
+        diag.message = transformValidationError;
+        (void)request.tree->markPartial(
+            *result.headerNodeId,
+            core::MaterializationState::Invalid,
+            std::move(diag));
+        return rollbackAndReturn(DslExecutionStatus::InvalidDefinition,
+                                 transformValidationError);
+    }
 
     if (!transformRes.succeeded()) {
         const auto headerTerminalState =
@@ -363,23 +476,14 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
             headerTerminalState,
             std::move(diag));
 
-        return rollbackAndReturn(transformRes.status, transformRes.errorMessage);
+        const QString errorMessage = transformRes.errorMessage.isEmpty()
+            ? QStringLiteral("Payload transform failed")
+            : transformRes.errorMessage;
+        return rollbackAndReturn(transformRes.status, errorMessage);
     }
 
     const core::SourceMapping& transformedMapping = *transformRes.forwardedMapping;
     result.forwardedPayloadMapping = transformedMapping;
-
-    if (!validateMapping(transformedMapping, &validationError)) {
-        core::ParseDiagnostic diag;
-        diag.code = core::DiagnosticCode::InvalidSyntax;
-        diag.severity = core::DiagnosticSeverity::Error;
-        diag.message = validationError;
-        (void)request.tree->markPartial(
-            *result.headerNodeId,
-            core::MaterializationState::Invalid,
-            std::move(diag));
-        return rollbackAndReturn(DslExecutionStatus::InvalidDefinition, validationError);
-    }
 
     DslExecutionOptions payloadOptions = request.options;
     payloadOptions.limits.maximumInstructions = instRemaining;
