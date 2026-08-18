@@ -16,9 +16,12 @@
 
 namespace streamview::rules {
 
+struct CompoundStructuralExecutionResult;
+
 struct CompoundTransactionHooks final {
     // Hooks run before tree nodes enter their terminal success states. Unexpected
     // exceptions fail the compound operation and trigger best-effort rollback.
+    std::function<void(const CompoundStructuralExecutionResult&)> onCommitWithResult;
     std::function<void()> onCommit;
     std::function<void()> onRollback;
 };
@@ -40,6 +43,7 @@ struct CompoundStructuralExecutionRequest final {
 
     DslExecutionOptions options;
     bool requireExactConsumption = true;
+    DslContextValueResolver contextValueResolver;
     CompoundTransactionHooks transactionHooks;
 };
 
@@ -56,6 +60,11 @@ struct CompoundStructuralExecutionResult final {
     std::optional<core::SourceMapping> forwardedPayloadMapping;
     std::vector<core::ParseDiagnostic> transformDiagnostics;
     std::vector<std::optional<quint64>> headerFieldValues;
+    std::vector<std::optional<quint64>> payloadFieldValues;
+    std::optional<DslExecutionContextValues> headerContextValues;
+    std::optional<DslExecutionContextValues> payloadContextValues;
+    std::vector<DslExecutionContextImport> headerContextImports;
+    std::vector<DslExecutionContextImport> payloadContextImports;
     QString errorMessage;
 
     [[nodiscard]] bool materialized() const noexcept {
