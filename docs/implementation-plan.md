@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5h-R — 主 Agent 深审补正（补齐 codec configuration 合同、DSL 对齐回归与真实证据，整改 commit `df896ab0bcf61d00fca36b123ef151e8b4389fad`）
-Next Action: 下发 Task P5i-1（双语 ADR-0103：跨层结构型入口执行、坐标映射视图与会话/UI 导航栈合同）；P5i-1 复审前不得开始 P5i 能力编码或 Task P5j
-Last Verification: P5h-R — Original docs commit `5d403b249af47dfce942d52edd0874e0b7b6ce63`; original feat commit `195a8814947c8b99ac0655bc6e5905f6c249e2ea`; remediation commit `df896ab0bcf61d00fca36b123ef151e8b4389fad`; Hosted CI Run `32131893568` (Windows-2022 job `95694647432`, macOS-15 job `95694647575`, Ubuntu-24.04 job `95694647610`: all success); local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest `40/40` all passed; MP4 analyzer `40/40`; sanitize zero reports; all four official `svtool rule check` commands OK; Python fixture generator compile/regeneration passed; `markdown_hygiene` and `git diff --check` passed
+Last Completed Step: Task P5i-1 — 双语 ADR-0103 跨层结构型入口执行、坐标映射与导航栈合同
+Next Action: 主 Agent 复审 P5i-1；未经复审不得开始 P5i-2
+Last Verification: P5i-1 — Docs commit d4982c4bc99f018e69c6cfbf45582dcbbda88ec1; Markdown-only (ADR-0019); markdown_hygiene passed; git diff --check clean
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -222,7 +222,11 @@ Blockers: None
 - **Task P5f**（规则切片）：`moov` 容器层级规则 v0.1.1（`moov`、`trak`、`mdia`、`minf`、`stbl`）；
 - **Task P5g**（规则切片）：样本表索引分页规则 v0.1.2（`stts`、`stsc`、`stsz`、`stco`、`co64`）；
 - **Task P5h**（规则切片）：编解码配置 Box 规则 v0.1.3（`stsd`、`avc1`、`avcC`、`mp4a`、`esds` + `@target_format`）；
-- **Task P5i**（能力切片）：跨层导航会话与坐标视图集成；
+- **Task P5i**（跨层执行与导航）：
+  - **Task P5i-1**（规范）：双语 ADR-0103 跨层结构型入口执行、坐标映射视图与导航栈合同（Markdown-only）；
+  - **Task P5i-2**（能力切片）：`BoundedSourceView` 与通用结构型入口执行器 `StructuralEntryRunner`；
+  - **Task P5i-3**（规则切片）：`org.streamview.h264` 增加 `video.h264.nal` 结构型入口并升级 `rule.toml`，验证 `org.streamview.aac` `audio.aac.asc` 结构型入口；
+  - **Task P5i-4**（会话/UI切片）：`AnalysisSession` 导航栈、双向坐标映射与 `MainWindow` 面包屑/选择集成；
 - **Task P5j**（验收与审计切片）：逐 bit 验收审计、超大 `mdat` 惰性验证与阶段 5 里程碑关闭。
 
 ### 阶段 5 检查清单
@@ -2341,3 +2345,17 @@ Blockers: None
   5. 原报告手写的 Docs/Feat 完整 SHA 不是仓库对象；真实值已更正为 `5d403b249af47dfce942d52edd0874e0b7b6ce63` 与 `195a8814947c8b99ac0655bc6e5905f6c249e2ea`。原报告同时声称 working tree clean，但评审现场存在未跟踪 `scratch/`；该目录未被本轮删除或提交。
   6. 验证：本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套全量 CTest 均 `40/40`，sanitize 零报告；四个官方规则均 `Rule OK`；Python fixture generator compile/regeneration、`markdown_hygiene` 与 `git diff --check` 通过；Hosted CI Run `32131893568` 的 Windows-2022 job `95694647432`、macOS-15 job `95694647575`、Ubuntu-24.04 job `95694647610` 全部 success。
   终审结论：P5h-R 通过。P5i 现场核对发现两个必须先固化的能力缺口：`audio.aac.asc` entry point 存在但现有 `AacAdtsAnalyzer` 只执行 scanner sequence，`video.h264.nal` 尚无官方 entry point；同时没有 bounded/mapped source 与父子会话导航栈合同。因此 Next Action 拆为 P5i-1 双语 ADR-0103 规范切片，复审后再按能力、规则入口和 UI 集成分片编码。
+- 2026-08-18：完成 Task P5i-1 —— 双语 ADR-0103 跨层结构型入口执行、坐标映射视图与导航栈合同（基线 `b42762a4df1f8be5b83ec8b44ee92b9558b61013`，Docs commit `d4982c4bc99f018e69c6cfbf45582dcbbda88ec1`）：
+  1. 架构设计与双语规范（Markdown-only）：
+     - 新增双语 ADR-0103（`docs/adr/0103-cross-layer-structured-entry-execution-and-navigation.md` 与 `docs/zh-CN/adr/0103-cross-layer-structured-entry-execution-and-navigation.md`）；
+     - 规范格式中立的通用结构型入口执行器 `StructuralEntryRunner`，直接调用 `DslExecutor::decodeStruct` 解码目标结构体，禁止将单结构体载荷传给 ADTS/Annex-B 流扫描器；
+     - 规范目标格式解析合同，消费 `RulePackageCatalog::resolveByFormat`，明确 `Found`、`MissingContent`、`VersionConflict`、`IncompatibleLanguage` 与 `IncompatibleEngine` 的用户可见行为；
+     - 规范坐标映射视图合同，定义基于父惰性节点 `FieldLocation` 与 `sourceSpans` 构建 `BoundedSourceView` 与 `SourceMapping`，子 AST 逻辑偏移 0 严格回映原根文件物理偏移，严禁载荷复制脱离坐标；
+     - 规范 `AnalysisSession` 导航栈 `NavigationStack` 与 `NavigationFrame`，明确进入、返回、父级选择恢复、双向高亮同步与进入失败父视图保持等行为；
+     - 规范 v0.1 会话持久化边界与优雅降级；
+     - 细化后续实施切片（P5i-2 能力执行器、P5i-3 官方规则入口与版本、P5i-4 会话与 UI 集成），制定涵盖 10 项核心场景的可执行验证矩阵。
+  2. 验证：
+     - `markdown_hygiene` 自动化测试通过，双语结构、标题、表格与代码围栏严格对称；
+     - `git diff --check` 干净无空白冲突；
+     - 纯 Markdown 变更按 ADR-0019 规则跳过 Hosted CI 矩阵。
+  终审结论：P5i-1 交付完成。Next Action 切换为主 Agent 复审 P5i-1；未经复审不得开始 P5i-2。
