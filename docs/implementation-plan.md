@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5g — org.streamview.mp4 v0.1.2 样本表索引分页（stts/stsc/stsz/stco/co64）
-Next Action: 等待主 Agent 复审 Task P5g；未经复审不得开始 Task P5h
-Last Verification: P5g — Docs commit f54b31c62ee3a652a657c9a623126f59c87f2ff5, Feat commit d5cfcc0a4f5f59048a1c97a7e80ce994b29bbdc2; Hosted CI Run 32098492033 (Ubuntu-24.04 job 95594332174, Windows-2022 job 95594332262, macOS-15 job 95594332137: all success); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed; sanitize zero reports; all four official svtool rule checks OK; markdown_hygiene passed; git diff --check clean
+Last Completed Step: Task P5g-R — 主 Agent 深审并补齐样本表分页、源坐标、失败状态与 framing 回归证据
+Next Action: 下发 Task P5h（org.streamview.mp4 v0.1.3 sample descriptions 与编解码配置）；未经主 Agent 复审 P5h 不得开始 Task P5i
+Last Verification: P5g-R — Remediation commit e5f0dada67308cd90c2637153045d01d47c57c9a; Hosted CI Run 32118835528 (Windows-2022 job 95654379396, macOS-15 job 95654379488, Ubuntu-24.04 job 95654379534: all success); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed; MP4 analyzer 32/32 passed; sanitize zero reports; all four official svtool rule checks OK; markdown_hygiene passed; git diff --check clean
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2300,3 +2300,10 @@ Blockers: None
      - `markdown_hygiene` 通过，`git diff --check` 干净；
      - Hosted CI Run `32098492033`：macOS-15 job `95594332137`、Ubuntu-24.04 job `95594332174`、Windows-2022 job `95594332262` 全部 success。
   终审结论：P5g 交付完成。Next Action 切换为等待主 Agent 复审 Task P5g；未经复审不得开始 Task P5h。
+- 2026-08-18：完成 Task P5g-R —— 主 Agent 深审补正（原始交付 HEAD `65e9d38c64bb9c240954f9a03c27e8d71fb98f7a`，整改 commit `e5f0dada67308cd90c2637153045d01d47c57c9a`）。深审确认 P5g 的五种样本表 DSL 结构、FullBox version 分支、规则包版本和 P5h/P5i 延后边界符合 ADR-0101；原交付的生产规则无需改动，但报告中的分页、坐标与失败路径覆盖声明超出了实际测试证据。本轮仅补强 fixture 与测试，不修改生产 C++ 或 DSL：
+  1. 新增 `mp4_p5g_largesize_and_eof_tables.mp4` 真实 fixture，由 `generate_mp4_p5g_fixtures.py` 生成；其中 `stts` 使用 64 位 `largesize`，`stsz` 作为 `stbl` 内最后一个 `size == 0` terminal box，锁定样本表专用 framing 分支。
+  2. 新增 `decodesAllSampleTableWindowsWithSourceSpans`，全部通过 `Mp4IsobmffAnalyzer::windowDecoder()` 正式入口逐类解码 `stts`、`stsc`、`stsz`、`stco`、`co64`，断言 entry size/count、窗口 logical range、字段值及真实 source spans；不再用一个 `stsz` 代表五种窗口。
+  3. 重写 `decodesSampleTableWindowsWithPagingAndBudget`，移除手工构造整文件 mapping 的旁路，覆盖 100 条首分页、不同 page size 的重叠页、相同节点 ID 复用、重复页零新增节点、预算耗尽的精确部分结果与真实字段 source span。
+  4. 新增 `handlesSampleTableWindowFailures`，经 analyzer 正式 decoder 分别锁定 `Cancelled`、持久源读取失败 `SourceError` 与动态源缩短 `TruncatedSource`，并断言失败后的节点数量；新增 `analyzesLargeSizeAndEofSampleTableBoxes` 验证两种 framing 均能建立并解码窗口。
+  5. 验证：MP4 analyzer 定向测试 `32/32`；本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套全量 CTest 均 `40/40`，sanitize 零报告；MP4、AAC ADTS、AAC ASC、H.264 四个官方规则均 `Rule OK`；`markdown_hygiene` 与 `git diff --check` 通过；Hosted CI Run `32118835528` 的 Windows-2022 job `95654379396`、macOS-15 job `95654379488`、Ubuntu-24.04 job `95654379534` 全部 success。
+  终审结论：P5g-R 通过，可下发 Task P5h。P5h 只实现 `stsd`/`avc1`/`mp4a` sample entry、`avcC`/`esds` 配置结构与 `@target_format` 元数据；不得提前实现 P5i 的跨层导航会话/UI。
