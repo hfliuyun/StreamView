@@ -1,0 +1,8 @@
+struct NalUnitHeader {
+    bits<1> forbidden_zero_bit;
+    bits<2> nal_ref_idc;
+    bits<5> nal_unit_type;
+}
+
+entry NalUnitHeader;
+entry NalUnitHeader;

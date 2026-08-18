@@ -5,8 +5,12 @@
 #include <streamview/core/cancellation.h>
 #include <streamview/core/coordinates.h>
 #include <streamview/core/source.h>
+#include <streamview/core/version.h>
+#include <streamview/rules/aac_adts_analyzer.h>
 #include <streamview/rules/dsl.h>
 #include <streamview/rules/dsl_ir.h>
+#include <streamview/rules/language_version.h>
+#include <streamview/rules/rule_catalog.h>
 
 #include <QFile>
 #include <QString>
@@ -169,6 +173,7 @@ private slots:
     void handlesCancellation();
     void handlesResourceLimits();
     void executesOfficialAacAscOnEsdsFixture();
+    void executesCatalogResolvedAacAscOnEsdsFixture();
 };
 
 void StructuralEntryRunnerTest::boundedSourceViewSingleSpan() {
@@ -693,6 +698,85 @@ void StructuralEntryRunnerTest::executesOfficialAacAscOnEsdsFixture() {
     QCOMPARE(extensionFlagNode->location()->sourceSpans().front().start().absoluteBitOffset(),
              quint64{1183});
     QCOMPARE(extensionFlagNode->location()->sourceSpans().front().bitLength(), quint64{1});
+}
+
+void StructuralEntryRunnerTest::executesCatalogResolvedAacAscOnEsdsFixture() {
+    auto loaded = loadAacAdtsRulePackage();
+    QVERIFY2(loaded.succeeded(), qPrintable(loaded.errorMessage));
+    QVERIFY(loaded.package.has_value());
+    QCOMPARE(loaded.package->identity().packageId(), QStringLiteral("org.streamview.aac"));
+    QCOMPARE(loaded.package->identity().packageVersion(), QStringLiteral("0.1.4"));
+
+    RulePackageCatalog catalog;
+    const auto registered = catalog.registerPackage(std::move(*loaded.package));
+    QVERIFY2(registered.succeeded(), qPrintable(registered.errorMessage));
+
+    const auto resolved = catalog.resolveByFormat(
+        u"audio.aac.asc", languageVersion(), streamview::core::version());
+    QVERIFY2(resolved.succeeded(), qPrintable(resolved.errorMessage));
+    QCOMPARE(resolved.status, RuleCatalogLookupStatus::Found);
+    QCOMPARE(resolved.package->identity().packageId(), QStringLiteral("org.streamview.aac"));
+    QCOMPARE(resolved.package->identity().packageVersion(), QStringLiteral("0.1.4"));
+    QCOMPARE(resolved.entryPoint->id, QStringLiteral("asc"));
+    QCOMPARE(resolved.entryPoint->format, QStringLiteral("audio.aac.asc"));
+    QCOMPARE(resolved.entryPoint->sourcePath, QStringLiteral("src/aac_asc.svfmt"));
+    QCOMPARE(resolved.entryPoint->depth, QStringLiteral("structural"));
+    QVERIFY(!resolved.entryPoint->detector.has_value());
+
+    const QByteArray* ruleSource =
+        resolved.package->fileContents(resolved.entryPoint->sourcePath);
+    QVERIFY(ruleSource != nullptr);
+    const auto parsed = DslParser::parse(QString::fromUtf8(*ruleSource));
+    QVERIFY2(parsed.succeeded(),
+             parsed.diagnostics.empty() ? "" : qPrintable(parsed.diagnostics.front().message));
+    const auto compiled = DslCompiler::compile(parsed.program);
+    QVERIFY2(compiled.succeeded(),
+             compiled.diagnostics.empty() ? ""
+                                          : qPrintable(compiled.diagnostics.front().message));
+    QCOMPARE(compiled.program->entry.kind, DslEntryKind::Structure);
+
+    const auto fixtureBytes = readFixtureBytes(QStringLiteral("mp4_p5h_mp4a_esds.mp4"));
+    QVERIFY(!fixtureBytes.empty());
+    MemorySource rootSource(fixtureBytes);
+    const auto ascSpan = SourceSpan::create(SourceBitAddress(1168), 16);
+    QVERIFY(ascSpan.has_value());
+    const auto ascMapping = SourceMapping::create(LogicalViewId(101), {*ascSpan});
+    QVERIFY(ascMapping.has_value());
+
+    const auto result =
+        StructuralEntryRunner::execute(rootSource, *ascMapping, *compiled.program);
+    QVERIFY2(result.succeeded(), qPrintable(result.execution.errorMessage));
+    QCOMPARE(result.execution.status, DslExecutionStatus::Materialized);
+    QVERIFY(result.tree != nullptr);
+
+    const auto rootNode = result.tree->node(result.tree->rootId());
+    QVERIFY(rootNode.has_value());
+    QCOMPARE(rootNode->children().size(), std::size_t{1});
+    const auto ascNode = result.tree->node(rootNode->children().front());
+    QVERIFY(ascNode.has_value());
+    QCOMPARE(ascNode->name(), QStringLiteral("AudioSpecificConfig"));
+
+    QStringList childNames;
+    for (const auto childId : ascNode->children()) {
+        const auto child = result.tree->node(childId);
+        QVERIFY(child.has_value());
+        childNames.push_back(child->name());
+    }
+    QCOMPARE(childNames,
+             QStringList({QStringLiteral("audio_object_type"),
+                          QStringLiteral("sampling_frequency_index"),
+                          QStringLiteral("channel_configuration"),
+                          QStringLiteral("frame_length_flag"),
+                          QStringLiteral("depends_on_core_coder"),
+                          QStringLiteral("extension_flag")}));
+
+    const auto firstField = result.tree->node(ascNode->children().front());
+    QVERIFY(firstField.has_value());
+    QCOMPARE(firstField->value().toULongLong(), quint64{2});
+    QVERIFY(firstField->location().has_value());
+    QCOMPARE(firstField->location()->sourceSpans().front().start().absoluteBitOffset(),
+             quint64{1168});
+    QCOMPARE(firstField->location()->sourceSpans().front().bitLength(), quint64{5});
 }
 
 QTEST_MAIN(StructuralEntryRunnerTest)

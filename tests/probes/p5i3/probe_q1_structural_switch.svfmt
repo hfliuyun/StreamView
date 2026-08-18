@@ -1,0 +1,23 @@
+struct SequenceParameterSetRbsp {
+    bits<8> profile_idc;
+}
+
+struct PictureParameterSetRbsp {
+    ue pic_parameter_set_id;
+}
+
+struct NalUnit {
+    bits<1> forbidden_zero_bit;
+    bits<2> nal_ref_idc;
+    bits<5> nal_unit_type;
+    switch (nal_unit_type) {
+        case 7: {
+            SequenceParameterSetRbsp payload;
+        }
+        case 8: {
+            PictureParameterSetRbsp payload;
+        }
+    }
+}
+
+entry NalUnit;
