@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5g-R — 主 Agent 深审并补齐样本表分页、源坐标、失败状态与 framing 回归证据
-Next Action: 下发 Task P5h（org.streamview.mp4 v0.1.3 sample descriptions 与编解码配置）；未经主 Agent 复审 P5h 不得开始 Task P5i
-Last Verification: P5g-R — Remediation commit e5f0dada67308cd90c2637153045d01d47c57c9a; Hosted CI Run 32118835528 (Windows-2022 job 95654379396, macOS-15 job 95654379488, Ubuntu-24.04 job 95654379534: all success); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed; MP4 analyzer 32/32 passed; sanitize zero reports; all four official svtool rule checks OK; markdown_hygiene passed; git diff --check clean
+Last Completed Step: Task P5h — org.streamview.mp4 v0.1.3 sample descriptions 与编解码配置（stsd、avc1、mp4a、avcC、esds 与 @target_format）
+Next Action: 等待主 Agent 复审 Task P5h；未经复审不得开始 Task P5i（跨层导航会话与坐标视图集成）
+Last Verification: P5h — Docs commit 5d403b22b1bc2703f8a48ef2d4242273ce96f7c1; Feat commit 195a8816c879d71c4c16ca6fc896e38b37c093a1; Hosted CI Run 32123671697 (Windows-2022 job 95669421829, macOS-15 job 95669421921, Ubuntu-24.04 job 95669421976: all success); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed; MP4 analyzer 38/38 passed; sanitize zero reports; all four official svtool rule checks OK; markdown_hygiene passed; git diff --check clean
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -227,8 +227,8 @@ Blockers: None
 
 ### 阶段 5 检查清单
 - [x] 支持普通、64 位、size=0 和未知 box；`mdat` 默认 lazy。
-- [ ] 实现 `ftyp`、movie/track/media 层级、sample descriptions、时间与 sample tables、编辑列表。
-- [ ] 实现 `avcC`、`esds`、AVC/AAC sample entry。
+- [x] 实现 `ftyp`、movie/track/media 层级、sample descriptions、时间与 sample tables、编辑列表。
+- [x] 实现 `avcC`、`esds`、AVC/AAC sample entry。
 - [x] 根据 `stsc`、`stsz`、`stco/co64` 建立分页 sample 索引。
 - [ ] 从 MP4 sample 进入 H.264/AAC 规则，并可返回容器字段。
 - [x] 对 `moof` 明确报告 fragmented MP4 不在首版范围。
@@ -2307,3 +2307,29 @@ Blockers: None
   4. 新增 `handlesSampleTableWindowFailures`，经 analyzer 正式 decoder 分别锁定 `Cancelled`、持久源读取失败 `SourceError` 与动态源缩短 `TruncatedSource`，并断言失败后的节点数量；新增 `analyzesLargeSizeAndEofSampleTableBoxes` 验证两种 framing 均能建立并解码窗口。
   5. 验证：MP4 analyzer 定向测试 `32/32`；本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套全量 CTest 均 `40/40`，sanitize 零报告；MP4、AAC ADTS、AAC ASC、H.264 四个官方规则均 `Rule OK`；`markdown_hygiene` 与 `git diff --check` 通过；Hosted CI Run `32118835528` 的 Windows-2022 job `95654379396`、macOS-15 job `95654379488`、Ubuntu-24.04 job `95654379534` 全部 success。
   终审结论：P5g-R 通过，可下发 Task P5h。P5h 只实现 `stsd`/`avc1`/`mp4a` sample entry、`avcC`/`esds` 配置结构与 `@target_format` 元数据；不得提前实现 P5i 的跨层导航会话/UI。
+- 2026-08-18：完成 Task P5h —— org.streamview.mp4 v0.1.3 sample descriptions 与编解码配置（基线 `8b4bfa46a3f650dc268c02488b5408822635c838`，Docs commit `5d403b22b1bc2703f8a48ef2d4242273ce96f7c1`，Feat commit `195a8816c879d71c4c16ca6fc896e38b37c093a1`）：
+  1. 规范与文档先行（Docs-first）：
+     - 新增双语 ADR-0102（`docs/adr/0102-mp4-sample-descriptions-and-codec-configurations.md` 与 `docs/zh-CN/adr/0102-mp4-sample-descriptions-and-codec-configurations.md`）；
+     - 明确 `org.streamview.mp4` 从 v0.1.2 升级至 v0.1.3；
+     - 规范 `stsd`、`avc1`、`mp4a`、`avcC`、`esds` 的 wire layout、FullBox/Entry 字段与 `@container(Box)` 嵌套分发模型；
+     - 规范 `avcC` 内变长 SPS/PPS 载荷绑定 `@target_format("video.h264.nal")`；
+     - 规范 `esds` 描述符 1..4 字节 0x80 continuation length 解析以及 `DecSpecificInfo` 内 AudioSpecificConfig 绑定 `@target_format("audio.aac.asc")`；
+     - 明确 P5h 仅生成 target_format metadata，不执行跨格式 resolveByFormat、会话跳转或容器回映（延后至 P5i）。
+  2. 规则与 DSL 编译器实现：
+     - 修复 DSL 编译器与 IR 字节对齐跟踪器（`OffsetTracker`），保证连续字节对齐 `@lazy` 区域与 `repeat` 循环迭代中 `byteAligned` 状态正确保留；
+     - 更新 `src/rules/official/org.streamview.mp4/rule.toml` 版本至 `0.1.3`；
+     - 更新 `src/rules/official/org.streamview.mp4/src/mp4_isobmff.svfmt`，由 DSL 规则完整表达 `stsd`、`avc1`、`mp4a`、`avcC`、`esds` 及其标准 32 位 size、64 位 largesize 与 size==0 EOF framing；
+     - 编写 Python 真实二进制码流生成脚本 `tests/fixtures/generate_mp4_p5h_fixtures.py` 并装配 6 套真实 MP4 文件：
+       1. `mp4_p5h_avc1_avcC.mp4`（包含 78 字节 `avc1` 与含 1 个 SPS、1 个 PPS 的 `avcC`）；
+       2. `mp4_p5h_mp4a_esds.mp4`（包含 28 字节 `mp4a` 与含 1 字节长度编码 AAC ASC 的 `esds`）；
+       3. `mp4_p5h_esds_multibyte_len.mp4`（包含 3 字节 continuation 长度编码的 `esds`）；
+       4. `mp4_p5h_unsupported_versions.mp4`（包含 version 1 `stsd`、config_version 2 `avcC` 与 version 1 `esds` 独立 3 轨道）；
+       5. `mp4_p5h_largesize_boxes.mp4`（包含 64 位 largesize 的 `stsd`、`avc1` 与 `avcC`）；
+       6. `mp4_p5h_truncated_avcC.mp4`（包含截断的 `avcC` 载荷）。
+     - 在 `tests/rules/mp4_isobmff_analyzer_test.cpp` 中追加 6 项定向测试（`analyzesAvc1AndAvcCDecoderConfiguration`、`analyzesMp4aAndEsdsDecoderConfiguration`、`analyzesEsdsMultiByteDescriptorLength`、`analyzesLargesizeSampleDescriptionBoxes`、`handlesUnsupportedCodecConfigurationVersions`、`handlesTruncatedAvcConfigurationBox`），严格断言完整有序 child 字段名、精确 bit span、字段值、`targetFormat` 元数据、未展开 lazy 区域、截断与 unsupported 诊断。
+  3. 本地与 Hosted CI 验证：
+     - 规则静态校验：`svtool rule check` 针对四个官方规则（`mp4_isobmff.svfmt`、`aac_adts.svfmt`、`aac_asc.svfmt`、`h264_annex_b.svfmt`）均输出 `Rule OK`；
+     - 本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套完整构建全量 CTest 均 `40/40` 通过，ASan/UBSan 零警告/零报告；MP4 analyzer 测试 `38/38` 全部通过；
+     - `markdown_hygiene` 通过，`git diff --check` 干净；
+     - Hosted CI Run `32123671697`：Windows-2022 job `95669421829`、macOS-15 job `95669421921`、Ubuntu-24.04 job `95669421976` 全部 success。
+  终审结论：P5h 交付完成。Next Action 切换为等待主 Agent 复审 Task P5h；未经复审不得开始 Task P5i。
