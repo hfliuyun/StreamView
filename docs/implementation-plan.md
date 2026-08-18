@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-3-R — 主 Agent 深审并修正 H.264 可表达性证据、源码引用、AAC package/catalog 验证与后续切片边界
-Next Action: 下发 Task P5i-3a：Docs-first 设计结构型 payload 通用能力；P5i-3a 复审前不得开始 P5i-4
-Last Verification: Task P5i-3-R — Fix commit b55d2f097f88737d1118efa8dd6def43a7558ae0; Hosted CI Run 32156099612 (macOS job 95773570304, Windows job 95773570354, Ubuntu job 95773570501 all success); local dev/ci/sanitize 41/41 passed; StructuralEntryRunner 20/20; committed probes 4/4 produced expected diagnostics; official rule checks 4/4 passed; markdown_hygiene and git diff --check clean
-Blockers: P5i-3a generic capability design required before standalone H.264 NAL rules or P5i-4 navigation
+Last Completed Step: Task P5i-3a — 结构型 Payload 通用能力设计与双语 ADR-0104
+Next Action: 主 Agent 复审 Task P5i-3a；未经复审不得实现 P5i-3b，也不得开始 P5i-4
+Last Verification: Task P5i-3a — Markdown-only (ADR-0019); bilingual ADR-0104 created; markdown_hygiene passed; git diff --check clean
+Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -2410,3 +2410,17 @@ Blockers: P5i-3a generic capability design required before standalone H.264 NAL 
   4. 由于五项门禁尚未形成完整的通用能力，未修改 `org.streamview.h264`、未增加 `video.h264.nal`、未修改生产分析核心；后续切片改为 P5i-3a Docs-first 通用 structural payload 能力设计，P5i-3a 复审前不得开始 P5i-4。
   5. 验证：四个归档探针均返回预期 exit 1 及对应诊断；四个官方规则均 `Rule OK`；Structural Runner `20/20`；本地 dev、ci、sanitize 全量 CTest 均 `41/41`，sanitize 零报告；`markdown_hygiene` 与 `git diff --check` 通过；Hosted CI Run `32156099612` 的 macOS job `95773570304`、Windows job `95773570354`、Ubuntu job `95773570501` 全部 success。
   终审结论：原 P5i-3 报告不通过；P5i-3-R 修正完成后，阻断状态成立，Next Action 切换为 P5i-3a。
+- 2026-08-19：完成 Task P5i-3a —— 结构型 Payload 通用能力设计与双语 ADR-0104（基线 `44191d3a0bebd244d1cbb9479064fe85705e978e`，Markdown-only 规范切片）：
+  1. 架构设计与双语规范（新增 `docs/adr/0104-generic-structural-payload-and-session-context.md` 与 `docs/zh-CN/adr/0104-generic-structural-payload-and-session-context.md`）：
+     - 语法与 IR：泛化 `payload<view_kind> TargetName switch (controller_field)`，支持以 `struct` 为分派宿主，定义 `DslPayloadTargetKind::Structure` 与 `DslTypedPayloadDispatch`；
+     - 树模型与坐标：统一单树层级（root header + payload child），子字段坐标经变换视图映射精确回映原物理文件；定义头部/payload 失败时的部分树与诊断语义；
+     - 变换视图：抽象通用脱壳变换提供者（`None`、`Rbsp`），严格保留排除区间（`0x03` bytes）并进行坐标溢出与边界保护；
+     - 上下文生命周期：明确上下文由 `RuleExecutionSession` 或等价 session owner 管理，保证同一会话内 SPS 生产者与 PPS 消费者的依赖解析，拒绝裸传 `ContextDirectory`；
+     - 规则复用：对比同文件多 entry、manifest target、独立 source、跨文件 import 四种方案，选定 **Manifest Target Selection**（`rule.toml` `entry = "NalUnit"`），使 `video.h264.annex-b` 与 `video.h264.nal` 共享单份 1200+ 行 H.264 语法，杜绝代码复制；
+     - 收敛与安全：流式 Annex-B runner 与结构型 runner 共享同一变换引擎与 `RuleExecutionSession`；严格限制为单层 header->payload，不开放通用递归子结构调用与任意调用栈；运行时保持完全格式中立。
+  2. 验证与约束：
+     - 未修改生产 C++、未修改官方规则、未升级包版本、未开始 P5i-3b/P5i-4；
+     - `ctest -R markdown_hygiene --preset dev` 通过，双语 ADR 标题、表格与围栏完全对称；
+     - `git diff --check` 干净无空白问题；
+     - 纯 Markdown 变更按 ADR-0019 规则跳过 Hosted CI 矩阵。
+  终审结论：P5i-3a 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-3a；未经复审不得实现 P5i-3b，也不得开始 Task P5i-4。
