@@ -56,6 +56,7 @@ struct DslExecutionOptions final {
     // payload, indexed by typed element field index. Empty outside a dispatched
     // payload; a `header_value(...)` leaf then fails as an invalid definition.
     std::vector<std::optional<quint64>> sequenceElementValues;
+    bool deferMaterialization = false;
 };
 
 struct DslExecutionContextValue final {
@@ -105,6 +106,7 @@ struct DslExecutionResult final {
     quint64 bitsConsumed = 0;
     quint64 instructionsExecuted = 0;
     quint64 nodesCreated = 0;
+    std::vector<std::optional<quint64>> fieldValues;
     std::optional<DslExecutionContextValues> contextValues;
     std::vector<DslExecutionContextImport> contextImports;
     QString errorMessage;

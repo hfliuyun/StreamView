@@ -19,6 +19,7 @@ add_library(streamview_rules STATIC
     mp4_isobmff_analyzer.cpp
     window_decoder.cpp
     structural_entry_runner.cpp
+    compound_structural_runner.cpp
     rule_catalog.cpp
     rule_package_archive.cpp
     rule_package_directory.cpp
@@ -44,6 +45,7 @@ add_library(streamview_rules STATIC
     include/streamview/rules/mp4_box_scanner.h
     include/streamview/rules/mp4_isobmff_analyzer.h
     include/streamview/rules/structural_entry_runner.h
+    include/streamview/rules/compound_structural_runner.h
     include/streamview/rules/window_decoder.h
     include/streamview/rules/rule_catalog.h
     include/streamview/rules/rule_package.h
