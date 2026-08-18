@@ -541,24 +541,307 @@ struct Box {
                                                                             }
                                                                         }
                                                                     } else {
-                                                                        if (type == 0x6D6F6F66) {
-                                                                            unsupported("fragmented MP4 (moof/traf) is outside the v0.1 subset") at type;
-                                                                        } else {
+                                                                        if (type == 0x73747364) {
                                                                             if (size == 1) {
-                                                                                bits<64> largesize
-                                                                                    @description("64-bit box size in bytes.");
-                                                                                computed<u64> large_payload_bytes = largesize - 16;
-                                                                                @lazy(large_payload_bytes) bytes large_payload
-                                                                                    @description("Box payload data.");
-                                                                            } else {
-                                                                                if (size == 0) {
-                                                                                    computed<u64> eof_payload_bytes = available_bytes();
-                                                                                    @lazy(eof_payload_bytes) bytes eof_payload
-                                                                                        @description("Box payload data extending to EOF.");
+                                                                                bits<64> stsd_largesize;
+                                                                            }
+                                                                            bits<8> stsd_version
+                                                                                @description("Version (0).");
+                                                                            bits<24> stsd_flags
+                                                                                @description("Flags.");
+                                                                            bits<32> stsd_entry_count
+                                                                                @description("Number of sample entries.");
+                                                                            if (stsd_version == 0) {
+                                                                                if (size == 1) {
+                                                                                    computed<u64> stsd_large_entries_bytes = stsd_largesize - 24;
+                                                                                    @lazy(stsd_large_entries_bytes) bytes stsd_large_entries
+                                                                                        @description("Sample description entries.")
+                                                                                        @container(Box);
                                                                                 } else {
-                                                                                    computed<u64> payload_bytes = size - 8;
-                                                                                    @lazy(payload_bytes) bytes payload
-                                                                                        @description("Box payload data.");
+                                                                                    if (size == 0) {
+                                                                                        computed<u64> stsd_eof_entries_bytes = available_bytes();
+                                                                                        @lazy(stsd_eof_entries_bytes) bytes stsd_eof_entries
+                                                                                            @description("Sample description entries.")
+                                                                                            @container(Box);
+                                                                                    } else {
+                                                                                        computed<u64> stsd_entries_bytes = size - 16;
+                                                                                        @lazy(stsd_entries_bytes) bytes stsd_entries
+                                                                                            @description("Sample description entries.")
+                                                                                            @container(Box);
+                                                                                    }
+                                                                                }
+                                                                            } else {
+                                                                                unsupported("Unsupported stsd FullBox version") at stsd_version;
+                                                                            }
+                                                                        } else {
+                                                                            if (type == 0x61766331) {
+                                                                                if (size == 1) {
+                                                                                    bits<64> avc1_largesize;
+                                                                                }
+                                                                                bits<48> avc1_reserved_entry
+                                                                                    @description("Reserved 6 bytes.");
+                                                                                bits<16> avc1_data_reference_index
+                                                                                    @description("Data reference index.");
+                                                                                bits<16> avc1_pre_defined
+                                                                                    @description("Pre-defined (0).");
+                                                                                bits<16> avc1_reserved_1
+                                                                                    @description("Reserved (0).");
+                                                                                bits<32> avc1_pre_defined_1_0
+                                                                                    @description("Pre-defined 1/3 (0).");
+                                                                                bits<32> avc1_pre_defined_1_1
+                                                                                    @description("Pre-defined 2/3 (0).");
+                                                                                bits<32> avc1_pre_defined_1_2
+                                                                                    @description("Pre-defined 3/3 (0).");
+                                                                                bits<16> avc1_width
+                                                                                    @description("Visual display width in pixels.");
+                                                                                bits<16> avc1_height
+                                                                                    @description("Visual display height in pixels.");
+                                                                                bits<32> avc1_horizresolution
+                                                                                    @description("Horizontal resolution (0x00480000 = 72 dpi).");
+                                                                                bits<32> avc1_vertresolution
+                                                                                    @description("Vertical resolution (0x00480000 = 72 dpi).");
+                                                                                bits<32> avc1_reserved_2
+                                                                                    @description("Reserved (0).");
+                                                                                bits<16> avc1_frame_count
+                                                                                    @description("Frames per sample (usually 1).");
+                                                                                bits<64> avc1_compressorname_0
+                                                                                    @description("Compressor name 1/4.");
+                                                                                bits<64> avc1_compressorname_1
+                                                                                    @description("Compressor name 2/4.");
+                                                                                bits<64> avc1_compressorname_2
+                                                                                    @description("Compressor name 3/4.");
+                                                                                bits<64> avc1_compressorname_3
+                                                                                    @description("Compressor name 4/4.");
+                                                                                bits<16> avc1_depth
+                                                                                    @description("Color depth (0x0018 = 24-bit).");
+                                                                                bits<16> avc1_pre_defined_2
+                                                                                    @description("Pre-defined (-1).");
+                                                                                if (size == 1) {
+                                                                                    computed<u64> avc1_large_children_bytes = avc1_largesize - 94;
+                                                                                    @lazy(avc1_large_children_bytes) bytes avc1_large_children
+                                                                                        @description("Visual sample entry child boxes.")
+                                                                                        @container(Box);
+                                                                                } else {
+                                                                                    if (size == 0) {
+                                                                                        computed<u64> avc1_eof_children_bytes = available_bytes();
+                                                                                        @lazy(avc1_eof_children_bytes) bytes avc1_eof_children
+                                                                                            @description("Visual sample entry child boxes.")
+                                                                                            @container(Box);
+                                                                                    } else {
+                                                                                        computed<u64> avc1_children_bytes = size - 86;
+                                                                                        @lazy(avc1_children_bytes) bytes avc1_children
+                                                                                            @description("Visual sample entry child boxes.")
+                                                                                            @container(Box);
+                                                                                    }
+                                                                                }
+                                                                            } else {
+                                                                                if (type == 0x6D703461) {
+                                                                                    if (size == 1) {
+                                                                                        bits<64> mp4a_largesize;
+                                                                                    }
+                                                                                    bits<48> mp4a_reserved_entry
+                                                                                        @description("Reserved 6 bytes.");
+                                                                                    bits<16> mp4a_data_reference_index
+                                                                                        @description("Data reference index.");
+                                                                                    bits<64> mp4a_reserved_1
+                                                                                        @description("Reserved 8 bytes (0).");
+                                                                                    bits<16> mp4a_channelcount
+                                                                                        @description("Channel count.");
+                                                                                    bits<16> mp4a_samplesize
+                                                                                        @description("Sample size in bits (16).");
+                                                                                    bits<16> mp4a_pre_defined
+                                                                                        @description("Pre-defined (0).");
+                                                                                    bits<16> mp4a_reserved_2
+                                                                                        @description("Reserved (0).");
+                                                                                    bits<32> mp4a_samplerate
+                                                                                        @description("Sample rate (16.16 fixed-point).");
+                                                                                    if (size == 1) {
+                                                                                        computed<u64> mp4a_large_children_bytes = mp4a_largesize - 44;
+                                                                                        @lazy(mp4a_large_children_bytes) bytes mp4a_large_children
+                                                                                            @description("Audio sample entry child boxes.")
+                                                                                            @container(Box);
+                                                                                    } else {
+                                                                                        if (size == 0) {
+                                                                                            computed<u64> mp4a_eof_children_bytes = available_bytes();
+                                                                                            @lazy(mp4a_eof_children_bytes) bytes mp4a_eof_children
+                                                                                                @description("Audio sample entry child boxes.")
+                                                                                                @container(Box);
+                                                                                        } else {
+                                                                                            computed<u64> mp4a_children_bytes = size - 36;
+                                                                                            @lazy(mp4a_children_bytes) bytes mp4a_children
+                                                                                                @description("Audio sample entry child boxes.")
+                                                                                                @container(Box);
+                                                                                        }
+                                                                                    }
+                                                                                } else {
+                                                                                    if (type == 0x61766343) {
+                                                                                        if (size == 1) {
+                                                                                            bits<64> avcC_largesize;
+                                                                                        }
+                                                                                        bits<8> configurationVersion
+                                                                                            @description("Configuration version (1).");
+                                                                                        if (configurationVersion == 1) {
+                                                                                            bits<8> avcProfileIndication
+                                                                                                @description("AVC profile indication.");
+                                                                                            bits<8> profile_compatibility
+                                                                                                @description("Profile compatibility flags.");
+                                                                                            bits<8> avcLevelIndication
+                                                                                                @description("AVC level indication.");
+                                                                                            bits<6> reserved_6bits
+                                                                                                @description("Reserved 6 bits (111111b).");
+                                                                                            bits<2> lengthSizeMinusOne
+                                                                                                @description("NAL unit length field size minus one.");
+                                                                                            bits<3> reserved_3bits
+                                                                                                @description("Reserved 3 bits (111b).");
+                                                                                            bits<5> numOfSequenceParameterSets
+                                                                                                @description("Number of sequence parameter sets.");
+                                                                                            repeat (numOfSequenceParameterSets, 31) {
+                                                                                                bits<16> sequenceParameterSetLength
+                                                                                                    @description("SPS NAL unit length in bytes.");
+                                                                                                @lazy(sequenceParameterSetLength) bytes sequenceParameterSetNALUnit
+                                                                                                    @description("SPS NAL unit bytes.")
+                                                                                                    @target_format("video.h264.nal");
+                                                                                            }
+                                                                                            bits<8> numOfPictureParameterSets
+                                                                                                @description("Number of picture parameter sets.");
+                                                                                            repeat (numOfPictureParameterSets, 64) {
+                                                                                                bits<16> pictureParameterSetLength
+                                                                                                    @description("PPS NAL unit length in bytes.");
+                                                                                                @lazy(pictureParameterSetLength) bytes pictureParameterSetNALUnit
+                                                                                                    @description("PPS NAL unit bytes.")
+                                                                                                    @target_format("video.h264.nal");
+                                                                                            }
+                                                                                        } else {
+                                                                                            unsupported("Unsupported avcC configurationVersion") at configurationVersion;
+                                                                                        }
+                                                                                    } else {
+                                                                                        if (type == 0x65736473) {
+                                                                                            if (size == 1) {
+                                                                                                bits<64> esds_largesize;
+                                                                                            }
+                                                                                            bits<8> esds_version
+                                                                                                @description("Version (0).");
+                                                                                            bits<24> esds_flags
+                                                                                                @description("Flags.");
+                                                                                            if (esds_version == 0) {
+                                                                                                bits<8> es_tag
+                                                                                                    @description("ES_DescrTag (0x03).");
+                                                                                                bits<1> es_len_more0;
+                                                                                                bits<7> es_len_val0;
+                                                                                                if (es_len_more0 == 1) {
+                                                                                                    bits<1> es_len_more1;
+                                                                                                    bits<7> es_len_val1;
+                                                                                                    if (es_len_more1 == 1) {
+                                                                                                        bits<1> es_len_more2;
+                                                                                                        bits<7> es_len_val2;
+                                                                                                        if (es_len_more2 == 1) {
+                                                                                                            bits<1> es_len_more3;
+                                                                                                            bits<7> es_len_val3;
+                                                                                                        }
+                                                                                                    }
+                                                                                                }
+                                                                                                bits<16> es_id
+                                                                                                    @description("ES ID.");
+                                                                                                bits<1> streamDependenceFlag
+                                                                                                    @description("Stream dependence flag.");
+                                                                                                bits<1> urlFlag
+                                                                                                    @description("URL flag.");
+                                                                                                bits<1> ocrStreamFlag
+                                                                                                    @description("OCR stream flag.");
+                                                                                                bits<5> streamPriority
+                                                                                                    @description("Stream priority.");
+                                                                                                bits<8> dc_tag
+                                                                                                    @description("DecoderConfigDescrTag (0x04).");
+                                                                                                bits<1> dc_len_more0;
+                                                                                                bits<7> dc_len_val0;
+                                                                                                if (dc_len_more0 == 1) {
+                                                                                                    bits<1> dc_len_more1;
+                                                                                                    bits<7> dc_len_val1;
+                                                                                                    if (dc_len_more1 == 1) {
+                                                                                                        bits<1> dc_len_more2;
+                                                                                                        bits<7> dc_len_val2;
+                                                                                                        if (dc_len_more2 == 1) {
+                                                                                                            bits<1> dc_len_more3;
+                                                                                                            bits<7> dc_len_val3;
+                                                                                                        }
+                                                                                                    }
+                                                                                                }
+                                                                                                bits<8> objectTypeIndication
+                                                                                                    @description("Object type indication (0x40 for Audio ISO/IEC 14496-3 AAC).");
+                                                                                                bits<6> streamType
+                                                                                                    @description("Stream type (0x05 for AudioStream).");
+                                                                                                bits<1> upStream
+                                                                                                    @description("Upstream flag.");
+                                                                                                bits<1> reserved_1bit
+                                                                                                    @description("Reserved bit (1).");
+                                                                                                bits<24> bufferSizeDB
+                                                                                                    @description("Buffer size in bytes.");
+                                                                                                bits<32> maxBitrate
+                                                                                                    @description("Maximum bitrate.");
+                                                                                                bits<32> avgBitrate
+                                                                                                    @description("Average bitrate.");
+                                                                                                bits<8> dsi_tag
+                                                                                                    @description("DecSpecificInfoTag (0x05).");
+                                                                                                bits<1> dsi_len_more0;
+                                                                                                bits<7> dsi_len_val0;
+                                                                                                if (dsi_len_more0 == 1) {
+                                                                                                    bits<1> dsi_len_more1;
+                                                                                                    bits<7> dsi_len_val1;
+                                                                                                    if (dsi_len_more1 == 1) {
+                                                                                                        bits<1> dsi_len_more2;
+                                                                                                        bits<7> dsi_len_val2;
+                                                                                                        if (dsi_len_more2 == 1) {
+                                                                                                            bits<1> dsi_len_more3;
+                                                                                                            bits<7> dsi_len_val3;
+                                                                                                            computed<u64> asc_len4 = dsi_len_val0 * 2097152 + dsi_len_val1 * 16384 + dsi_len_val2 * 128 + dsi_len_val3;
+                                                                                                            @lazy(asc_len4) bytes asc_bytes4
+                                                                                                                @description("AudioSpecificConfig payload.")
+                                                                                                                @target_format("audio.aac.asc");
+                                                                                                        } else {
+                                                                                                            computed<u64> asc_len3 = dsi_len_val0 * 16384 + dsi_len_val1 * 128 + dsi_len_val2;
+                                                                                                            @lazy(asc_len3) bytes asc_bytes3
+                                                                                                                @description("AudioSpecificConfig payload.")
+                                                                                                                @target_format("audio.aac.asc");
+                                                                                                        }
+                                                                                                    } else {
+                                                                                                        computed<u64> asc_len2 = dsi_len_val0 * 128 + dsi_len_val1;
+                                                                                                        @lazy(asc_len2) bytes asc_bytes2
+                                                                                                            @description("AudioSpecificConfig payload.")
+                                                                                                            @target_format("audio.aac.asc");
+                                                                                                    }
+                                                                                                } else {
+                                                                                                    computed<u64> asc_len1 = dsi_len_val0;
+                                                                                                    @lazy(asc_len1) bytes asc_bytes1
+                                                                                                        @description("AudioSpecificConfig payload.")
+                                                                                                        @target_format("audio.aac.asc");
+                                                                                                }
+                                                                                            } else {
+                                                                                                unsupported("Unsupported esds FullBox version") at esds_version;
+                                                                                            }
+                                                                                        } else {
+                                                                                            if (type == 0x6D6F6F66) {
+                                                                                                unsupported("fragmented MP4 (moof/traf) is outside the v0.1 subset") at type;
+                                                                                            } else {
+                                                                                                if (size == 1) {
+                                                                                                    bits<64> largesize
+                                                                                                        @description("64-bit box size in bytes.");
+                                                                                                    computed<u64> large_payload_bytes = largesize - 16;
+                                                                                                    @lazy(large_payload_bytes) bytes large_payload
+                                                                                                        @description("Box payload data.");
+                                                                                                } else {
+                                                                                                    if (size == 0) {
+                                                                                                        computed<u64> eof_payload_bytes = available_bytes();
+                                                                                                        @lazy(eof_payload_bytes) bytes eof_payload
+                                                                                                            @description("Box payload data extending to EOF.");
+                                                                                                    } else {
+                                                                                                        computed<u64> payload_bytes = size - 8;
+                                                                                                        @lazy(payload_bytes) bytes payload
+                                                                                                            @description("Box payload data.");
+                                                                                                    }
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                    }
                                                                                 }
                                                                             }
                                                                         }
