@@ -281,37 +281,119 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
     }
     const quint64 nodesRemaining = maxNodes - nodesUsed;
 
-    // 4. Payload Execution Phase (appends payload under header node)
+    // 4. Payload Transform and Execution Phase (appends payload under header node)
+    const auto& registry = request.transformRegistry ? *request.transformRegistry
+                                                     : PayloadTransformRegistry::instance();
+    const auto provider = registry.findProvider(request.transformProviderId);
+    if (!provider) {
+        core::ParseDiagnostic diag;
+        diag.code = core::DiagnosticCode::InvalidSyntax;
+        diag.severity = core::DiagnosticSeverity::Error;
+        diag.message = QStringLiteral("Unknown payload transform provider: %1")
+            .arg(request.transformProviderId);
+        (void)request.tree->markPartial(
+            *result.headerNodeId,
+            core::MaterializationState::Invalid,
+            std::move(diag));
+        return rollbackAndReturn(
+            DslExecutionStatus::InvalidDefinition,
+            QStringLiteral("Unknown payload transform provider: %1").arg(request.transformProviderId));
+    }
+
+    const quint64 payloadInputBitLength =
+        request.payloadMapping->logicalBitLength() - request.payloadLogicalStart;
+    if (payloadInputBitLength == 0) {
+        core::ParseDiagnostic diag;
+        diag.code = core::DiagnosticCode::InvalidSyntax;
+        diag.severity = core::DiagnosticSeverity::Error;
+        diag.message = QStringLiteral("Payload logical length is zero");
+        (void)request.tree->markPartial(
+            *result.headerNodeId,
+            core::MaterializationState::Invalid,
+            std::move(diag));
+        return rollbackAndReturn(
+            DslExecutionStatus::InvalidDefinition,
+            QStringLiteral("Payload logical length is zero"));
+    }
+
+    PayloadTransformRequest transformReq;
+    transformReq.source = request.source;
+    transformReq.inputMapping = request.payloadMapping;
+    transformReq.logicalBitStart = request.payloadLogicalStart;
+    transformReq.logicalBitLength = payloadInputBitLength;
+    transformReq.cancellation = request.options.cancellation;
+    transformReq.maximumInspectedBytes = request.options.limits.maximumInspectedBytes;
+
+    const PayloadTransformResult transformRes = provider->transform(transformReq);
+    result.inspectedByteCount = transformRes.inspectedByteCount;
+    result.excludedSpans = transformRes.excludedSpans;
+
+    if (!transformRes.succeeded()) {
+        const auto headerTerminalState =
+            transformRes.status == DslExecutionStatus::Cancelled
+                ? core::MaterializationState::Cancelled
+            : transformRes.status == DslExecutionStatus::Unsupported
+                ? core::MaterializationState::Unsupported
+            : transformRes.status == DslExecutionStatus::DependencyUnavailable
+                ? core::MaterializationState::WaitingDependency
+                : core::MaterializationState::Invalid;
+
+        core::ParseDiagnostic diag;
+        diag.code =
+            transformRes.status == DslExecutionStatus::Cancelled
+                ? core::DiagnosticCode::Cancelled
+            : transformRes.status == DslExecutionStatus::Unsupported
+                ? core::DiagnosticCode::UnsupportedSyntax
+            : transformRes.status == DslExecutionStatus::DependencyUnavailable
+                ? core::DiagnosticCode::DependencyUnavailable
+            : transformRes.status == DslExecutionStatus::TruncatedSource
+                ? core::DiagnosticCode::TruncatedSource
+            : transformRes.status == DslExecutionStatus::SourceError
+                ? core::DiagnosticCode::SourceError
+            : transformRes.status == DslExecutionStatus::ResourceLimit
+                ? core::DiagnosticCode::ResourceLimit
+                : core::DiagnosticCode::InvalidSyntax;
+        diag.severity = core::DiagnosticSeverity::Error;
+        diag.message = transformRes.errorMessage.isEmpty()
+            ? QStringLiteral("Payload transform failed")
+            : transformRes.errorMessage;
+
+        (void)request.tree->markPartial(
+            *result.headerNodeId,
+            headerTerminalState,
+            std::move(diag));
+
+        return rollbackAndReturn(transformRes.status, transformRes.errorMessage);
+    }
+
+    const core::SourceMapping& transformedMapping = *transformRes.forwardedMapping;
+    result.forwardedPayloadMapping = transformedMapping;
+
+    if (!validateMapping(transformedMapping, &validationError)) {
+        core::ParseDiagnostic diag;
+        diag.code = core::DiagnosticCode::InvalidSyntax;
+        diag.severity = core::DiagnosticSeverity::Error;
+        diag.message = validationError;
+        (void)request.tree->markPartial(
+            *result.headerNodeId,
+            core::MaterializationState::Invalid,
+            std::move(diag));
+        return rollbackAndReturn(DslExecutionStatus::InvalidDefinition, validationError);
+    }
+
     DslExecutionOptions payloadOptions = request.options;
     payloadOptions.limits.maximumInstructions = instRemaining;
     payloadOptions.limits.maximumMaterializedNodes = nodesRemaining;
     payloadOptions.sequenceElementValues = headerResult.fieldValues;
 
-    const quint64 payloadBitLength =
-        request.payloadMapping->logicalBitLength() - request.payloadLogicalStart;
-    auto payloadReader = core::BitReader::fromMappingSlice(
-        *request.source,
-        *request.payloadMapping,
-        request.payloadLogicalStart,
-        payloadBitLength);
-    if (!payloadReader) {
-        core::ParseDiagnostic diag;
-        diag.code = core::DiagnosticCode::InvalidSyntax;
-        diag.severity = core::DiagnosticSeverity::Error;
-        diag.message = QStringLiteral("Unable to construct payload mapping slice");
-        (void)request.tree->markPartial(*result.headerNodeId,
-                                        core::MaterializationState::Invalid,
-                                        std::move(diag));
-        return rollbackAndReturn(DslExecutionStatus::InvalidDefinition,
-                                 QStringLiteral("Unable to construct payload mapping slice"));
-    }
+    core::BitReader payloadReader(*request.source, transformedMapping);
 
     const DslExecutionResult payloadResult = DslVirtualMachine::executeDeferred(
         program,
         *request.payloadStructureIndex,
-        *payloadReader,
-        *request.payloadMapping,
-        request.payloadLogicalStart,
+        payloadReader,
+        transformedMapping,
+        0,
         *request.tree,
         *result.headerNodeId,
         payloadOptions);
@@ -346,7 +428,7 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
     }
 
     if (request.requireExactConsumption) {
-        if (payloadResult.bitsConsumed != payloadBitLength) {
+        if (payloadResult.bitsConsumed != transformedMapping.logicalBitLength()) {
             core::ParseDiagnostic diag;
             diag.code = core::DiagnosticCode::InvalidSyntax;
             diag.severity = core::DiagnosticSeverity::Error;
