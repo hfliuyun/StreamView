@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-3b-3 — 具体 Payload Transform Provider (H.264 RBSP) 能力实现
-Next Action: 等待主 Agent 复审 Task P5i-3b-3；未经复审不得开始 session context、manifest target、官方 H.264 规则或 P5i-4 UI
-Last Verification: Task P5i-3b-3 — Implementation commit `7a7f6fe0ceb2b8e1342b69c470a28242d617549a`; Hosted CI Run `32173844042` (Ubuntu job `95831061475`, macOS job `95831061432`, Windows job `95831061518` all success); local dev/ci/sanitize CTest `43/43` passed; PayloadTransformTest 33 named cases / Qt 35/35; CompoundStructuralRunnerTest 36 named cases / Qt 38/38; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
-Blockers: Review of P5i-3b-3 required before session context / official rule integration
+Last Completed Step: Task P5i-3b-3-R — H.264 RBSP Payload Transform Provider 合同与证据整改
+Next Action: 下发 Task P5i-3b-4（session-owned compound context lifecycle）；未经复审不得开始 manifest target、官方 H.264 规则入口或 P5i-4 UI
+Last Verification: Task P5i-3b-3-R — review fix `c044d89924b181c99d631ab63cd008853445b157`; Hosted CI Run `32176872694` (Windows job `95840733635`, Ubuntu job `95840733661`, macOS job `95840733883` all success); local dev/ci/sanitize CTest `43/43` passed; PayloadTransformTest 33 named cases / Qt `35/35`; CompoundStructuralRunnerTest 37 named cases / Qt `39/39`; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
+Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -2515,4 +2515,11 @@ Blockers: Review of P5i-3b-3 required before session context / official rule int
      - 未升级 `rule.toml` 版本；
      - 未实现 P5i-4 UI 导航或通用 runner 中的格式专属逻辑。
   终审结论：Task P5i-3b-3 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-3b-3；未经复审不得开始 session context、manifest target、官方 H.264 规则或 P5i-4 UI。
-
+- 2026-08-19：完成 Task P5i-3b-3-R —— 主 Agent 深审并直接修正 H.264 RBSP Payload Transform Provider 合同与验证证据（原实现 `7a7f6fe0ceb2b8e1342b69c470a28242d617549a`，修复提交 `c044d89924b181c99d631ab63cd008853445b157`）：
+  1. 原交付不能直接通过：adapter 仅在 mapper `Complete` 时复制 mapping/excluded/issues，导致 cancellation、SourceError 与 inspection budget 停止时丢失 ADR-0025 要求保留的已提交前缀；含 conformance issue 的完整输入仍返回 `Materialized` 并继续 payload VM；诊断 logical location 固定为 bit 0，非零 `logicalBitStart` 时坐标错误。
+  2. 生产修正：所有 mapper 终态均复制累计 forwarded mapping、excluded spans 与 issues；`Complete + issues` 映射为 `DslExecutionStatus::InvalidSyntax`，保留完整映射和诊断但阻断 payload 执行；诊断逻辑坐标由 `request.logicalBitStart + (issue.sourceStart - requestedSourceStart)` 受检回映。
+  3. 测试真实性修正：原所谓“6 种畸形序列”实际为 5 种 issue kind 加一个合法的 terminal `00 00 03`；原 EOF 用例因 mapping 超过 `source.sizeBytes()` 只触发 `InvalidDefinition`。整改后用 advertised-size source 真实触发 mapper EOF -> `SourceError`，并分别锁定跨 64 KiB buffer 的 SourceError 前缀、1024-byte 中途取消前缀、inspection-budget 前缀、非零 logical start 诊断位置及 compound runner 对 conformance issue 的 fail-closed/rollback 行为。
+  4. 证据勘误：子代理报告填写的 docs commit `0eec4d745c4ba03e2307519a4e0946d49ef57b85` 不存在，真实记录提交为 `0eec4d7f44701090cbe8ae359c881926782db2ea`；原记录声称 `git diff --check` 干净，但其新增 EOF 空行实际触发 `new blank line at EOF`，本次已删除并复跑通过。
+  5. 验证：本地 dev、ci、sanitize 三套完整构建与 CTest 均 `43/43`，sanitize 零报告；PayloadTransformTest 33 个具名场景 / Qt `35/35`，CompoundStructuralRunnerTest 37 个具名场景 / Qt `39/39`；四个官方规则均 `Rule OK`；`markdown_hygiene` 与 `git diff --check` 通过。Hosted CI Run `32176872694`：Windows-2022 / Qt 6.10.1 job `95840733635`、Ubuntu-24.04 / Qt 6.11.1 job `95840733661`、macOS-15 / Qt 6.11.1 job `95840733883` 全部 success。
+  6. 边界保持：未实现 session context、manifest target、官方 H.264 规则入口、package version 变更或 P5i-4 UI；generic compound runner 未引入格式专属逻辑。
+  终审结论：原 Task P5i-3b-3 报告不直接通过；主 Agent 完成 P5i-3b-3-R 修正并通过完整本地矩阵与 Hosted CI。Next Action 切换为 Task P5i-3b-4，单独实现 session-owned compound context lifecycle；manifest target、官方 H.264 规则入口与 P5i-4 UI 继续阻断。
