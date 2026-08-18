@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-1 — 双语 ADR-0103 跨层结构型入口执行、坐标映射与导航栈合同
-Next Action: 主 Agent 复审 P5i-1；未经复审不得开始 P5i-2
-Last Verification: P5i-1 — Docs commit d4982c4bc99f018e69c6cfbf45582dcbbda88ec1; Markdown-only (ADR-0019); markdown_hygiene passed; git diff --check clean
+Last Completed Step: Task P5i-1-R — 主 Agent 深审并修正 ADR-0103 的拟议 API、H.264 能力边界、坐标映射与会话/UI 所有权合同
+Next Action: 下发 Task P5i-2：实现可复用映射源视图与格式中立的 `StructuralEntryRunner`；不得修改官方规则包或开始 P5i-3/P5i-4
+Last Verification: P5i-1-R — ADR remediation commit 4d6150a4cb7eae284734f0f1cea11a54e418a18b; original Docs commit d4982c48f63355c6c27ee430f2f71fdc18f26e4a; Markdown-only (ADR-0019); markdown_hygiene passed; bilingual headings/tables/fences symmetric; git diff --check clean
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -224,8 +224,8 @@ Blockers: None
 - **Task P5h**（规则切片）：编解码配置 Box 规则 v0.1.3（`stsd`、`avc1`、`avcC`、`mp4a`、`esds` + `@target_format`）；
 - **Task P5i**（跨层执行与导航）：
   - **Task P5i-1**（规范）：双语 ADR-0103 跨层结构型入口执行、坐标映射视图与导航栈合同（Markdown-only）；
-  - **Task P5i-2**（能力切片）：`BoundedSourceView` 与通用结构型入口执行器 `StructuralEntryRunner`；
-  - **Task P5i-3**（规则切片）：`org.streamview.h264` 增加 `video.h264.nal` 结构型入口并升级 `rule.toml`，验证 `org.streamview.aac` `audio.aac.asc` 结构型入口；
+  - **Task P5i-2**（能力切片）：可复用映射源视图与格式中立的结构型入口执行器 `StructuralEntryRunner`；以本地结构规则和现有 AAC ASC 入口验证，不修改官方包；
+  - **Task P5i-3**（规则切片）：Docs-first 探测独立 H.264 单 NAL 规则形态；可表达时增加 `video.h264.nal` 结构型入口并按真实输出变更升级 `rule.toml`，否则申请独立语言能力切片；验证现有 `org.streamview.aac` `audio.aac.asc` 结构型入口；
   - **Task P5i-4**（会话/UI切片）：`AnalysisSession` 导航栈、双向坐标映射与 `MainWindow` 面包屑/选择集成；
 - **Task P5j**（验收与审计切片）：逐 bit 验收审计、超大 `mdat` 惰性验证与阶段 5 里程碑关闭。
 
@@ -2345,7 +2345,7 @@ Blockers: None
   5. 原报告手写的 Docs/Feat 完整 SHA 不是仓库对象；真实值已更正为 `5d403b249af47dfce942d52edd0874e0b7b6ce63` 与 `195a8814947c8b99ac0655bc6e5905f6c249e2ea`。原报告同时声称 working tree clean，但评审现场存在未跟踪 `scratch/`；该目录未被本轮删除或提交。
   6. 验证：本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套全量 CTest 均 `40/40`，sanitize 零报告；四个官方规则均 `Rule OK`；Python fixture generator compile/regeneration、`markdown_hygiene` 与 `git diff --check` 通过；Hosted CI Run `32131893568` 的 Windows-2022 job `95694647432`、macOS-15 job `95694647575`、Ubuntu-24.04 job `95694647610` 全部 success。
   终审结论：P5h-R 通过。P5i 现场核对发现两个必须先固化的能力缺口：`audio.aac.asc` entry point 存在但现有 `AacAdtsAnalyzer` 只执行 scanner sequence，`video.h264.nal` 尚无官方 entry point；同时没有 bounded/mapped source 与父子会话导航栈合同。因此 Next Action 拆为 P5i-1 双语 ADR-0103 规范切片，复审后再按能力、规则入口和 UI 集成分片编码。
-- 2026-08-18：完成 Task P5i-1 —— 双语 ADR-0103 跨层结构型入口执行、坐标映射视图与导航栈合同（基线 `b42762a4df1f8be5b83ec8b44ee92b9558b61013`，Docs commit `d4982c4bc99f018e69c6cfbf45582dcbbda88ec1`）：
+- 2026-08-18：完成 Task P5i-1 —— 双语 ADR-0103 跨层结构型入口执行、坐标映射视图与导航栈合同（基线 `b42762a4df1f8be5b83ec8b44ee92b9558b61013`，Docs commit `d4982c48f63355c6c27ee430f2f71fdc18f26e4a`）：
   1. 架构设计与双语规范（Markdown-only）：
      - 新增双语 ADR-0103（`docs/adr/0103-cross-layer-structured-entry-execution-and-navigation.md` 与 `docs/zh-CN/adr/0103-cross-layer-structured-entry-execution-and-navigation.md`）；
      - 规范格式中立的通用结构型入口执行器 `StructuralEntryRunner`，直接调用 `DslExecutor::decodeStruct` 解码目标结构体，禁止将单结构体载荷传给 ADTS/Annex-B 流扫描器；
@@ -2359,3 +2359,13 @@ Blockers: None
      - `git diff --check` 干净无空白冲突；
      - 纯 Markdown 变更按 ADR-0019 规则跳过 Hosted CI 矩阵。
   终审结论：P5i-1 交付完成。Next Action 切换为主 Agent 复审 P5i-1；未经复审不得开始 P5i-2。
+- 2026-08-18：完成 Task P5i-1-R —— 主 Agent 深审并直接修正 ADR-0103（原始交付 HEAD `04a4a2346e89ba484b6109f8a2ecf3295a1e5859`，ADR 整改 commit `4d6150a4cb7eae284734f0f1cea11a54e418a18b`）：
+  1. 将 `StructuralEntryRunner`、可复用 mapped/bounded source、`NavigationFrame` 与导航 API 明确标记为拟议能力，避免把 P5i-1 基线不存在的类型写成现状；API 改用仓库真实的 `DslExecutionLimits`、`std::optional<core::CancellationToken>`、`DslTypedProgram`、`DslExecutionResult` 与 `DslExecutionStatus::Materialized`。
+  2. 修正 H.264 能力假设：当前 v0.1.39 只有 `video.h264.annex-b`，规则中不存在独立 `NalUnit` 结构或结构入口，payload dispatch 依附顶层 scan。P5i-2 仅验证通用结构运行能力；P5i-3 必须 Docs-first 探测独立单 NAL 规则是否可表达，不可表达时停止并申请语言能力切片，禁止加入 H.264 专属 C++ dispatch。
+  3. 修正 AAC 包版本合同：`org.streamview.aac` 已有 v0.1.4 `audio.aac.asc` 结构入口，P5i-3 只按现状验证；只有实际修改 manifest 或解码输出时才升级版本。
+  4. 收紧映射源合同：校验空位置、逻辑及物理 span 字节对齐、`SourceMapping::create` 失败、长度/乘法溢出、EOF 与底层读取错误；跨不连续 span 的所有子范围必须通过 `SourceMapping::locate` 返回完整物理 spans。现有 `BoundedSourceView` 仅是 `mp4_isobmff_analyzer.cpp` 私有实现，P5i-2 负责抽取或替换为可复用模块。
+  5. 修正会话/UI 所有权：非 `QObject` 的 `AnalysisSession` 只管理语义导航栈和活动树；`MainWindow` 管理 model、inspector、raw view、面包屑与选择快照。失败以结构化结果返回且不切换活动树；栈为空时活动树为根树，非空时为栈顶子树。
+  6. 修正验证矩阵：AAC fixture 载荷真实范围为根字节 `[146, 148)`，`sampling_frequency_index` 的绝对源 bit 为 `1173`；每次显式导航使用独立 limits/cancellation，不与已完成父分析器共享预算；H.264 SPS/PPS 用例归入 P5i-3。
+  7. 子代理报告及原计划记录的 Docs SHA `d4982c4bc99f018e69c6cfbf45582dcbbda88ec1` 不是 Git 对象，真实值为 `d4982c48f63355c6c27ee430f2f71fdc18f26e4a`。评审现场存在既有未跟踪 `scratch/`，因此不能称整个工作树 clean；本轮未删除或提交该目录。
+  8. 验证：双语 ADR headings `16/16`、table rows `19/19`、code fences `8/8`、总行数 `234/234` 对称；`markdown_hygiene` 与 `git diff --check` 通过。整改为纯 Markdown，按 ADR-0019 不触发 Hosted CI。
+  终审结论：P5i-1-R 通过。Next Action 切换为 Task P5i-2；该切片只实现可复用映射源视图与格式中立的 `StructuralEntryRunner`，复审前不得开始 P5i-3。
