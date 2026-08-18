@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-3b-1-R — 主 Agent 深审并修正 compound payload slice、deferred finalization、exact consumption、transaction hook 与测试有效性
-Next Action: 下发 Task P5i-3b-2：实现格式中立 PayloadTransformProvider/Registry、disjoint mapping 与独立 excluded spans；复审前不得开始 session context、manifest target、官方 H.264 规则或 P5i-4
-Last Verification: Task P5i-3b-1-R — Fix commit cf146ffbeaed13fccc6307a9d76a117e592a1f36; Hosted CI Run 32164456931 (macOS job 95800669490, Windows job 95800669524, Ubuntu job 95800669528 all success); local dev/ci/sanitize 42/42 passed; CompoundStructuralRunner 24 named cases / Qt 26/26; git diff --check clean
-Blockers: None
+Last Completed Step: Task P5i-3b-2 — 格式中立 Payload Transform Provider 与映射合同
+Next Action: 等待主 Agent 复审 Task P5i-3b-2；未经复审不得开始 Task P5i-3b-3、session context、manifest target 或官方 H.264 规则
+Last Verification: Task P5i-3b-2 — Hosted CI Run 32166474977 (Ubuntu job 95807125160, macOS job 95807125154, Windows job 95807125321 all success); local dev/ci/sanitize 43/43 passed; PayloadTransformTest 21 named cases / Qt 23/23; CompoundStructuralRunnerTest 31 named cases / Qt 33/33; official rules 4/4 Rule OK; git diff --check clean
+Blockers: Review of P5i-3b-2 required before P5i-3b-3
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -2467,3 +2467,25 @@ Blockers: None
   7. 边界保持不变：未修改官方规则、manifest、package version、transform provider、session context 或 UI，未引入格式专属 C++ 逻辑。子代理报告中的“实现 Commit/记录 Commit”字段误填文件名，实际提交仍以 Git 原始值 `2487c7f04ec3f567207ad2f2217c259c011be1ef` 与 `7f9cdc6d6b4f3a851458c74bb0ee530dd45432f3` 为准。
   8. 验证：本地 dev、ci、sanitize 三套完整构建与 CTest 均 `42/42`，sanitize 零报告；定向套件 24 个具名场景、Qt `26/26`；`git diff --check` 与 `markdown_hygiene` 通过。Hosted CI Run `32164456931` 对修复提交全绿：macOS-15 / Qt 6.11.1 job `95800669490`、Windows-2022 / Qt 6.10.1 job `95800669524`、Ubuntu-24.04 / Qt 6.11.1 job `95800669528`。
   终审结论：原 P5i-3b-1 报告不直接通过；主 Agent 补正后 P5i-3b-1-R 通过。Next Action 切换为 Task P5i-3b-2，只实现格式中立 transform provider/registry、disjoint mapping 与独立 excluded spans；session context、manifest target、官方 H.264 规则及 P5i-4 继续阻断。
+- 2026-08-19：完成 Task P5i-3b-2 —— 格式中立 Payload Transform Provider 与映射合同（实现提交 `feee35cb3cbeecc91dbd38f591e1bdb7f12c29ed`）：
+  1. 架构与类型体系落地：
+     - 在 `streamview::rules` 命名空间新增 `PayloadTransformProvider`、`PayloadTransformRegistry`、`PayloadTransformRequest`、`PayloadTransformResult` 与 `PayloadExcludedSpan`；
+     - 实现 `IdentityPayloadTransformProvider`（标识符 `"none"`），使用 `SourceMapping::locate` 提取子范围并生成 forwarded `SourceMapping`，支持单 span 与 disjoint spans，不分配或复制 payload 数据；
+     - 独立记录 `PayloadExcludedSpan {sourceSpan, outputBitOffset}`，严格保持 `forwardedBits + sum(excludedBits) == totalInputBits` 坐标不变量，禁止将 excluded bytes 塞入 `SourceMapping` 或 `FieldLocation`。
+  2. CompoundStructuralRunner 深度集成：
+     - 在 Header 成功索引后、Payload VM 执行前接入 transform provider 调度；
+     - 限制与预算：新增 `DslExecutionLimits::maximumInspectedBytes`（默认 10,000,000 bytes），provider 独立累计并在 `CompoundStructuralExecutionResult` 中返回 `inspectedByteCount`；
+     - 终态与回滚：未知 provider 强制 fail closed（`DslExecutionStatus::InvalidDefinition`），`SourceError`、`TruncatedSource`、`Cancelled`、`ResourceLimit` 均精准标记 Header 终态（`Invalid` / `Cancelled` / `UnsupportedSyntax`）、跳过 Payload VM 并触发 `onRollback` exactly once。
+  3. 测试体系与全矩阵验证：
+     - 新增独立测试套件 `tests/rules/payload_transform_test.cpp`，包含 21 个具名行为测试场景（Qt 报告 `23/23` 包含 init/cleanup），覆盖单 span/disjoint mapping 切片、跨 span 边界 logical 子范围、未对齐/空范围/越界拦截、pre/mid 取消、inspection budget 耗尽与恰好边界、registry 生命周期与并发查询、独立 excluded spans 不变量；
+     - 扩展 `tests/rules/compound_structural_runner_test.cpp`，新增 7 个 transform 集成具名行为测试场景（总计 31 个具名行为测试场景，Qt 报告 `33/33` 包含 init/cleanup），覆盖 custom provider 成功/excluded spans、未知 provider fail closed、SourceError/Truncation/Cancellation/ResourceLimit 终态与 rollback hooks、零长度 payload 拦截；
+     - 4 个内置官方 `.svfmt` 规则全部 `svtool rule check` 通过（`Rule OK`）；
+     - 本地 dev / ci / sanitize 三套全量构建及 CTest 均通过（`43/43`），sanitize 零报告；
+     - `git diff --check` 与 `markdown_hygiene` 干净；
+     - Hosted CI Run `32166474977`：Ubuntu 24.04（Job `95807125160`）、macOS 15（Job `95807125154`）、Windows 2022（Job `95807125321`）三平台全部 success。
+  4. 交付约束严格恪守：
+     - 未实现 H.264/RBSP 专属编解码器或复用任何 H.264 enum/诊断；
+     - 未修改官方规则、`rule.toml`、manifest schema 或升级 package version；
+     - 未实现 session context、manifest target 或 UI。
+  终审结论：Task P5i-3b-2 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-3b-2；未经复审不得开始 Task P5i-3b-3、transform provider 具体编解码器实现、session context、manifest target 或官方 H.264 规则。
+
