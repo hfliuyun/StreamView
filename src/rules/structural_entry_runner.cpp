@@ -1,7 +1,6 @@
 #include <streamview/rules/structural_entry_runner.h>
 
 #include <streamview/core/bit_reader.h>
-#include <streamview/core/bounded_source_view.h>
 #include <streamview/rules/dsl_executor.h>
 
 #include <limits>
@@ -92,6 +91,8 @@ StructuralExecutionResult StructuralEntryRunner::execute(
     auto tree = std::make_shared<core::AnalysisTree>(std::move(*treeOpt));
     result.tree = tree;
 
+    // BitReader already consumes the logical mapping directly and preserves the
+    // physical spans used by the VM's reader/mapping consistency check.
     core::BitReader reader(baseSource, sourceMapping);
 
     DslExecutionOptions vmOptions;

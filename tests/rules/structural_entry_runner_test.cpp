@@ -216,16 +216,22 @@ void StructuralEntryRunnerTest::boundedSourceViewOutOfBoundsAndEof() {
 }
 
 void StructuralEntryRunnerTest::boundedSourceViewPropagatesSourceError() {
-    FaultySource source(toBytes({0x01, 0x02, 0x03, 0x04}), 2); // Fails at offset >= 2
-    const auto span = SourceSpan::create(SourceBitAddress(0), 32);
-    QVERIFY(span.has_value());
-    const auto mapping = SourceMapping::create(LogicalViewId(4), {*span});
+    std::vector<quint8> rawData(100, 0);
+    rawData[10] = 0xAA;
+    rawData[11] = 0xBB;
+    FaultySource source(toBytes(rawData), 50); // Fails while reading the second mapped span.
+    const auto firstSpan = SourceSpan::create(SourceBitAddress(80), 16);
+    const auto secondSpan = SourceSpan::create(SourceBitAddress(400), 16);
+    QVERIFY(firstSpan.has_value());
+    QVERIFY(secondSpan.has_value());
+    const auto mapping = SourceMapping::create(LogicalViewId(4), {*firstSpan, *secondSpan});
     QVERIFY(mapping.has_value());
 
     BoundedSourceView view(source, *mapping, 4);
     std::array<std::byte, 4> dest{};
     const auto readRes = view.readAt(0, dest);
     QCOMPARE(readRes.status, SourceReadStatus::Error);
+    QCOMPARE(readRes.bytesRead, std::size_t{2});
     QCOMPARE(readRes.errorMessage, QStringLiteral("Injected I/O failure"));
 }
 
