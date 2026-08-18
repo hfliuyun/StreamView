@@ -74,8 +74,8 @@ public:
 
 #### Behavioral Invariants
 1. `StructuralEntryRunner` requires `program.entry.kind == DslEntryKind::Structure` and validates `program.entry.targetIndex` before reading. Sequence entries are rejected as `InvalidDefinition`.
-2. It validates that `sourceMapping.logicalBitLength()` is non-zero, byte-aligned, and convertible to bytes. It then creates a reusable mapped `BoundedSourceView` over exactly that logical length.
-3. It initializes a `core::BitReader` on the mapped view and calls `DslExecutor::decodeStruct` (`src/rules/include/streamview/rules/dsl_executor.h:13-42`) with `program.entry.targetIndex`, logical start zero, a newly owned child tree, and `DslExecutionOptions` built from the supplied limits and cancellation token.
+2. It validates that `sourceMapping.logicalBitLength()` is non-zero, byte-aligned, and convertible to bytes. The runner uses the existing mapping-aware `core::BitReader(baseSource, sourceMapping)` path, which reads the physical spans without copying and preserves the VM's reader/mapping consistency check.
+3. It calls `DslExecutor::decodeStruct` (`src/rules/include/streamview/rules/dsl_executor.h:13-42`) with `program.entry.targetIndex`, logical start zero, a newly owned child tree, and `DslExecutionOptions` built from the supplied limits and cancellation token. `BoundedSourceView` remains the reusable `RandomAccessSource` view for scanner and other byte-oriented consumers; it is not inserted as a second mapping layer in the VM reader.
 4. Each explicit navigation action receives its own bounded execution limits and cancellation token. P5i does not recursively auto-expand target formats and does not share a completed parent analyzer's consumed budget with a later user action.
 5. It does **not** instantiate or invoke scanner-based analyzers (`AacAdtsAnalyzer`, `H264AnnexBAnalyzer`, `Mp4IsobmffAnalyzer`). Streaming sequence analyzers are strictly reserved for top-level progressive media files.
 

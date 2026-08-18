@@ -74,8 +74,8 @@ public:
 
 #### 行为不变式
 1. `StructuralEntryRunner` 要求 `program.entry.kind == DslEntryKind::Structure`，并在读取前校验 `program.entry.targetIndex`；序列入口以 `InvalidDefinition` 拒绝。
-2. 它校验 `sourceMapping.logicalBitLength()` 非零、字节对齐且可安全转换为字节数，再在该精确逻辑长度上创建可复用的映射 `BoundedSourceView`。
-3. 它在映射视图上初始化 `core::BitReader`，并以 `program.entry.targetIndex`、逻辑起点 0、新建的子树及由限制和取消令牌构造的 `DslExecutionOptions` 调用 `DslExecutor::decodeStruct`（`src/rules/include/streamview/rules/dsl_executor.h:13-42`）。
+2. 它校验 `sourceMapping.logicalBitLength()` 非零、字节对齐且可安全转换为字节数。运行器使用现有的映射感知路径 `core::BitReader(baseSource, sourceMapping)`，无复制地读取物理 spans，并保留 VM 的 reader/mapping 一致性校验。
+3. 它以 `program.entry.targetIndex`、逻辑起点 0、新建的子树及由限制和取消令牌构造的 `DslExecutionOptions` 调用 `DslExecutor::decodeStruct`（`src/rules/include/streamview/rules/dsl_executor.h:13-42`）。`BoundedSourceView` 仍是供扫描器及其它面向字节的消费者使用的可复用 `RandomAccessSource` 视图；不得在 VM reader 中叠加第二层映射。
 4. 每次显式导航动作使用独立的有界执行限制与取消令牌。P5i 不递归自动展开目标格式，也不与已经完成的父分析器共享已消耗预算。
 5. 它**不**实例化或调用基于扫描器的分析器（`AacAdtsAnalyzer`、`H264AnnexBAnalyzer`、`Mp4IsobmffAnalyzer`）。流式序列分析器严格保留给顶层渐进式媒体文件。
 
