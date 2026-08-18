@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 5
 Last Completed Step: Task P5i-3-R — 主 Agent 深审并修正 H.264 可表达性证据、源码引用、AAC package/catalog 验证与后续切片边界
 Next Action: 下发 Task P5i-3a：Docs-first 设计结构型 payload 通用能力；P5i-3a 复审前不得开始 P5i-4
-Last Verification: Task P5i-3-R — committed negative probes under tests/probes/p5i3/; bundled AAC catalog/StructuralEntryRunner test 20/20; official rule checks 4/4; local dev/ci/sanitize and Hosted CI pending final verification
+Last Verification: Task P5i-3-R — Fix commit b55d2f097f88737d1118efa8dd6def43a7558ae0; Hosted CI Run 32156099612 (macOS job 95773570304, Windows job 95773570354, Ubuntu job 95773570501 all success); local dev/ci/sanitize 41/41 passed; StructuralEntryRunner 20/20; committed probes 4/4 produced expected diagnostics; official rule checks 4/4 passed; markdown_hygiene and git diff --check clean
 Blockers: P5i-3a generic capability design required before standalone H.264 NAL rules or P5i-4 navigation
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2408,5 +2408,5 @@ Blockers: P5i-3a generic capability design required before standalone H.264 NAL 
   2. 修正证据边界：Q1 的诊断位于 `src/rules/dsl.cpp:1000-1004`；Q2 位于 `3763-3781`；Q3 的无 resolver 分支位于 `src/rules/dsl_vm.cpp:718-743`，实际状态为 `InvalidDefinition`；PPS import 位于 `h264_annex_b.svfmt:393-403`，孤立 SPS 不作过宽的 dependency 结论；manifest 支持多个 entrypoint，但每个 source 路径必须唯一，不能推导为必须复制整个 1200 行文件。
   3. 新增 `executesCatalogResolvedAacAscOnEsdsFixture`：加载内置 `org.streamview.aac` v0.1.4，注册 `RulePackageCatalog`，按 `audio.aac.asc` 解析 `asc` entry，读取 manifest 指定 source，编译并通过 `StructuralEntryRunner` 执行真实 ESDS fixture；断言完整 child 列表、值和根文件坐标。该验证不升级 AAC 版本。
   4. 由于五项门禁尚未形成完整的通用能力，未修改 `org.streamview.h264`、未增加 `video.h264.nal`、未修改生产分析核心；后续切片改为 P5i-3a Docs-first 通用 structural payload 能力设计，P5i-3a 复审前不得开始 P5i-4。
-  5. 当前待回写验证：四个官方规则 `Rule OK`、Structural Runner `20/20`、本地 dev/ci/sanitize 全量 CTest、markdown hygiene、git diff、Hosted CI 三平台。
+  5. 验证：四个归档探针均返回预期 exit 1 及对应诊断；四个官方规则均 `Rule OK`；Structural Runner `20/20`；本地 dev、ci、sanitize 全量 CTest 均 `41/41`，sanitize 零报告；`markdown_hygiene` 与 `git diff --check` 通过；Hosted CI Run `32156099612` 的 macOS job `95773570304`、Windows job `95773570354`、Ubuntu job `95773570501` 全部 success。
   终审结论：原 P5i-3 报告不通过；P5i-3-R 修正完成后，阻断状态成立，Next Action 切换为 P5i-3a。
