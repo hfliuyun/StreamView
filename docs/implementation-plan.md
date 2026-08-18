@@ -3,9 +3,9 @@
 Status: In Progress
 Current Phase: 5
 Last Completed Step: Task P5i-3b-2-R — Payload Transform Provider 合同与测试真实性修正
-Next Action: 主 Agent 完成 P5i-3b-2-R 验证后下发 Task P5i-3b-3；未经复审不得实现具体编解码器、session context、manifest target 或官方 H.264 规则
-Last Verification: Task P5i-3b-2-R — local targeted suites passed after provider-result validation and diagnostic propagation; Hosted CI pending; working tree contains only the review changes plus pre-existing scratch/
-Blockers: Task P5i-3b-2-R review and hosted verification required before Task P5i-3b-3
+Next Action: 下发 Task P5i-3b-3；未经复审不得实现 session context、manifest target、官方 H.264 规则入口或 P5i-4 UI
+Last Verification: Task P5i-3b-2-R — review fix `f6f188243b968b62fc8adac2bcb0d33778bf92a2`; Hosted CI Run `32171522131` (macOS job `95823560276`, Ubuntu job `95823560259`, Windows job `95823560223` all success); local dev/ci/sanitize CTest `43/43` passed; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
+Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -2493,5 +2493,6 @@ Blockers: Task P5i-3b-2-R review and hosted verification required before Task P5
   2. 生产修正：新增 transform-result 合同闸门，校验 forwarded/excluded span 必须落在输入 mapping 内、不得互相重叠、按字节对齐、输出偏移有界，并以 checked arithmetic 强制 `forwardedBits + excludedBits == inputBits`；Materialized 缺失或超预算结果统一 fail closed 为 `InvalidDefinition`；provider diagnostics 同时复制到执行结果并挂载 header 节点；空错误文本使用稳定 fallback。
   3. 测试修正：新增 malformed transform result 拒绝与 provider diagnostics 发布场景；将 transform 中途取消改为 source 在第二个字节读取后真实触发取消。当前 CompoundStructuralRunnerTest 为 33 个具名场景，PayloadTransformTest 为 21 个具名场景。
   4. 边界保持不变：未实现具体编解码器、session context、manifest target、官方 H.264 规则或 UI；未修改规则包和版本；未引入格式专属 C++ 逻辑。
-  5. 本地定向验证：dev Debug 下 `streamview_compound_structural_runner_tests` 与 `streamview_payload_transform_tests` 全部通过，`git diff --check` 干净；完整 dev/ci/sanitize、四个官方规则静态检查与 Hosted CI 待本次修正提交后执行。
-  终审结论：原 Task P5i-3b-2 报告不直接通过；P5i-3b-2-R 修正待完整矩阵与 Hosted CI 验证。通过后 Next Action 切换为 Task P5i-3b-3，继续保持 capability-only 边界。
+  5. 测试修正：新增非零 `payloadLogicalStart` 下拒绝逃逸到逻辑子范围外的 forwarded span；将 inspection budget 超限校验扩展到所有 provider 终态；增加 forwarded mapping view identity 校验。当前 CompoundStructuralRunnerTest 为 35 个具名场景，Qt `37/37`；PayloadTransformTest 为 21 个具名场景，Qt `23/23`。
+  6. 验证：本地 dev、ci、sanitize 三套完整构建与 CTest 均 `43/43`，sanitize 零报告；四个官方规则静态检查均 `Rule OK`；`markdown_hygiene` 与 `git diff --check` 通过。Hosted CI Run `32171522131`：macOS-15 / Qt 6.11.1 job `95823560276`、Ubuntu-24.04 / Qt 6.11.1 job `95823560259`、Windows-2022 / Qt 6.10.1 job `95823560223` 全部 success。
+  终审结论：原 Task P5i-3b-2 报告不直接通过；主 Agent 完成 P5i-3b-2-R 修正并通过完整矩阵与 Hosted CI 验证。Next Action 切换为 Task P5i-3b-3，继续保持 capability-only 边界。
