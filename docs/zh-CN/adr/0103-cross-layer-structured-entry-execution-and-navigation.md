@@ -201,14 +201,15 @@ struct NavigationFrame final {
 
 - **任务 P5i-1**：纯 Markdown 双语 ADR-0103 规范。
 - **任务 P5i-2**：实现可复用映射源视图与 `StructuralEntryRunner`，使用本地结构型规则和现有 `audio.aac.asc` 入口证明通用路径。本能力切片不得修改官方包 manifest，也不得声称完整 H.264 NAL 解码。
-- **任务 P5i-3**（探测结论与阻断状态）：Docs-first 独立 H.264 单 NAL 可表达性探测证明 DSL 0.1 当前缺少：
-  1. 结构体内部子结构实例化 / switch 结构体分派能力（`src/rules/dsl.cpp:1152-1156`：`Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type`）；
-  2. 结构型入口上的声明式 `payload<rbsp>`（`src/rules/dsl.cpp:3771-3775` 与 `3778-3782`：严格限制于 `scan` 序列）；
-  3. 脱离流式 `H264AnnexBAnalyzer` 的格式中立 EBSP->RBSP 防竞争字节脱壳视图层；
-  4. 独立结构型执行器调用间的上下文依赖传递（SPS->PPS 上下文解析）；
-  5. 单个 `.svfmt` 文件内多 entry 声明支持（`src/rules/dsl.cpp:1765-1772`）或跨文件结构体共享导入。
-  根据停止与上报协议，任务 P5i-3 停止规则与生产代码实现，不修改 `org.streamview.h264`（保持 v0.1.39）且不增加 `video.h264.nal`，申请独立的结构体脱壳/分派语言能力切片，并确认 `org.streamview.aac` v0.1.4 `audio.aac.asc` 作为 P5i-4 的活动跨层入口。
-- **任务 P5i-4**：在 `AnalysisSession` 中实现 `NavigationStack`，连接 `MainWindow` 面包屑导航，并使用 `audio.aac.asc` 测试树与原始视图的双向坐标同步。
+- **任务 P5i-3**（探测结论与阻断状态）：Docs-first 探针和源码审计表明，DSL 0.1 没有可用于独立 H.264 NAL 入口的完整、格式中立路径。证据严格限定于已测试形态，不声称未来任意语法拼写都不可能：
+  1. 结构型 `switch` 分支不能实例化子结构。`tests/probes/p5i3/probe_q1_structural_switch.svfmt` 在 `src/rules/dsl.cpp:1000-1004` 复现 `Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type`。
+  2. `payload<rbsp>` 绑定已声明的 scan 序列，并要求 entry 指向该序列。`tests/probes/p5i3/probe_q2_unbound_payload.svfmt` 与 `probe_q2_sequence_entry_mismatch.svfmt` 复现 `src/rules/dsl.cpp:3763-3781` 的两条诊断。现有 EBSP/RBSP mapper 仅由 `H264AnnexBAnalyzer`（`src/rules/h264_annex_b_analyzer.cpp:666-693`）实例化；`StructuralEntryRunner` 没有转换钩子。
+  3. 独立 PPS 执行无法通过当前运行器解析 SPS import：`StructuralEntryRunner::execute` 没有提供 context resolver（`src/rules/structural_entry_runner.cpp:87-103`），VM 返回 `InvalidDefinition` 及 `Imported context value resolver is unavailable`（`src/rules/dsl_vm.cpp:718-743`）。该限制适用于 PPS 和依赖它的 slice，不适用于没有 import 的孤立 SPS。
+  4. 保持运行器格式中立意味着该缺口必须由新的通用 DSL/运行时能力解决，不能向 C++ 加入 H.264 专属分派；当前运行器本身没有格式专属分派。
+  5. 一个 `.svfmt` 程序只接受一个 `entry`（`tests/probes/p5i3/probe_q5_multiple_entries.svfmt`、`src/rules/dsl.cpp:1758-1777`）。manifest 已支持多个 entrypoint，但每个 entry 必须使用不同 source 路径（`src/rules/rule_package.cpp:371-424`）；仓库没有跨文件结构导入。因此不能严格声称新入口必然复制整个 Annex-B 文件。
+  根据停止与上报协议，任务 P5i-3 停止规则与生产代码实现，不修改 `org.streamview.h264`（保持 v0.1.39）且不增加 `video.h264.nal`。现有 `org.streamview.aac` v0.1.4 `audio.aac.asc` 已通过 bundled package、`resolveByFormat`、manifest source 和 `StructuralEntryRunner` 验证，继续作为 P5i-4 导航基线。
+- **任务 P5i-3a**：Docs-first 设计结构型 payload 入口所需的最小通用能力：header/controller 解析、映射字节转换钩子、payload 结构分派和 session-owned context resolver。本能力切片不得实现官方 H.264 规则包。
+- **任务 P5i-4**：在 `AnalysisSession` 中实现 `NavigationStack`，连接 `MainWindow` 面包屑导航，并使用已验证的 `audio.aac.asc` 路径测试树与原始视图的双向坐标同步。
 
 ---
 
@@ -216,13 +217,14 @@ struct NavigationFrame final {
 
 | 测试标识符 | 类别 | 输入 Fixture / 前置条件 | 执行路径 | 预期状态 | 关键断言 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `test_structural_runner_aac_asc_success` | P5i-2 核心执行 | `mp4_p5h_mp4a_esds.mp4`（`asc_bytes1`，2 字节 `0x12 0x10`） | 使用现有 `AudioSpecificConfig` 入口执行 `StructuralEntryRunner` | `DslExecutionStatus::Materialized` | 根节点名为 `AudioSpecificConfig`；`audio_object_type == 2`、`sampling_frequency_index == 4`、`channel_configuration == 2`；源区间与父级字节偏移精确吻合。 |
-| `test_structural_runner_h264_sps_nal_success` | P5i-3 规则集成 | `mp4_p5h_avc1_avcC.mp4`（`sequenceParameterSetNALUnit[0]`，25 字节） | 由 `video.h264.nal` 选择未来的独立单 NAL 入口；不假设当前存在 `NalUnit` 结构 | `DslExecutionStatus::Materialized` | `nal_unit_type == 7`、`profile_idc == 100`、`level_idc == 41`；子字段源区间与根 SPS 字节偏移精确吻合。 |
-| `test_structural_runner_h264_pps_nal_success` | P5i-3 规则集成 | `mp4_p5h_avc1_avcC.mp4`（`pictureParameterSetNALUnit[0]`，4 字节） | 由 `video.h264.nal` 选择未来的独立单 NAL 入口 | `DslExecutionStatus::Materialized` | `nal_unit_type == 8`、`pic_parameter_set_id == 0`、`seq_parameter_set_id == 0`；源区间与根 PPS 字节偏移精确吻合。 |
-| `test_resolve_by_format_all_statuses` | Catalog 查找 | 格式：`"audio.aac.asc"`、`"video.h264.nal"`、`"unknown.fmt"`、模拟冲突、不兼容版本 | `RulePackageCatalog::resolveByFormat` | `Found`、`MissingContent`、`VersionConflict`、`IncompatibleLanguage`、`IncompatibleEngine` | 返回正确查找状态与非空诊断信息。 |
+| `executesOfficialAacAscOnEsdsFixture` | P5i-2 核心执行 | `mp4_p5h_mp4a_esds.mp4`（`asc_bytes1`，2 字节 `0x12 0x10`） | 直接编译现有 `AudioSpecificConfig` source 并执行 `StructuralEntryRunner` | `DslExecutionStatus::Materialized` | 完整有序六字段列表与六个精确根 bit spans `[1168,1173)`、`[1173,1177)`、`[1177,1181)`、`[1181,1182)`、`[1182,1183)`、`[1183,1184)`。 |
+| `executesCatalogResolvedAacAscOnEsdsFixture` | P5i-3 包验证 | 同一 ASC fixture | bundled AAC v0.1.4 -> `resolveByFormat("audio.aac.asc")` -> manifest source -> `StructuralEntryRunner` | `DslExecutionStatus::Materialized` | 断言包/版本、`asc` entry 元数据、完整 child 列表、`audio_object_type == 2` 及首字段根 span。 |
+| `resolvesPackageByFormat` | Catalog 查找回归 | 合成规则包 catalog 场景 | `RulePackageCatalog::resolveByFormat` | `Found`、`MissingContent`、`IncompatibleLanguage`、`IncompatibleEngine` | 现有规则包测试断言各状态及诊断。 |
+| `rejectsAmbiguousPackagesWhenResolvingByFormat` | Catalog 查找回归 | 同 format 的两个已安装版本 | `RulePackageCatalog::resolveByFormat` | `VersionConflict` | 现有规则包测试拒绝歧义内容且不返回包。 |
+| `p5i3_h264_standalone_probes` | P5i-3 可表达性门禁 | `tests/probes/p5i3/` 下四个已提交 `.svfmt` 探针 | `svtool rule check`，预期失败 | 负向诊断 | Q1/Q2/Q5 诊断可复现；H.264 SPS/PPS 物化在 P5i-3a 前明确阻断。 |
 | `test_bounded_source_view_truncated` | P5i-2 坐标/源 | 通过单字节映射暴露两字节 ASC | `StructuralEntryRunner` 执行 | `DslExecutionStatus::TruncatedSource` | 产生 `TruncatedSource` 诊断；未激活的部分节点保留精确源区间。 |
 | `test_bounded_source_view_io_fault` | P5i-2 坐标/源 | 注入故障的 `RandomAccessSource` | `StructuralEntryRunner` 执行 | `DslExecutionStatus::SourceError` | 返回 `SourceError`；任一部分树保持未激活且父级不受影响。 |
-| `test_navigation_enter_and_return_cycle` | P5i-4 会话/UI | `mp4_p5h_avc1_avcC.mp4` 的 `AnalysisSession` | 调用 `enterChildFormat(spsNodeId)` 后调用 `returnToParent()` | 成功 | 栈深度经历 0 -> 1 -> 0；活动树切换至 SPS AST 后返回 MP4 AST；父级选中节点恢复。 |
+| `test_navigation_enter_and_return_cycle` | P5i-4 会话/UI | `mp4_p5h_mp4a_esds.mp4` 的 `AnalysisSession` | 调用 `enterChildFormat(ascNodeId)` 后调用 `returnToParent()` | 成功 | 栈深度经历 0 -> 1 -> 0；活动树切换至 ASC AST 后返回 MP4 AST；父级选中节点恢复。 |
 | `test_navigation_enter_failure_preserves_parent` | P5i-4 会话/UI | 目标节点携带无效/缺失格式 `"invalid.format"` | 调用 `enterChildFormat(nodeId)` | `MissingContent` / 失败 | 返回结构化失败；栈深度保持 0；父树与当前选择不变。 |
 | `test_bidirectional_coordinate_selection` | P5i-4 坐标/UI | 选中子 ASC 树节点 | 检查 `FieldLocation` 源区间 | 成功 | ASC 载荷映射到已提交 fixture 的根字节 `[146, 148)`；选择绝对源 bit 1173 时选中 `AudioSpecificConfig.sampling_frequency_index`。 |
 | `test_nested_navigation_independent_limits` | P5i-4 预算/取消 | 使用较低子级限制显式触发嵌套导航 | 第二次由用户触发的子执行 | `ResourceLimit` | 每次导航动作独立执行自身限制；子级取消/资源失败后，已完成的父帧仍可使用。 |

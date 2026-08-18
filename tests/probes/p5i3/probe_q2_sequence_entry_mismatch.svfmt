@@ -1,0 +1,18 @@
+struct NalUnitHeader {
+    bits<1> forbidden_zero_bit;
+    bits<2> nal_ref_idc;
+    bits<5> nal_unit_type;
+}
+
+struct SequenceParameterSetRbsp {
+    bits<8> profile_idc;
+}
+
+@index(progressive)
+sequence<NalUnitHeader> nal_units = scan(h264_start_code);
+
+payload<rbsp> nal_units switch (nal_unit_type) {
+    case 7: SequenceParameterSetRbsp;
+}
+
+entry NalUnitHeader;
