@@ -183,6 +183,10 @@ private slots:
     void analyzesFullBoxVersion1TimeHeadersAndEditList();
     void handlesLargeSizeHandlerReferenceBoxWireOrder();
     void rejectsUnsupportedFullBoxVersionWithoutV0Fallback();
+    void analyzesSampleTableBoxesV0();
+    void analyzesSampleSizeUniformWithoutTable();
+    void decodesSampleTableWindowsWithPagingAndBudget();
+    void handlesUnsupportedSampleTableVersions();
 };
 
 void Mp4IsobmffAnalyzerTest::failsCleanlyWhenNoRulePackageInstalled() {
@@ -753,7 +757,7 @@ void Mp4IsobmffAnalyzerTest::loadsBundledMp4PackageSuccessfully() {
     QVERIFY(loaded.succeeded());
     QVERIFY(loaded.package.has_value());
     QCOMPARE(loaded.package->identity().packageId(), QStringLiteral("org.streamview.mp4"));
-    QCOMPARE(loaded.package->identity().packageVersion(), QStringLiteral("0.1.1"));
+    QCOMPARE(loaded.package->identity().packageVersion(), QStringLiteral("0.1.2"));
     const auto* mp4Source = loaded.package->fileContents(QStringLiteral("src/mp4_isobmff.svfmt"));
     QVERIFY(mp4Source != nullptr);
     QVERIFY(!mp4Source->isEmpty());
@@ -1207,7 +1211,7 @@ void Mp4IsobmffAnalyzerTest::analyzesFullMoovContainerHierarchyV0() {
         QStringLiteral("type"),
         QStringLiteral("elst_version"),
         QStringLiteral("elst_flags"),
-        QStringLiteral("elst_entry_count"),
+        QStringLiteral("elst_v0_entry_count"),
         QStringLiteral("elst_v0_segment_duration[0]"),
         QStringLiteral("elst_v0_media_time[0]"),
         QStringLiteral("elst_v0_media_rate_integer[0]"),
@@ -1539,6 +1543,415 @@ void Mp4IsobmffAnalyzerTest::rejectsUnsupportedFullBoxVersionWithoutV0Fallback()
     const auto mdatStruct = tree.node(mdat->children().front());
     QVERIFY(mdatStruct.has_value());
     QCOMPARE(mdatStruct->state(), streamview::core::MaterializationState::Materialized);
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesSampleTableBoxesV0() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5g_sample_tables_v0.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+    QCOMPARE(batch.boxNodes.size(), std::size_t{3});
+
+    const auto& tree = analyzer->tree();
+
+    // Box 1: moov
+    const auto moov = tree.node(batch.boxNodes[1]);
+    QVERIFY(moov.has_value());
+    const auto moovStruct = tree.node(moov->children().front());
+    QVERIFY(moovStruct.has_value());
+    const auto moovPayload = tree.node(moovStruct->children().back());
+    QVERIFY(moovPayload.has_value());
+
+    // trak -> mdia -> minf -> stbl
+    const auto trakStruct = tree.node(moovPayload->children().front());
+    QVERIFY(trakStruct.has_value());
+    const auto trakPayload = tree.node(trakStruct->children().back());
+    QVERIFY(trakPayload.has_value());
+
+    const auto mdiaStruct = tree.node(trakPayload->children().front());
+    QVERIFY(mdiaStruct.has_value());
+    const auto mdiaPayload = tree.node(mdiaStruct->children().back());
+    QVERIFY(mdiaPayload.has_value());
+
+    const auto minfStruct = tree.node(mdiaPayload->children().front());
+    QVERIFY(minfStruct.has_value());
+    const auto minfPayload = tree.node(minfStruct->children().back());
+    QVERIFY(minfPayload.has_value());
+
+    const auto stblStruct = tree.node(minfPayload->children().front());
+    QVERIFY(stblStruct.has_value());
+    const auto stblPayload = tree.node(stblStruct->children().back());
+    QVERIFY(stblPayload.has_value());
+    QCOMPARE(stblPayload->children().size(), std::size_t{5});
+
+    // 1. stts
+    const auto sttsBox = tree.node(stblPayload->children()[0]);
+    QVERIFY(sttsBox.has_value());
+    const auto sttsPayload = tree.node(sttsBox->children().back());
+    QVERIFY(sttsPayload.has_value());
+    const auto sttsStruct = tree.node(sttsPayload->children().front());
+    QVERIFY(sttsStruct.has_value());
+    std::vector<QString> sttsFieldNames;
+    for (const auto childId : sttsStruct->children()) {
+        sttsFieldNames.push_back(tree.node(childId)->name());
+    }
+    const std::vector<QString> expectedSttsFieldNames = {
+        QStringLiteral("version"),
+        QStringLiteral("flags"),
+        QStringLiteral("entry_count"),
+        QStringLiteral("table_bytes"),
+        QStringLiteral("entries"),
+    };
+    QCOMPARE(sttsFieldNames, expectedSttsFieldNames);
+    QCOMPARE(tree.node(sttsStruct->children()[0])->value().toULongLong(), quint64{0});
+    QCOMPARE(tree.node(sttsStruct->children()[1])->value().toULongLong(), quint64{0});
+    QCOMPARE(tree.node(sttsStruct->children()[2])->value().toULongLong(), quint64{2});
+    QCOMPARE(tree.node(sttsStruct->children()[3])->value().toULongLong(), quint64{16});
+    const auto sttsWindow = tree.node(sttsStruct->children()[4]);
+    QVERIFY(sttsWindow->metadata().window.has_value());
+    QCOMPARE(sttsWindow->metadata().window->entryCount, quint64{2});
+    QCOMPARE(sttsWindow->metadata().window->entrySizeBits, quint32{64});
+
+    // 2. stsc
+    const auto stscBox = tree.node(stblPayload->children()[1]);
+    QVERIFY(stscBox.has_value());
+    const auto stscPayload = tree.node(stscBox->children().back());
+    QVERIFY(stscPayload.has_value());
+    const auto stscStruct = tree.node(stscPayload->children().front());
+    QVERIFY(stscStruct.has_value());
+    std::vector<QString> stscFieldNames;
+    for (const auto childId : stscStruct->children()) {
+        stscFieldNames.push_back(tree.node(childId)->name());
+    }
+    const std::vector<QString> expectedStscFieldNames = {
+        QStringLiteral("version"),
+        QStringLiteral("flags"),
+        QStringLiteral("entry_count"),
+        QStringLiteral("table_bytes"),
+        QStringLiteral("entries"),
+    };
+    QCOMPARE(stscFieldNames, expectedStscFieldNames);
+    QCOMPARE(tree.node(stscStruct->children()[0])->value().toULongLong(), quint64{0});
+    QCOMPARE(tree.node(stscStruct->children()[2])->value().toULongLong(), quint64{2});
+    QCOMPARE(tree.node(stscStruct->children()[3])->value().toULongLong(), quint64{24});
+    const auto stscWindow = tree.node(stscStruct->children()[4]);
+    QVERIFY(stscWindow->metadata().window.has_value());
+    QCOMPARE(stscWindow->metadata().window->entryCount, quint64{2});
+    QCOMPARE(stscWindow->metadata().window->entrySizeBits, quint32{96});
+
+    // 3. stsz
+    const auto stszBox = tree.node(stblPayload->children()[2]);
+    QVERIFY(stszBox.has_value());
+    const auto stszPayload = tree.node(stszBox->children().back());
+    QVERIFY(stszPayload.has_value());
+    const auto stszStruct = tree.node(stszPayload->children().front());
+    QVERIFY(stszStruct.has_value());
+    std::vector<QString> stszFieldNames;
+    for (const auto childId : stszStruct->children()) {
+        stszFieldNames.push_back(tree.node(childId)->name());
+    }
+    const std::vector<QString> expectedStszFieldNames = {
+        QStringLiteral("version"),
+        QStringLiteral("flags"),
+        QStringLiteral("sample_size"),
+        QStringLiteral("sample_count"),
+        QStringLiteral("table_bytes"),
+        QStringLiteral("entries"),
+    };
+    QCOMPARE(stszFieldNames, expectedStszFieldNames);
+    QCOMPARE(tree.node(stszStruct->children()[0])->value().toULongLong(), quint64{0});
+    QCOMPARE(tree.node(stszStruct->children()[2])->value().toULongLong(), quint64{0});
+    QCOMPARE(tree.node(stszStruct->children()[3])->value().toULongLong(), quint64{3});
+    QCOMPARE(tree.node(stszStruct->children()[4])->value().toULongLong(), quint64{12});
+    const auto stszWindow = tree.node(stszStruct->children()[5]);
+    QVERIFY(stszWindow->metadata().window.has_value());
+    QCOMPARE(stszWindow->metadata().window->entryCount, quint64{3});
+    QCOMPARE(stszWindow->metadata().window->entrySizeBits, quint32{32});
+
+    // 4. stco
+    const auto stcoBox = tree.node(stblPayload->children()[3]);
+    QVERIFY(stcoBox.has_value());
+    const auto stcoPayload = tree.node(stcoBox->children().back());
+    QVERIFY(stcoPayload.has_value());
+    const auto stcoStruct = tree.node(stcoPayload->children().front());
+    QVERIFY(stcoStruct.has_value());
+    std::vector<QString> stcoFieldNames;
+    for (const auto childId : stcoStruct->children()) {
+        stcoFieldNames.push_back(tree.node(childId)->name());
+    }
+    const std::vector<QString> expectedStcoFieldNames = {
+        QStringLiteral("version"),
+        QStringLiteral("flags"),
+        QStringLiteral("entry_count"),
+        QStringLiteral("table_bytes"),
+        QStringLiteral("entries"),
+    };
+    QCOMPARE(stcoFieldNames, expectedStcoFieldNames);
+    QCOMPARE(tree.node(stcoStruct->children()[0])->value().toULongLong(), quint64{0});
+    QCOMPARE(tree.node(stcoStruct->children()[2])->value().toULongLong(), quint64{2});
+    QCOMPARE(tree.node(stcoStruct->children()[3])->value().toULongLong(), quint64{8});
+    const auto stcoWindow = tree.node(stcoStruct->children()[4]);
+    QVERIFY(stcoWindow->metadata().window.has_value());
+    QCOMPARE(stcoWindow->metadata().window->entryCount, quint64{2});
+    QCOMPARE(stcoWindow->metadata().window->entrySizeBits, quint32{32});
+
+    // 5. co64
+    const auto co64Box = tree.node(stblPayload->children()[4]);
+    QVERIFY(co64Box.has_value());
+    const auto co64Payload = tree.node(co64Box->children().back());
+    QVERIFY(co64Payload.has_value());
+    const auto co64Struct = tree.node(co64Payload->children().front());
+    QVERIFY(co64Struct.has_value());
+    std::vector<QString> co64FieldNames;
+    for (const auto childId : co64Struct->children()) {
+        co64FieldNames.push_back(tree.node(childId)->name());
+    }
+    const std::vector<QString> expectedCo64FieldNames = {
+        QStringLiteral("version"),
+        QStringLiteral("flags"),
+        QStringLiteral("entry_count"),
+        QStringLiteral("table_bytes"),
+        QStringLiteral("entries"),
+    };
+    QCOMPARE(co64FieldNames, expectedCo64FieldNames);
+    QCOMPARE(tree.node(co64Struct->children()[0])->value().toULongLong(), quint64{0});
+    QCOMPARE(tree.node(co64Struct->children()[2])->value().toULongLong(), quint64{2});
+    QCOMPARE(tree.node(co64Struct->children()[3])->value().toULongLong(), quint64{16});
+    const auto co64Window = tree.node(co64Struct->children()[4]);
+    QVERIFY(co64Window->metadata().window.has_value());
+    QCOMPARE(co64Window->metadata().window->entryCount, quint64{2});
+    QCOMPARE(co64Window->metadata().window->entrySizeBits, quint32{64});
+
+    QCOMPARE(analyzer->tree().node(analyzer->tree().rootId())->diagnostics().size(), std::size_t{0});
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesSampleSizeUniformWithoutTable() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5g_stsz_uniform.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    const auto moov = tree.node(batch.boxNodes[1]);
+    QVERIFY(moov.has_value());
+    const auto moovStruct = tree.node(moov->children().front());
+    QVERIFY(moovStruct.has_value());
+    const auto moovPayload = tree.node(moovStruct->children().back());
+    QVERIFY(moovPayload.has_value());
+
+    const auto trakStruct = tree.node(moovPayload->children().front());
+    QVERIFY(trakStruct.has_value());
+    const auto trakPayload = tree.node(trakStruct->children().back());
+    QVERIFY(trakPayload.has_value());
+
+    const auto mdiaStruct = tree.node(trakPayload->children().front());
+    QVERIFY(mdiaStruct.has_value());
+    const auto mdiaPayload = tree.node(mdiaStruct->children().back());
+    QVERIFY(mdiaPayload.has_value());
+
+    const auto minfStruct = tree.node(mdiaPayload->children().front());
+    QVERIFY(minfStruct.has_value());
+    const auto minfPayload = tree.node(minfStruct->children().back());
+    QVERIFY(minfPayload.has_value());
+
+    const auto stblStruct = tree.node(minfPayload->children().front());
+    QVERIFY(stblStruct.has_value());
+    const auto stblPayload = tree.node(stblStruct->children().back());
+    QVERIFY(stblPayload.has_value());
+
+    const auto stszBox = tree.node(stblPayload->children().front());
+    QVERIFY(stszBox.has_value());
+    const auto stszPayload = tree.node(stszBox->children().back());
+    QVERIFY(stszPayload.has_value());
+    const auto stszStruct = tree.node(stszPayload->children().front());
+    QVERIFY(stszStruct.has_value());
+
+    std::vector<QString> stszFieldNames;
+    for (const auto childId : stszStruct->children()) {
+        stszFieldNames.push_back(tree.node(childId)->name());
+    }
+    const std::vector<QString> expectedStszFieldNames = {
+        QStringLiteral("version"),
+        QStringLiteral("flags"),
+        QStringLiteral("sample_size"),
+        QStringLiteral("sample_count"),
+    };
+    QCOMPARE(stszFieldNames, expectedStszFieldNames);
+    QCOMPARE(tree.node(stszStruct->children()[0])->value().toULongLong(), quint64{0});
+    QCOMPARE(tree.node(stszStruct->children()[1])->value().toULongLong(), quint64{0});
+    QCOMPARE(tree.node(stszStruct->children()[2])->value().toULongLong(), quint64{1024});
+    QCOMPARE(tree.node(stszStruct->children()[3])->value().toULongLong(), quint64{50});
+    QCOMPARE(analyzer->tree().node(analyzer->tree().rootId())->diagnostics().size(), std::size_t{0});
+}
+
+void Mp4IsobmffAnalyzerTest::decodesSampleTableWindowsWithPagingAndBudget() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5g_large_sample_table.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    const auto loaded = streamview::rules::loadMp4IsobmffRulePackage();
+    QVERIFY(loaded.succeeded());
+    const auto* svfmtSource = loaded.package->fileContents(QStringLiteral("src/mp4_isobmff.svfmt"));
+    QVERIFY(svfmtSource != nullptr);
+    const auto parseRes = streamview::rules::DslParser::parse(QString::fromUtf8(*svfmtSource));
+    QVERIFY(parseRes.succeeded());
+    const auto compileRes = streamview::rules::DslCompiler::compile(parseRes.program);
+    QVERIFY(compileRes.succeeded());
+    const auto& program = *compileRes.program;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    // Locate stbl
+    const auto moov = tree.node(batch.boxNodes[2]); // free is 1, moov is 2
+    QVERIFY(moov.has_value());
+    const auto moovStruct = tree.node(moov->children().front());
+    QVERIFY(moovStruct.has_value());
+    const auto moovPayload = tree.node(moovStruct->children().back());
+    QVERIFY(moovPayload.has_value());
+
+    const auto trakStruct = tree.node(moovPayload->children().front());
+    const auto trakPayload = tree.node(trakStruct->children().back());
+    const auto mdiaStruct = tree.node(trakPayload->children().front());
+    const auto mdiaPayload = tree.node(mdiaStruct->children().back());
+    const auto minfStruct = tree.node(mdiaPayload->children().front());
+    const auto minfPayload = tree.node(minfStruct->children().back());
+    const auto stblStruct = tree.node(minfPayload->children().front());
+    const auto stblPayload = tree.node(stblStruct->children().back());
+
+    const auto stszBox = tree.node(stblPayload->children()[1]);
+    QVERIFY(stszBox.has_value());
+    const auto stszPayload = tree.node(stszBox->children().back());
+    QVERIFY(stszPayload.has_value());
+    const auto stszStruct = tree.node(stszPayload->children().front());
+    QVERIFY(stszStruct.has_value());
+
+    const auto windowNodeId = stszStruct->children()[5];
+    const auto windowNode = tree.node(windowNodeId);
+    QVERIFY(windowNode.has_value());
+    QVERIFY(windowNode->metadata().window.has_value());
+    QCOMPARE(windowNode->metadata().window->entryCount, quint64{200});
+
+    auto mutableTree = std::make_shared<streamview::core::AnalysisTree>(analyzer->tree());
+    auto budget = std::make_shared<streamview::rules::RunnerExecutionBudget>();
+    const auto span = *streamview::core::SourceSpan::create(streamview::core::SourceBitAddress(0), bytes.size() * 8U);
+    const auto mapping = *streamview::core::SourceMapping::create(streamview::core::LogicalViewId(1), {span});
+
+    streamview::rules::WindowDecoder decoder(program, source, mapping, mutableTree, windowNodeId, budget);
+
+    // Page 0: decode 50 entries
+    streamview::rules::WindowDecodeRequest req1;
+    req1.pageIndex = 0;
+    req1.pageSize = 50;
+    auto res1 = decoder.decodeWindow(req1);
+    QCOMPARE(res1.status, streamview::rules::DslExecutionStatus::Materialized);
+    QCOMPARE(res1.decodedEntryCount, quint64{50});
+    auto winNodeAfter1 = mutableTree->node(windowNodeId);
+    QVERIFY(winNodeAfter1.has_value());
+    QCOMPARE(winNodeAfter1->children().size(), std::size_t{50});
+
+    const auto firstEntry = mutableTree->node(winNodeAfter1->children().front());
+    QVERIFY(firstEntry.has_value());
+    const auto firstEntryVal = mutableTree->node(firstEntry->children().front());
+    QVERIFY(firstEntryVal.has_value());
+    QCOMPARE(firstEntryVal->value().toULongLong(), quint64{500});
+
+    // Page 1: decode next 50 entries (total 100)
+    streamview::rules::WindowDecodeRequest req2;
+    req2.pageIndex = 1;
+    req2.pageSize = 50;
+    auto res2 = decoder.decodeWindow(req2);
+    QCOMPARE(res2.status, streamview::rules::DslExecutionStatus::Materialized);
+    QCOMPARE(res2.decodedEntryCount, quint64{50});
+    auto winNodeAfter2 = mutableTree->node(windowNodeId);
+    QVERIFY(winNodeAfter2.has_value());
+    QCOMPARE(winNodeAfter2->children().size(), std::size_t{100});
+
+    // Repeat Page 0: should reuse nodes without duplicate allocation
+    auto res3 = decoder.decodeWindow(req1);
+    QCOMPARE(res3.status, streamview::rules::DslExecutionStatus::Materialized);
+    auto winNodeAfter3 = mutableTree->node(windowNodeId);
+    QVERIFY(winNodeAfter3.has_value());
+    QCOMPARE(winNodeAfter3->children().size(), std::size_t{100});
+
+    // Budget limit enforcement
+    budget->remainingNodes = 5;
+    streamview::rules::WindowDecodeRequest req3;
+    req3.pageIndex = 2;
+    req3.pageSize = 50;
+    auto res4 = decoder.decodeWindow(req3);
+    QCOMPARE(res4.status, streamview::rules::DslExecutionStatus::ResourceLimit);
+}
+
+void Mp4IsobmffAnalyzerTest::handlesUnsupportedSampleTableVersions() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5g_unsupported_stbl_versions.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    const auto moov = tree.node(batch.boxNodes[1]);
+    QVERIFY(moov.has_value());
+    const auto moovStruct = tree.node(moov->children().front());
+    QVERIFY(moovStruct.has_value());
+    const auto moovPayload = tree.node(moovStruct->children().back());
+    QVERIFY(moovPayload.has_value());
+
+    const auto trakStruct = tree.node(moovPayload->children().front());
+    const auto trakPayload = tree.node(trakStruct->children().back());
+    const auto mdiaStruct = tree.node(trakPayload->children().front());
+    const auto mdiaPayload = tree.node(mdiaStruct->children().back());
+    const auto minfStruct = tree.node(mdiaPayload->children().front());
+    const auto minfPayload = tree.node(minfStruct->children().back());
+    const auto stblStruct = tree.node(minfPayload->children().front());
+    const auto stblPayload = tree.node(stblStruct->children().back());
+
+    const QString expectedFieldPaths[5] = {
+        QStringLiteral("TimeToSampleBox.version"),
+        QStringLiteral("SampleToChunkBox.version"),
+        QStringLiteral("SampleSizeBox.version"),
+        QStringLiteral("ChunkOffsetBox.version"),
+        QStringLiteral("ChunkLargeOffsetBox.version"),
+    };
+
+    for (std::size_t i = 0; i < 5; ++i) {
+        const auto box = tree.node(stblPayload->children()[i]);
+        QVERIFY(box.has_value());
+        const auto payload = tree.node(box->children().back());
+        QVERIFY(payload.has_value());
+        const auto payloadStruct = tree.node(payload->children().front());
+        QVERIFY(payloadStruct.has_value());
+        QCOMPARE(payloadStruct->state(), streamview::core::MaterializationState::Unsupported);
+        QVERIFY(!payloadStruct->diagnostics().empty());
+        bool foundUnsupported = false;
+        for (const auto& diag : payloadStruct->diagnostics()) {
+            if (diag.code == streamview::core::DiagnosticCode::UnsupportedSyntax &&
+                diag.fieldPath == expectedFieldPaths[i]) {
+                foundUnsupported = true;
+                break;
+            }
+        }
+        QVERIFY2(foundUnsupported, qPrintable(QStringLiteral("Missing UnsupportedSyntax diagnostic for %1").arg(expectedFieldPaths[i])));
+    }
 }
 
 QTEST_MAIN(Mp4IsobmffAnalyzerTest)

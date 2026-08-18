@@ -1,3 +1,133 @@
+@spec("ISO/IEC 14496-12:2015", "8.6.1.2")
+@description("Time to Sample entry.")
+struct TimeToSampleEntry {
+    bits<32> sample_count
+        @description("Number of consecutive samples with this delta.");
+    bits<32> sample_delta
+        @description("Delta of these samples in timescale units.");
+}
+
+@spec("ISO/IEC 14496-12:2015", "8.6.1.2")
+@description("Time to Sample box payload.")
+struct TimeToSampleBox {
+    bits<8> version
+        @description("Version (0).");
+    bits<24> flags
+        @description("Flags.");
+    bits<32> entry_count
+        @description("Number of time-to-sample entries.");
+    if (version == 0) {
+        computed<u64> table_bytes = entry_count * 8;
+        @lazy(table_bytes) bytes entries @window(TimeToSampleEntry, entry_count);
+    } else {
+        unsupported("Unsupported stts FullBox version") at version;
+    }
+}
+
+@spec("ISO/IEC 14496-12:2015", "8.7.4")
+@description("Sample to Chunk entry.")
+struct SampleToChunkEntry {
+    bits<32> first_chunk
+        @description("First chunk index using this description.");
+    bits<32> samples_per_chunk
+        @description("Number of samples in each chunk.");
+    bits<32> sample_description_index
+        @description("Sample description index for these samples.");
+}
+
+@spec("ISO/IEC 14496-12:2015", "8.7.4")
+@description("Sample to Chunk box payload.")
+struct SampleToChunkBox {
+    bits<8> version
+        @description("Version (0).");
+    bits<24> flags
+        @description("Flags.");
+    bits<32> entry_count
+        @description("Number of sample-to-chunk entries.");
+    if (version == 0) {
+        computed<u64> table_bytes = entry_count * 12;
+        @lazy(table_bytes) bytes entries @window(SampleToChunkEntry, entry_count);
+    } else {
+        unsupported("Unsupported stsc FullBox version") at version;
+    }
+}
+
+@spec("ISO/IEC 14496-12:2015", "8.7.3.2")
+@description("Sample Size entry.")
+struct SampleSizeEntry {
+    bits<32> entry_size
+        @description("Size of individual sample in bytes.");
+}
+
+@spec("ISO/IEC 14496-12:2015", "8.7.3.2")
+@description("Sample Size box payload.")
+struct SampleSizeBox {
+    bits<8> version
+        @description("Version (0).");
+    bits<24> flags
+        @description("Flags.");
+    bits<32> sample_size
+        @description("Default sample size (if 0, individual sizes follow in table).");
+    bits<32> sample_count
+        @description("Number of samples.");
+    if (version == 0) {
+        if (sample_size == 0) {
+            computed<u64> table_bytes = sample_count * 4;
+            @lazy(table_bytes) bytes entries @window(SampleSizeEntry, sample_count);
+        }
+    } else {
+        unsupported("Unsupported stsz FullBox version") at version;
+    }
+}
+
+@spec("ISO/IEC 14496-12:2015", "8.7.5")
+@description("32-bit Chunk Offset entry.")
+struct ChunkOffsetEntry {
+    bits<32> chunk_offset
+        @description("32-bit byte offset of chunk from beginning of file.");
+}
+
+@spec("ISO/IEC 14496-12:2015", "8.7.5")
+@description("32-bit Chunk Offset box payload.")
+struct ChunkOffsetBox {
+    bits<8> version
+        @description("Version (0).");
+    bits<24> flags
+        @description("Flags.");
+    bits<32> entry_count
+        @description("Number of chunk offset entries.");
+    if (version == 0) {
+        computed<u64> table_bytes = entry_count * 4;
+        @lazy(table_bytes) bytes entries @window(ChunkOffsetEntry, entry_count);
+    } else {
+        unsupported("Unsupported stco FullBox version") at version;
+    }
+}
+
+@spec("ISO/IEC 14496-12:2015", "8.7.5")
+@description("64-bit Chunk Offset entry.")
+struct ChunkLargeOffsetEntry {
+    bits<64> chunk_offset
+        @description("64-bit byte offset of chunk from beginning of file.");
+}
+
+@spec("ISO/IEC 14496-12:2015", "8.7.5")
+@description("64-bit Chunk Offset box payload.")
+struct ChunkLargeOffsetBox {
+    bits<8> version
+        @description("Version (0).");
+    bits<24> flags
+        @description("Flags.");
+    bits<32> entry_count
+        @description("Number of 64-bit chunk offset entries.");
+    if (version == 0) {
+        computed<u64> table_bytes = entry_count * 8;
+        @lazy(table_bytes) bytes entries @window(ChunkLargeOffsetEntry, entry_count);
+    } else {
+        unsupported("Unsupported co64 FullBox version") at version;
+    }
+}
+
 @spec("ISO/IEC 14496-12:2015", "4.2")
 @description("ISO Base Media File Format box.")
 struct Box {
@@ -193,10 +323,10 @@ struct Box {
                                     @description("Version of edit list box (0 or 1).");
                                 bits<24> elst_flags
                                     @description("Flags.");
-                                bits<32> elst_entry_count
-                                    @description("Number of edit list entries.");
                                 if (elst_version == 1) {
-                                    repeat (elst_entry_count, 64) {
+                                    bits<32> elst_v1_entry_count
+                                        @description("Number of edit list entries.");
+                                    repeat (elst_v1_entry_count, 64) {
                                         bits<64> elst_v1_segment_duration
                                             @description("Segment duration in movie timescale.");
                                         bits<64> elst_v1_media_time
@@ -208,7 +338,9 @@ struct Box {
                                     }
                                 } else {
                                     if (elst_version == 0) {
-                                        repeat (elst_entry_count, 64) {
+                                        bits<32> elst_v0_entry_count
+                                            @description("Number of edit list entries.");
+                                        repeat (elst_v0_entry_count, 64) {
                                             bits<32> elst_v0_segment_duration
                                                 @description("Segment duration in movie timescale.");
                                             bits<32> elst_v0_media_time
@@ -334,24 +466,104 @@ struct Box {
                                                         }
                                                     }
                                                 } else {
-                                                    if (type == 0x6D6F6F66) {
-                                                        unsupported("fragmented MP4 (moof/traf) is outside the v0.1 subset") at type;
-                                                    } else {
+                                                    if (type == 0x73747473) {
                                                         if (size == 1) {
-                                                            bits<64> largesize
-                                                                @description("64-bit box size in bytes.");
-                                                            computed<u64> large_payload_bytes = largesize - 16;
-                                                            @lazy(large_payload_bytes) bytes large_payload
-                                                                @description("Box payload data.");
+                                                            bits<64> stts_largesize;
+                                                            computed<u64> stts_large_payload_bytes = stts_largesize - 16;
+                                                            @lazy(stts_large_payload_bytes) bytes stts_large_payload @container(TimeToSampleBox);
                                                         } else {
                                                             if (size == 0) {
-                                                                computed<u64> eof_payload_bytes = available_bytes();
-                                                                @lazy(eof_payload_bytes) bytes eof_payload
-                                                                    @description("Box payload data extending to EOF.");
+                                                                computed<u64> stts_eof_payload_bytes = available_bytes();
+                                                                @lazy(stts_eof_payload_bytes) bytes stts_eof_payload @container(TimeToSampleBox);
                                                             } else {
-                                                                computed<u64> payload_bytes = size - 8;
-                                                                @lazy(payload_bytes) bytes payload
-                                                                    @description("Box payload data.");
+                                                                computed<u64> stts_payload_bytes = size - 8;
+                                                                @lazy(stts_payload_bytes) bytes stts_payload @container(TimeToSampleBox);
+                                                            }
+                                                        }
+                                                    } else {
+                                                        if (type == 0x73747363) {
+                                                            if (size == 1) {
+                                                                bits<64> stsc_largesize;
+                                                                computed<u64> stsc_large_payload_bytes = stsc_largesize - 16;
+                                                                @lazy(stsc_large_payload_bytes) bytes stsc_large_payload @container(SampleToChunkBox);
+                                                            } else {
+                                                                if (size == 0) {
+                                                                    computed<u64> stsc_eof_payload_bytes = available_bytes();
+                                                                    @lazy(stsc_eof_payload_bytes) bytes stsc_eof_payload @container(SampleToChunkBox);
+                                                                } else {
+                                                                    computed<u64> stsc_payload_bytes = size - 8;
+                                                                    @lazy(stsc_payload_bytes) bytes stsc_payload @container(SampleToChunkBox);
+                                                                }
+                                                            }
+                                                        } else {
+                                                            if (type == 0x7374737A) {
+                                                                if (size == 1) {
+                                                                    bits<64> stsz_largesize;
+                                                                    computed<u64> stsz_large_payload_bytes = stsz_largesize - 16;
+                                                                    @lazy(stsz_large_payload_bytes) bytes stsz_large_payload @container(SampleSizeBox);
+                                                                } else {
+                                                                    if (size == 0) {
+                                                                        computed<u64> stsz_eof_payload_bytes = available_bytes();
+                                                                        @lazy(stsz_eof_payload_bytes) bytes stsz_eof_payload @container(SampleSizeBox);
+                                                                    } else {
+                                                                        computed<u64> stsz_payload_bytes = size - 8;
+                                                                        @lazy(stsz_payload_bytes) bytes stsz_payload @container(SampleSizeBox);
+                                                                    }
+                                                                }
+                                                            } else {
+                                                                if (type == 0x7374636F) {
+                                                                    if (size == 1) {
+                                                                        bits<64> stco_largesize;
+                                                                        computed<u64> stco_large_payload_bytes = stco_largesize - 16;
+                                                                        @lazy(stco_large_payload_bytes) bytes stco_large_payload @container(ChunkOffsetBox);
+                                                                    } else {
+                                                                        if (size == 0) {
+                                                                            computed<u64> stco_eof_payload_bytes = available_bytes();
+                                                                            @lazy(stco_eof_payload_bytes) bytes stco_eof_payload @container(ChunkOffsetBox);
+                                                                        } else {
+                                                                            computed<u64> stco_payload_bytes = size - 8;
+                                                                            @lazy(stco_payload_bytes) bytes stco_payload @container(ChunkOffsetBox);
+                                                                        }
+                                                                    }
+                                                                } else {
+                                                                    if (type == 0x636F3634) {
+                                                                        if (size == 1) {
+                                                                            bits<64> co64_largesize;
+                                                                            computed<u64> co64_large_payload_bytes = co64_largesize - 16;
+                                                                            @lazy(co64_large_payload_bytes) bytes co64_large_payload @container(ChunkLargeOffsetBox);
+                                                                        } else {
+                                                                            if (size == 0) {
+                                                                                computed<u64> co64_eof_payload_bytes = available_bytes();
+                                                                                @lazy(co64_eof_payload_bytes) bytes co64_eof_payload @container(ChunkLargeOffsetBox);
+                                                                            } else {
+                                                                                computed<u64> co64_payload_bytes = size - 8;
+                                                                                @lazy(co64_payload_bytes) bytes co64_payload @container(ChunkLargeOffsetBox);
+                                                                            }
+                                                                        }
+                                                                    } else {
+                                                                        if (type == 0x6D6F6F66) {
+                                                                            unsupported("fragmented MP4 (moof/traf) is outside the v0.1 subset") at type;
+                                                                        } else {
+                                                                            if (size == 1) {
+                                                                                bits<64> largesize
+                                                                                    @description("64-bit box size in bytes.");
+                                                                                computed<u64> large_payload_bytes = largesize - 16;
+                                                                                @lazy(large_payload_bytes) bytes large_payload
+                                                                                    @description("Box payload data.");
+                                                                            } else {
+                                                                                if (size == 0) {
+                                                                                    computed<u64> eof_payload_bytes = available_bytes();
+                                                                                    @lazy(eof_payload_bytes) bytes eof_payload
+                                                                                        @description("Box payload data extending to EOF.");
+                                                                                } else {
+                                                                                    computed<u64> payload_bytes = size - 8;
+                                                                                    @lazy(payload_bytes) bytes payload
+                                                                                        @description("Box payload data.");
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     }
