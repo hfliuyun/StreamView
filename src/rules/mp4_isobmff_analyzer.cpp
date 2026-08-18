@@ -1,6 +1,7 @@
 #include <streamview/rules/mp4_isobmff_analyzer.h>
 
 #include <streamview/core/bit_reader.h>
+#include <streamview/core/bounded_source_view.h>
 #include <streamview/core/coordinates.h>
 #include <streamview/core/version.h>
 #include <streamview/rules/dsl.h>
@@ -79,66 +80,6 @@ public:
 
 private:
     std::shared_ptr<RunnerExecutionBudget> budget_;
-};
-
-class BoundedSourceView final : public core::RandomAccessSource {
-public:
-    BoundedSourceView(const core::RandomAccessSource& baseSource,
-                      core::SourceMapping mapping,
-                      quint64 sizeBytes)
-        : baseSource_(&baseSource), mapping_(std::move(mapping)), sizeBytes_(sizeBytes) {}
-
-    [[nodiscard]] quint64 sizeBytes() const noexcept override { return sizeBytes_; }
-    [[nodiscard]] QString identity() const override { return baseSource_->identity(); }
-
-    [[nodiscard]] core::SourceReadResult
-    readAt(quint64 byteOffset, std::span<std::byte> destination) const override {
-        if (destination.empty()) {
-            return {core::SourceReadStatus::Complete, 0, {}};
-        }
-        if (byteOffset >= sizeBytes_) {
-            return {core::SourceReadStatus::EndOfSource, 0, {}};
-        }
-        const quint64 available = sizeBytes_ - byteOffset;
-        const std::size_t count = static_cast<std::size_t>(std::min(static_cast<quint64>(destination.size()), available));
-
-        constexpr quint64 maxByteCoordinate = std::numeric_limits<quint64>::max() / 8U;
-        if (byteOffset > maxByteCoordinate ||
-            static_cast<quint64>(count) > maxByteCoordinate) {
-            return {core::SourceReadStatus::Error, 0,
-                    QStringLiteral("Container source view coordinate overflow")};
-        }
-
-        auto range = core::LogicalRange::create(
-            core::LogicalBitAddress(mapping_.viewId(), byteOffset * 8U), count * 8U);
-        if (!range) {
-            return {core::SourceReadStatus::Error, 0, QStringLiteral("Invalid range in container source view")};
-        }
-        auto locateRes = mapping_.locate(*range);
-        if (!locateRes.has_value() || locateRes->sourceSpans().empty()) {
-            return {core::SourceReadStatus::Error, 0, QStringLiteral("Failed to locate spans in container")};
-        }
-
-        std::size_t bytesFilled = 0;
-        for (const auto& span : locateRes->sourceSpans()) {
-            const quint64 spanStartByte = span.start().byteOffset();
-            const std::size_t spanLength = static_cast<std::size_t>(span.bitLength() / 8U);
-            const std::size_t toRead = std::min(spanLength, count - bytesFilled);
-            auto readRes = baseSource_->readAt(spanStartByte, destination.subspan(bytesFilled, toRead));
-            if (!readRes.complete()) {
-                return readRes;
-            }
-            bytesFilled += readRes.bytesRead;
-            if (bytesFilled >= count) break;
-        }
-        return {bytesFilled == destination.size() ? core::SourceReadStatus::Complete : core::SourceReadStatus::EndOfSource,
-                bytesFilled, {}};
-    }
-
-private:
-    const core::RandomAccessSource* baseSource_;
-    core::SourceMapping mapping_;
-    quint64 sizeBytes_;
 };
 
 struct BundledMp4Rule final {
@@ -564,7 +505,7 @@ bool Mp4IsobmffAnalyzer::recursivelyDrillContainer(
                     if (errorMessage) *errorMessage = QStringLiteral("Failed to create container source mapping");
                     return false;
                 }
-                BoundedSourceView containerSource(*source_, *containerMapping, containerByteLength);
+                core::BoundedSourceView containerSource(*source_, *containerMapping, containerByteLength);
                 Mp4BoxScanner containerScanner(containerSource, cancellation_);
 
                 while (!containerScanner.finished()) {
