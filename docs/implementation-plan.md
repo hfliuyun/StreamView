@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-3b-2-R — Payload Transform Provider 合同与测试真实性修正
-Next Action: 下发 Task P5i-3b-3；未经复审不得实现 session context、manifest target、官方 H.264 规则入口或 P5i-4 UI
-Last Verification: Task P5i-3b-2-R — review fix `f6f188243b968b62fc8adac2bcb0d33778bf92a2`; Hosted CI Run `32171522131` (macOS job `95823560276`, Ubuntu job `95823560259`, Windows job `95823560223` all success); local dev/ci/sanitize CTest `43/43` passed; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
-Blockers: None
+Last Completed Step: Task P5i-3b-3 — 具体 Payload Transform Provider (H.264 RBSP) 能力实现
+Next Action: 等待主 Agent 复审 Task P5i-3b-3；未经复审不得开始 session context、manifest target、官方 H.264 规则或 P5i-4 UI
+Last Verification: Task P5i-3b-3 — Implementation commit `7a7f6fe0ceb2b8e1342b69c470a28242d617549a`; Hosted CI Run `32173844042` (Ubuntu job `95831061475`, macOS job `95831061432`, Windows job `95831061518` all success); local dev/ci/sanitize CTest `43/43` passed; PayloadTransformTest 33 named cases / Qt 35/35; CompoundStructuralRunnerTest 36 named cases / Qt 38/38; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
+Blockers: Review of P5i-3b-3 required before session context / official rule integration
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -2496,3 +2496,23 @@ Blockers: None
   5. 测试修正：新增非零 `payloadLogicalStart` 下拒绝逃逸到逻辑子范围外的 forwarded span；将 inspection budget 超限校验扩展到所有 provider 终态；增加 forwarded mapping view identity 校验。当前 CompoundStructuralRunnerTest 为 35 个具名场景，Qt `37/37`；PayloadTransformTest 为 21 个具名场景，Qt `23/23`。
   6. 验证：本地 dev、ci、sanitize 三套完整构建与 CTest 均 `43/43`，sanitize 零报告；四个官方规则静态检查均 `Rule OK`；`markdown_hygiene` 与 `git diff --check` 通过。Hosted CI Run `32171522131`：macOS-15 / Qt 6.11.1 job `95823560276`、Ubuntu-24.04 / Qt 6.11.1 job `95823560259`、Windows-2022 / Qt 6.10.1 job `95823560223` 全部 success。
   终审结论：原 Task P5i-3b-2 报告不直接通过；主 Agent 完成 P5i-3b-2-R 修正并通过完整矩阵与 Hosted CI 验证。Next Action 切换为 Task P5i-3b-3，继续保持 capability-only 边界。
+- 2026-08-19：完成 Task P5i-3b-3 —— 具体 Payload Transform Provider (H.264 RBSP) 能力实现（实现提交 `7a7f6fe0ceb2b8e1342b69c470a28242d617549a`）：
+  1. H.264 RBSP Provider 落地：
+     - 在 `src/rules/h264_rbsp_payload_transform_provider.cpp` 与 `include/streamview/rules/h264_rbsp_payload_transform_provider.h` 实现 `H264RbspPayloadTransformProvider`（标识符 `"rbsp"`），封装 `H264EbspRbspMapper` 并支持显式注册到 `PayloadTransformRegistry`；
+     - 保持通用 compound runner 架构中立，无格式专属逻辑泄露；
+     - 状态精准映射：`Complete` -> `Materialized`，`Cancelled` -> `Cancelled`，`SourceError` -> `SourceError`，`ResourceLimit` -> `ResourceLimit`，`InvalidInput`/`InvalidBatchSize` -> `InvalidDefinition`；
+     - 坐标与诊断：准确生成 `PayloadExcludedSpan` 并严格保证 `forwardedBits + sum(excludedBits) == requestedInputBits`；将 5 种 EBSP 畸形序列 issue 转换为 `core::ParseDiagnostic`；
+     - 边界安全：对 disjoint EBSP 输入 mapping 显式返回 `InvalidDefinition`，严禁静默拼接或产生错误坐标。
+  2. 测试体系扩展：
+     - `tests/rules/payload_transform_test.cpp` 扩充 12 个具名行为测试场景（总计 33 个具名行为场景，Qt 套件报告 `35/35` 包含 init/cleanup），覆盖正常单 span `00 00 03 01`、多个 excluded spans、非零逻辑起点切片、disjoint mapping 显式拒绝与单 span 内子范围接纳、6 种畸形序列诊断、SourceError 传播、EOF / 超出 source 截断、跨 1024 字节取消检查闸门的真实中途 cancellation、inspection budget 精确耗尽与超限、未对齐/越界前置拦截、以及 provider 注册与生命周期重置；
+     - `tests/rules/compound_structural_runner_test.cpp` 扩充 1 个集成具名行为测试场景 `executesCompoundWithRegisteredRbspTransformProvider`（总计 36 个具名行为场景，Qt 套件报告 `38/38` 包含 init/cleanup），验证在 CompoundStructuralRunner 中注册并调度 `"rbsp"` provider 时，Header 与 Payload 在同一树内成功索引、转写、物化并挂载 excluded spans；
+     - 4 个内置官方 `.svfmt` 规则全部通过 `svtool rule check`（`Rule OK`）；
+     - 本地 dev / ci / sanitize 三套全量构建及 CTest 均通过（`43/43`），sanitize 零报告；
+     - `git diff --check` 与 `markdown_hygiene` 干净；
+     - Hosted CI Run `32173844042`：Ubuntu 24.04（Job `95831061475`）、macOS 15（Job `95831061432`）、Windows 2022（Job `95831061518`）三平台全部 success。
+  3. 边界严格恪守：
+     - 未实现 session context、manifest target selection、官方 H.264 规则入口或 `.svfmt` 修改；
+     - 未升级 `rule.toml` 版本；
+     - 未实现 P5i-4 UI 导航或通用 runner 中的格式专属逻辑。
+  终审结论：Task P5i-3b-3 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-3b-3；未经复审不得开始 session context、manifest target、官方 H.264 规则或 P5i-4 UI。
+
