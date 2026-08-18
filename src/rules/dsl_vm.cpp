@@ -1115,6 +1115,51 @@ DslExecutionResult DslVirtualMachine::execute(
     core::AnalysisNodeId parentId,
     const DslExecutionOptions& options,
     const DslContextValueResolver& contextValueResolver) {
+    return executeWithFinalization(program,
+                                   structureIndex,
+                                   reader,
+                                   mapping,
+                                   logicalStart,
+                                   tree,
+                                   parentId,
+                                   options,
+                                   contextValueResolver,
+                                   false);
+}
+
+DslExecutionResult DslVirtualMachine::executeDeferred(
+    const DslTypedProgram& program,
+    quint32 structureIndex,
+    core::BitReader& reader,
+    const core::SourceMapping& mapping,
+    quint64 logicalStart,
+    core::AnalysisTree& tree,
+    core::AnalysisNodeId parentId,
+    const DslExecutionOptions& options,
+    const DslContextValueResolver& contextValueResolver) {
+    return executeWithFinalization(program,
+                                   structureIndex,
+                                   reader,
+                                   mapping,
+                                   logicalStart,
+                                   tree,
+                                   parentId,
+                                   options,
+                                   contextValueResolver,
+                                   true);
+}
+
+DslExecutionResult DslVirtualMachine::executeWithFinalization(
+    const DslTypedProgram& program,
+    quint32 structureIndex,
+    core::BitReader& reader,
+    const core::SourceMapping& mapping,
+    quint64 logicalStart,
+    core::AnalysisTree& tree,
+    core::AnalysisNodeId parentId,
+    const DslExecutionOptions& options,
+    const DslContextValueResolver& contextValueResolver,
+    bool deferMaterialization) {
     DslExecutionResult result;
     if (structureIndex >= program.structs.size()) {
         result.errorMessage = QStringLiteral("Typed IR structure index is out of range");
@@ -4058,7 +4103,7 @@ DslExecutionResult DslVirtualMachine::execute(
                     stagedContextImports.push_back({import.kind, *key});
                 }
             }
-            if (!options.deferMaterialization) {
+            if (!deferMaterialization) {
                 if (!tree.transition(*result.structureNode,
                                      core::MaterializationState::Materialized)) {
                     markFailure(DslExecutionStatus::InvalidDefinition,

@@ -2,6 +2,7 @@
 
 #include <streamview/core/bit_reader.h>
 
+#include <exception>
 #include <limits>
 
 namespace streamview::rules {
@@ -40,6 +41,23 @@ namespace {
         }
     }
     return true;
+}
+
+[[nodiscard]] std::optional<QString> invokeTransactionHook(
+    const std::function<void()>& hook,
+    const QString& hookName) noexcept {
+    if (!hook) {
+        return std::nullopt;
+    }
+    try {
+        hook();
+        return std::nullopt;
+    } catch (const std::exception& error) {
+        return QStringLiteral("%1 hook failed: %2")
+            .arg(hookName, QString::fromUtf8(error.what()));
+    } catch (...) {
+        return QStringLiteral("%1 hook failed with an unknown exception").arg(hookName);
+    }
 }
 
 } // namespace
@@ -94,9 +112,16 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
             return makeFailure(DslExecutionStatus::InvalidDefinition,
                                QStringLiteral("Payload logical start is out of range"));
         }
+        if ((request.payloadLogicalStart % 8U) != 0) {
+            return makeFailure(DslExecutionStatus::InvalidDefinition,
+                               QStringLiteral("Payload logical start is not byte-aligned"));
+        }
         if (!validateMapping(*request.payloadMapping, &validationError)) {
             return makeFailure(DslExecutionStatus::InvalidDefinition, validationError);
         }
+    } else if (request.payloadMapping != nullptr || request.payloadLogicalStart != 0) {
+        return makeFailure(DslExecutionStatus::InvalidDefinition,
+                           QStringLiteral("Payload mapping requires a payload structure"));
     }
 
     if (request.options.cancellation &&
@@ -105,13 +130,40 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
                            QStringLiteral("Compound execution was cancelled before starting"));
     }
 
-    // 1. Header Execution Phase (keeps header in Indexing state)
-    DslExecutionOptions headerOptions = request.options;
-    headerOptions.deferMaterialization = true;
+    const auto rollbackAndReturn = [&](DslExecutionStatus status,
+                                       const QString& message) {
+        result.status = status;
+        result.errorMessage = message;
+        if (const auto hookError = invokeTransactionHook(
+                request.transactionHooks.onRollback, QStringLiteral("Rollback"))) {
+            result.status = DslExecutionStatus::InvalidDefinition;
+            if (!result.errorMessage.isEmpty()) {
+                result.errorMessage += QStringLiteral("; ");
+            }
+            result.errorMessage += *hookError;
+        }
+        return result;
+    };
 
+    const auto commitTransaction = [&]() {
+        const auto hookError = invokeTransactionHook(
+            request.transactionHooks.onCommit, QStringLiteral("Commit"));
+        if (!hookError) {
+            return true;
+        }
+        result.status = DslExecutionStatus::InvalidDefinition;
+        result.errorMessage = *hookError;
+        if (const auto rollbackError = invokeTransactionHook(
+                request.transactionHooks.onRollback, QStringLiteral("Rollback"))) {
+            result.errorMessage += QStringLiteral("; ") + *rollbackError;
+        }
+        return false;
+    };
+
+    // 1. Header Execution Phase (keeps header in Indexing state)
     core::BitReader headerReader(*request.source, *request.headerMapping);
 
-    const DslExecutionResult headerResult = DslVirtualMachine::execute(
+    const DslExecutionResult headerResult = DslVirtualMachine::executeDeferred(
         program,
         request.headerStructureIndex,
         headerReader,
@@ -119,7 +171,7 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
         0,
         *request.tree,
         request.parentId,
-        headerOptions);
+        request.options);
 
     result.headerNodeId = headerResult.structureNode;
     result.headerBitsConsumed = headerResult.bitsConsumed;
@@ -128,55 +180,49 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
     result.headerFieldValues = headerResult.fieldValues;
 
     if (!headerResult.materialized()) {
-        result.status = headerResult.status;
-        result.errorMessage = headerResult.errorMessage;
-        if (request.transactionHooks.onRollback) {
-            request.transactionHooks.onRollback();
-        }
-        return result;
+        return rollbackAndReturn(headerResult.status, headerResult.errorMessage);
     }
 
     if (!result.headerNodeId) {
-        result.status = DslExecutionStatus::InvalidDefinition;
-        result.errorMessage = QStringLiteral("Header execution did not produce a structure node");
-        if (request.transactionHooks.onRollback) {
-            request.transactionHooks.onRollback();
+        return rollbackAndReturn(
+            DslExecutionStatus::InvalidDefinition,
+            QStringLiteral("Header execution did not produce a structure node"));
+    }
+
+    if (request.requireExactConsumption &&
+        headerResult.bitsConsumed != request.headerMapping->logicalBitLength()) {
+        core::ParseDiagnostic diag;
+        diag.code = core::DiagnosticCode::InvalidSyntax;
+        diag.severity = core::DiagnosticSeverity::Error;
+        diag.message = QStringLiteral("Header did not consume all available logical bits");
+        if (!request.tree->markPartial(*result.headerNodeId,
+                                       core::MaterializationState::Invalid,
+                                       std::move(diag))) {
+            return rollbackAndReturn(
+                DslExecutionStatus::InvalidDefinition,
+                QStringLiteral("Failed to invalidate an incompletely consumed header"));
         }
-        return result;
+        return rollbackAndReturn(
+            DslExecutionStatus::InvalidSyntax,
+            QStringLiteral("Header did not consume all available logical bits"));
     }
 
     // 2. If no payload structure is requested
     if (!request.payloadStructureIndex.has_value()) {
-        if (request.requireExactConsumption &&
-            headerResult.bitsConsumed != request.headerMapping->logicalBitLength()) {
+        if (!commitTransaction()) {
             core::ParseDiagnostic diag;
             diag.code = core::DiagnosticCode::InvalidSyntax;
             diag.severity = core::DiagnosticSeverity::Error;
-            diag.message = QStringLiteral("Header did not consume all available logical bits");
-            (void)request.tree->markPartial(
-                *result.headerNodeId,
-                core::MaterializationState::Invalid,
-                std::move(diag));
-
-            if (request.transactionHooks.onRollback) {
-                request.transactionHooks.onRollback();
-            }
-            result.status = DslExecutionStatus::InvalidSyntax;
-            result.errorMessage = QStringLiteral("Header did not consume all available logical bits");
+            diag.message = result.errorMessage;
+            (void)request.tree->markPartial(*result.headerNodeId,
+                                            core::MaterializationState::Invalid,
+                                            std::move(diag));
             return result;
         }
 
         if (!request.tree->transition(*result.headerNodeId, core::MaterializationState::Materialized)) {
-            result.status = DslExecutionStatus::InvalidDefinition;
-            result.errorMessage = QStringLiteral("Failed to materialize header node");
-            if (request.transactionHooks.onRollback) {
-                request.transactionHooks.onRollback();
-            }
-            return result;
-        }
-
-        if (request.transactionHooks.onCommit) {
-            request.transactionHooks.onCommit();
+            return rollbackAndReturn(DslExecutionStatus::InvalidDefinition,
+                                     QStringLiteral("Failed to materialize header node"));
         }
         result.status = DslExecutionStatus::Materialized;
         return result;
@@ -194,12 +240,9 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
             core::MaterializationState::Cancelled,
             std::move(diag));
 
-        if (request.transactionHooks.onRollback) {
-            request.transactionHooks.onRollback();
-        }
-        result.status = DslExecutionStatus::Cancelled;
-        result.errorMessage = QStringLiteral("Execution was cancelled between header and payload");
-        return result;
+        return rollbackAndReturn(
+            DslExecutionStatus::Cancelled,
+            QStringLiteral("Execution was cancelled between header and payload"));
     }
 
     const quint64 maxInstructions = request.options.limits.maximumInstructions;
@@ -214,12 +257,9 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
             core::MaterializationState::Invalid,
             std::move(diag));
 
-        if (request.transactionHooks.onRollback) {
-            request.transactionHooks.onRollback();
-        }
-        result.status = DslExecutionStatus::ResourceLimit;
-        result.errorMessage = QStringLiteral("Instruction budget exhausted after header execution");
-        return result;
+        return rollbackAndReturn(
+            DslExecutionStatus::ResourceLimit,
+            QStringLiteral("Instruction budget exhausted after header execution"));
     }
     const quint64 instRemaining = maxInstructions - instUsed;
 
@@ -235,12 +275,9 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
             core::MaterializationState::Invalid,
             std::move(diag));
 
-        if (request.transactionHooks.onRollback) {
-            request.transactionHooks.onRollback();
-        }
-        result.status = DslExecutionStatus::ResourceLimit;
-        result.errorMessage = QStringLiteral("Materialized node budget exhausted after header execution");
-        return result;
+        return rollbackAndReturn(
+            DslExecutionStatus::ResourceLimit,
+            QStringLiteral("Materialized node budget exhausted after header execution"));
     }
     const quint64 nodesRemaining = maxNodes - nodesUsed;
 
@@ -249,33 +286,30 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
     payloadOptions.limits.maximumInstructions = instRemaining;
     payloadOptions.limits.maximumMaterializedNodes = nodesRemaining;
     payloadOptions.sequenceElementValues = headerResult.fieldValues;
-    payloadOptions.deferMaterialization = false;
 
-    core::BitReader payloadReader(*request.source, *request.payloadMapping);
-    if (request.payloadLogicalStart > 0) {
-        if (!payloadReader.seek(request.payloadLogicalStart)) {
-            core::ParseDiagnostic diag;
-            diag.code = core::DiagnosticCode::TruncatedSource;
-            diag.severity = core::DiagnosticSeverity::Error;
-            diag.message = QStringLiteral("Unable to seek to payload logical start");
-            (void)request.tree->markPartial(
-                *result.headerNodeId,
-                core::MaterializationState::Invalid,
-                std::move(diag));
-
-            if (request.transactionHooks.onRollback) {
-                request.transactionHooks.onRollback();
-            }
-            result.status = DslExecutionStatus::TruncatedSource;
-            result.errorMessage = QStringLiteral("Unable to seek to payload logical start");
-            return result;
-        }
+    const quint64 payloadBitLength =
+        request.payloadMapping->logicalBitLength() - request.payloadLogicalStart;
+    auto payloadReader = core::BitReader::fromMappingSlice(
+        *request.source,
+        *request.payloadMapping,
+        request.payloadLogicalStart,
+        payloadBitLength);
+    if (!payloadReader) {
+        core::ParseDiagnostic diag;
+        diag.code = core::DiagnosticCode::InvalidSyntax;
+        diag.severity = core::DiagnosticSeverity::Error;
+        diag.message = QStringLiteral("Unable to construct payload mapping slice");
+        (void)request.tree->markPartial(*result.headerNodeId,
+                                        core::MaterializationState::Invalid,
+                                        std::move(diag));
+        return rollbackAndReturn(DslExecutionStatus::InvalidDefinition,
+                                 QStringLiteral("Unable to construct payload mapping slice"));
     }
 
-    const DslExecutionResult payloadResult = DslVirtualMachine::execute(
+    const DslExecutionResult payloadResult = DslVirtualMachine::executeDeferred(
         program,
         *request.payloadStructureIndex,
-        payloadReader,
+        *payloadReader,
         *request.payloadMapping,
         request.payloadLogicalStart,
         *request.tree,
@@ -285,17 +319,16 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
     result.payloadNodeId = payloadResult.structureNode;
     result.payloadBitsConsumed = payloadResult.bitsConsumed;
 
-    constexpr quint64 maxVal = std::numeric_limits<quint64>::max();
-    if (maxVal - result.instructionsExecuted < payloadResult.instructionsExecuted) {
-        result.instructionsExecuted = maxVal;
-    } else {
-        result.instructionsExecuted += payloadResult.instructionsExecuted;
+    if (payloadResult.instructionsExecuted > instRemaining ||
+        payloadResult.nodesCreated > nodesRemaining) {
+        (void)request.tree->transition(*result.headerNodeId,
+                                       core::MaterializationState::Invalid);
+        return rollbackAndReturn(
+            DslExecutionStatus::InvalidDefinition,
+            QStringLiteral("Payload execution exceeded its remaining compound budget"));
     }
-    if (maxVal - result.nodesCreated < payloadResult.nodesCreated) {
-        result.nodesCreated = maxVal;
-    } else {
-        result.nodesCreated += payloadResult.nodesCreated;
-    }
+    result.instructionsExecuted += payloadResult.instructionsExecuted;
+    result.nodesCreated += payloadResult.nodesCreated;
 
     if (!payloadResult.materialized()) {
         const auto headerTerminalState =
@@ -309,50 +342,65 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
 
         (void)request.tree->transition(*result.headerNodeId, headerTerminalState);
 
-        if (request.transactionHooks.onRollback) {
-            request.transactionHooks.onRollback();
-        }
-        result.status = payloadResult.status;
-        result.errorMessage = payloadResult.errorMessage;
-        return result;
+        return rollbackAndReturn(payloadResult.status, payloadResult.errorMessage);
     }
 
     if (request.requireExactConsumption) {
-        const quint64 expectedPayloadBits =
-            request.payloadMapping->logicalBitLength() - request.payloadLogicalStart;
-        if (payloadResult.bitsConsumed != expectedPayloadBits) {
+        if (payloadResult.bitsConsumed != payloadBitLength) {
             core::ParseDiagnostic diag;
             diag.code = core::DiagnosticCode::InvalidSyntax;
             diag.severity = core::DiagnosticSeverity::Error;
             diag.message = QStringLiteral("Payload did not consume all available logical bits");
             if (result.payloadNodeId) {
-                (void)request.tree->markPartial(
-                    *result.payloadNodeId,
-                    core::MaterializationState::Invalid,
-                    diag);
+                if (!request.tree->markPartial(*result.payloadNodeId,
+                                               core::MaterializationState::Invalid,
+                                               diag)) {
+                    return rollbackAndReturn(
+                        DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Failed to invalidate an incompletely consumed payload"));
+                }
             }
             (void)request.tree->transition(*result.headerNodeId, core::MaterializationState::Invalid);
-
-            if (request.transactionHooks.onRollback) {
-                request.transactionHooks.onRollback();
-            }
-            result.status = DslExecutionStatus::InvalidSyntax;
-            result.errorMessage = QStringLiteral("Payload did not consume all available logical bits");
-            return result;
+            return rollbackAndReturn(
+                DslExecutionStatus::InvalidSyntax,
+                QStringLiteral("Payload did not consume all available logical bits"));
         }
     }
 
-    if (!request.tree->transition(*result.headerNodeId, core::MaterializationState::Materialized)) {
-        result.status = DslExecutionStatus::InvalidDefinition;
-        result.errorMessage = QStringLiteral("Failed to materialize header node after payload");
-        if (request.transactionHooks.onRollback) {
-            request.transactionHooks.onRollback();
-        }
+    if (!result.payloadNodeId) {
+        (void)request.tree->transition(*result.headerNodeId,
+                                       core::MaterializationState::Invalid);
+        return rollbackAndReturn(
+            DslExecutionStatus::InvalidDefinition,
+            QStringLiteral("Payload execution did not produce a structure node"));
+    }
+
+    if (!commitTransaction()) {
+        core::ParseDiagnostic diag;
+        diag.code = core::DiagnosticCode::InvalidSyntax;
+        diag.severity = core::DiagnosticSeverity::Error;
+        diag.message = result.errorMessage;
+        (void)request.tree->markPartial(*result.payloadNodeId,
+                                        core::MaterializationState::Invalid,
+                                        diag);
+        (void)request.tree->markPartial(*result.headerNodeId,
+                                        core::MaterializationState::Invalid,
+                                        std::move(diag));
         return result;
     }
 
-    if (request.transactionHooks.onCommit) {
-        request.transactionHooks.onCommit();
+    if (!request.tree->transition(*result.payloadNodeId,
+                                  core::MaterializationState::Materialized)) {
+        (void)request.tree->transition(*result.headerNodeId,
+                                       core::MaterializationState::Invalid);
+        return rollbackAndReturn(
+            DslExecutionStatus::InvalidDefinition,
+            QStringLiteral("Failed to materialize payload node"));
+    }
+    if (!request.tree->transition(*result.headerNodeId, core::MaterializationState::Materialized)) {
+        return rollbackAndReturn(
+            DslExecutionStatus::InvalidDefinition,
+            QStringLiteral("Failed to materialize header node after payload"));
     }
     result.status = DslExecutionStatus::Materialized;
     return result;

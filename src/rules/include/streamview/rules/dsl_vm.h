@@ -56,7 +56,6 @@ struct DslExecutionOptions final {
     // payload, indexed by typed element field index. Empty outside a dispatched
     // payload; a `header_value(...)` leaf then fails as an invalid definition.
     std::vector<std::optional<quint64>> sequenceElementValues;
-    bool deferMaterialization = false;
 };
 
 struct DslExecutionContextValue final {
@@ -100,6 +99,8 @@ struct DslContextValueResolution final {
 using DslContextValueResolver =
     std::function<DslContextValueResolution(const DslContextValueRequest&)>;
 
+class CompoundStructuralRunner;
+
 struct DslExecutionResult final {
     DslExecutionStatus status = DslExecutionStatus::InvalidDefinition;
     std::optional<core::AnalysisNodeId> structureNode;
@@ -128,6 +129,32 @@ public:
         core::AnalysisNodeId parentId,
         const DslExecutionOptions& options = {},
         const DslContextValueResolver& contextValueResolver = {});
+
+private:
+    friend class CompoundStructuralRunner;
+
+    [[nodiscard]] static DslExecutionResult executeDeferred(
+        const DslTypedProgram& program,
+        quint32 structureIndex,
+        core::BitReader& reader,
+        const core::SourceMapping& mapping,
+        quint64 logicalStart,
+        core::AnalysisTree& tree,
+        core::AnalysisNodeId parentId,
+        const DslExecutionOptions& options,
+        const DslContextValueResolver& contextValueResolver = {});
+
+    [[nodiscard]] static DslExecutionResult executeWithFinalization(
+        const DslTypedProgram& program,
+        quint32 structureIndex,
+        core::BitReader& reader,
+        const core::SourceMapping& mapping,
+        quint64 logicalStart,
+        core::AnalysisTree& tree,
+        core::AnalysisNodeId parentId,
+        const DslExecutionOptions& options,
+        const DslContextValueResolver& contextValueResolver,
+        bool deferMaterialization);
 };
 
 } // namespace streamview::rules
