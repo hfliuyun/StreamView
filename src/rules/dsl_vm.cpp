@@ -4058,13 +4058,16 @@ DslExecutionResult DslVirtualMachine::execute(
                     stagedContextImports.push_back({import.kind, *key});
                 }
             }
-            if (!tree.transition(*result.structureNode,
-                                 core::MaterializationState::Materialized)) {
-                markFailure(DslExecutionStatus::InvalidDefinition,
-                            QStringLiteral("Typed IR end instruction is invalid"),
-                            nullptr);
-                return result;
+            if (!options.deferMaterialization) {
+                if (!tree.transition(*result.structureNode,
+                                     core::MaterializationState::Materialized)) {
+                    markFailure(DslExecutionStatus::InvalidDefinition,
+                                QStringLiteral("Typed IR end instruction is invalid"),
+                                nullptr);
+                    return result;
+                }
             }
+            result.fieldValues = std::move(fieldValues);
             result.contextValues = std::move(stagedContextValues);
             result.contextImports = std::move(stagedContextImports);
             result.status = DslExecutionStatus::Materialized;
