@@ -60,9 +60,37 @@ namespace {
     return left.start() < right.endExclusive() && right.start() < left.endExclusive();
 }
 
+[[nodiscard]] std::optional<core::SourceMapping> requestedInputMapping(
+    const PayloadTransformRequest& request) {
+    if (request.inputMapping == nullptr || request.logicalBitLength == 0 ||
+        request.logicalBitStart > request.inputMapping->logicalBitLength() ||
+        request.logicalBitLength >
+            request.inputMapping->logicalBitLength() - request.logicalBitStart) {
+        return std::nullopt;
+    }
+    const auto logicalAddress = core::LogicalBitAddress(
+        request.inputMapping->viewId(), request.logicalBitStart);
+    const auto logicalRange = core::LogicalRange::create(
+        logicalAddress, request.logicalBitLength);
+    if (!logicalRange) {
+        return std::nullopt;
+    }
+    const auto location = request.inputMapping->locate(*logicalRange);
+    if (!location) {
+        return std::nullopt;
+    }
+    return core::SourceMapping::create(
+        request.inputMapping->viewId(), location->sourceSpans());
+}
+
 [[nodiscard]] bool validateTransformResult(const PayloadTransformRequest& request,
                                            const PayloadTransformResult& transformResult,
                                            QString* errorMessage) {
+    if (request.maximumInspectedBytes != 0 &&
+        transformResult.inspectedByteCount > request.maximumInspectedBytes) {
+        *errorMessage = QStringLiteral("Payload transform exceeded its inspection budget");
+        return false;
+    }
     if (transformResult.status != DslExecutionStatus::Materialized) {
         return true;
     }
@@ -70,9 +98,13 @@ namespace {
         *errorMessage = QStringLiteral("Materialized transform did not return a forwarded mapping");
         return false;
     }
-    if (request.maximumInspectedBytes != 0 &&
-        transformResult.inspectedByteCount > request.maximumInspectedBytes) {
-        *errorMessage = QStringLiteral("Payload transform exceeded its inspection budget");
+    const auto allowedMapping = requestedInputMapping(request);
+    if (!allowedMapping) {
+        *errorMessage = QStringLiteral("Payload logical range cannot be mapped to source spans");
+        return false;
+    }
+    if (transformResult.forwardedMapping->viewId() != allowedMapping->viewId()) {
+        *errorMessage = QStringLiteral("Forwarded mapping view does not match the input mapping");
         return false;
     }
     if (!validateMapping(*transformResult.forwardedMapping, errorMessage)) {
@@ -80,8 +112,9 @@ namespace {
     }
 
     for (const auto& forwardedSpan : transformResult.forwardedMapping->sourceSpans()) {
-        if (!spanContainedInMapping(*request.inputMapping, forwardedSpan)) {
-            *errorMessage = QStringLiteral("Forwarded mapping escapes the input mapping");
+        if (!spanContainedInMapping(*allowedMapping, forwardedSpan)) {
+            *errorMessage = QStringLiteral(
+                "Forwarded mapping escapes the requested payload logical range");
             return false;
         }
     }
@@ -94,8 +127,9 @@ namespace {
             *errorMessage = QStringLiteral("Excluded spans must be non-empty and byte-aligned");
             return false;
         }
-        if (!spanContainedInMapping(*request.inputMapping, excluded.sourceSpan)) {
-            *errorMessage = QStringLiteral("Excluded span escapes the input mapping");
+        if (!spanContainedInMapping(*allowedMapping, excluded.sourceSpan)) {
+            *errorMessage = QStringLiteral(
+                "Excluded span escapes the requested payload logical range");
             return false;
         }
         if ((excluded.outputBitOffset % 8U) != 0 ||
