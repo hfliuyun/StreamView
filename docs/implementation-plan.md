@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-1-R — 主 Agent 深审并修正 ADR-0103 的拟议 API、H.264 能力边界、坐标映射与会话/UI 所有权合同
-Next Action: 下发 Task P5i-2：实现可复用映射源视图与格式中立的 `StructuralEntryRunner`；不得修改官方规则包或开始 P5i-3/P5i-4
-Last Verification: P5i-1-R — ADR remediation commit 4d6150a4cb7eae284734f0f1cea11a54e418a18b; original Docs commit d4982c48f63355c6c27ee430f2f71fdc18f26e4a; Markdown-only (ADR-0019); markdown_hygiene passed; bilingual headings/tables/fences symmetric; git diff --check clean
+Last Completed Step: Task P5i-2 — 可复用映射源视图与格式中立 StructuralEntryRunner
+Next Action: 主 Agent 复审 Task P5i-2；未经复审不得开始 Task P5i-3
+Last Verification: Task P5i-2 — Commit aef42682334a97b33c85ddc1438bbae4395b6d2c; Hosted CI Run 32137182843 (Ubuntu 24.04 job 95711151665, Windows 2022 job 95711151774, macOS 15 job 95711151820 all success); local dev/ci/sanitize 41/41 passed, sanitize 0 reports; svtool rule check 4/4 passed; git diff --check clean
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2369,3 +2369,28 @@ Blockers: None
   7. 子代理报告及原计划记录的 Docs SHA `d4982c4bc99f018e69c6cfbf45582dcbbda88ec1` 不是 Git 对象，真实值为 `d4982c48f63355c6c27ee430f2f71fdc18f26e4a`。评审现场存在既有未跟踪 `scratch/`，因此不能称整个工作树 clean；本轮未删除或提交该目录。
   8. 验证：双语 ADR headings `16/16`、table rows `19/19`、code fences `8/8`、总行数 `234/234` 对称；`markdown_hygiene` 与 `git diff --check` 通过。整改为纯 Markdown，按 ADR-0019 不触发 Hosted CI。
   终审结论：P5i-1-R 通过。Next Action 切换为 Task P5i-2；该切片只实现可复用映射源视图与格式中立的 `StructuralEntryRunner`，复审前不得开始 P5i-3。
+- 2026-08-18：完成 Task P5i-2 —— 可复用映射源视图与格式中立 StructuralEntryRunner（基线 `6e647937b2a67df425d9659f6d83c1815df02592`，Feat commit `aef42682334a97b33c85ddc1438bbae4395b6d2c`）：
+  1. 映射源视图与结构型执行器实现：
+     - 在 `src/core/include/streamview/core/bounded_source_view.h` 与 `src/core/bounded_source_view.cpp` 实现可复用 `streamview::core::BoundedSourceView`，组合 `RandomAccessSource` 与 `SourceMapping`，支持单 span、连续与不连续多 span 读取，严格进行字节对齐与坐标加法溢出检查，不复制物理载荷；
+     - 替换 `src/rules/mp4_isobmff_analyzer.cpp` 中的私有 `BoundedSourceView`，消除重复实现；
+     - 在 `src/rules/include/streamview/rules/structural_entry_runner.h` 与 `src/rules/structural_entry_runner.cpp` 实现格式中立的 `streamview::rules::StructuralEntryRunner`；只接受 `DslEntryKind::Structure`，使用 `program.entry.targetIndex`；
+     - 使用真实类型 `DslExecutionLimits`、`std::optional<core::CancellationToken>`、`DslTypedProgram`、`DslExecutionResult`，支持独立 limits 与 cancellation；
+     - 通过 `DslExecutor::decodeStruct` 解码目标结构体，所有子字段位置通过 `sourceMapping` 自动回映到根文件物理 source spans。
+  2. 测试套件覆盖（`tests/rules/structural_entry_runner_test.cpp` 包含 18 项用例）：
+     - `boundedSourceViewSingleSpan`、`boundedSourceViewDisjointSpans`、`boundedSourceViewOutOfBoundsAndEof`、`boundedSourceViewPropagatesSourceError`、`boundedSourceViewRejectsUnalignedSpans`；
+     - `rejectsSequenceEntryKind`、`rejectsOutOfRangeTargetIndex`、`rejectsZeroOrUnalignedLogicalLength`、`rejectsEmptyOrUnalignedSourceSpans`；
+     - `executesLocalMinimalStructSuccess`、`executesAcrossDisjointPhysicalSpansAndMapsFieldLocations`；
+     - `handlesTruncatedSourceWithPartialTree`、`handlesUnderlyingSourceError`、`handlesCancellation`、`handlesResourceLimits`；
+     - `executesOfficialAacAscOnEsdsFixture`：基于真实 `tests/fixtures/mp4_p5h_mp4a_esds.mp4`（根字节 `[146, 148)`）执行官方 `org.streamview.aac` v0.1.4 `AudioSpecificConfig` 规则，验证 `audio_object_type = 2`、`sampling_frequency_index = 4`（绝对源 bit 1173）、`channel_configuration = 2` 与全部子字段物理 span 映射。
+  3. 边界与纪律遵循：
+     - 未修改任何官方 `rule.toml`、`.svfmt` 规则或包版本；
+     - 未增加 `video.h264.nal`，未声称 SPS/PPS 已可完整执行；
+     - 未实现 `resolveByFormat`、`AnalysisSession` 导航栈、`MainWindow` 或 UI；
+     - 未增加 H.264/AAC/MP4 专属 C++ dispatch；
+     - 未开始 P5i-3 / P5i-4；未删除或修改既有未跟踪 `scratch/`。
+  4. 本地与 Hosted CI 验证：
+     - 规则静态校验：`svtool rule check` 针对四个官方规则文件（`h264_annex_b.svfmt`、`aac_adts.svfmt`、`aac_asc.svfmt`、`mp4_isobmff.svfmt`）均输出 `Rule OK`；
+     - 本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套完整构建全量 CTest 均 `41/41` 通过，ASan/UBSan 零警告/零报告；
+     - `markdown_hygiene` 通过，`git diff --check` 干净；
+     - Hosted CI Run `32137182843`：Ubuntu-24.04 job `95711151665`、Windows-2022 job `95711151774`、macOS-15 job `95711151820` 全部 success。
+  终审结论：P5i-2 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-2；未经复审不得开始 Task P5i-3。
