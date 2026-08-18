@@ -55,17 +55,28 @@ BoundedSourceView::readAt(quint64 byteOffset, std::span<std::byte> destination) 
         const std::size_t toRead = std::min(spanLength, count - bytesFilled);
         const auto readRes = baseSource_->readAt(
             spanStartByte, destination.subspan(bytesFilled, toRead));
-        if (!readRes.complete()) {
-            return readRes;
+        if (readRes.bytesRead > toRead) {
+            return {SourceReadStatus::Error,
+                    bytesFilled,
+                    QStringLiteral("Bounded source view received an oversized read")};
         }
         bytesFilled += readRes.bytesRead;
+        if (!readRes.complete()) {
+            return {readRes.status, bytesFilled, readRes.errorMessage};
+        }
+        if (readRes.bytesRead != toRead) {
+            return {SourceReadStatus::Error,
+                    bytesFilled,
+                    QStringLiteral("Bounded source view received an incomplete successful read")};
+        }
         if (bytesFilled >= count) {
             break;
         }
     }
 
-    return {bytesFilled == destination.size() ? SourceReadStatus::Complete
-                                              : SourceReadStatus::EndOfSource,
+    return {bytesFilled == count && count == destination.size()
+                ? SourceReadStatus::Complete
+                : SourceReadStatus::EndOfSource,
             bytesFilled,
             {}};
 }
