@@ -2477,7 +2477,7 @@ Blockers: None
      - 限制与预算：新增 `DslExecutionLimits::maximumInspectedBytes`（默认 10,000,000 bytes），provider 独立累计并在 `CompoundStructuralExecutionResult` 中返回 `inspectedByteCount`；
      - 终态与回滚：未知 provider 强制 fail closed（`DslExecutionStatus::InvalidDefinition`），`SourceError`、`TruncatedSource`、`Cancelled`、`ResourceLimit` 均精准标记 Header 终态（`Invalid` / `Cancelled` / `UnsupportedSyntax`）、跳过 Payload VM 并触发 `onRollback` exactly once。
   3. 测试体系与全矩阵验证：
-     - 新增独立测试套件 `tests/rules/payload_transform_test.cpp`，包含 21 个具名行为测试场景（Qt 报告 `23/23` 包含 init/cleanup），覆盖单 span/disjoint mapping 切片、跨 span 边界 logical 子范围、未对齐/空范围/越界拦截、pre/mid 取消、inspection budget 耗尽与恰好边界、registry 生命周期与并发查询、独立 excluded spans 不变量；
+     - 新增独立测试套件 `tests/rules/payload_transform_test.cpp`，包含 21 个具名行为测试场景（Qt 报告 `23/23` 包含 init/cleanup），覆盖单 span/disjoint mapping 切片、跨 span 边界 logical 子范围、未对齐/空范围/越界拦截、pre/mid 取消、inspection budget 耗尽与恰好边界、registry 生命周期与查找；registry 的线程安全由内部 mutex 保护，但本套件未声称并发压力覆盖；独立 excluded spans 不变量；
      - 扩展 `tests/rules/compound_structural_runner_test.cpp`，新增 7 个 transform 集成具名行为测试场景（总计 31 个具名行为测试场景，Qt 报告 `33/33` 包含 init/cleanup），覆盖 custom provider 成功/excluded spans、未知 provider fail closed、SourceError/Truncation/Cancellation/ResourceLimit 终态与 rollback hooks、零长度 payload 拦截；
      - 4 个内置官方 `.svfmt` 规则全部 `svtool rule check` 通过（`Rule OK`）；
      - 本地 dev / ci / sanitize 三套全量构建及 CTest 均通过（`43/43`），sanitize 零报告；
