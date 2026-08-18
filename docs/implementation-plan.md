@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-3a — 结构型 Payload 通用能力设计与双语 ADR-0104
-Next Action: 主 Agent 复审 Task P5i-3a；未经复审不得实现 P5i-3b，也不得开始 P5i-4
-Last Verification: Task P5i-3a — Markdown-only (ADR-0019); bilingual ADR-0104 created; markdown_hygiene passed; git diff --check clean
-Blockers: None
+Last Completed Step: Task P5i-3a-R — 主 Agent 深审并修正 ADR-0104 的 compound transaction、manifest v2 target、transform provider 与 session context 合同
+Next Action: 下发 Task P5i-3b-1：实现格式中立 compound structural execution 基座；复审前不得实现官方 H.264 规则，也不得开始 P5i-4
+Last Verification: Task P5i-3a-R — bilingual ADR-0104 corrected; planned matrix explicitly marked unexecuted; markdown_hygiene passed; git diff --check clean
+Blockers: P5i-3b capability implementation required before official H.264 rule package or P5i-4
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -2424,3 +2424,12 @@ Blockers: None
      - `git diff --check` 干净无空白问题；
      - 纯 Markdown 变更按 ADR-0019 规则跳过 Hosted CI 矩阵。
   终审结论：P5i-3a 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-3a；未经复审不得实现 P5i-3b，也不得开始 Task P5i-4。
+- 2026-08-19：完成 Task P5i-3a-R —— 主 Agent 深审并补正 ADR-0104（基线 `cca32d604a87b5be2ce6cff951211474792cd4c3`，Markdown-only 修订）：
+  1. 原交付不能直接通过：原 ADR 将未实现的未来测试写成已验证矩阵，H.264 回归数字 `125/125` 与当前测试事实不符，且部分源码行号和 `InvalidDefinition`/`DependencyUnavailable` 语义错误。
+  2. 双语 ADR 已同步修正：问题证据改为可核对的源码事实；验证矩阵改名为“P5i-3b 验收矩阵（计划；P5i-3a 未执行）”；H.264 回归计划改为 `174/174`；删除“独立 source 必然复制全部 1200+ 行”的过度推断。
+  3. 固化可实施的 compound tree transaction：header 在 header/payload 两阶段保持 `Indexing`，共享累计 instruction/node budget 与 cancellation，tree snapshot 与 staged context 分离回滚，失败终态准确区分 `Invalid`、`WaitingDependency`、`Cancelled`、`Unsupported` 与 `Materialized`。
+  4. 固化 transform provider 合同：generic dispatcher 只消费 opaque provider identifier；`none`/注册的 `rbsp` provider、disjoint mapping、独立 excluded spans、inspection budget、取消/SourceError 终态与 byte-alignment 闸门均明确，避免把 codec policy 写进通用运行时。
+  5. 固化 session/context 合同：现有 `RuleExecutionSession::run` 不能简单串联冒充 compound runner；context owner 绑定 source/package/program/scope，producer staged publish、source position + generation 查找、显式 reset 以及 presentation-tree identity 约束均写入 ADR。
+  6. 固化 manifest v2 target 方案：`RulePackageEntryPoint` 增加 optional `target`，v1 继续可读；共享 source 的 `(source,target-or-default)` 必须唯一；统一 `compileForTarget` 负责 target binding，catalog 仅负责选择；官方 manifest 后续变更必须同步 content hash 与版本。
+  7. 本次仍未修改生产 C++、官方规则或 manifest，未开始 P5i-3b/P5i-4。验证范围为双语 ADR 对称性、`markdown_hygiene` 与 `git diff --check`；Hosted CI 按 ADR-0019 不启动。
+  终审结论：原 P5i-3a 报告不直接通过；主 Agent 补正后设计合同可作为 P5i-3b 实现依据。下一步拆分为 P5i-3b-1（compound structural execution + tree transaction + shared budget），后续再实现 transform provider、session context owner 与 manifest target-aware compilation；官方 H.264 规则和 P5i-4 继续阻断。
