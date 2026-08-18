@@ -1,3 +1,4 @@
+#include <streamview/core/cancellation.h>
 #include <streamview/core/coordinates.h>
 #include <streamview/core/source.h>
 #include <streamview/rules/dsl.h>
@@ -14,6 +15,7 @@
 #include <vector>
 
 using streamview::core::AnalysisTree;
+using streamview::core::CancellationSource;
 using streamview::core::ContextDefinitionKind;
 using streamview::core::ContextKey;
 using streamview::core::ContextLookupStatus;
@@ -24,6 +26,8 @@ using streamview::core::SourceMapping;
 using streamview::core::SourceReadResult;
 using streamview::core::SourceReadStatus;
 using streamview::core::SourceSpan;
+using streamview::rules::CompoundRuleExecutionRequest;
+using streamview::rules::CompoundRuleExecutionResult;
 using streamview::rules::DslCompiler;
 using streamview::rules::DslExecutionStatus;
 using streamview::rules::DslParser;
@@ -78,6 +82,47 @@ private:
     mutable quint64 readCount_ = 0;
 };
 
+class CancellingSource final : public RandomAccessSource {
+public:
+    CancellingSource(std::vector<std::byte> data,
+                     quint64 cancelAtOffset,
+                     CancellationSource& cancellation)
+        : data_(std::move(data)),
+          cancelAtOffset_(cancelAtOffset),
+          cancellation_(cancellation) {}
+
+    [[nodiscard]] quint64 sizeBytes() const noexcept override { return data_.size(); }
+    [[nodiscard]] QString identity() const override { return QStringLiteral("cancelling-source"); }
+
+    [[nodiscard]] SourceReadResult
+    readAt(quint64 byteOffset, std::span<std::byte> destination) const override {
+        if (destination.empty()) {
+            return {SourceReadStatus::Complete, 0, {}};
+        }
+        if (byteOffset >= cancelAtOffset_) {
+            (void)cancellation_.requestCancellation();
+        }
+        if (byteOffset >= sizeBytes()) {
+            return {SourceReadStatus::EndOfSource, 0, {}};
+        }
+        const quint64 available = sizeBytes() - byteOffset;
+        const std::size_t count = static_cast<std::size_t>(
+            std::min(static_cast<quint64>(destination.size()), available));
+        for (std::size_t i = 0; i < count; ++i) {
+            destination[i] = data_[static_cast<std::size_t>(byteOffset + i)];
+        }
+        return {count == destination.size() ? SourceReadStatus::Complete
+                                            : SourceReadStatus::EndOfSource,
+                count,
+                {}};
+    }
+
+private:
+    std::vector<std::byte> data_;
+    quint64 cancelAtOffset_ = 0;
+    CancellationSource& cancellation_;
+};
+
 struct View final {
     SourceSpan span;
     SourceMapping mapping;
@@ -121,6 +166,28 @@ struct View final {
     request.tree = &tree;
     request.parentId = tree.rootId();
     request.enclosingSourceSpan = view.span;
+    return request;
+}
+
+[[nodiscard]] CompoundRuleExecutionRequest makeCompoundRequest(
+    const RandomAccessSource& source,
+    quint32 headerIndex,
+    const View& headerView,
+    AnalysisTree& tree,
+    std::optional<quint32> payloadIndex = std::nullopt,
+    const View* payloadView = nullptr,
+    std::optional<SourceSpan> enclosingSpan = std::nullopt) {
+    CompoundRuleExecutionRequest request;
+    request.source = &source;
+    request.headerStructureIndex = headerIndex;
+    request.headerMapping = &headerView.mapping;
+    request.payloadStructureIndex = payloadIndex;
+    if (payloadView != nullptr) {
+        request.payloadMapping = &payloadView->mapping;
+    }
+    request.tree = &tree;
+    request.parentId = tree.rootId();
+    request.enclosingSourceSpan = enclosingSpan.has_value() ? *enclosingSpan : headerView.span;
     return request;
 }
 
@@ -2332,6 +2399,534 @@ private slots:
         QCOMPARE(structure->diagnostics().size(), std::size_t(1));
         QCOMPARE(structure->diagnostics().front().code,
                  DiagnosticCode::UnsupportedSyntax);
+    }
+
+    void compoundPublishesContextDefinitionFromHeaderAndResolvesInSubsequentConsumer() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "@context(\"h264-sps\", sps_id) "
+            "struct SpsHeader { bits<8> sps_id; bits<8> width @context_export; } "
+            "@context_import(\"h264-sps\", sps_id) "
+            "struct SliceHeader { bits<8> marker; bits<8> sps_id; } "
+            "entry SpsHeader;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const auto spsIndex = compiled.program->structureIndex(QStringLiteral("SpsHeader"));
+        const auto sliceIndex = compiled.program->structureIndex(QStringLiteral("SliceHeader"));
+        QVERIFY(spsIndex.has_value());
+        QVERIFY(sliceIndex.has_value());
+
+        MemorySource source(bytes({3, 12, 0xFF, 3}));
+        const auto spsView = makeView(1, 0, 16);
+        const auto sliceView = makeView(2, 16, 16);
+        QVERIFY(spsView.has_value());
+        QVERIFY(sliceView.has_value());
+
+        auto tree = AnalysisTree::create(QStringLiteral("compound-header-pub"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        CompoundRuleExecutionRequest req1;
+        req1.source = &source;
+        req1.headerStructureIndex = *spsIndex;
+        req1.headerMapping = &spsView->mapping;
+        req1.tree = &*tree;
+        req1.parentId = tree->rootId();
+        req1.enclosingSourceSpan = spsView->span;
+
+        const auto spsRes = session.runCompound(req1);
+        QCOMPARE(spsRes.status, RuleExecutionStatus::Materialized);
+        QVERIFY(spsRes.publishedDefinition.has_value());
+        QCOMPARE(spsRes.publishedDefinition->value(), quint64(1));
+        QCOMPARE(session.publishedDefinitionCount(), std::size_t(1));
+
+        CompoundRuleExecutionRequest req2;
+        req2.source = &source;
+        req2.headerStructureIndex = *sliceIndex;
+        req2.headerMapping = &sliceView->mapping;
+        req2.tree = &*tree;
+        req2.parentId = tree->rootId();
+        req2.enclosingSourceSpan = sliceView->span;
+
+        const auto sliceRes = session.runCompound(req2);
+        QCOMPARE(sliceRes.status, RuleExecutionStatus::Materialized);
+        QCOMPARE(sliceRes.importedContexts.size(), std::size_t(1));
+        QCOMPARE(sliceRes.importedContexts.front().key.value, quint64(3));
+    }
+
+    void compoundPublishesContextDefinitionFromPayloadAndResolvesInSubsequentConsumer() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct NalHeader { bits<8> nal_type; } "
+            "@context(\"h264-sps\", sps_id) "
+            "struct SpsPayload { bits<8> sps_id; bits<8> profile_idc @context_export; } "
+            "struct SliceHeader { bits<8> nal_type; } "
+            "@context_import(\"h264-sps\", sps_id) "
+            "struct SlicePayload { bits<8> slice_type; bits<8> sps_id; } "
+            "entry NalHeader;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const auto nalHeaderIndex = compiled.program->structureIndex(QStringLiteral("NalHeader"));
+        const auto spsPayloadIndex = compiled.program->structureIndex(QStringLiteral("SpsPayload"));
+        const auto sliceHeaderIndex = compiled.program->structureIndex(QStringLiteral("SliceHeader"));
+        const auto slicePayloadIndex = compiled.program->structureIndex(QStringLiteral("SlicePayload"));
+        QVERIFY(nalHeaderIndex.has_value());
+        QVERIFY(spsPayloadIndex.has_value());
+        QVERIFY(sliceHeaderIndex.has_value());
+        QVERIFY(slicePayloadIndex.has_value());
+
+        // Byte 0: NalHeader (0x67), Bytes 1..2: SpsPayload (sps_id=1, profile_idc=100) -> 3 bytes = 24 bits
+        // Byte 3: SliceHeader (0x65), Bytes 4..5: SlicePayload (slice_type=2, sps_id=1) -> 3 bytes = 24 bits
+        MemorySource source(bytes({0x67, 1, 100, 0x65, 2, 1}));
+        const auto nal1HeaderView = makeView(1, 0, 8);
+        const auto nal1PayloadView = makeView(2, 8, 16);
+        const auto nal1Enclosing = SourceSpan::create(SourceBitAddress(0), 24);
+
+        const auto nal2HeaderView = makeView(3, 24, 8);
+        const auto nal2PayloadView = makeView(4, 32, 16);
+        const auto nal2Enclosing = SourceSpan::create(SourceBitAddress(24), 24);
+
+        auto tree = AnalysisTree::create(QStringLiteral("compound-payload-pub"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        CompoundRuleExecutionRequest req1;
+        req1.source = &source;
+        req1.headerStructureIndex = *nalHeaderIndex;
+        req1.headerMapping = &nal1HeaderView->mapping;
+        req1.payloadStructureIndex = *spsPayloadIndex;
+        req1.payloadMapping = &nal1PayloadView->mapping;
+        req1.tree = &*tree;
+        req1.parentId = tree->rootId();
+        req1.enclosingSourceSpan = *nal1Enclosing;
+
+        const auto res1 = session.runCompound(req1);
+        QCOMPARE(res1.status, RuleExecutionStatus::Materialized);
+        QVERIFY(res1.publishedDefinition.has_value());
+        QCOMPARE(session.publishedDefinitionCount(), std::size_t(1));
+        QVERIFY(res1.execution.headerNodeId.has_value());
+        QVERIFY(res1.execution.payloadNodeId.has_value());
+
+        CompoundRuleExecutionRequest req2;
+        req2.source = &source;
+        req2.headerStructureIndex = *sliceHeaderIndex;
+        req2.headerMapping = &nal2HeaderView->mapping;
+        req2.payloadStructureIndex = *slicePayloadIndex;
+        req2.payloadMapping = &nal2PayloadView->mapping;
+        req2.tree = &*tree;
+        req2.parentId = tree->rootId();
+        req2.enclosingSourceSpan = *nal2Enclosing;
+
+        const auto res2 = session.runCompound(req2);
+        QCOMPARE(res2.status, RuleExecutionStatus::Materialized);
+        QCOMPARE(res2.importedContexts.size(), std::size_t(1));
+        QCOMPARE(res2.importedContexts.front().key.value, quint64(1));
+    }
+
+    void compoundDependencyUnavailableWhenProducerMissing() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct SliceHeader { bits<8> marker; } "
+            "@context_import(\"h264-sps\", sps_id) "
+            "struct SlicePayload { bits<8> sps_id; } "
+            "entry SliceHeader;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({0x01, 0x05}));
+        const auto headerView = makeView(1, 0, 8);
+        const auto payloadView = makeView(2, 8, 8);
+        const auto enclosing = SourceSpan::create(SourceBitAddress(0), 16);
+
+        auto tree = AnalysisTree::create(QStringLiteral("missing-producer"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        CompoundRuleExecutionRequest req;
+        req.source = &source;
+        req.headerStructureIndex = *compiled.program->structureIndex(QStringLiteral("SliceHeader"));
+        req.headerMapping = &headerView->mapping;
+        req.payloadStructureIndex = *compiled.program->structureIndex(QStringLiteral("SlicePayload"));
+        req.payloadMapping = &payloadView->mapping;
+        req.tree = &*tree;
+        req.parentId = tree->rootId();
+        req.enclosingSourceSpan = *enclosing;
+
+        const auto res = session.runCompound(req);
+        QCOMPARE(res.status, RuleExecutionStatus::DependencyUnavailable);
+        QCOMPARE(session.publishedDefinitionCount(), std::size_t(0));
+    }
+
+    void compoundFailedProducerDoesNotPublishAndLeavesConsumerUnavailable() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct NalHeader { bits<8> nal_type; } "
+            "@context(\"h264-sps\", sps_id) "
+            "struct SpsPayload { bits<8> sps_id; bits<8> width @equals(100) @context_export; } "
+            "struct SliceHeader { bits<8> nal_type; } "
+            "@context_import(\"h264-sps\", sps_id) "
+            "struct SlicePayload { bits<8> sps_id; } "
+            "entry NalHeader;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        // SpsPayload has width=50 which violates @equals(100)
+        MemorySource source(bytes({0x67, 1, 50, 0x65, 1}));
+        const auto nal1HeaderView = makeView(1, 0, 8);
+        const auto nal1PayloadView = makeView(2, 8, 16);
+        const auto nal1Enclosing = SourceSpan::create(SourceBitAddress(0), 24);
+
+        const auto nal2HeaderView = makeView(3, 24, 8);
+        const auto nal2PayloadView = makeView(4, 32, 8);
+        const auto nal2Enclosing = SourceSpan::create(SourceBitAddress(24), 16);
+
+        auto tree = AnalysisTree::create(QStringLiteral("failed-producer"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        // Run NAL 1 (failing producer)
+        CompoundRuleExecutionRequest req1;
+        req1.source = &source;
+        req1.headerStructureIndex = *compiled.program->structureIndex(QStringLiteral("NalHeader"));
+        req1.headerMapping = &nal1HeaderView->mapping;
+        req1.payloadStructureIndex = *compiled.program->structureIndex(QStringLiteral("SpsPayload"));
+        req1.payloadMapping = &nal1PayloadView->mapping;
+        req1.tree = &*tree;
+        req1.parentId = tree->rootId();
+        req1.enclosingSourceSpan = *nal1Enclosing;
+
+        const auto res1 = session.runCompound(req1);
+        QCOMPARE(res1.status, RuleExecutionStatus::InvalidSyntax);
+        QVERIFY(!res1.publishedDefinition.has_value());
+        QCOMPARE(session.publishedDefinitionCount(), std::size_t(0));
+
+        // Run NAL 2 (consumer) -> must be DependencyUnavailable because producer failed and was rolled back
+        CompoundRuleExecutionRequest req2;
+        req2.source = &source;
+        req2.headerStructureIndex = *compiled.program->structureIndex(QStringLiteral("SliceHeader"));
+        req2.headerMapping = &nal2HeaderView->mapping;
+        req2.payloadStructureIndex = *compiled.program->structureIndex(QStringLiteral("SlicePayload"));
+        req2.payloadMapping = &nal2PayloadView->mapping;
+        req2.tree = &*tree;
+        req2.parentId = tree->rootId();
+        req2.enclosingSourceSpan = *nal2Enclosing;
+
+        const auto res2 = session.runCompound(req2);
+        QCOMPARE(res2.status, RuleExecutionStatus::DependencyUnavailable);
+    }
+
+    void compoundRedefinitionSelectsLatestGenerationBeforeConsumerPosition() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "@context(\"h264-sps\", sps_id) "
+            "struct Sps { bits<8> sps_id; bits<8> width @context_export; } "
+            "@context_import(\"h264-sps\", sps_id) "
+            "struct Slice { bits<8> sps_id; bits<context_value(sps_id, h264_sps, width)> payload; } "
+            "entry Sps;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const auto spsIndex = compiled.program->structureIndex(QStringLiteral("Sps"));
+        const auto sliceIndex = compiled.program->structureIndex(QStringLiteral("Slice"));
+
+        // Bytes 0..1: Sps gen 1 (sps_id=1, width=8 bits) -> span 0..16
+        // Bytes 4..5: Consumer A at offset 32 (sps_id=1, payload=8 bits 0xAA) -> span 32..48
+        // Bytes 8..9: Sps gen 2 at offset 64 (sps_id=1, width=16 bits) -> span 64..80
+        // Bytes 12..14: Consumer B at offset 96 (sps_id=1, payload=16 bits 0xBEEF) -> span 96..120
+        MemorySource source(bytes({1, 8, 0, 0, 1, 0xAA, 0, 0, 1, 16, 0, 0, 1, 0xBE, 0xEF}));
+        const auto sps1View = makeView(1, 0, 16);
+        const auto consAView = makeView(2, 32, 16);
+        const auto sps2View = makeView(3, 64, 16);
+        const auto consBView = makeView(4, 96, 24);
+
+        auto tree = AnalysisTree::create(QStringLiteral("redef-tree"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        // 1. Publish Gen 1
+        const auto resSps1 = session.runCompound(
+            makeCompoundRequest(source, *spsIndex, *sps1View, *tree));
+        QCOMPARE(resSps1.status, RuleExecutionStatus::Materialized);
+
+        // 2. Consume Gen 1 at position 32 (reads width=8 bits)
+        const auto resConsA = session.runCompound(
+            makeCompoundRequest(source, *sliceIndex, *consAView, *tree));
+        QCOMPARE(resConsA.status, RuleExecutionStatus::Materialized);
+        QCOMPARE(resConsA.execution.headerBitsConsumed, quint64(16));
+
+        // 3. Publish Gen 2 at position 64
+        const auto resSps2 = session.runCompound(
+            makeCompoundRequest(source, *spsIndex, *sps2View, *tree));
+        QCOMPARE(resSps2.status, RuleExecutionStatus::Materialized);
+
+        // 4. Consume Gen 2 at position 96 (reads width=16 bits)
+        const auto resConsB = session.runCompound(
+            makeCompoundRequest(source, *sliceIndex, *consBView, *tree));
+        QCOMPARE(resConsB.status, RuleExecutionStatus::Materialized);
+        QCOMPARE(resConsB.execution.headerBitsConsumed, quint64(24));
+
+        // 5. Re-running Consumer A at position 32 still resolves Gen 1 (width=8 bits)
+        const auto resConsARepeat = session.runCompound(
+            makeCompoundRequest(source, *sliceIndex, *consAView, *tree));
+        QCOMPARE(resConsARepeat.status, RuleExecutionStatus::Materialized);
+        QCOMPARE(resConsARepeat.execution.headerBitsConsumed, quint64(16));
+    }
+
+    void compoundFutureDefinitionIsolation() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "@context(\"h264-sps\", sps_id) "
+            "struct Sps { bits<8> sps_id; bits<8> width @context_export; } "
+            "@context_import(\"h264-sps\", sps_id) "
+            "struct Slice { bits<8> sps_id; } "
+            "entry Sps;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        // Consumer at offset 0, Sps published at offset 64
+        MemorySource source(bytes({1, 0, 0, 0, 0, 0, 0, 0, 1, 10}));
+        const auto consView = makeView(1, 0, 8);
+        const auto spsView = makeView(2, 64, 16);
+
+        auto tree = AnalysisTree::create(QStringLiteral("future-tree"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        // Publish SPS at position 64
+        const auto spsRes = session.runCompound(
+            makeCompoundRequest(source, *compiled.program->structureIndex(QStringLiteral("Sps")), *spsView, *tree));
+        QCOMPARE(spsRes.status, RuleExecutionStatus::Materialized);
+
+        // Consumer at position 0 attempts to read future SPS (position 64) -> must fail as DependencyUnavailable
+        const auto consRes = session.runCompound(
+            makeCompoundRequest(source, *compiled.program->structureIndex(QStringLiteral("Slice")), *consView, *tree));
+        QCOMPARE(consRes.status, RuleExecutionStatus::DependencyUnavailable);
+    }
+
+    void compoundSourceAndTreeIsolation() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "struct Sps { bits<8> sps_id; } entry Sps;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource sourceA(bytes({1}));
+        MemorySource sourceB(bytes({2}));
+        const auto viewA = makeView(1, 0, 8);
+        const auto viewB = makeView(2, 0, 8);
+
+        auto treeA = AnalysisTree::create(QStringLiteral("treeA"));
+        auto treeB = AnalysisTree::create(QStringLiteral("treeB"));
+        RuleExecutionSession session(*compiled.program);
+
+        const auto res1 = session.runCompound(
+            makeCompoundRequest(sourceA, 0, *viewA, *treeA));
+        QCOMPARE(res1.status, RuleExecutionStatus::Materialized);
+        QCOMPARE(session.boundSource(), &sourceA);
+        QCOMPARE(session.boundTreeIdentity(), treeA->instanceIdentity());
+
+        // Calling with different source -> InvalidDefinition
+        const auto resDifferentSource = session.runCompound(
+            makeCompoundRequest(sourceB, 0, *viewA, *treeA));
+        QCOMPARE(resDifferentSource.status, RuleExecutionStatus::InvalidDefinition);
+
+        // Calling with different tree -> InvalidDefinition
+        const auto resDifferentTree = session.runCompound(
+            makeCompoundRequest(sourceA, 0, *viewA, *treeB));
+        QCOMPARE(resDifferentTree.status, RuleExecutionStatus::InvalidDefinition);
+    }
+
+    void compoundSessionResetClearsAllDefinitionsAndBindsNewSource() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "@context(\"h264-sps\", sps_id) "
+            "struct Sps { bits<8> sps_id; bits<8> width @context_export; } "
+            "@context_import(\"h264-sps\", sps_id) "
+            "struct Slice { bits<8> sps_id; } "
+            "entry Sps;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource sourceA(bytes({1, 10, 1}));
+        MemorySource sourceB(bytes({2, 20, 2}));
+        const auto spsViewA = makeView(1, 0, 16);
+        const auto sliceViewA = makeView(2, 16, 8);
+        const auto spsViewB = makeView(3, 0, 16);
+
+        auto treeA = AnalysisTree::create(QStringLiteral("treeA"));
+        auto treeB = AnalysisTree::create(QStringLiteral("treeB"));
+        RuleExecutionSession session(*compiled.program);
+
+        // Run on sourceA, publish sps 1
+        const auto res1 = session.runCompound(
+            makeCompoundRequest(sourceA, *compiled.program->structureIndex(QStringLiteral("Sps")), *spsViewA, *treeA));
+        QCOMPARE(res1.status, RuleExecutionStatus::Materialized);
+        QCOMPARE(session.publishedDefinitionCount(), std::size_t(1));
+
+        // Reset session
+        session.reset();
+        QCOMPARE(session.publishedDefinitionCount(), std::size_t(0));
+        QCOMPARE(session.boundSource(), nullptr);
+        QCOMPARE(session.boundTreeIdentity(), quint64(0));
+
+        // Attempting to consume sps 1 now returns DependencyUnavailable
+        const auto resConsumerAfterReset = session.runCompound(
+            makeCompoundRequest(sourceA, *compiled.program->structureIndex(QStringLiteral("Slice")), *sliceViewA, *treeA));
+        QCOMPARE(resConsumerAfterReset.status, RuleExecutionStatus::DependencyUnavailable);
+
+        // Reset again and bind cleanly to sourceB and treeB
+        session.reset();
+        const auto res2 = session.runCompound(
+            makeCompoundRequest(sourceB, *compiled.program->structureIndex(QStringLiteral("Sps")), *spsViewB, *treeB));
+        QCOMPARE(res2.status, RuleExecutionStatus::Materialized);
+        QCOMPARE(session.publishedDefinitionCount(), std::size_t(1));
+        QCOMPARE(session.boundSource(), &sourceB);
+    }
+
+    void compoundTransactionRollbackOnCommitHookFailure() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "@context(\"h264-sps\", sps_id) "
+            "struct Sps { bits<8> sps_id; bits<8> width @context_export; } "
+            "@context_import(\"h264-sps\", sps_id) "
+            "struct Slice { bits<8> sps_id; } "
+            "entry Sps;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({1, 10, 1}));
+        const auto spsView = makeView(1, 0, 16);
+        const auto sliceView = makeView(2, 16, 8);
+
+        auto tree = AnalysisTree::create(QStringLiteral("rollback-tree"));
+        RuleExecutionSession session(*compiled.program);
+
+        bool rollbackCalled = false;
+        CompoundRuleExecutionRequest req = makeCompoundRequest(
+            source, *compiled.program->structureIndex(QStringLiteral("Sps")), *spsView, *tree);
+        req.transactionHooks.onCommit = []() {
+            throw std::runtime_error("Simulated crash in commit hook");
+        };
+        req.transactionHooks.onRollback = [&]() {
+            rollbackCalled = true;
+        };
+
+        const auto res = session.runCompound(req);
+        QCOMPARE(res.status, RuleExecutionStatus::InvalidDefinition);
+        QVERIFY(rollbackCalled);
+        QCOMPARE(session.publishedDefinitionCount(), std::size_t(0));
+
+        // Subsequent consumer returns DependencyUnavailable because publication rolled back
+        const auto consRes = session.runCompound(
+            makeCompoundRequest(source, *compiled.program->structureIndex(QStringLiteral("Slice")), *sliceView, *tree));
+        QCOMPARE(consRes.status, RuleExecutionStatus::DependencyUnavailable);
+    }
+
+    void compoundCancellationAcrossAllPhases() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "@context(\"h264-sps\", sps_id) "
+            "struct Sps { bits<8> sps_id; bits<8> width @context_export; } "
+            "entry Sps;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({1, 10}));
+        const auto view = makeView(1, 0, 16);
+        auto tree = AnalysisTree::create(QStringLiteral("cancel-tree"));
+        RuleExecutionSession session(*compiled.program);
+
+        // Pre-cancellation
+        CancellationSource cancelSource;
+        (void)cancelSource.requestCancellation();
+
+        CompoundRuleExecutionRequest req = makeCompoundRequest(
+            source, *compiled.program->structureIndex(QStringLiteral("Sps")), *view, *tree);
+        req.options.cancellation = cancelSource.token();
+
+        const auto res = session.runCompound(req);
+        QCOMPARE(res.status, RuleExecutionStatus::Cancelled);
+        QCOMPARE(session.publishedDefinitionCount(), std::size_t(0));
+    }
+
+    void compoundSharedBudgetExhaustionInSession() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "@context(\"h264-sps\", sps_id) "
+            "struct Sps { bits<8> sps_id; bits<8> f2; bits<8> f3; bits<8> f4 @context_export; } "
+            "entry Sps;"));
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        MemorySource source(bytes({1, 2, 3, 4}));
+        const auto view = makeView(1, 0, 32);
+        auto tree = AnalysisTree::create(QStringLiteral("budget-tree"));
+        RuleExecutionSession session(*compiled.program);
+
+        CompoundRuleExecutionRequest req = makeCompoundRequest(
+            source, *compiled.program->structureIndex(QStringLiteral("Sps")), *view, *tree);
+        req.options.limits.maximumInstructions = 2; // will exceed
+
+        const auto res = session.runCompound(req);
+        QCOMPARE(res.status, RuleExecutionStatus::ResourceLimit);
+        QCOMPARE(session.publishedDefinitionCount(), std::size_t(0));
+    }
+
+    void compoundContextResolutionInBothHeaderAndPayloadPhases() {
+        const auto parsed = DslParser::parse(QStringLiteral(
+            "@context(\"h264-sps\", sps_id) "
+            "struct Sps { bits<8> sps_id; bits<8> width @context_export; } "
+            "@context(\"h264-pps\", pps_id) "
+            "@context_dependency(\"h264-sps\", sps_id) "
+            "struct Pps { bits<8> pps_id; bits<8> sps_id; bits<8> entropy @context_export; } "
+            "@context_import(\"h264-sps\", sps_id) "
+            "struct SliceHeader { bits<8> sps_id; } "
+            "@context_import(\"h264-pps\", pps_id) "
+            "struct SlicePayload { bits<8> pps_id; bits<8> data; } "
+            "entry Sps;"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const auto spsIndex = compiled.program->structureIndex(QStringLiteral("Sps"));
+        const auto ppsIndex = compiled.program->structureIndex(QStringLiteral("Pps"));
+        const auto sliceHeaderIndex = compiled.program->structureIndex(QStringLiteral("SliceHeader"));
+        const auto slicePayloadIndex = compiled.program->structureIndex(QStringLiteral("SlicePayload"));
+
+        // Bytes 0..1: Sps (sps_id=1, width=10) -> span 0..16
+        // Bytes 2..4: Pps (pps_id=2, sps_id=1, entropy=5) -> span 16..40
+        // Bytes 5..7: SliceHeader (sps_id=1) at byte 5, SlicePayload (pps_id=2, data=0xAA) at bytes 6..7 -> span 40..64
+        MemorySource source(bytes({1, 10, 2, 1, 5, 1, 2, 0xAA}));
+        const auto spsView = makeView(1, 0, 16);
+        const auto ppsView = makeView(2, 16, 24);
+        const auto sliceHeaderView = makeView(3, 40, 8);
+        const auto slicePayloadView = makeView(4, 48, 16);
+        const auto sliceEnclosing = SourceSpan::create(SourceBitAddress(40), 24);
+
+        auto tree = AnalysisTree::create(QStringLiteral("two-phase-import-tree"));
+        RuleExecutionSession session(*compiled.program);
+
+        // 1. Run SPS
+        const auto spsRes = session.runCompound(
+            makeCompoundRequest(source, *spsIndex, *spsView, *tree));
+        QCOMPARE(spsRes.status, RuleExecutionStatus::Materialized);
+
+        // 2. Run PPS
+        const auto ppsRes = session.runCompound(
+            makeCompoundRequest(source, *ppsIndex, *ppsView, *tree));
+        QCOMPARE(ppsRes.status, RuleExecutionStatus::Materialized);
+
+        // 3. Run Compound Slice: Header imports SPS, Payload imports PPS
+        CompoundRuleExecutionRequest sliceReq;
+        sliceReq.source = &source;
+        sliceReq.headerStructureIndex = *sliceHeaderIndex;
+        sliceReq.headerMapping = &sliceHeaderView->mapping;
+        sliceReq.payloadStructureIndex = *slicePayloadIndex;
+        sliceReq.payloadMapping = &slicePayloadView->mapping;
+        sliceReq.tree = &*tree;
+        sliceReq.parentId = tree->rootId();
+        sliceReq.enclosingSourceSpan = *sliceEnclosing;
+
+        const auto sliceRes = session.runCompound(sliceReq);
+        QCOMPARE(sliceRes.status, RuleExecutionStatus::Materialized);
+        QCOMPARE(sliceRes.importedContexts.size(), std::size_t(2));
     }
 };
 

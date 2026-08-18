@@ -188,6 +188,24 @@ namespace {
     }
 }
 
+[[nodiscard]] std::optional<QString> invokeTransactionHookWithResult(
+    const std::function<void(const CompoundStructuralExecutionResult&)>& hook,
+    const CompoundStructuralExecutionResult& result,
+    const QString& hookName) noexcept {
+    if (!hook) {
+        return std::nullopt;
+    }
+    try {
+        hook(result);
+        return std::nullopt;
+    } catch (const std::exception& error) {
+        return QStringLiteral("%1 hook failed: %2")
+            .arg(hookName, QString::fromUtf8(error.what()));
+    } catch (...) {
+        return QStringLiteral("%1 hook failed with an unknown exception").arg(hookName);
+    }
+}
+
 } // namespace
 
 CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
@@ -195,21 +213,10 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
     const CompoundStructuralExecutionRequest& request) {
     CompoundStructuralExecutionResult result;
 
-    if (request.source == nullptr) {
+    if (request.source == nullptr || request.headerMapping == nullptr ||
+        request.tree == nullptr || request.headerStructureIndex >= program.structs.size()) {
         return makeFailure(DslExecutionStatus::InvalidDefinition,
-                           QStringLiteral("Source is null"));
-    }
-    if (request.headerMapping == nullptr) {
-        return makeFailure(DslExecutionStatus::InvalidDefinition,
-                           QStringLiteral("Header source mapping is null"));
-    }
-    if (request.tree == nullptr) {
-        return makeFailure(DslExecutionStatus::InvalidDefinition,
-                           QStringLiteral("Analysis tree is null"));
-    }
-    if (request.headerStructureIndex >= program.structs.size()) {
-        return makeFailure(DslExecutionStatus::InvalidDefinition,
-                           QStringLiteral("Header structure index is out of range"));
+                           QStringLiteral("Compound execution request is invalid"));
     }
 
     QString validationError;
@@ -234,7 +241,7 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
         }
         if (request.payloadMapping == nullptr) {
             return makeFailure(DslExecutionStatus::InvalidDefinition,
-                               QStringLiteral("Payload source mapping is null"));
+                               QStringLiteral("Payload structure requires a payload mapping"));
         }
         if (request.payloadLogicalStart > request.payloadMapping->logicalBitLength()) {
             return makeFailure(DslExecutionStatus::InvalidDefinition,
@@ -274,6 +281,16 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
     };
 
     const auto commitTransaction = [&]() {
+        if (const auto resultHookError = invokeTransactionHookWithResult(
+                request.transactionHooks.onCommitWithResult, result, QStringLiteral("Commit"))) {
+            result.status = DslExecutionStatus::InvalidDefinition;
+            result.errorMessage = *resultHookError;
+            if (const auto rollbackError = invokeTransactionHook(
+                    request.transactionHooks.onRollback, QStringLiteral("Rollback"))) {
+                result.errorMessage += QStringLiteral("; ") + *rollbackError;
+            }
+            return false;
+        }
         const auto hookError = invokeTransactionHook(
             request.transactionHooks.onCommit, QStringLiteral("Commit"));
         if (!hookError) {
@@ -299,13 +316,16 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
         0,
         *request.tree,
         request.parentId,
-        request.options);
+        request.options,
+        request.contextValueResolver);
 
     result.headerNodeId = headerResult.structureNode;
     result.headerBitsConsumed = headerResult.bitsConsumed;
     result.instructionsExecuted = headerResult.instructionsExecuted;
     result.nodesCreated = headerResult.nodesCreated;
     result.headerFieldValues = headerResult.fieldValues;
+    result.headerContextValues = headerResult.contextValues;
+    result.headerContextImports = headerResult.contextImports;
 
     if (!headerResult.materialized()) {
         return rollbackAndReturn(headerResult.status, headerResult.errorMessage);
@@ -534,10 +554,14 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
         0,
         *request.tree,
         *result.headerNodeId,
-        payloadOptions);
+        payloadOptions,
+        request.contextValueResolver);
 
     result.payloadNodeId = payloadResult.structureNode;
     result.payloadBitsConsumed = payloadResult.bitsConsumed;
+    result.payloadFieldValues = payloadResult.fieldValues;
+    result.payloadContextValues = payloadResult.contextValues;
+    result.payloadContextImports = payloadResult.contextImports;
 
     if (payloadResult.instructionsExecuted > instRemaining ||
         payloadResult.nodesCreated > nodesRemaining) {

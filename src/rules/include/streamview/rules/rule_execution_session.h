@@ -3,6 +3,7 @@
 #include <streamview/core/analysis_model.h>
 #include <streamview/core/context_directory.h>
 #include <streamview/core/source.h>
+#include <streamview/rules/compound_structural_runner.h>
 #include <streamview/rules/dsl_ir.h>
 #include <streamview/rules/dsl_vm.h>
 
@@ -68,6 +69,39 @@ struct RuleExecutionResult final {
     }
 };
 
+struct CompoundRuleExecutionRequest final {
+    const core::RandomAccessSource* source = nullptr;
+    const core::SourceMapping* headerMapping = nullptr;
+    quint32 headerStructureIndex = 0;
+
+    std::optional<quint32> payloadStructureIndex;
+    const core::SourceMapping* payloadMapping = nullptr;
+    quint64 payloadLogicalStart = 0;
+
+    QString transformProviderId = QStringLiteral("none");
+    const PayloadTransformRegistry* transformRegistry = nullptr;
+
+    core::AnalysisTree* tree = nullptr;
+    core::AnalysisNodeId parentId;
+    std::optional<core::SourceSpan> enclosingSourceSpan;
+
+    DslExecutionOptions options;
+    bool requireExactConsumption = true;
+    CompoundTransactionHooks transactionHooks;
+};
+
+struct CompoundRuleExecutionResult final {
+    RuleExecutionStatus status = RuleExecutionStatus::InvalidDefinition;
+    CompoundStructuralExecutionResult execution;
+    std::optional<core::ContextDefinitionId> publishedDefinition;
+    std::vector<RuleImportedContext> importedContexts;
+    QString errorMessage;
+
+    [[nodiscard]] bool materialized() const noexcept {
+        return status == RuleExecutionStatus::Materialized;
+    }
+};
+
 class RuleExecutionSession final {
 public:
     explicit RuleExecutionSession(DslTypedProgram program,
@@ -78,11 +112,22 @@ public:
     RuleExecutionSession& operator=(const RuleExecutionSession&) = delete;
     RuleExecutionSession& operator=(RuleExecutionSession&&) noexcept = default;
 
+    void reset(quint64 contextScopeId = 0) noexcept;
     [[nodiscard]] RuleExecutionResult run(const RuleExecutionRequest& request);
+    [[nodiscard]] CompoundRuleExecutionResult runCompound(
+        const CompoundRuleExecutionRequest& request);
     [[nodiscard]] const DslTypedProgram& program() const noexcept { return program_; }
     [[nodiscard]] const core::ContextDirectory& contextDirectory() const noexcept {
         return contextDirectory_;
     }
+    [[nodiscard]] quint64 contextScopeId() const noexcept { return contextScopeId_; }
+    [[nodiscard]] std::size_t publishedDefinitionCount() const noexcept {
+        return contextPayloads_.size();
+    }
+    [[nodiscard]] const core::RandomAccessSource* boundSource() const noexcept {
+        return source_;
+    }
+    [[nodiscard]] quint64 boundTreeIdentity() const noexcept { return treeIdentity_; }
 
 private:
     struct ContextPayload final {
