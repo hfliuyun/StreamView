@@ -14,13 +14,14 @@ Task P5h implements the sample description (`stsd`), sample entry (`avc1`, `mp4a
 1. Sample Description Box (`stsd` / `0x73747364`): FullBox container holding visual and audio sample entries.
 2. Visual Sample Entry (`avc1` / `0x61766331`): ISO/IEC 14496-12 78-byte visual sample entry header, hosting child codec configuration boxes.
 3. Audio Sample Entry (`mp4a` / `0x6D703461`): ISO/IEC 14496-14 28-byte audio sample entry header, hosting child descriptor boxes.
-4. AVC Configuration Box (`avcC` / `0x61766343`): ISO/IEC 14496-15 `AVCDecoderConfigurationRecord`, exposing repeated sequence parameter sets (SPS) and picture parameter sets (PPS) as `@lazy(...) bytes` regions annotated with `@target_format("video.h264.nal")`.
-5. Elementary Stream Descriptor Box (`esds` / `0x65736473`): ISO/IEC 14496-14 FullBox descriptor containing `ES_Descriptor` (tag 0x03), `DecoderConfigDescriptor` (tag 0x04), and `DecoderSpecificInfo` (tag 0x05) with 1–4 byte variable length continuation (MSB 0x80), exposing the `AudioSpecificConfig` payload as `@lazy(...) bytes` annotated with `@target_format("audio.aac.asc")`.
+4. AVC Configuration Box (`avcC` / `0x61766343`): ISO/IEC 14496-15 `AVCDecoderConfigurationRecord`, exposing repeated sequence parameter sets (SPS), picture parameter sets (PPS), and the High-profile SPS extension set as `@lazy(...) bytes` regions annotated with `@target_format("video.h264.nal")`.
+5. Elementary Stream Descriptor Box (`esds` / `0x65736473`): the supported AAC subset of the ISO/IEC 14496-14 FullBox descriptor, validating `ES_Descriptor` (tag 0x03), `DecoderConfigDescriptor` (tag 0x04), and `DecoderSpecificInfo` (tag 0x05), consuming the three optional ES fields selected by their flags, and supporting 1–4 byte variable length continuation (MSB 0x80). The `AudioSpecificConfig` payload is exposed as a `@lazy(...) bytes` region annotated with `@target_format("audio.aac.asc")`.
 
 All structures must:
 - Validate FullBox header versions (`stsd` version 0, `esds` version 0) and `avcC` `configurationVersion == 1`, reporting `unsupported(...)` diagnostics on unhandled versions;
 - Support standard 32-bit box sizes, 64-bit `largesize` (`size == 1`), and `size == 0` EOF span;
-- Preserve DSL byte-alignment tracking across integer-byte lazy regions and repeat loops without ad-hoc C++ decoder shortcuts;
+- Validate descriptor tags, reserved AVC/AAC bits, and reject a fifth continuation length byte with an `unsupported(...)` diagnostic; descriptor payload lengths are decoded but remain within the enclosing box view rather than creating a new bounded descriptor view;
+- Preserve DSL byte-alignment tracking across integer-byte lazy regions, variable bounded/sentinel repeats, and switch-arm joins without ad-hoc C++ decoder shortcuts;
 - Maintain strict boundaries: Task P5h produces AST nodes and `@target_format` metadata without eagerly invoking sub-format analyzers or implementing cross-layer navigation (deferred to Task P5i).
 
 ---
@@ -160,11 +161,11 @@ struct AvcConfigurationBox {
             @description("Profile compatibility flags.");
         bits<8> avcLevelIndication
             @description("AVC level indication.");
-        bits<6> reserved_6bits
+        bits<6> reserved_6bits @equals(63)
             @description("Reserved 6 bits (111111b).");
         bits<2> lengthSizeMinusOne
             @description("NAL unit length field size minus one.");
-        bits<3> reserved_3bits
+        bits<3> reserved_3bits @equals(7)
             @description("Reserved 3 bits (111b).");
         bits<5> numOfSequenceParameterSets
             @description("Number of sequence parameter sets.");
@@ -184,6 +185,23 @@ struct AvcConfigurationBox {
                 @description("PPS NAL unit bytes.")
                 @target_format("video.h264.nal");
         }
+        computed<bool> has_profile_extensions =
+            avcProfileIndication == 100 || avcProfileIndication == 110 ||
+            avcProfileIndication == 122 || avcProfileIndication == 144;
+        if (has_profile_extensions) {
+            bits<6> reserved_chroma_format @equals(63);
+            bits<2> chroma_format;
+            bits<5> reserved_bit_depth_luma @equals(31);
+            bits<3> bit_depth_luma_minus8;
+            bits<5> reserved_bit_depth_chroma @equals(31);
+            bits<3> bit_depth_chroma_minus8;
+            bits<8> numOfSequenceParameterSetExt;
+            repeat (numOfSequenceParameterSetExt, 255) {
+                bits<16> sequenceParameterSetExtLength;
+                @lazy(sequenceParameterSetExtLength) bytes sequenceParameterSetExtNALUnit
+                    @target_format("video.h264.nal");
+            }
+        }
     } else {
         unsupported("Unsupported avcC configurationVersion") at configurationVersion;
     }
@@ -197,7 +215,7 @@ struct ElementaryStreamDescriptorBox {
     bits<24> flags
         @description("Flags.");
     if (version == 0) {
-        bits<8> es_tag
+        bits<8> es_tag @equals(3)
             @description("ES_DescrTag (0x03).");
         bits<1> es_len_more0;
         bits<7> es_len_val0;
@@ -210,6 +228,9 @@ struct ElementaryStreamDescriptorBox {
                 if (es_len_more2 == 1) {
                     bits<1> es_len_more3;
                     bits<7> es_len_val3;
+                    if (es_len_more3 == 1) {
+                        unsupported("ES_Descriptor length exceeds four bytes") at es_len_more3;
+                    }
                 }
             }
         }
@@ -223,7 +244,17 @@ struct ElementaryStreamDescriptorBox {
             @description("OCR stream flag.");
         bits<5> streamPriority
             @description("Stream priority.");
-        bits<8> dc_tag
+        if (streamDependenceFlag == 1) {
+            bits<16> dependsOn_ES_ID;
+        }
+        if (urlFlag == 1) {
+            bits<8> URLlength;
+            @lazy(URLlength) bytes URLstring;
+        }
+        if (ocrStreamFlag == 1) {
+            bits<16> OCR_ES_Id;
+        }
+        bits<8> dc_tag @equals(4)
             @description("DecoderConfigDescrTag (0x04).");
         bits<1> dc_len_more0;
         bits<7> dc_len_val0;
@@ -236,16 +267,19 @@ struct ElementaryStreamDescriptorBox {
                 if (dc_len_more2 == 1) {
                     bits<1> dc_len_more3;
                     bits<7> dc_len_val3;
+                    if (dc_len_more3 == 1) {
+                        unsupported("DecoderConfigDescriptor length exceeds four bytes") at dc_len_more3;
+                    }
                 }
             }
         }
-        bits<8> objectTypeIndication
+        bits<8> objectTypeIndication @equals(64)
             @description("Object type indication (0x40 for Audio ISO/IEC 14496-3 AAC).");
-        bits<6> streamType
+        bits<6> streamType @equals(5)
             @description("Stream type (0x05 for AudioStream).");
         bits<1> upStream
             @description("Upstream flag.");
-        bits<1> reserved_1bit
+        bits<1> reserved_1bit @equals(1)
             @description("Reserved bit (1).");
         bits<24> bufferSizeDB
             @description("Buffer size in bytes.");
@@ -253,7 +287,7 @@ struct ElementaryStreamDescriptorBox {
             @description("Maximum bitrate.");
         bits<32> avgBitrate
             @description("Average bitrate.");
-        bits<8> dsi_tag
+        bits<8> dsi_tag @equals(5)
             @description("DecSpecificInfoTag (0x05).");
         bits<1> dsi_len_more0;
         bits<7> dsi_len_val0;
@@ -266,10 +300,14 @@ struct ElementaryStreamDescriptorBox {
                 if (dsi_len_more2 == 1) {
                     bits<1> dsi_len_more3;
                     bits<7> dsi_len_val3;
-                    computed<u64> asc_len4 = dsi_len_val0 * 2097152 + dsi_len_val1 * 16384 + dsi_len_val2 * 128 + dsi_len_val3;
-                    @lazy(asc_len4) bytes asc_bytes4
-                        @description("AudioSpecificConfig payload.")
-                        @target_format("audio.aac.asc");
+                    if (dsi_len_more3 == 1) {
+                        unsupported("DecoderSpecificInfo length exceeds four bytes") at dsi_len_more3;
+                    } else {
+                        computed<u64> asc_len4 = dsi_len_val0 * 2097152 + dsi_len_val1 * 16384 + dsi_len_val2 * 128 + dsi_len_val3;
+                        @lazy(asc_len4) bytes asc_bytes4
+                            @description("AudioSpecificConfig payload.")
+                            @target_format("audio.aac.asc");
+                    }
                 } else {
                     computed<u64> asc_len3 = dsi_len_val0 * 16384 + dsi_len_val1 * 128 + dsi_len_val2;
                     @lazy(asc_len3) bytes asc_bytes3
@@ -311,7 +349,7 @@ Because `@lazy(byte_count) bytes` consumes an integer number of bytes (`byte_cou
 
 ## Consequences
 
-- Full ISOBMFF sample description and codec configuration decoding is supported through declarative DSL rules.
+- The declared P5h sample-description and AAC/AVC codec-configuration subset is decoded through declarative DSL rules; descriptor lengths remain bounded by the enclosing Box view.
 - Codec configuration payloads attach `@target_format("video.h264.nal")` and `@target_format("audio.aac.asc")` metadata for downstream session navigation.
-- Multi-byte descriptor length continuation and repeated SPS/PPS structures are correctly modeled.
+- Multi-byte descriptor length continuation, ES optional fields, High-profile SPS extensions, and repeated SPS/PPS structures are correctly modeled; a fifth continuation byte is reported as unsupported.
 - Cross-layer analyzer resolution and UI navigation remain cleanly decoupled for Task P5i.

@@ -1816,6 +1816,12 @@ private slots:
         const auto repeatedUnaligned = DslParser::parse(QStringLiteral(
             "struct Header { bits<8> count; repeat (count, 2) { "
             "bits<8, little> value; bits<4> padding; } } entry Header;"));
+        const auto dynamicRepeatTail = DslParser::parse(QStringLiteral(
+            "struct Header { bits<8> count; repeat (count, 8) { bits<1> value; } "
+            "@lazy(1) bytes payload; } entry Header;"));
+        const auto sentinelIteration = DslParser::parse(QStringLiteral(
+            "struct Header { repeat (2) { @lazy(1) bytes payload; bits<1> done; } "
+            "until (done == 0); } entry Header;"));
         const auto tailUnaligned = DslParser::parse(QStringLiteral(
             "struct Header { bits<2> count; repeat (count, 2) { bits<8> value; } "
             "bits<16, little> tail; } entry Header;"));
@@ -1832,6 +1838,25 @@ private slots:
 
         const auto badAlignment = DslCompiler::compile(repeatedUnaligned.program);
         QVERIFY(hasDiagnostic(badAlignment, DslDiagnosticCode::InvalidEndian));
+        const auto badDynamicRepeatTail = DslCompiler::compile(dynamicRepeatTail.program);
+        QVERIFY(hasDiagnostic(badDynamicRepeatTail, DslDiagnosticCode::InvalidEndian));
+        const auto badSentinelIteration = DslCompiler::compile(sentinelIteration.program);
+        QVERIFY(hasDiagnostic(badSentinelIteration, DslDiagnosticCode::InvalidEndian));
+
+        const auto convergedSwitch = DslParser::parse(QStringLiteral(
+            "struct Header { bits<8> selector; bits<1> prefix; switch (selector) { "
+            "case 0: { bits<7> short_arm; } case 1: { bits<15> long_arm; } "
+            "default: { bits<23> default_arm; } } "
+            "bits<8> tail; @lazy(1) bytes payload; } entry Header;"));
+        QVERIFY2(convergedSwitch.succeeded(),
+                 convergedSwitch.diagnostics.empty()
+                     ? ""
+                     : qPrintable(convergedSwitch.diagnostics.front().message));
+        const auto convergedSwitchResult = DslCompiler::compile(convergedSwitch.program);
+        QVERIFY2(convergedSwitchResult.succeeded(),
+                 convergedSwitchResult.diagnostics.empty()
+                     ? ""
+                     : qPrintable(convergedSwitchResult.diagnostics.front().message));
 
         auto malformed = valid.program;
         malformed.structs.front().items.at(1).repeatMaximum = 0;
