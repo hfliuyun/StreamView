@@ -10,6 +10,7 @@
 
 #include <QFile>
 #include <QString>
+#include <QStringList>
 #include <QtTest>
 
 #include <memory>
@@ -104,6 +105,33 @@ private:
     quint64 failAtOffset_ = 0;
 };
 
+enum class MalformedReadMode {
+    IncompleteSuccess,
+    OversizedSuccess,
+};
+
+class MalformedSource final : public RandomAccessSource {
+public:
+    explicit MalformedSource(MalformedReadMode mode) : mode_(mode) {}
+
+    [[nodiscard]] quint64 sizeBytes() const noexcept override { return 2; }
+    [[nodiscard]] QString identity() const override { return QStringLiteral("malformed"); }
+
+    [[nodiscard]] SourceReadResult
+    readAt(quint64, std::span<std::byte> destination) const override {
+        if (destination.empty()) {
+            return {SourceReadStatus::Complete, 0, {}};
+        }
+        if (mode_ == MalformedReadMode::OversizedSuccess) {
+            return {SourceReadStatus::Complete, destination.size() + 1, {}};
+        }
+        return {SourceReadStatus::Complete, destination.size() - 1, {}};
+    }
+
+private:
+    MalformedReadMode mode_;
+};
+
 [[nodiscard]] std::vector<std::byte> readFixtureBytes(const QString& relativePath) {
     const QString basePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/");
     QFile file(basePath + relativePath);
@@ -127,12 +155,13 @@ private slots:
     void boundedSourceViewDisjointSpans();
     void boundedSourceViewOutOfBoundsAndEof();
     void boundedSourceViewPropagatesSourceError();
+    void boundedSourceViewRejectsMalformedSuccessfulReads();
     void boundedSourceViewRejectsUnalignedSpans();
 
     void rejectsSequenceEntryKind();
     void rejectsOutOfRangeTargetIndex();
     void rejectsZeroOrUnalignedLogicalLength();
-    void rejectsEmptyOrUnalignedSourceSpans();
+    void rejectsUnalignedSourceSpans();
     void executesLocalMinimalStructSuccess();
     void executesAcrossDisjointPhysicalSpansAndMapsFieldLocations();
     void handlesTruncatedSourceWithPartialTree();
@@ -235,6 +264,30 @@ void StructuralEntryRunnerTest::boundedSourceViewPropagatesSourceError() {
     QCOMPARE(readRes.errorMessage, QStringLiteral("Injected I/O failure"));
 }
 
+void StructuralEntryRunnerTest::boundedSourceViewRejectsMalformedSuccessfulReads() {
+    const auto span = SourceSpan::create(SourceBitAddress(0), 16);
+    QVERIFY(span.has_value());
+    const auto mapping = SourceMapping::create(LogicalViewId(5), {*span});
+    QVERIFY(mapping.has_value());
+    std::array<std::byte, 2> destination{};
+
+    MalformedSource incompleteSource(MalformedReadMode::IncompleteSuccess);
+    BoundedSourceView incompleteView(incompleteSource, *mapping, 2);
+    const auto incompleteResult = incompleteView.readAt(0, destination);
+    QCOMPARE(incompleteResult.status, SourceReadStatus::Error);
+    QCOMPARE(incompleteResult.bytesRead, std::size_t{1});
+    QCOMPARE(incompleteResult.errorMessage,
+             QStringLiteral("Bounded source view received an incomplete successful read"));
+
+    MalformedSource oversizedSource(MalformedReadMode::OversizedSuccess);
+    BoundedSourceView oversizedView(oversizedSource, *mapping, 2);
+    const auto oversizedResult = oversizedView.readAt(0, destination);
+    QCOMPARE(oversizedResult.status, SourceReadStatus::Error);
+    QCOMPARE(oversizedResult.bytesRead, std::size_t{0});
+    QCOMPARE(oversizedResult.errorMessage,
+             QStringLiteral("Bounded source view received an oversized read"));
+}
+
 void StructuralEntryRunnerTest::boundedSourceViewRejectsUnalignedSpans() {
     MemorySource source(toBytes({0xFF, 0xFF}));
     // Non-byte-aligned span (bit start 3)
@@ -298,6 +351,15 @@ void StructuralEntryRunnerTest::rejectsZeroOrUnalignedLogicalLength() {
 
     MemorySource source(toBytes({0x01}));
 
+    const auto zeroMapping = SourceMapping::create(LogicalViewId(1), {});
+    QVERIFY(zeroMapping.has_value());
+    const auto zeroResult = StructuralEntryRunner::execute(
+        source, *zeroMapping, *compiled.program);
+    QCOMPARE(zeroResult.execution.status, DslExecutionStatus::InvalidDefinition);
+    QCOMPARE(zeroResult.execution.errorMessage,
+             QStringLiteral("Source mapping logical length is zero"));
+    QVERIFY(zeroResult.tree == nullptr);
+
     // Non-byte-aligned logical length (7 bits)
     const auto unalignedSpan = SourceSpan::create(SourceBitAddress(0), 7);
     const auto unalignedMapping = SourceMapping::create(LogicalViewId(1), {*unalignedSpan});
@@ -309,7 +371,7 @@ void StructuralEntryRunnerTest::rejectsZeroOrUnalignedLogicalLength() {
              QStringLiteral("Source mapping logical length is not byte-aligned"));
 }
 
-void StructuralEntryRunnerTest::rejectsEmptyOrUnalignedSourceSpans() {
+void StructuralEntryRunnerTest::rejectsUnalignedSourceSpans() {
     const auto parsed = DslParser::parse(QStringLiteral("struct Header { bits<8> a; } entry Header;"));
     QVERIFY(parsed.succeeded());
     const auto compiled = DslCompiler::compile(parsed.program);
@@ -566,10 +628,12 @@ void StructuralEntryRunnerTest::executesOfficialAacAscOnEsdsFixture() {
     std::optional<AnalysisNode> frameLengthFlagNode;
     std::optional<AnalysisNode> dependsOnCoreCoderNode;
     std::optional<AnalysisNode> extensionFlagNode;
+    QStringList childNames;
 
     for (const auto childId : ascNode->children()) {
         const auto child = result.tree->node(childId);
         if (!child) continue;
+        childNames.push_back(child->name());
         if (child->name() == QStringLiteral("audio_object_type")) audioObjectTypeNode = child;
         else if (child->name() == QStringLiteral("sampling_frequency_index")) samplingFreqIndexNode = child;
         else if (child->name() == QStringLiteral("channel_configuration")) channelConfigNode = child;
@@ -577,6 +641,13 @@ void StructuralEntryRunnerTest::executesOfficialAacAscOnEsdsFixture() {
         else if (child->name() == QStringLiteral("depends_on_core_coder")) dependsOnCoreCoderNode = child;
         else if (child->name() == QStringLiteral("extension_flag")) extensionFlagNode = child;
     }
+    QCOMPARE(childNames,
+             QStringList({QStringLiteral("audio_object_type"),
+                          QStringLiteral("sampling_frequency_index"),
+                          QStringLiteral("channel_configuration"),
+                          QStringLiteral("frame_length_flag"),
+                          QStringLiteral("depends_on_core_coder"),
+                          QStringLiteral("extension_flag")}));
 
     // audio_object_type == 2 (AAC LC)
     QVERIFY(audioObjectTypeNode.has_value());
@@ -602,14 +673,26 @@ void StructuralEntryRunnerTest::executesOfficialAacAscOnEsdsFixture() {
     // frame_length_flag == 0
     QVERIFY(frameLengthFlagNode.has_value());
     QCOMPARE(frameLengthFlagNode->value().toULongLong(), quint64{0});
+    QVERIFY(frameLengthFlagNode->location().has_value());
+    QCOMPARE(frameLengthFlagNode->location()->sourceSpans().front().start().absoluteBitOffset(),
+             quint64{1181});
+    QCOMPARE(frameLengthFlagNode->location()->sourceSpans().front().bitLength(), quint64{1});
 
     // depends_on_core_coder == 0
     QVERIFY(dependsOnCoreCoderNode.has_value());
     QCOMPARE(dependsOnCoreCoderNode->value().toULongLong(), quint64{0});
+    QVERIFY(dependsOnCoreCoderNode->location().has_value());
+    QCOMPARE(dependsOnCoreCoderNode->location()->sourceSpans().front().start().absoluteBitOffset(),
+             quint64{1182});
+    QCOMPARE(dependsOnCoreCoderNode->location()->sourceSpans().front().bitLength(), quint64{1});
 
     // extension_flag == 0
     QVERIFY(extensionFlagNode.has_value());
     QCOMPARE(extensionFlagNode->value().toULongLong(), quint64{0});
+    QVERIFY(extensionFlagNode->location().has_value());
+    QCOMPARE(extensionFlagNode->location()->sourceSpans().front().start().absoluteBitOffset(),
+             quint64{1183});
+    QCOMPARE(extensionFlagNode->location()->sourceSpans().front().bitLength(), quint64{1});
 }
 
 QTEST_MAIN(StructuralEntryRunnerTest)

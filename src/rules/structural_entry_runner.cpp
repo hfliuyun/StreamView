@@ -54,13 +54,6 @@ StructuralExecutionResult StructuralEntryRunner::execute(
         return result;
     }
 
-    if (sourceMapping.sourceSpans().empty()) {
-        result.execution = makeFailure(
-            DslExecutionStatus::InvalidDefinition,
-            QStringLiteral("Source mapping has no source spans"));
-        return result;
-    }
-
     constexpr quint64 maxByteCoordinate = std::numeric_limits<quint64>::max() / 8U;
     const quint64 byteLength = logicalBitLength / 8U;
     if (byteLength > maxByteCoordinate) {
