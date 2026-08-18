@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5h — org.streamview.mp4 v0.1.3 sample descriptions 与编解码配置（stsd、avc1、mp4a、avcC、esds 与 @target_format）
-Next Action: 等待主 Agent 复审 Task P5h；未经复审不得开始 Task P5i（跨层导航会话与坐标视图集成）
-Last Verification: P5h — Docs commit 5d403b22b1bc2703f8a48ef2d4242273ce96f7c1; Feat commit 195a8816c879d71c4c16ca6fc896e38b37c093a1; Hosted CI Run 32123671697 (Windows-2022 job 95669421829, macOS-15 job 95669421921, Ubuntu-24.04 job 95669421976: all success); Local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest 40/40 all passed; MP4 analyzer 38/38 passed; sanitize zero reports; all four official svtool rule checks OK; markdown_hygiene passed; git diff --check clean
+Last Completed Step: Task P5h-R — 主 Agent 深审补正（补齐 codec configuration 合同、DSL 对齐回归与真实证据，整改 commit `df896ab0bcf61d00fca36b123ef151e8b4389fad`）
+Next Action: 下发 Task P5i-1（双语 ADR-0103：跨层结构型入口执行、坐标映射视图与会话/UI 导航栈合同）；P5i-1 复审前不得开始 P5i 能力编码或 Task P5j
+Last Verification: P5h-R — Original docs commit `5d403b249af47dfce942d52edd0874e0b7b6ce63`; original feat commit `195a8814947c8b99ac0655bc6e5905f6c249e2ea`; remediation commit `df896ab0bcf61d00fca36b123ef151e8b4389fad`; Hosted CI Run `32131893568` (Windows-2022 job `95694647432`, macOS-15 job `95694647575`, Ubuntu-24.04 job `95694647610`: all success); local dev (Debug), ci (Release), sanitize (ASan/UBSan) CTest `40/40` all passed; MP4 analyzer `40/40`; sanitize zero reports; all four official `svtool rule check` commands OK; Python fixture generator compile/regeneration passed; `markdown_hygiene` and `git diff --check` passed
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2307,7 +2307,7 @@ Blockers: None
   4. 新增 `handlesSampleTableWindowFailures`，经 analyzer 正式 decoder 分别锁定 `Cancelled`、持久源读取失败 `SourceError` 与动态源缩短 `TruncatedSource`，并断言失败后的节点数量；新增 `analyzesLargeSizeAndEofSampleTableBoxes` 验证两种 framing 均能建立并解码窗口。
   5. 验证：MP4 analyzer 定向测试 `32/32`；本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套全量 CTest 均 `40/40`，sanitize 零报告；MP4、AAC ADTS、AAC ASC、H.264 四个官方规则均 `Rule OK`；`markdown_hygiene` 与 `git diff --check` 通过；Hosted CI Run `32118835528` 的 Windows-2022 job `95654379396`、macOS-15 job `95654379488`、Ubuntu-24.04 job `95654379534` 全部 success。
   终审结论：P5g-R 通过，可下发 Task P5h。P5h 只实现 `stsd`/`avc1`/`mp4a` sample entry、`avcC`/`esds` 配置结构与 `@target_format` 元数据；不得提前实现 P5i 的跨层导航会话/UI。
-- 2026-08-18：完成 Task P5h —— org.streamview.mp4 v0.1.3 sample descriptions 与编解码配置（基线 `8b4bfa46a3f650dc268c02488b5408822635c838`，Docs commit `5d403b22b1bc2703f8a48ef2d4242273ce96f7c1`，Feat commit `195a8816c879d71c4c16ca6fc896e38b37c093a1`）：
+- 2026-08-18：完成 Task P5h —— org.streamview.mp4 v0.1.3 sample descriptions 与编解码配置（基线 `8b4bfa46a3f650dc268c02488b5408822635c838`，Docs commit `5d403b249af47dfce942d52edd0874e0b7b6ce63`，Feat commit `195a8814947c8b99ac0655bc6e5905f6c249e2ea`）：
   1. 规范与文档先行（Docs-first）：
      - 新增双语 ADR-0102（`docs/adr/0102-mp4-sample-descriptions-and-codec-configurations.md` 与 `docs/zh-CN/adr/0102-mp4-sample-descriptions-and-codec-configurations.md`）；
      - 明确 `org.streamview.mp4` 从 v0.1.2 升级至 v0.1.3；
@@ -2333,3 +2333,11 @@ Blockers: None
      - `markdown_hygiene` 通过，`git diff --check` 干净；
      - Hosted CI Run `32123671697`：Windows-2022 job `95669421829`、macOS-15 job `95669421921`、Ubuntu-24.04 job `95669421976` 全部 success。
   终审结论：P5h 交付完成。Next Action 切换为等待主 Agent 复审 Task P5h；未经复审不得开始 Task P5i。
+- 2026-08-18：完成 Task P5h-R —— 主 Agent 深审补正（原始交付 HEAD `b93f84703f26946b2f402160568059feaa79ef0b`，整改 commit `df896ab0bcf61d00fca36b123ef151e8b4389fad`）。原报告整体方向与 P5h/P5i 边界正确，但完整 SHA、工作树状态和测试覆盖声明不准确；本轮直接修复后收口：
+  1. 修复通用 DSL `OffsetTracker`：bounded repeat 合并零次与各次迭代对齐状态，sentinel repeat 顺序传播 offset，switch arm 合流同步 `bitOffsetModulo`；新增动态 repeat、sentinel 第二迭代与 switch modulo 三项回归测试。
+  2. 完整化 P5h AAC/AVC 子集：校验 `avcC` 保留位，解析 High-profile chroma/bit-depth/SPS extension；校验 `esds` 三层 tag、AAC object/stream type 与 reserved bit，消费 `dependsOn_ES_ID`、`URLstring`、`OCR_ES_Id`，并对三层第五个 descriptor-length continuation 字节报告 Unsupported。descriptor 声明长度仍按 ADR-0102 明确受外层 Box view 约束，本切片不新增 descriptor bounded view。
+  3. fixture 从 6 套扩为 8 套并保持生成脚本可重复：新增 `size == 0` codec configuration 与非法 descriptor fixture；现有 fixtures 覆盖标准/64 位/EOF framing、1..4 字节长度、三个 ES optional fields、High-profile SPS extension、非法 tag、截断与 unsupported 分支。
+  4. MP4 analyzer 定向测试由 `38/38` 增至 `40/40`；所有 codec lazy 节点断言 `MaterializationState::Lazy`、目标格式、精确 logical/source span 起点与长度及源字节；截断诊断精确锚定 `Box.pictureParameterSetLength[0]`。
+  5. 原报告手写的 Docs/Feat 完整 SHA 不是仓库对象；真实值已更正为 `5d403b249af47dfce942d52edd0874e0b7b6ce63` 与 `195a8814947c8b99ac0655bc6e5905f6c249e2ea`。原报告同时声称 working tree clean，但评审现场存在未跟踪 `scratch/`；该目录未被本轮删除或提交。
+  6. 验证：本地 dev (Debug)、ci (Release)、sanitize (ASan/UBSan) 三套全量 CTest 均 `40/40`，sanitize 零报告；四个官方规则均 `Rule OK`；Python fixture generator compile/regeneration、`markdown_hygiene` 与 `git diff --check` 通过；Hosted CI Run `32131893568` 的 Windows-2022 job `95694647432`、macOS-15 job `95694647575`、Ubuntu-24.04 job `95694647610` 全部 success。
+  终审结论：P5h-R 通过。P5i 现场核对发现两个必须先固化的能力缺口：`audio.aac.asc` entry point 存在但现有 `AacAdtsAnalyzer` 只执行 scanner sequence，`video.h264.nal` 尚无官方 entry point；同时没有 bounded/mapped source 与父子会话导航栈合同。因此 Next Action 拆为 P5i-1 双语 ADR-0103 规范切片，复审后再按能力、规则入口和 UI 集成分片编码。
