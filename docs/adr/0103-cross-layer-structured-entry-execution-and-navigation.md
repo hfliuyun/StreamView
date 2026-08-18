@@ -199,10 +199,16 @@ To prevent monolithic PRs and enforce single-responsibility review:
 [P5i-4 (App/UI)]: AnalysisSession NavigationStack, MainWindow Breadcrumbs & Bidirectional Selection
 ```
 
-- **Task P5i-1** (this task): Markdown-only dual-language ADR-0103 specification.
+- **Task P5i-1**: Markdown-only dual-language ADR-0103 specification.
 - **Task P5i-2**: Implement the reusable mapped source view and `StructuralEntryRunner`. Prove the generic path with a local structural rule and the existing `audio.aac.asc` entry. Do not change official package manifests or claim complete H.264 NAL decoding in this capability slice.
-- **Task P5i-3**: Docs-first probe the standalone one-NAL rule shape, then add `video.h264.nal` to `org.streamview.h264` and bump it from v0.1.39 to v0.1.40 if the rule output changes. If the existing language cannot express header-plus-RBSP dispatch without a scan sequence, stop and request a separate capability slice; do not add H.264-specific C++ dispatch. The existing `org.streamview.aac` v0.1.4 ASC entry is validated as-is and is upgraded only if this slice actually changes its manifest or decoding output.
-- **Task P5i-4**: Implement `NavigationStack` in `AnalysisSession`, connect breadcrumb navigation in `MainWindow`, and test tree/raw view bidirectional coordinate synchronization.
+- **Task P5i-3** (Probe Outcome & Blocked State): Docs-first probe of standalone H.264 one-NAL expressibility proved that DSL 0.1 currently lacks:
+  1. Sub-structure instantiation / structural switch dispatch inside structs (`src/rules/dsl.cpp:1152-1156`: `Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type`);
+  2. Declarative `payload<rbsp>` on structural entries (`src/rules/dsl.cpp:3771-3775` & `3778-3782`: restricted to `scan` sequences);
+  3. Format-neutral EBSP-to-RBSP unescaping view layer outside progressive `H264AnnexBAnalyzer`;
+  4. Context dependency resolution across standalone structural runner executions;
+  5. Multiple entrypoints per `.svfmt` file (`src/rules/dsl.cpp:1765-1772`) or cross-file struct sharing.
+  Per the Stop and Report Protocol, Task P5i-3 stops without modifying `org.streamview.h264` (retains v0.1.39) or adding `video.h264.nal`, requests a dedicated language capability slice for structural unescaping/dispatch, and verifies `org.streamview.aac` v0.1.4 `audio.aac.asc` as the active cross-layer entrypoint for P5i-4.
+- **Task P5i-4**: Implement `NavigationStack` in `AnalysisSession`, connect breadcrumb navigation in `MainWindow`, and test tree/raw view bidirectional coordinate synchronization using `audio.aac.asc`.
 
 ---
 
