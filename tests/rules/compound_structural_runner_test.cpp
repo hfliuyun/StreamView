@@ -154,6 +154,111 @@ private:
     return std::make_shared<DslTypedProgram>(*compileResult.program);
 }
 
+class MockFilteringProvider final : public PayloadTransformProvider {
+public:
+    [[nodiscard]] QString identifier() const override {
+        return QStringLiteral("mock_filter");
+    }
+
+    [[nodiscard]] PayloadTransformResult transform(
+        const PayloadTransformRequest& request) const override {
+        PayloadTransformResult result;
+        if (!request.source || !request.inputMapping) {
+            result.status = DslExecutionStatus::InvalidDefinition;
+            result.errorMessage = QStringLiteral("Null inputs");
+            return result;
+        }
+
+        if (request.cancellation && request.cancellation->isCancellationRequested()) {
+            result.status = DslExecutionStatus::Cancelled;
+            result.errorMessage = QStringLiteral("Cancelled before transform");
+            return result;
+        }
+
+        const quint64 totalBytes = request.logicalBitLength / 8U;
+        if (request.maximumInspectedBytes > 0 && totalBytes > request.maximumInspectedBytes) {
+            result.status = DslExecutionStatus::ResourceLimit;
+            result.inspectedByteCount = request.maximumInspectedBytes;
+            result.errorMessage = QStringLiteral("Inspection budget exceeded");
+            return result;
+        }
+
+        std::vector<SourceSpan> forwardedSpans;
+        std::vector<PayloadExcludedSpan> excludedSpans;
+        quint64 outputBitOffset = 0;
+        quint64 inspectedBytes = 0;
+
+        for (quint64 byteIndex = 0; byteIndex < totalBytes; ++byteIndex) {
+            if (request.cancellation && request.cancellation->isCancellationRequested()) {
+                result.status = DslExecutionStatus::Cancelled;
+                result.errorMessage = QStringLiteral("Cancelled during transform");
+                result.inspectedByteCount = inspectedBytes;
+                return result;
+            }
+
+            const quint64 logicalBitOffset = request.logicalBitStart + (byteIndex * 8U);
+            const auto logicalAddr = LogicalBitAddress(
+                request.inputMapping->viewId(), logicalBitOffset);
+            const auto rangeOpt = LogicalRange::create(logicalAddr, 8U);
+            if (!rangeOpt) {
+                result.status = DslExecutionStatus::InvalidDefinition;
+                result.errorMessage = QStringLiteral("Invalid range");
+                return result;
+            }
+            const auto location = request.inputMapping->locate(*rangeOpt);
+            if (!location || location->sourceSpans().empty()) {
+                result.status = DslExecutionStatus::InvalidDefinition;
+                result.errorMessage = QStringLiteral("Failed to locate byte");
+                return result;
+            }
+
+            const SourceSpan byteSpan = location->sourceSpans().front();
+            const quint64 physByteOffset = byteSpan.start().byteOffset();
+
+            std::byte readByte{};
+            const auto readRes = request.source->readAt(physByteOffset, std::span<std::byte>(&readByte, 1));
+            if (readRes.status == SourceReadStatus::Error) {
+                result.status = DslExecutionStatus::SourceError;
+                result.errorMessage = readRes.errorMessage;
+                result.inspectedByteCount = inspectedBytes;
+                return result;
+            }
+            if (readRes.status == SourceReadStatus::EndOfSource || readRes.bytesRead == 0) {
+                result.status = DslExecutionStatus::TruncatedSource;
+                result.errorMessage = QStringLiteral("Unexpected EOF");
+                result.inspectedByteCount = inspectedBytes;
+                return result;
+            }
+
+            const auto val = static_cast<quint8>(readByte);
+            ++inspectedBytes;
+
+            if (val == 0xEE) {
+                // Exclude
+                excludedSpans.push_back({byteSpan, outputBitOffset});
+            } else {
+                // Forward
+                forwardedSpans.push_back(byteSpan);
+                outputBitOffset += 8U;
+            }
+        }
+
+        auto mappingOpt = SourceMapping::create(
+            request.inputMapping->viewId(), std::move(forwardedSpans));
+        if (!mappingOpt) {
+            result.status = DslExecutionStatus::InvalidDefinition;
+            result.errorMessage = QStringLiteral("Failed to build forwarded mapping");
+            return result;
+        }
+
+        result.status = DslExecutionStatus::Materialized;
+        result.forwardedMapping = std::move(mappingOpt);
+        result.excludedSpans = std::move(excludedSpans);
+        result.inspectedByteCount = inspectedBytes;
+        return result;
+    }
+};
+
 } // namespace
 
 class CompoundStructuralRunnerTest : public QObject {
@@ -161,27 +266,28 @@ class CompoundStructuralRunnerTest : public QObject {
 
 private slots:
     void initTestCase();
+    void cleanupTestCase();
 
-    // 1. Success header + payload single tree
+    // 1. Success cases
     void executesSuccessfulHeaderAndPayloadInSingleTree();
 
-    // 2. Header failure halts and skips payload
+    // 2. Header failure halts compound execution
     void headerTruncationHaltsAndSkipsPayload();
     void headerSourceErrorHaltsAndSkipsPayload();
     void headerInvalidSyntaxHaltsAndSkipsPayload();
 
-    // 3. Payload failure terminal states and header transition
+    // 3. Payload failure transitions header to corresponding terminal state
     void payloadTruncationTransitionsHeaderToInvalid();
     void payloadSourceErrorTransitionsHeaderToInvalid();
     void payloadUnsupportedTransitionsHeaderToUnsupported();
     void payloadInvalidSyntaxTransitionsHeaderToInvalid();
 
-    // 4. Shared budgets and combined accounting
+    // 4. Shared compound budget exhaustion and arithmetic overflow protection
     void sharedInstructionBudgetExhaustion();
     void sharedNodeBudgetExhaustion();
     void reportsCombinedExecutionCountsAtExactBudget();
 
-    // 5. Cancellation across all phases
+    // 5. Cancellation tokens
     void preCancellationHaltsBeforeAnyTreeMutation();
     void headerPhaseCancellation();
     void betweenHeaderAndPayloadCancellation();
@@ -203,6 +309,15 @@ private slots:
 
     // 9. Preflight validation of inputs
     void rejectsInvalidInputContracts();
+
+    // 10. Transform provider integration tests
+    void executesCompoundWithCustomTransformProviderAndExcludedSpans();
+    void compoundFailsClosedOnUnknownTransformProvider();
+    void compoundPropagatesTransformSourceError();
+    void compoundPropagatesTransformTruncation();
+    void compoundPropagatesTransformCancellation();
+    void compoundPropagatesTransformInspectionBudgetExceeded();
+    void compoundRejectsZeroLengthPayloadInput();
 
 private:
     std::shared_ptr<DslTypedProgram> testProgram_;
@@ -238,6 +353,10 @@ entry Header;
 
     testProgram_ = compileDslProgram(dsl);
     QVERIFY(testProgram_ != nullptr);
+}
+
+void CompoundStructuralRunnerTest::cleanupTestCase() {
+    testProgram_.reset();
 }
 
 void CompoundStructuralRunnerTest::executesSuccessfulHeaderAndPayloadInSingleTree() {
@@ -1253,6 +1372,279 @@ void CompoundStructuralRunnerTest::rejectsInvalidInputContracts() {
         const auto res = CompoundStructuralRunner::execute(*testProgram_, req);
         QCOMPARE(res.status, DslExecutionStatus::InvalidDefinition);
     }
+}
+
+void CompoundStructuralRunnerTest::executesCompoundWithCustomTransformProviderAndExcludedSpans() {
+    // Header (0x67) + Payload with escape (0x12, 0xEE, 0x34) = 4 bytes
+    const auto data = toBytes({0x67, 0x12, 0xEE, 0x34});
+    const MemorySource source(data);
+    const auto headerMapping = makeMapping(0, 1, 1);
+    const auto payloadMapping = makeMapping(1, 3, 2);
+
+    auto treeOpt = AnalysisTree::create(QStringLiteral("Root"));
+    AnalysisTree tree = std::move(*treeOpt);
+
+    const auto headerIndex = testProgram_->structureIndex(QStringLiteral("Header"));
+    const auto payloadIndex = testProgram_->structureIndex(QStringLiteral("PayloadA"));
+
+    PayloadTransformRegistry registry;
+    auto mockProvider = std::make_shared<MockFilteringProvider>();
+    QVERIFY(registry.registerProvider(mockProvider));
+
+    bool committed = false;
+    CompoundStructuralExecutionRequest request;
+    request.source = &source;
+    request.headerMapping = &headerMapping;
+    request.headerStructureIndex = *headerIndex;
+    request.payloadStructureIndex = *payloadIndex;
+    request.payloadMapping = &payloadMapping;
+    request.transformProviderId = QStringLiteral("mock_filter");
+    request.transformRegistry = &registry;
+    request.tree = &tree;
+    request.parentId = tree.rootId();
+    request.transactionHooks.onCommit = [&]() { committed = true; };
+
+    const auto result = CompoundStructuralRunner::execute(*testProgram_, request);
+
+    QVERIFY(result.materialized());
+    QVERIFY(committed);
+    QVERIFY(result.headerNodeId.has_value());
+    QVERIFY(result.payloadNodeId.has_value());
+    QCOMPARE(result.inspectedByteCount, 3ULL);
+    QCOMPARE(result.excludedSpans.size(), 1ULL);
+    QCOMPARE(result.excludedSpans[0].sourceSpan.start().byteOffset(), 2ULL);
+    QCOMPARE(result.excludedSpans[0].outputBitOffset, 8ULL);
+    QVERIFY(result.forwardedPayloadMapping.has_value());
+    QCOMPARE(result.forwardedPayloadMapping->logicalBitLength(), 16ULL);
+
+    const auto headerNode = tree.node(*result.headerNodeId);
+    const auto payloadNode = tree.node(*result.payloadNodeId);
+    QVERIFY(headerNode.has_value());
+    QVERIFY(payloadNode.has_value());
+    QCOMPARE(headerNode->state(), MaterializationState::Materialized);
+    QCOMPARE(payloadNode->state(), MaterializationState::Materialized);
+    QCOMPARE(payloadNode->parentId(), *result.headerNodeId);
+}
+
+void CompoundStructuralRunnerTest::compoundFailsClosedOnUnknownTransformProvider() {
+    const auto data = toBytes({0x67, 0x12, 0x34});
+    const MemorySource source(data);
+    const auto headerMapping = makeMapping(0, 1, 1);
+    const auto payloadMapping = makeMapping(1, 2, 2);
+
+    auto treeOpt = AnalysisTree::create(QStringLiteral("Root"));
+    AnalysisTree tree = std::move(*treeOpt);
+
+    const auto headerIndex = testProgram_->structureIndex(QStringLiteral("Header"));
+    const auto payloadIndex = testProgram_->structureIndex(QStringLiteral("PayloadA"));
+
+    bool rolledBack = false;
+    CompoundStructuralExecutionRequest request;
+    request.source = &source;
+    request.headerMapping = &headerMapping;
+    request.headerStructureIndex = *headerIndex;
+    request.payloadStructureIndex = *payloadIndex;
+    request.payloadMapping = &payloadMapping;
+    request.transformProviderId = QStringLiteral("non_existent_provider");
+    request.tree = &tree;
+    request.parentId = tree.rootId();
+    request.transactionHooks.onRollback = [&]() { rolledBack = true; };
+
+    const auto result = CompoundStructuralRunner::execute(*testProgram_, request);
+
+    QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+    QVERIFY(rolledBack);
+    QVERIFY(result.headerNodeId.has_value());
+    QCOMPARE(result.payloadNodeId, std::nullopt);
+    const auto headerNode = tree.node(*result.headerNodeId);
+    QVERIFY(headerNode.has_value());
+    QCOMPARE(headerNode->state(), MaterializationState::Invalid);
+}
+
+void CompoundStructuralRunnerTest::compoundPropagatesTransformSourceError() {
+    const auto data = toBytes({0x67, 0x12, 0x34});
+    const FaultySource source(data, 2); // Fails when reading byte 2 (payload)
+    const auto headerMapping = makeMapping(0, 1, 1);
+    const auto payloadMapping = makeMapping(1, 2, 2);
+
+    auto treeOpt = AnalysisTree::create(QStringLiteral("Root"));
+    AnalysisTree tree = std::move(*treeOpt);
+
+    const auto headerIndex = testProgram_->structureIndex(QStringLiteral("Header"));
+    const auto payloadIndex = testProgram_->structureIndex(QStringLiteral("PayloadA"));
+
+    PayloadTransformRegistry registry;
+    auto mockProvider = std::make_shared<MockFilteringProvider>();
+    QVERIFY(registry.registerProvider(mockProvider));
+
+    bool rolledBack = false;
+    CompoundStructuralExecutionRequest request;
+    request.source = &source;
+    request.headerMapping = &headerMapping;
+    request.headerStructureIndex = *headerIndex;
+    request.payloadStructureIndex = *payloadIndex;
+    request.payloadMapping = &payloadMapping;
+    request.transformProviderId = QStringLiteral("mock_filter");
+    request.transformRegistry = &registry;
+    request.tree = &tree;
+    request.parentId = tree.rootId();
+    request.transactionHooks.onRollback = [&]() { rolledBack = true; };
+
+    const auto result = CompoundStructuralRunner::execute(*testProgram_, request);
+
+    QCOMPARE(result.status, DslExecutionStatus::SourceError);
+    QVERIFY(rolledBack);
+    QVERIFY(result.headerNodeId.has_value());
+    QCOMPARE(result.payloadNodeId, std::nullopt);
+    const auto headerNode = tree.node(*result.headerNodeId);
+    QVERIFY(headerNode.has_value());
+    QCOMPARE(headerNode->state(), MaterializationState::Invalid);
+}
+
+void CompoundStructuralRunnerTest::compoundPropagatesTransformTruncation() {
+    const auto data = toBytes({0x67, 0x12}); // Only 2 bytes total, but payload claims 3 bytes
+    const MemorySource source(data);
+    const auto headerMapping = makeMapping(0, 1, 1);
+    const auto payloadMapping = makeMapping(1, 3, 2);
+
+    auto treeOpt = AnalysisTree::create(QStringLiteral("Root"));
+    AnalysisTree tree = std::move(*treeOpt);
+
+    const auto headerIndex = testProgram_->structureIndex(QStringLiteral("Header"));
+    const auto payloadIndex = testProgram_->structureIndex(QStringLiteral("PayloadA"));
+
+    PayloadTransformRegistry registry;
+    auto mockProvider = std::make_shared<MockFilteringProvider>();
+    QVERIFY(registry.registerProvider(mockProvider));
+
+    bool rolledBack = false;
+    CompoundStructuralExecutionRequest request;
+    request.source = &source;
+    request.headerMapping = &headerMapping;
+    request.headerStructureIndex = *headerIndex;
+    request.payloadStructureIndex = *payloadIndex;
+    request.payloadMapping = &payloadMapping;
+    request.transformProviderId = QStringLiteral("mock_filter");
+    request.transformRegistry = &registry;
+    request.tree = &tree;
+    request.parentId = tree.rootId();
+    request.transactionHooks.onRollback = [&]() { rolledBack = true; };
+
+    const auto result = CompoundStructuralRunner::execute(*testProgram_, request);
+
+    QCOMPARE(result.status, DslExecutionStatus::TruncatedSource);
+    QVERIFY(rolledBack);
+    QVERIFY(result.headerNodeId.has_value());
+    QCOMPARE(result.payloadNodeId, std::nullopt);
+    const auto headerNode = tree.node(*result.headerNodeId);
+    QVERIFY(headerNode.has_value());
+    QCOMPARE(headerNode->state(), MaterializationState::Invalid);
+}
+
+void CompoundStructuralRunnerTest::compoundPropagatesTransformCancellation() {
+    const auto data = toBytes({0x67, 0x12, 0x34});
+    CancellationSource cancelSource;
+    CancellingSource source(data, 1, cancelSource); // Cancels when reading byte 1 during transform
+    const auto headerMapping = makeMapping(0, 1, 1);
+    const auto payloadMapping = makeMapping(1, 2, 2);
+
+    auto treeOpt = AnalysisTree::create(QStringLiteral("Root"));
+    AnalysisTree tree = std::move(*treeOpt);
+
+    const auto headerIndex = testProgram_->structureIndex(QStringLiteral("Header"));
+    const auto payloadIndex = testProgram_->structureIndex(QStringLiteral("PayloadA"));
+
+    PayloadTransformRegistry registry;
+    auto mockProvider = std::make_shared<MockFilteringProvider>();
+    QVERIFY(registry.registerProvider(mockProvider));
+
+    bool rolledBack = false;
+    CompoundStructuralExecutionRequest request;
+    request.source = &source;
+    request.headerMapping = &headerMapping;
+    request.headerStructureIndex = *headerIndex;
+    request.payloadStructureIndex = *payloadIndex;
+    request.payloadMapping = &payloadMapping;
+    request.transformProviderId = QStringLiteral("mock_filter");
+    request.transformRegistry = &registry;
+    request.options.cancellation = cancelSource.token();
+    request.tree = &tree;
+    request.parentId = tree.rootId();
+    request.transactionHooks.onRollback = [&]() { rolledBack = true; };
+
+    const auto result = CompoundStructuralRunner::execute(*testProgram_, request);
+
+    QCOMPARE(result.status, DslExecutionStatus::Cancelled);
+    QVERIFY(rolledBack);
+    QVERIFY(result.headerNodeId.has_value());
+    QCOMPARE(result.payloadNodeId, std::nullopt);
+    const auto headerNode = tree.node(*result.headerNodeId);
+    QVERIFY(headerNode.has_value());
+    QCOMPARE(headerNode->state(), MaterializationState::Cancelled);
+}
+
+void CompoundStructuralRunnerTest::compoundPropagatesTransformInspectionBudgetExceeded() {
+    const auto data = toBytes({0x67, 0x12, 0x34, 0x56});
+    const MemorySource source(data);
+    const auto headerMapping = makeMapping(0, 1, 1);
+    const auto payloadMapping = makeMapping(1, 3, 2); // 3 bytes payload
+
+    auto treeOpt = AnalysisTree::create(QStringLiteral("Root"));
+    AnalysisTree tree = std::move(*treeOpt);
+
+    const auto headerIndex = testProgram_->structureIndex(QStringLiteral("Header"));
+    const auto payloadIndex = testProgram_->structureIndex(QStringLiteral("PayloadA"));
+
+    bool rolledBack = false;
+    CompoundStructuralExecutionRequest request;
+    request.source = &source;
+    request.headerMapping = &headerMapping;
+    request.headerStructureIndex = *headerIndex;
+    request.payloadStructureIndex = *payloadIndex;
+    request.payloadMapping = &payloadMapping;
+    request.options.limits.maximumInspectedBytes = 2; // Limit 2 < 3
+    request.tree = &tree;
+    request.parentId = tree.rootId();
+    request.transactionHooks.onRollback = [&]() { rolledBack = true; };
+
+    const auto result = CompoundStructuralRunner::execute(*testProgram_, request);
+
+    QCOMPARE(result.status, DslExecutionStatus::ResourceLimit);
+    QVERIFY(rolledBack);
+    QVERIFY(result.headerNodeId.has_value());
+    const auto headerNode = tree.node(*result.headerNodeId);
+    QVERIFY(headerNode.has_value());
+    QCOMPARE(headerNode->state(), MaterializationState::Invalid);
+}
+
+void CompoundStructuralRunnerTest::compoundRejectsZeroLengthPayloadInput() {
+    const auto data = toBytes({0x67, 0x12, 0x34});
+    const MemorySource source(data);
+    const auto headerMapping = makeMapping(0, 1, 1);
+    const auto payloadMapping = makeMapping(1, 2, 2);
+
+    auto treeOpt = AnalysisTree::create(QStringLiteral("Root"));
+    AnalysisTree tree = std::move(*treeOpt);
+
+    const auto headerIndex = testProgram_->structureIndex(QStringLiteral("Header"));
+    const auto payloadIndex = testProgram_->structureIndex(QStringLiteral("PayloadA"));
+
+    bool rolledBack = false;
+    CompoundStructuralExecutionRequest request;
+    request.source = &source;
+    request.headerMapping = &headerMapping;
+    request.headerStructureIndex = *headerIndex;
+    request.payloadStructureIndex = *payloadIndex;
+    request.payloadMapping = &payloadMapping;
+    request.payloadLogicalStart = 16; // Equal to payloadMapping->logicalBitLength() -> zero length payload
+    request.tree = &tree;
+    request.parentId = tree.rootId();
+    request.transactionHooks.onRollback = [&]() { rolledBack = true; };
+
+    const auto result = CompoundStructuralRunner::execute(*testProgram_, request);
+
+    QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+    QVERIFY(rolledBack);
 }
 
 QTEST_MAIN(CompoundStructuralRunnerTest)

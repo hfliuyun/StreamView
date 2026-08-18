@@ -37,6 +37,9 @@ struct DslExecutionLimits final {
     [[nodiscard]] static constexpr quint64 defaultMaximumMaterializedNodes() noexcept {
         return 100'000;
     }
+    [[nodiscard]] static constexpr quint64 defaultMaximumInspectedBytes() noexcept {
+        return 10'000'000;
+    }
     [[nodiscard]] static constexpr quint64 defaultCancellationCheckInterval() noexcept {
         return 1'024;
     }
@@ -46,6 +49,7 @@ struct DslExecutionLimits final {
     quint32 maximumViewDepth = defaultMaximumViewDepth();
     quint32 maximumNodeDepth = defaultMaximumNodeDepth();
     quint64 maximumMaterializedNodes = defaultMaximumMaterializedNodes();
+    quint64 maximumInspectedBytes = defaultMaximumInspectedBytes();
     quint64 cancellationCheckInterval = defaultCancellationCheckInterval();
 };
 

@@ -5,6 +5,7 @@
 #include <streamview/core/source.h>
 #include <streamview/rules/dsl_ir.h>
 #include <streamview/rules/dsl_vm.h>
+#include <streamview/rules/payload_transform.h>
 
 #include <QString>
 #include <QtGlobal>
@@ -31,6 +32,9 @@ struct CompoundStructuralExecutionRequest final {
     const core::SourceMapping* payloadMapping = nullptr;
     quint64 payloadLogicalStart = 0;
 
+    QString transformProviderId = QStringLiteral("none");
+    const PayloadTransformRegistry* transformRegistry = nullptr;
+
     core::AnalysisTree* tree = nullptr;
     core::AnalysisNodeId parentId;
 
@@ -47,6 +51,9 @@ struct CompoundStructuralExecutionResult final {
     quint64 payloadBitsConsumed = 0;
     quint64 instructionsExecuted = 0;
     quint64 nodesCreated = 0;
+    quint64 inspectedByteCount = 0;
+    std::vector<PayloadExcludedSpan> excludedSpans;
+    std::optional<core::SourceMapping> forwardedPayloadMapping;
     std::vector<std::optional<quint64>> headerFieldValues;
     QString errorMessage;
 
