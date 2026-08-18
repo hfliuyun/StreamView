@@ -121,6 +121,15 @@ target_compile_definitions(
     PRIVATE
         STREAMVIEW_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
 )
+streamview_add_rules_test(
+    streamview_structural_entry_runner_tests
+    rules/structural_entry_runner_test.cpp
+)
+target_compile_definitions(
+    streamview_structural_entry_runner_tests
+    PRIVATE
+        STREAMVIEW_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
 
 if(TARGET streamview_app)
     streamview_add_app_test(streamview_analysis_session_tests app/analysis_session_test.cpp)

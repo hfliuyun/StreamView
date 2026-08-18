@@ -1,6 +1,7 @@
 add_library(streamview_core STATIC
     analysis_model.cpp
     bit_reader.cpp
+    bounded_source_view.cpp
     context_directory.cpp
     coordinates.cpp
     paged_cache.cpp
@@ -9,6 +10,7 @@ add_library(streamview_core STATIC
     source_pager.cpp
     include/streamview/core/analysis_model.h
     include/streamview/core/bit_reader.h
+    include/streamview/core/bounded_source_view.h
     include/streamview/core/context_directory.h
     include/streamview/core/coordinates.h
     include/streamview/core/paged_cache.h
