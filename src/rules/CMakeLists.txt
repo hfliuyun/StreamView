@@ -21,6 +21,7 @@ add_library(streamview_rules STATIC
     structural_entry_runner.cpp
     compound_structural_runner.cpp
     payload_transform.cpp
+    h264_rbsp_payload_transform_provider.cpp
     rule_catalog.cpp
     rule_package_archive.cpp
     rule_package_directory.cpp
@@ -40,6 +41,7 @@ add_library(streamview_rules STATIC
     include/streamview/rules/h264_annex_b_analyzer.h
     include/streamview/rules/h264_annex_b_detector.h
     include/streamview/rules/h264_ebsp_rbsp_mapper.h
+    include/streamview/rules/h264_rbsp_payload_transform_provider.h
     include/streamview/rules/h264_start_code_scanner.h
     include/streamview/rules/language_version.h
     include/streamview/rules/mp4_box_detector.h
