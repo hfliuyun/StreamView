@@ -3171,6 +3171,9 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     } else if (item.repeatMaximum != 0) {
                         const quint32 firstFieldIndex =
                             static_cast<quint32>(typedStruct.fields.size());
+                        std::optional<quint8> commonBitOffsetModulo =
+                            tracker.bitOffsetModulo;
+                        bool allIterationBoundariesByteAligned = tracker.byteAligned;
                         if (controller) {
                             typedStruct.repeatBounds.push_back({controller->fieldIndex,
                                                                 firstFieldIndex,
@@ -3198,10 +3201,17 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                                            tracker);
                             repeatIndices.pop_back();
                             declaredFields.resize(scopeStart);
+                            allIterationBoundariesByteAligned =
+                                allIterationBoundariesByteAligned && tracker.byteAligned;
+                            if (!commonBitOffsetModulo || !tracker.bitOffsetModulo ||
+                                *commonBitOffsetModulo != *tracker.bitOffsetModulo) {
+                                commonBitOffsetModulo = std::nullopt;
+                            }
                         }
+                        tracker.bitOffsetModulo = commonBitOffsetModulo;
+                        tracker.byteAligned = allIterationBoundariesByteAligned;
                     }
                     tracker.exactBitOffset = std::nullopt;
-                    // tracker.byteAligned is maintained from repeat loop iterations
                     continue;
                 }
                 if (item.kind == DslStructItemKind::SentinelRepeat) {
@@ -3295,7 +3305,6 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                         typedRepeat.range = item.range;
                         std::vector<DslTypedFieldCondition> iterationConditions =
                             conditions;
-                        const auto initialTracker = tracker;
                         for (quint64 iteration = 0;
                              iteration < item.repeatMaximum;
                              ++iteration) {
@@ -3303,10 +3312,10 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                             typedRepeat.firstFieldIndices.push_back(
                                 static_cast<quint32>(typedStruct.fields.size()));
                             repeatIndices.push_back(iteration);
-                            (void)self(self,
-                                       item.repeatItems,
-                                       iterationConditions,
-                                       initialTracker);
+                            tracker = self(self,
+                                           item.repeatItems,
+                                           iterationConditions,
+                                           tracker);
                             repeatIndices.pop_back();
                             if (validSentinel) {
                                 const auto projectedSentinel = std::find_if(
@@ -3546,6 +3555,25 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
                     tracker.exactBitOffset = std::nullopt;
                 } else {
                     tracker.exactBitOffset = firstKnown->exactBitOffset;
+                }
+                const auto firstKnownModulo = std::find_if(
+                    armTrackers.begin(),
+                    armTrackers.end(),
+                    [](const OffsetTracker& t) {
+                        return t.bitOffsetModulo.has_value();
+                    });
+                if (firstKnownModulo == armTrackers.end() ||
+                    std::any_of(
+                        armTrackers.begin(),
+                        armTrackers.end(),
+                        [&firstKnownModulo](const OffsetTracker& t) {
+                            return !t.bitOffsetModulo ||
+                                   *t.bitOffsetModulo !=
+                                       *firstKnownModulo->bitOffsetModulo;
+                        })) {
+                    tracker.bitOffsetModulo = std::nullopt;
+                } else {
+                    tracker.bitOffsetModulo = firstKnownModulo->bitOffsetModulo;
                 }
                 tracker.byteAligned = std::all_of(
                     armTrackers.begin(),

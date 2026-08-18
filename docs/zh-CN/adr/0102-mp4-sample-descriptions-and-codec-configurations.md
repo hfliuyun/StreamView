@@ -14,13 +14,14 @@
 1. 样本描述 Box（`stsd` / `0x73747364`）：FullBox 容器，容纳视觉与音频样本条目。
 2. 视觉样本条目（`avc1` / `0x61766331`）：ISO/IEC 14496-12 78 字节视觉样本条目头部，作为子编解码配置 Box 的容器。
 3. 音频样本条目（`mp4a` / `0x6D703461`）：ISO/IEC 14496-14 28 字节音频样本条目头部，作为子描述符 Box 的容器。
-4. AVC 配置 Box（`avcC` / `0x61766343`）：ISO/IEC 14496-15 `AVCDecoderConfigurationRecord`，将重复的序列参数集（SPS）与图像参数集（PPS）公开为带有 `@target_format("video.h264.nal")` 注解的 `@lazy(...) bytes` 区域。
-5. 基本流描述符 Box（`esds` / `0x65736473`）：ISO/IEC 14496-14 FullBox 描述符，包含 `ES_Descriptor`（标签 0x03）、`DecoderConfigDescriptor`（标签 0x04）与 `DecoderSpecificInfo`（标签 0x05），支持 1–4 字节可扩展长度编码（最高有效位 0x80），将 `AudioSpecificConfig` 载荷公开为带有 `@target_format("audio.aac.asc")` 注解的 `@lazy(...) bytes` 区域。
+4. AVC 配置 Box（`avcC` / `0x61766343`）：ISO/IEC 14496-15 `AVCDecoderConfigurationRecord`，将重复的序列参数集（SPS）、图像参数集（PPS）和 High-profile SPS 扩展集公开为带有 `@target_format("video.h264.nal")` 注解的 `@lazy(...) bytes` 区域。
+5. 基本流描述符 Box（`esds` / `0x65736473`）：ISO/IEC 14496-14 FullBox 描述符的 AAC 支持子集，校验 `ES_Descriptor`（标签 0x03）、`DecoderConfigDescriptor`（标签 0x04）与 `DecoderSpecificInfo`（标签 0x05），按三个 flag 消费 ES 可选字段，并支持 1–4 字节可扩展长度编码（最高有效位 0x80）。`AudioSpecificConfig` 载荷公开为带有 `@target_format("audio.aac.asc")` 注解的 `@lazy(...) bytes` 区域。
 
 所有结构必须：
 - 校验 FullBox 头部版本（`stsd` 版本 0，`esds` 版本 0）及 `avcC` `configurationVersion == 1`，对未处理版本报告 `unsupported(...)` 语法诊断；
 - 支持 32 位标准 Box 尺寸、64 位 `largesize`（`size == 1`）以及 `size == 0` 延伸至 EOF；
-- 在整数字节 lazy 区域与 repeat 循环中保持 DSL 字节对齐追踪，不采用 C++ 解码器专用旁路；
+- 校验 descriptor 标签、AVC/AAC 保留位，并对第五个长度 continuation 字节报告 `unsupported(...)`；descriptor 长度会被解码，但仍在外层 Box view 内消费，不创建新的 descriptor bounded view；
+- 在整数字节 lazy 区域、可变 bounded/sentinel repeat 与 switch 分支合流中保持 DSL 字节对齐追踪，不采用 C++ 解码器专用旁路；
 - 保持严格切片边界：任务 P5h 仅生成 AST 节点与 `@target_format` 元数据，不触发子格式分析器调用或实现跨层会话导航（延后至任务 P5i）。
 
 ---
@@ -160,11 +161,11 @@ struct AvcConfigurationBox {
             @description("Profile compatibility flags.");
         bits<8> avcLevelIndication
             @description("AVC level indication.");
-        bits<6> reserved_6bits
+        bits<6> reserved_6bits @equals(63)
             @description("Reserved 6 bits (111111b).");
         bits<2> lengthSizeMinusOne
             @description("NAL unit length field size minus one.");
-        bits<3> reserved_3bits
+        bits<3> reserved_3bits @equals(7)
             @description("Reserved 3 bits (111b).");
         bits<5> numOfSequenceParameterSets
             @description("Number of sequence parameter sets.");
@@ -184,6 +185,23 @@ struct AvcConfigurationBox {
                 @description("PPS NAL unit bytes.")
                 @target_format("video.h264.nal");
         }
+        computed<bool> has_profile_extensions =
+            avcProfileIndication == 100 || avcProfileIndication == 110 ||
+            avcProfileIndication == 122 || avcProfileIndication == 144;
+        if (has_profile_extensions) {
+            bits<6> reserved_chroma_format @equals(63);
+            bits<2> chroma_format;
+            bits<5> reserved_bit_depth_luma @equals(31);
+            bits<3> bit_depth_luma_minus8;
+            bits<5> reserved_bit_depth_chroma @equals(31);
+            bits<3> bit_depth_chroma_minus8;
+            bits<8> numOfSequenceParameterSetExt;
+            repeat (numOfSequenceParameterSetExt, 255) {
+                bits<16> sequenceParameterSetExtLength;
+                @lazy(sequenceParameterSetExtLength) bytes sequenceParameterSetExtNALUnit
+                    @target_format("video.h264.nal");
+            }
+        }
     } else {
         unsupported("Unsupported avcC configurationVersion") at configurationVersion;
     }
@@ -197,7 +215,7 @@ struct ElementaryStreamDescriptorBox {
     bits<24> flags
         @description("Flags.");
     if (version == 0) {
-        bits<8> es_tag
+        bits<8> es_tag @equals(3)
             @description("ES_DescrTag (0x03).");
         bits<1> es_len_more0;
         bits<7> es_len_val0;
@@ -210,6 +228,9 @@ struct ElementaryStreamDescriptorBox {
                 if (es_len_more2 == 1) {
                     bits<1> es_len_more3;
                     bits<7> es_len_val3;
+                    if (es_len_more3 == 1) {
+                        unsupported("ES_Descriptor length exceeds four bytes") at es_len_more3;
+                    }
                 }
             }
         }
@@ -223,7 +244,17 @@ struct ElementaryStreamDescriptorBox {
             @description("OCR stream flag.");
         bits<5> streamPriority
             @description("Stream priority.");
-        bits<8> dc_tag
+        if (streamDependenceFlag == 1) {
+            bits<16> dependsOn_ES_ID;
+        }
+        if (urlFlag == 1) {
+            bits<8> URLlength;
+            @lazy(URLlength) bytes URLstring;
+        }
+        if (ocrStreamFlag == 1) {
+            bits<16> OCR_ES_Id;
+        }
+        bits<8> dc_tag @equals(4)
             @description("DecoderConfigDescrTag (0x04).");
         bits<1> dc_len_more0;
         bits<7> dc_len_val0;
@@ -236,16 +267,19 @@ struct ElementaryStreamDescriptorBox {
                 if (dc_len_more2 == 1) {
                     bits<1> dc_len_more3;
                     bits<7> dc_len_val3;
+                    if (dc_len_more3 == 1) {
+                        unsupported("DecoderConfigDescriptor length exceeds four bytes") at dc_len_more3;
+                    }
                 }
             }
         }
-        bits<8> objectTypeIndication
+        bits<8> objectTypeIndication @equals(64)
             @description("Object type indication (0x40 for Audio ISO/IEC 14496-3 AAC).");
-        bits<6> streamType
+        bits<6> streamType @equals(5)
             @description("Stream type (0x05 for AudioStream).");
         bits<1> upStream
             @description("Upstream flag.");
-        bits<1> reserved_1bit
+        bits<1> reserved_1bit @equals(1)
             @description("Reserved bit (1).");
         bits<24> bufferSizeDB
             @description("Buffer size in bytes.");
@@ -253,7 +287,7 @@ struct ElementaryStreamDescriptorBox {
             @description("Maximum bitrate.");
         bits<32> avgBitrate
             @description("Average bitrate.");
-        bits<8> dsi_tag
+        bits<8> dsi_tag @equals(5)
             @description("DecSpecificInfoTag (0x05).");
         bits<1> dsi_len_more0;
         bits<7> dsi_len_val0;
@@ -266,10 +300,14 @@ struct ElementaryStreamDescriptorBox {
                 if (dsi_len_more2 == 1) {
                     bits<1> dsi_len_more3;
                     bits<7> dsi_len_val3;
-                    computed<u64> asc_len4 = dsi_len_val0 * 2097152 + dsi_len_val1 * 16384 + dsi_len_val2 * 128 + dsi_len_val3;
-                    @lazy(asc_len4) bytes asc_bytes4
-                        @description("AudioSpecificConfig payload.")
-                        @target_format("audio.aac.asc");
+                    if (dsi_len_more3 == 1) {
+                        unsupported("DecoderSpecificInfo length exceeds four bytes") at dsi_len_more3;
+                    } else {
+                        computed<u64> asc_len4 = dsi_len_val0 * 2097152 + dsi_len_val1 * 16384 + dsi_len_val2 * 128 + dsi_len_val3;
+                        @lazy(asc_len4) bytes asc_bytes4
+                            @description("AudioSpecificConfig payload.")
+                            @target_format("audio.aac.asc");
+                    }
                 } else {
                     computed<u64> asc_len3 = dsi_len_val0 * 16384 + dsi_len_val1 * 128 + dsi_len_val2;
                     @lazy(asc_len3) bytes asc_bytes3
@@ -311,7 +349,7 @@ struct ElementaryStreamDescriptorBox {
 
 ## 后果
 
-- 通过声明式 DSL 规则全面支持 ISOBMFF 样本描述与编解码配置解码。
+- 通过声明式 DSL 规则解码本 ADR 声明的 P5h 样本描述与 AAC/AVC 编解码配置子集；descriptor 长度仍受外层 Box view 约束。
 - 编解码配置载荷附加 `@target_format("video.h264.nal")` 与 `@target_format("audio.aac.asc")` 元数据供下游会话导航使用。
-- 正确建模多字节描述符长度扩展与重复 SPS/PPS 结构。
+- 正确建模多字节描述符长度扩展、ES 可选字段、High-profile SPS 扩展与重复 SPS/PPS 结构；第五个 continuation 字节报告为不支持。
 - 跨层分析器解析与 UI 导航保持清晰解耦，留待任务 P5i 实施。

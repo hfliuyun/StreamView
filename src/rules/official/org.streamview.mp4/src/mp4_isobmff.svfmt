@@ -687,11 +687,11 @@ struct Box {
                                                                                                 @description("Profile compatibility flags.");
                                                                                             bits<8> avcLevelIndication
                                                                                                 @description("AVC level indication.");
-                                                                                            bits<6> reserved_6bits
+                                                                                            bits<6> reserved_6bits @equals(63)
                                                                                                 @description("Reserved 6 bits (111111b).");
                                                                                             bits<2> lengthSizeMinusOne
                                                                                                 @description("NAL unit length field size minus one.");
-                                                                                            bits<3> reserved_3bits
+                                                                                            bits<3> reserved_3bits @equals(7)
                                                                                                 @description("Reserved 3 bits (111b).");
                                                                                             bits<5> numOfSequenceParameterSets
                                                                                                 @description("Number of sequence parameter sets.");
@@ -711,6 +711,34 @@ struct Box {
                                                                                                     @description("PPS NAL unit bytes.")
                                                                                                     @target_format("video.h264.nal");
                                                                                             }
+                                                                                            computed<bool> has_profile_extensions =
+                                                                                                avcProfileIndication == 100 ||
+                                                                                                avcProfileIndication == 110 ||
+                                                                                                avcProfileIndication == 122 ||
+                                                                                                avcProfileIndication == 144;
+                                                                                            if (has_profile_extensions) {
+                                                                                                bits<6> reserved_chroma_format @equals(63)
+                                                                                                    @description("Reserved 6 bits before chroma_format.");
+                                                                                                bits<2> chroma_format
+                                                                                                    @description("Chroma format identifier.");
+                                                                                                bits<5> reserved_bit_depth_luma @equals(31)
+                                                                                                    @description("Reserved 5 bits before bit_depth_luma_minus8.");
+                                                                                                bits<3> bit_depth_luma_minus8
+                                                                                                    @description("Luma bit depth minus 8.");
+                                                                                                bits<5> reserved_bit_depth_chroma @equals(31)
+                                                                                                    @description("Reserved 5 bits before bit_depth_chroma_minus8.");
+                                                                                                bits<3> bit_depth_chroma_minus8
+                                                                                                    @description("Chroma bit depth minus 8.");
+                                                                                                bits<8> numOfSequenceParameterSetExt
+                                                                                                    @description("Number of sequence parameter set extensions.");
+                                                                                                repeat (numOfSequenceParameterSetExt, 255) {
+                                                                                                    bits<16> sequenceParameterSetExtLength
+                                                                                                        @description("SPS extension NAL unit length in bytes.");
+                                                                                                    @lazy(sequenceParameterSetExtLength) bytes sequenceParameterSetExtNALUnit
+                                                                                                        @description("SPS extension NAL unit bytes.")
+                                                                                                        @target_format("video.h264.nal");
+                                                                                                }
+                                                                                            }
                                                                                         } else {
                                                                                             unsupported("Unsupported avcC configurationVersion") at configurationVersion;
                                                                                         }
@@ -724,7 +752,7 @@ struct Box {
                                                                                             bits<24> esds_flags
                                                                                                 @description("Flags.");
                                                                                             if (esds_version == 0) {
-                                                                                                bits<8> es_tag
+                                                                                                bits<8> es_tag @equals(3)
                                                                                                     @description("ES_DescrTag (0x03).");
                                                                                                 bits<1> es_len_more0;
                                                                                                 bits<7> es_len_val0;
@@ -737,6 +765,9 @@ struct Box {
                                                                                                         if (es_len_more2 == 1) {
                                                                                                             bits<1> es_len_more3;
                                                                                                             bits<7> es_len_val3;
+                                                                                                            if (es_len_more3 == 1) {
+                                                                                                                unsupported("ES_Descriptor length exceeds four bytes") at es_len_more3;
+                                                                                                            }
                                                                                                         }
                                                                                                     }
                                                                                                 }
@@ -750,7 +781,21 @@ struct Box {
                                                                                                     @description("OCR stream flag.");
                                                                                                 bits<5> streamPriority
                                                                                                     @description("Stream priority.");
-                                                                                                bits<8> dc_tag
+                                                                                                if (streamDependenceFlag == 1) {
+                                                                                                    bits<16> dependsOn_ES_ID
+                                                                                                        @description("ES_ID of the depended-on elementary stream.");
+                                                                                                }
+                                                                                                if (urlFlag == 1) {
+                                                                                                    bits<8> URLlength
+                                                                                                        @description("Length of the URL string in bytes.");
+                                                                                                    @lazy(URLlength) bytes URLstring
+                                                                                                        @description("URL string bytes.");
+                                                                                                }
+                                                                                                if (ocrStreamFlag == 1) {
+                                                                                                    bits<16> OCR_ES_Id
+                                                                                                        @description("ES_ID carrying the object clock reference.");
+                                                                                                }
+                                                                                                bits<8> dc_tag @equals(4)
                                                                                                     @description("DecoderConfigDescrTag (0x04).");
                                                                                                 bits<1> dc_len_more0;
                                                                                                 bits<7> dc_len_val0;
@@ -763,16 +808,19 @@ struct Box {
                                                                                                         if (dc_len_more2 == 1) {
                                                                                                             bits<1> dc_len_more3;
                                                                                                             bits<7> dc_len_val3;
+                                                                                                            if (dc_len_more3 == 1) {
+                                                                                                                unsupported("DecoderConfigDescriptor length exceeds four bytes") at dc_len_more3;
+                                                                                                            }
                                                                                                         }
                                                                                                     }
                                                                                                 }
-                                                                                                bits<8> objectTypeIndication
+                                                                                                bits<8> objectTypeIndication @equals(64)
                                                                                                     @description("Object type indication (0x40 for Audio ISO/IEC 14496-3 AAC).");
-                                                                                                bits<6> streamType
+                                                                                                bits<6> streamType @equals(5)
                                                                                                     @description("Stream type (0x05 for AudioStream).");
                                                                                                 bits<1> upStream
                                                                                                     @description("Upstream flag.");
-                                                                                                bits<1> reserved_1bit
+                                                                                                bits<1> reserved_1bit @equals(1)
                                                                                                     @description("Reserved bit (1).");
                                                                                                 bits<24> bufferSizeDB
                                                                                                     @description("Buffer size in bytes.");
@@ -780,7 +828,7 @@ struct Box {
                                                                                                     @description("Maximum bitrate.");
                                                                                                 bits<32> avgBitrate
                                                                                                     @description("Average bitrate.");
-                                                                                                bits<8> dsi_tag
+                                                                                                bits<8> dsi_tag @equals(5)
                                                                                                     @description("DecSpecificInfoTag (0x05).");
                                                                                                 bits<1> dsi_len_more0;
                                                                                                 bits<7> dsi_len_val0;
@@ -793,10 +841,14 @@ struct Box {
                                                                                                         if (dsi_len_more2 == 1) {
                                                                                                             bits<1> dsi_len_more3;
                                                                                                             bits<7> dsi_len_val3;
-                                                                                                            computed<u64> asc_len4 = dsi_len_val0 * 2097152 + dsi_len_val1 * 16384 + dsi_len_val2 * 128 + dsi_len_val3;
-                                                                                                            @lazy(asc_len4) bytes asc_bytes4
-                                                                                                                @description("AudioSpecificConfig payload.")
-                                                                                                                @target_format("audio.aac.asc");
+                                                                                                            if (dsi_len_more3 == 1) {
+                                                                                                                unsupported("DecoderSpecificInfo length exceeds four bytes") at dsi_len_more3;
+                                                                                                            } else {
+                                                                                                                computed<u64> asc_len4 = dsi_len_val0 * 2097152 + dsi_len_val1 * 16384 + dsi_len_val2 * 128 + dsi_len_val3;
+                                                                                                                @lazy(asc_len4) bytes asc_bytes4
+                                                                                                                    @description("AudioSpecificConfig payload.")
+                                                                                                                    @target_format("audio.aac.asc");
+                                                                                                            }
                                                                                                         } else {
                                                                                                             computed<u64> asc_len3 = dsi_len_val0 * 16384 + dsi_len_val1 * 128 + dsi_len_val2;
                                                                                                             @lazy(asc_len3) bytes asc_bytes3

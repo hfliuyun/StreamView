@@ -3215,10 +3215,20 @@ private:
                                  item.range});
                         }
                         const std::size_t scopeStart = declaredFields.size();
-                        tracker = self(self, item.repeatItems, active, tracker);
+                        const auto initialTracker = tracker;
+                        const auto bodyTracker =
+                            self(self, item.repeatItems, active, tracker);
                         declaredFields.resize(scopeStart);
                         tracker.exactBitOffset = std::nullopt;
-                        // tracker.byteAligned is maintained from repeat items
+                        tracker.bitOffsetModulo =
+                            initialTracker.bitOffsetModulo &&
+                                    bodyTracker.bitOffsetModulo &&
+                                    *initialTracker.bitOffsetModulo ==
+                                        *bodyTracker.bitOffsetModulo
+                                ? initialTracker.bitOffsetModulo
+                                : std::nullopt;
+                        tracker.byteAligned = initialTracker.byteAligned &&
+                                              bodyTracker.byteAligned;
                         continue;
                     }
                     if (item.kind == DslStructItemKind::SentinelRepeat) {

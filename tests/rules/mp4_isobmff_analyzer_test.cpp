@@ -13,7 +13,9 @@
 #include <QTest>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -159,6 +161,27 @@ private:
     return result;
 }
 
+void verifyLazySourceBytes(const streamview::core::AnalysisNode& node,
+                           const std::vector<std::byte>& sourceBytes,
+                           quint64 expectedByteOffset,
+                           std::span<const std::byte> expectedBytes) {
+    QCOMPARE(node.state(), streamview::core::MaterializationState::Lazy);
+    QVERIFY(node.location().has_value());
+    QCOMPARE(node.location()->logicalRange().bitLength(),
+             static_cast<quint64>(expectedBytes.size()) * 8U);
+    QCOMPARE(node.location()->sourceSpans().size(), std::size_t{1});
+    const auto& sourceSpan = node.location()->sourceSpans().front();
+    QCOMPARE(sourceSpan.start().bitOffsetInByte(), quint8{0});
+    QCOMPARE(sourceSpan.start().byteOffset(), expectedByteOffset);
+    QCOMPARE(sourceSpan.bitLength(), static_cast<quint64>(expectedBytes.size()) * 8U);
+    const auto byteOffset = static_cast<std::size_t>(sourceSpan.start().byteOffset());
+    QVERIFY(byteOffset <= sourceBytes.size());
+    QVERIFY(expectedBytes.size() <= sourceBytes.size() - byteOffset);
+    QVERIFY(std::equal(expectedBytes.begin(),
+                       expectedBytes.end(),
+                       sourceBytes.begin() + static_cast<std::ptrdiff_t>(byteOffset)));
+}
+
 [[nodiscard]] std::optional<streamview::core::AnalysisNodeId> findSampleTableWindow(
     const streamview::core::AnalysisTree& tree,
     const streamview::rules::Mp4IsobmffAnalysisBatch& batch,
@@ -283,6 +306,8 @@ private slots:
     void analyzesLargesizeSampleDescriptionBoxes();
     void handlesUnsupportedCodecConfigurationVersions();
     void handlesTruncatedAvcConfigurationBox();
+    void analyzesSizeZeroCodecConfigurationBoxes();
+    void rejectsInvalidDescriptorTagsAndFifthLengthBytes();
 };
 
 void Mp4IsobmffAnalyzerTest::failsCleanlyWhenNoRulePackageInstalled() {
@@ -2347,6 +2372,16 @@ void Mp4IsobmffAnalyzerTest::analyzesAvc1AndAvcCDecoderConfiguration() {
         QStringLiteral("numOfPictureParameterSets"),
         QStringLiteral("pictureParameterSetLength[0]"),
         QStringLiteral("pictureParameterSetNALUnit[0]"),
+        QStringLiteral("has_profile_extensions"),
+        QStringLiteral("reserved_chroma_format"),
+        QStringLiteral("chroma_format"),
+        QStringLiteral("reserved_bit_depth_luma"),
+        QStringLiteral("bit_depth_luma_minus8"),
+        QStringLiteral("reserved_bit_depth_chroma"),
+        QStringLiteral("bit_depth_chroma_minus8"),
+        QStringLiteral("numOfSequenceParameterSetExt"),
+        QStringLiteral("sequenceParameterSetExtLength[0]"),
+        QStringLiteral("sequenceParameterSetExtNALUnit[0]"),
     };
     QCOMPARE(avcCFieldNames, expectedAvcCFieldNames);
     QCOMPARE(tree.node(avcCBox->children()[2])->value().toULongLong(), quint64{1}); // configurationVersion
@@ -2361,9 +2396,16 @@ void Mp4IsobmffAnalyzerTest::analyzesAvc1AndAvcCDecoderConfiguration() {
     const auto spsNode = tree.node(avcCBox->children()[11]);
     QVERIFY(spsNode.has_value());
     QCOMPARE(spsNode->metadata().targetFormat, QStringLiteral("video.h264.nal"));
-    QVERIFY(spsNode->location().has_value());
-    QCOMPARE(spsNode->location()->logicalRange().bitLength(), quint64{200}); // 25 bytes * 8
-    QVERIFY(!spsNode->location()->sourceSpans().empty());
+    const std::vector<std::byte> expectedSps = {
+        std::byte{0x67}, std::byte{0x64}, std::byte{0x00}, std::byte{0x29},
+        std::byte{0xAC}, std::byte{0x2B}, std::byte{0x40}, std::byte{0x3C},
+        std::byte{0x01}, std::byte{0x13}, std::byte{0xF2}, std::byte{0xE0},
+        std::byte{0x22}, std::byte{0x00}, std::byte{0x00}, std::byte{0x03},
+        std::byte{0x00}, std::byte{0x02}, std::byte{0x00}, std::byte{0x00},
+        std::byte{0x03}, std::byte{0x00}, std::byte{0x79}, std::byte{0x1E},
+        std::byte{0x30},
+    };
+    verifyLazySourceBytes(*spsNode, bytes, 178, expectedSps);
 
     // PPS lazy target format & location
     QCOMPARE(tree.node(avcCBox->children()[12])->value().toULongLong(), quint64{1}); // numOfPictureParameterSets
@@ -2371,9 +2413,20 @@ void Mp4IsobmffAnalyzerTest::analyzesAvc1AndAvcCDecoderConfiguration() {
     const auto ppsNode = tree.node(avcCBox->children()[14]);
     QVERIFY(ppsNode.has_value());
     QCOMPARE(ppsNode->metadata().targetFormat, QStringLiteral("video.h264.nal"));
-    QVERIFY(ppsNode->location().has_value());
-    QCOMPARE(ppsNode->location()->logicalRange().bitLength(), quint64{32}); // 4 bytes * 8
-    QVERIFY(!ppsNode->location()->sourceSpans().empty());
+    const std::vector<std::byte> expectedPps = {
+        std::byte{0x68}, std::byte{0xEE}, std::byte{0x3C}, std::byte{0x80}};
+    verifyLazySourceBytes(*ppsNode, bytes, 206, expectedPps);
+    QCOMPARE(tree.node(avcCBox->children()[15])->value().toBool(), true);
+    QCOMPARE(tree.node(avcCBox->children()[17])->value().toULongLong(), quint64{1});
+    QCOMPARE(tree.node(avcCBox->children()[19])->value().toULongLong(), quint64{0});
+    QCOMPARE(tree.node(avcCBox->children()[21])->value().toULongLong(), quint64{0});
+    QCOMPARE(tree.node(avcCBox->children()[22])->value().toULongLong(), quint64{1});
+    const auto spsExtNode = tree.node(avcCBox->children()[24]);
+    QVERIFY(spsExtNode.has_value());
+    QCOMPARE(spsExtNode->metadata().targetFormat, QStringLiteral("video.h264.nal"));
+    const std::vector<std::byte> expectedSpsExt = {
+        std::byte{0x6D}, std::byte{0x00}, std::byte{0x01}};
+    verifyLazySourceBytes(*spsExtNode, bytes, 216, expectedSpsExt);
 }
 
 void Mp4IsobmffAnalyzerTest::analyzesMp4aAndEsdsDecoderConfiguration() {
@@ -2484,9 +2537,8 @@ void Mp4IsobmffAnalyzerTest::analyzesMp4aAndEsdsDecoderConfiguration() {
     const auto ascNode = tree.node(esdsBox->children()[26]);
     QVERIFY(ascNode.has_value());
     QCOMPARE(ascNode->metadata().targetFormat, QStringLiteral("audio.aac.asc"));
-    QVERIFY(ascNode->location().has_value());
-    QCOMPARE(ascNode->location()->logicalRange().bitLength(), quint64{16}); // 2 bytes * 8
-    QVERIFY(!ascNode->location()->sourceSpans().empty());
+    const std::vector<std::byte> expectedAsc = {std::byte{0x12}, std::byte{0x10}};
+    verifyLazySourceBytes(*ascNode, bytes, 146, expectedAsc);
 }
 
 void Mp4IsobmffAnalyzerTest::analyzesEsdsMultiByteDescriptorLength() {
@@ -2515,23 +2567,76 @@ void Mp4IsobmffAnalyzerTest::analyzesEsdsMultiByteDescriptorLength() {
 
     const auto stsdBox = tree.node(stblPayload->children().front());
     const auto stsdEntries = tree.node(stsdBox->children()[6]);
-    const auto mp4aBox = tree.node(stsdEntries->children().front());
-    const auto mp4aChildren = tree.node(mp4aBox->children().back());
-    const auto esdsBox = tree.node(mp4aChildren->children().front());
-    QVERIFY(esdsBox.has_value());
+    QCOMPARE(stsdEntries->children().size(), std::size_t{4});
+    const std::vector<std::byte> expectedAsc = {std::byte{0x12}, std::byte{0x10}};
+    for (std::size_t index = 0; index < 4; ++index) {
+        const auto mp4aBox = tree.node(stsdEntries->children()[index]);
+        QVERIFY(mp4aBox.has_value());
+        const auto mp4aChildren = tree.node(mp4aBox->children().back());
+        QVERIFY(mp4aChildren.has_value());
+        const auto esdsBox = tree.node(mp4aChildren->children().front());
+        QVERIFY(esdsBox.has_value());
 
-    // Check 3-byte length continuation fields
-    const auto ascLenNode = tree.node(esdsBox->children()[esdsBox->children().size() - 2]);
-    QVERIFY(ascLenNode.has_value());
-    QCOMPARE(ascLenNode->name(), QStringLiteral("asc_len3"));
-    QCOMPARE(ascLenNode->value().toULongLong(), quint64{2});
+        const auto byteCount = static_cast<int>(index + 1);
+        const auto ascLenNode =
+            tree.node(esdsBox->children()[esdsBox->children().size() - 2]);
+        QVERIFY(ascLenNode.has_value());
+        QCOMPARE(ascLenNode->name(), QStringLiteral("asc_len%1").arg(byteCount));
+        QCOMPARE(ascLenNode->value().toULongLong(), quint64{2});
 
-    const auto ascBytesNode = tree.node(esdsBox->children().back());
-    QVERIFY(ascBytesNode.has_value());
-    QCOMPARE(ascBytesNode->name(), QStringLiteral("asc_bytes3"));
-    QCOMPARE(ascBytesNode->metadata().targetFormat, QStringLiteral("audio.aac.asc"));
-    QVERIFY(ascBytesNode->location().has_value());
-    QCOMPARE(ascBytesNode->location()->logicalRange().bitLength(), quint64{16});
+        const auto ascBytesNode = tree.node(esdsBox->children().back());
+        QVERIFY(ascBytesNode.has_value());
+        QCOMPARE(ascBytesNode->name(), QStringLiteral("asc_bytes%1").arg(byteCount));
+        QCOMPARE(ascBytesNode->metadata().targetFormat,
+                 QStringLiteral("audio.aac.asc"));
+        static constexpr std::array<quint64, 4> ascOffsets = {146, 221, 299, 397};
+        verifyLazySourceBytes(*ascBytesNode, bytes, ascOffsets[index], expectedAsc);
+
+        for (int lengthIndex = 0; lengthIndex < byteCount; ++lengthIndex) {
+            const QString fieldName = QStringLiteral("dsi_len_more%1").arg(lengthIndex);
+            const auto found = std::find_if(
+                esdsBox->children().begin(),
+                esdsBox->children().end(),
+                [&tree, &fieldName](streamview::core::AnalysisNodeId childId) {
+                    const auto child = tree.node(childId);
+                    return child && child->name() == fieldName;
+                });
+            QVERIFY(found != esdsBox->children().end());
+            const auto field = tree.node(*found);
+            QCOMPARE(field->value().toULongLong(),
+                     lengthIndex + 1 < byteCount ? quint64{1} : quint64{0});
+        }
+
+        if (byteCount == 4) {
+            const auto childValue = [&tree, &esdsBox](QStringView name) {
+                for (const auto childId : esdsBox->children()) {
+                    const auto child = tree.node(childId);
+                    if (child && child->name() == name) {
+                        return child->value().toULongLong();
+                    }
+                }
+                return std::numeric_limits<quint64>::max();
+            };
+            QCOMPARE(childValue(QStringLiteral("dependsOn_ES_ID")), quint64{7});
+            QCOMPARE(childValue(QStringLiteral("URLlength")), quint64{12});
+            QCOMPARE(childValue(QStringLiteral("OCR_ES_Id")), quint64{9});
+            const auto urlNode = std::find_if(
+                esdsBox->children().begin(),
+                esdsBox->children().end(),
+                [&tree](streamview::core::AnalysisNodeId childId) {
+                    const auto child = tree.node(childId);
+                    return child && child->name() == QStringLiteral("URLstring");
+                });
+            QVERIFY(urlNode != esdsBox->children().end());
+            const auto url = tree.node(*urlNode);
+            const std::vector<std::byte> expectedUrl = {
+                std::byte{0x63}, std::byte{0x6F}, std::byte{0x64}, std::byte{0x65},
+                std::byte{0x63}, std::byte{0x2D}, std::byte{0x63}, std::byte{0x6F},
+                std::byte{0x6E}, std::byte{0x66}, std::byte{0x69}, std::byte{0x67},
+            };
+            verifyLazySourceBytes(*url, bytes, 360, expectedUrl);
+        }
+    }
 }
 
 void Mp4IsobmffAnalyzerTest::analyzesLargesizeSampleDescriptionBoxes() {
@@ -2563,7 +2668,7 @@ void Mp4IsobmffAnalyzerTest::analyzesLargesizeSampleDescriptionBoxes() {
     QVERIFY(stsdBox.has_value());
     QCOMPARE(tree.node(stsdBox->children()[0])->value().toULongLong(), quint64{1}); // size == 1
     QCOMPARE(tree.node(stsdBox->children()[2])->name(), QStringLiteral("stsd_largesize"));
-    QCOMPARE(tree.node(stsdBox->children()[2])->value().toULongLong(), quint64{174});
+    QCOMPARE(tree.node(stsdBox->children()[2])->value().toULongLong(), quint64{178});
 
     // 2. avc1 with largesize
     const auto stsdLargeEntries = tree.node(stsdBox->children()[7]);
@@ -2572,7 +2677,7 @@ void Mp4IsobmffAnalyzerTest::analyzesLargesizeSampleDescriptionBoxes() {
     QVERIFY(avc1Box.has_value());
     QCOMPARE(tree.node(avc1Box->children()[0])->value().toULongLong(), quint64{1}); // size == 1
     QCOMPARE(tree.node(avc1Box->children()[2])->name(), QStringLiteral("avc1_largesize"));
-    QCOMPARE(tree.node(avc1Box->children()[2])->value().toULongLong(), quint64{150});
+    QCOMPARE(tree.node(avc1Box->children()[2])->value().toULongLong(), quint64{154});
 
     // 3. avcC with largesize
     const auto avc1LargeChildren = tree.node(avc1Box->children().back());
@@ -2581,8 +2686,26 @@ void Mp4IsobmffAnalyzerTest::analyzesLargesizeSampleDescriptionBoxes() {
     QVERIFY(avcCBox.has_value());
     QCOMPARE(tree.node(avcCBox->children()[0])->value().toULongLong(), quint64{1}); // size == 1
     QCOMPARE(tree.node(avcCBox->children()[2])->name(), QStringLiteral("avcC_largesize"));
-    QCOMPARE(tree.node(avcCBox->children()[2])->value().toULongLong(), quint64{56});
+    QCOMPARE(tree.node(avcCBox->children()[2])->value().toULongLong(), quint64{60});
     QCOMPARE(tree.node(avcCBox->children()[3])->value().toULongLong(), quint64{1}); // configurationVersion
+
+    // 4. audio stsd/mp4a/esds with largesize framing
+    const auto audioTrak = tree.node(moovPayload->children()[1]);
+    const auto audioTrakPayload = tree.node(audioTrak->children().back());
+    const auto audioMdia = tree.node(audioTrakPayload->children().front());
+    const auto audioMdiaPayload = tree.node(audioMdia->children().back());
+    const auto audioMinf = tree.node(audioMdiaPayload->children().front());
+    const auto audioMinfPayload = tree.node(audioMinf->children().back());
+    const auto audioStbl = tree.node(audioMinfPayload->children().front());
+    const auto audioStblPayload = tree.node(audioStbl->children().back());
+    const auto audioStsdBox = tree.node(audioStblPayload->children().front());
+    QCOMPARE(tree.node(audioStsdBox->children()[0])->value().toULongLong(), quint64{1});
+    const auto audioStsdEntries = tree.node(audioStsdBox->children()[7]);
+    const auto audioMp4aBox = tree.node(audioStsdEntries->children().front());
+    QCOMPARE(tree.node(audioMp4aBox->children()[0])->value().toULongLong(), quint64{1});
+    const auto audioMp4aChildren = tree.node(audioMp4aBox->children().back());
+    const auto audioEsdsBox = tree.node(audioMp4aChildren->children().front());
+    QCOMPARE(tree.node(audioEsdsBox->children()[0])->value().toULongLong(), quint64{1});
 }
 
 void Mp4IsobmffAnalyzerTest::handlesUnsupportedCodecConfigurationVersions() {
@@ -2716,12 +2839,141 @@ void Mp4IsobmffAnalyzerTest::handlesTruncatedAvcConfigurationBox() {
     QVERIFY(!avcCBox->diagnostics().empty());
     bool foundTruncated = false;
     for (const auto& diag : avcCBox->diagnostics()) {
-        if (diag.code == streamview::core::DiagnosticCode::TruncatedSource) {
+        if (diag.code == streamview::core::DiagnosticCode::TruncatedSource &&
+            diag.fieldPath == QStringLiteral("Box.pictureParameterSetLength[0]")) {
+            QVERIFY(diag.location.has_value());
+            QCOMPARE(diag.location->logicalRange().bitLength(), quint64{0});
             foundTruncated = true;
             break;
         }
     }
     QVERIFY2(foundTruncated, "Missing TruncatedSource diagnostic on truncated avcC box");
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesSizeZeroCodecConfigurationBoxes() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5h_size0_boxes.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    const auto moov = tree.node(batch.boxNodes[1]);
+    QVERIFY(moov.has_value());
+    const auto moovStruct = tree.node(moov->children().front());
+    const auto moovPayload = tree.node(moovStruct->children().back());
+    QCOMPARE(moovPayload->children().size(), std::size_t{2});
+
+    const auto stsdForTrack = [&tree, &moovPayload](std::size_t trackIndex) {
+        const auto trak = tree.node(moovPayload->children()[trackIndex]);
+        const auto trakPayload = tree.node(trak->children().back());
+        const auto mdia = tree.node(trakPayload->children().front());
+        const auto mdiaPayload = tree.node(mdia->children().back());
+        const auto minf = tree.node(mdiaPayload->children().front());
+        const auto minfPayload = tree.node(minf->children().back());
+        const auto stbl = tree.node(minfPayload->children().front());
+        const auto stblPayload = tree.node(stbl->children().back());
+        return tree.node(stblPayload->children().front());
+    };
+
+    const auto videoStsd = stsdForTrack(0);
+    QVERIFY(videoStsd.has_value());
+    QCOMPARE(tree.node(videoStsd->children()[0])->value().toULongLong(), quint64{0});
+    const auto videoEntries = tree.node(videoStsd->children()[6]);
+    const auto videoAvc1 = tree.node(videoEntries->children().front());
+    QCOMPARE(tree.node(videoAvc1->children()[0])->value().toULongLong(), quint64{0});
+    const auto videoChildren = tree.node(videoAvc1->children().back());
+    const auto videoAvcC = tree.node(videoChildren->children().front());
+    QCOMPARE(tree.node(videoAvcC->children()[0])->value().toULongLong(), quint64{0});
+    const auto videoSps = tree.node(videoAvcC->children()[11]);
+    const std::vector<std::byte> expectedSps = {
+        std::byte{0x67}, std::byte{0x64}, std::byte{0x00}, std::byte{0x29},
+        std::byte{0xAC}, std::byte{0x2B}, std::byte{0x40}, std::byte{0x3C},
+        std::byte{0x01}, std::byte{0x13}, std::byte{0xF2}, std::byte{0xE0},
+        std::byte{0x22}, std::byte{0x00}, std::byte{0x00}, std::byte{0x03},
+        std::byte{0x00}, std::byte{0x02}, std::byte{0x00}, std::byte{0x00},
+        std::byte{0x03}, std::byte{0x00}, std::byte{0x79}, std::byte{0x1E},
+        std::byte{0x30},
+    };
+    verifyLazySourceBytes(*videoSps, bytes, 178, expectedSps);
+
+    const auto audioStsd = stsdForTrack(1);
+    QVERIFY(audioStsd.has_value());
+    QCOMPARE(tree.node(audioStsd->children()[0])->value().toULongLong(), quint64{0});
+    const auto audioEntries = tree.node(audioStsd->children()[6]);
+    const auto audioMp4a = tree.node(audioEntries->children().front());
+    QCOMPARE(tree.node(audioMp4a->children()[0])->value().toULongLong(), quint64{0});
+    const auto audioChildren = tree.node(audioMp4a->children().back());
+    const auto audioEsds = tree.node(audioChildren->children().front());
+    QCOMPARE(tree.node(audioEsds->children()[0])->value().toULongLong(), quint64{0});
+    const auto audioAsc = tree.node(audioEsds->children().back());
+    const std::vector<std::byte> expectedAsc = {std::byte{0x12}, std::byte{0x10}};
+    verifyLazySourceBytes(*audioAsc, bytes, 332, expectedAsc);
+}
+
+void Mp4IsobmffAnalyzerTest::rejectsInvalidDescriptorTagsAndFifthLengthBytes() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5h_invalid_descriptors.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    const auto moov = tree.node(batch.boxNodes[1]);
+    const auto moovStruct = tree.node(moov->children().front());
+    const auto moovPayload = tree.node(moovStruct->children().back());
+    const auto trak = tree.node(moovPayload->children().front());
+    const auto trakPayload = tree.node(trak->children().back());
+    const auto mdia = tree.node(trakPayload->children().front());
+    const auto mdiaPayload = tree.node(mdia->children().back());
+    const auto minf = tree.node(mdiaPayload->children().front());
+    const auto minfPayload = tree.node(minf->children().back());
+    const auto stbl = tree.node(minfPayload->children().front());
+    const auto stblPayload = tree.node(stbl->children().back());
+    const auto stsd = tree.node(stblPayload->children().front());
+    const auto entries = tree.node(stsd->children()[6]);
+    QCOMPARE(entries->children().size(), std::size_t{4});
+    const QString continuationFields[3] = {
+        QStringLiteral("Box.es_len_more3"),
+        QStringLiteral("Box.dc_len_more3"),
+        QStringLiteral("Box.dsi_len_more3"),
+    };
+    for (std::size_t index = 0; index < 3; ++index) {
+        const auto mp4a = tree.node(entries->children()[index]);
+        const auto children = tree.node(mp4a->children().back());
+        const auto invalidContinuation = tree.node(children->children().front());
+        QCOMPARE(invalidContinuation->state(),
+                 streamview::core::MaterializationState::Unsupported);
+        bool foundContinuationDiagnostic = false;
+        for (const auto& diagnostic : invalidContinuation->diagnostics()) {
+            if (diagnostic.code == streamview::core::DiagnosticCode::UnsupportedSyntax &&
+                diagnostic.fieldPath == continuationFields[index]) {
+                foundContinuationDiagnostic = true;
+                break;
+            }
+        }
+        QVERIFY(foundContinuationDiagnostic);
+    }
+
+    const auto invalidTagMp4a = tree.node(entries->children()[3]);
+    const auto invalidTagChildren = tree.node(invalidTagMp4a->children().back());
+    const auto invalidTag = tree.node(invalidTagChildren->children().front());
+    QCOMPARE(invalidTag->state(), streamview::core::MaterializationState::Invalid);
+    bool foundTagDiagnostic = false;
+    for (const auto& diagnostic : invalidTag->diagnostics()) {
+        if (diagnostic.code == streamview::core::DiagnosticCode::InvalidSyntax &&
+            diagnostic.fieldPath == QStringLiteral("Box.es_tag")) {
+            foundTagDiagnostic = true;
+            break;
+        }
+    }
+    QVERIFY(foundTagDiagnostic);
 }
 
 QTEST_MAIN(Mp4IsobmffAnalyzerTest)
