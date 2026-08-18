@@ -407,6 +407,7 @@ private slots:
     void compoundPublishesTransformDiagnostics();
     void rejectsInspectionBudgetAboveSandboxBound();
     void executesCompoundWithRegisteredRbspTransformProvider();
+    void compoundFailsClosedOnRbspConformanceIssue();
 
 private:
     std::shared_ptr<DslTypedProgram> testProgram_;
@@ -1931,6 +1932,50 @@ void CompoundStructuralRunnerTest::executesCompoundWithRegisteredRbspTransformPr
     QCOMPARE(headerNode->state(), MaterializationState::Materialized);
     QCOMPARE(payloadNode->state(), MaterializationState::Materialized);
     QCOMPARE(payloadNode->parentId(), *result.headerNodeId);
+}
+
+void CompoundStructuralRunnerTest::compoundFailsClosedOnRbspConformanceIssue() {
+    const auto data = toBytes({0x67, 0x00, 0x00, 0x00, 0x01});
+    const MemorySource source(data);
+    const auto headerMapping = makeMapping(0, 1, 1);
+    const auto payloadMapping = makeMapping(1, 4, 2);
+
+    auto treeOpt = AnalysisTree::create(QStringLiteral("Root"));
+    QVERIFY(treeOpt.has_value());
+    AnalysisTree tree = std::move(*treeOpt);
+
+    const auto headerIndex = testProgram_->structureIndex(QStringLiteral("Header"));
+    const auto payloadIndex = testProgram_->structureIndex(QStringLiteral("Payload3Bytes"));
+    QVERIFY(headerIndex.has_value());
+    QVERIFY(payloadIndex.has_value());
+
+    PayloadTransformRegistry registry;
+    QVERIFY(registry.registerProvider(
+        std::make_shared<H264RbspPayloadTransformProvider>()));
+
+    int rollbackCount = 0;
+    CompoundStructuralExecutionRequest request;
+    request.source = &source;
+    request.headerMapping = &headerMapping;
+    request.headerStructureIndex = *headerIndex;
+    request.payloadStructureIndex = *payloadIndex;
+    request.payloadMapping = &payloadMapping;
+    request.transformProviderId = QStringLiteral("rbsp");
+    request.transformRegistry = &registry;
+    request.tree = &tree;
+    request.parentId = tree.rootId();
+    request.transactionHooks.onRollback = [&]() { ++rollbackCount; };
+
+    const auto result = CompoundStructuralRunner::execute(*testProgram_, request);
+
+    QCOMPARE(result.status, DslExecutionStatus::InvalidSyntax);
+    QVERIFY(result.headerNodeId.has_value());
+    QCOMPARE(result.payloadNodeId, std::nullopt);
+    QCOMPARE(result.transformDiagnostics.size(), std::size_t(2));
+    QCOMPARE(rollbackCount, 1);
+    const auto headerNode = tree.node(*result.headerNodeId);
+    QVERIFY(headerNode.has_value());
+    QCOMPARE(headerNode->state(), MaterializationState::Invalid);
 }
 
 QTEST_MAIN(CompoundStructuralRunnerTest)

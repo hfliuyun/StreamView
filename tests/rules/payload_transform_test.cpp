@@ -94,6 +94,35 @@ private:
     quint64 failAtOffset_ = 0;
 };
 
+class PrematureEofSource final : public RandomAccessSource {
+public:
+    PrematureEofSource(std::vector<std::byte> data, quint64 advertisedSize)
+        : data_(std::move(data)), advertisedSize_(advertisedSize) {}
+
+    [[nodiscard]] quint64 sizeBytes() const noexcept override { return advertisedSize_; }
+    [[nodiscard]] QString identity() const override {
+        return QStringLiteral("premature-eof-source");
+    }
+
+    [[nodiscard]] SourceReadResult
+    readAt(quint64 byteOffset, std::span<std::byte> destination) const override {
+        if (destination.empty()) {
+            return {SourceReadStatus::Complete, 0, {}};
+        }
+        if (byteOffset >= data_.size()) {
+            return {SourceReadStatus::EndOfSource, 0, {}};
+        }
+        const auto offset = static_cast<std::size_t>(byteOffset);
+        const auto count = std::min(destination.size(), data_.size() - offset);
+        std::copy_n(data_.data() + offset, count, destination.data());
+        return {SourceReadStatus::EndOfSource, count, {}};
+    }
+
+private:
+    std::vector<std::byte> data_;
+    quint64 advertisedSize_ = 0;
+};
+
 class CancellingSource final : public RandomAccessSource {
 public:
     CancellingSource(std::vector<std::byte> data,
@@ -799,6 +828,19 @@ void PayloadTransformTest::rbspTransformWithNonZeroLogicalStart() {
         QVERIFY(span.start().byteOffset() >= 4ULL);
         QVERIFY(span.endExclusive().byteOffset() <= 10ULL);
     }
+
+    const auto malformedData = toBytes({0xFF, 0x00, 0x00, 0x00, 0x01});
+    const MemorySource malformedSource(malformedData);
+    const auto malformedMapping = makeSingleSpanMapping(0, 5);
+    request.source = &malformedSource;
+    request.inputMapping = &malformedMapping;
+    request.logicalBitStart = 8;
+    request.logicalBitLength = 32;
+    const auto malformedResult = provider.transform(request);
+    QCOMPARE(malformedResult.status, DslExecutionStatus::InvalidSyntax);
+    QCOMPARE(malformedResult.diagnostics.size(), 2ULL);
+    QVERIFY(malformedResult.diagnostics[0].location.has_value());
+    QCOMPARE(malformedResult.diagnostics[0].location->logicalRange().start().bitOffset(), 8ULL);
 }
 
 void PayloadTransformTest::rbspTransformDisjointMappingRejected() {
@@ -854,10 +896,14 @@ void PayloadTransformTest::rbspTransformMalformedSequencesEmitDiagnostics() {
         request.logicalBitLength = 32;
 
         const auto result = provider.transform(request);
-        QVERIFY(result.succeeded());
+        QCOMPARE(result.status, DslExecutionStatus::InvalidSyntax);
+        QVERIFY(!result.succeeded());
+        QVERIFY(result.forwardedMapping.has_value());
         QCOMPARE(result.diagnostics.size(), 1ULL);
         QCOMPARE(result.diagnostics[0].code, DiagnosticCode::InvalidSyntax);
         QVERIFY(result.diagnostics[0].message.contains(QStringLiteral("00 00 00")));
+        QVERIFY(result.diagnostics[0].location.has_value());
+        QCOMPARE(result.diagnostics[0].location->logicalRange().start().bitOffset(), 0ULL);
     }
 
     // 2. Prohibited 00 00 01
@@ -872,7 +918,8 @@ void PayloadTransformTest::rbspTransformMalformedSequencesEmitDiagnostics() {
         request.logicalBitLength = 32;
 
         const auto result = provider.transform(request);
-        QVERIFY(result.succeeded());
+        QCOMPARE(result.status, DslExecutionStatus::InvalidSyntax);
+        QVERIFY(!result.succeeded());
         QCOMPARE(result.diagnostics.size(), 1ULL);
         QVERIFY(result.diagnostics[0].message.contains(QStringLiteral("00 00 01")));
     }
@@ -889,7 +936,8 @@ void PayloadTransformTest::rbspTransformMalformedSequencesEmitDiagnostics() {
         request.logicalBitLength = 32;
 
         const auto result = provider.transform(request);
-        QVERIFY(result.succeeded());
+        QCOMPARE(result.status, DslExecutionStatus::InvalidSyntax);
+        QVERIFY(!result.succeeded());
         QCOMPARE(result.diagnostics.size(), 1ULL);
         QVERIFY(result.diagnostics[0].message.contains(QStringLiteral("00 00 02")));
     }
@@ -906,7 +954,8 @@ void PayloadTransformTest::rbspTransformMalformedSequencesEmitDiagnostics() {
         request.logicalBitLength = 32;
 
         const auto result = provider.transform(request);
-        QVERIFY(result.succeeded());
+        QCOMPARE(result.status, DslExecutionStatus::InvalidSyntax);
+        QVERIFY(!result.succeeded());
         QCOMPARE(result.excludedSpans.size(), 1ULL); // 0x03 still excluded
         QCOMPARE(result.diagnostics.size(), 1ULL);
         QVERIFY(result.diagnostics[0].message.contains(QStringLiteral("00 00 03 xx")));
@@ -924,6 +973,7 @@ void PayloadTransformTest::rbspTransformMalformedSequencesEmitDiagnostics() {
         request.logicalBitLength = 24;
 
         const auto result = provider.transform(request);
+        QCOMPARE(result.status, DslExecutionStatus::Materialized);
         QVERIFY(result.succeeded());
         QCOMPARE(result.forwardedMapping->logicalBitLength(), 16ULL);
         QCOMPARE(result.excludedSpans.size(), 1ULL);
@@ -941,7 +991,8 @@ void PayloadTransformTest::rbspTransformMalformedSequencesEmitDiagnostics() {
         request.logicalBitLength = 24;
 
         const auto result = provider.transform(request);
-        QVERIFY(result.succeeded());
+        QCOMPARE(result.status, DslExecutionStatus::InvalidSyntax);
+        QVERIFY(!result.succeeded());
         QCOMPARE(result.diagnostics.size(), 1ULL);
         QVERIFY(result.diagnostics[0].message.contains(QStringLiteral("final byte must not be 00")));
     }
@@ -962,11 +1013,25 @@ void PayloadTransformTest::rbspTransformSourceErrorPropagation() {
     const auto result = provider.transform(request);
     QCOMPARE(result.status, DslExecutionStatus::SourceError);
     QVERIFY(!result.succeeded());
+    QVERIFY(result.forwardedMapping.has_value());
+    QCOMPARE(result.forwardedMapping->logicalBitLength(), 0ULL);
+
+    std::vector<std::byte> largeData(65'537, std::byte{0x01});
+    const FaultySource lateFaultSource(std::move(largeData), 65'536);
+    const auto largeMapping = makeSingleSpanMapping(0, 65'537);
+    request.source = &lateFaultSource;
+    request.inputMapping = &largeMapping;
+    request.logicalBitLength = 65'537ULL * 8ULL;
+    const auto lateFaultResult = provider.transform(request);
+    QCOMPARE(lateFaultResult.status, DslExecutionStatus::SourceError);
+    QCOMPARE(lateFaultResult.inspectedByteCount, 65'536ULL);
+    QVERIFY(lateFaultResult.forwardedMapping.has_value());
+    QCOMPARE(lateFaultResult.forwardedMapping->logicalBitLength(), 65'536ULL * 8ULL);
 }
 
 void PayloadTransformTest::rbspTransformEndOfSourcePropagation() {
     const auto data = toBytes({0x00, 0x00});
-    const MemorySource source(data);
+    const PrematureEofSource source(data, 4);
     const auto mapping = makeSingleSpanMapping(0, 4); // claims 4 bytes on a 2-byte source
 
     H264RbspPayloadTransformProvider provider;
@@ -977,8 +1042,10 @@ void PayloadTransformTest::rbspTransformEndOfSourcePropagation() {
     request.logicalBitLength = 32;
 
     const auto result = provider.transform(request);
-    QCOMPARE(result.status, DslExecutionStatus::InvalidDefinition);
+    QCOMPARE(result.status, DslExecutionStatus::SourceError);
     QVERIFY(!result.succeeded());
+    QVERIFY(result.forwardedMapping.has_value());
+    QCOMPARE(result.forwardedMapping->logicalBitLength(), 0ULL);
 }
 
 void PayloadTransformTest::rbspTransformMidInspectionCancellation() {
@@ -999,6 +1066,8 @@ void PayloadTransformTest::rbspTransformMidInspectionCancellation() {
     QCOMPARE(result.status, DslExecutionStatus::Cancelled);
     QVERIFY(!result.succeeded());
     QCOMPARE(result.inspectedByteCount, 1024ULL);
+    QVERIFY(result.forwardedMapping.has_value());
+    QCOMPARE(result.forwardedMapping->logicalBitLength(), 1024ULL * 8ULL);
 }
 
 void PayloadTransformTest::rbspTransformInspectionBudgetExceededAndExactBoundary() {
@@ -1021,6 +1090,9 @@ void PayloadTransformTest::rbspTransformInspectionBudgetExceededAndExactBoundary
         QCOMPARE(result.status, DslExecutionStatus::ResourceLimit);
         QCOMPARE(result.inspectedByteCount, 3ULL);
         QVERIFY(!result.succeeded());
+        QVERIFY(result.forwardedMapping.has_value());
+        QCOMPARE(result.forwardedMapping->logicalBitLength(), 16ULL);
+        QCOMPARE(result.excludedSpans.size(), 1ULL);
     }
 
     // Budget = 4 on 4-byte input -> Materialized

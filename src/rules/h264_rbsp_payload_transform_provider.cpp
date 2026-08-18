@@ -120,27 +120,43 @@ PayloadTransformResult H264RbspPayloadTransformProvider::transform(
     result.inspectedByteCount =
         mapper.sourceCursor() >= startByte ? (mapper.sourceCursor() - startByte) : 0;
 
-    if (batch.status == H264EbspRbspMapStatus::Complete) {
-        result.status = DslExecutionStatus::Materialized;
-        result.forwardedMapping = mapper.mapping();
+    // The mapper is incremental: terminal failures and budget stops still
+    // expose the prefix committed before the failing byte. Preserve that
+    // prefix and its diagnostics for callers that render partial results.
+    result.forwardedMapping = mapper.mapping();
+    result.excludedSpans.reserve(mapper.excludedSpans().size());
+    for (const auto& excluded : mapper.excludedSpans()) {
+        result.excludedSpans.push_back({excluded.sourceSpan, excluded.rbspBitOffset});
+    }
 
-        result.excludedSpans.reserve(mapper.excludedSpans().size());
-        for (const auto& excluded : mapper.excludedSpans()) {
-            result.excludedSpans.push_back({excluded.sourceSpan, excluded.rbspBitOffset});
-        }
+    for (const auto& issue : mapper.issues()) {
+        core::ParseDiagnostic diag;
+        diag.code = core::DiagnosticCode::InvalidSyntax;
+        diag.severity = core::DiagnosticSeverity::Error;
+        diag.message = issueMessage(issue.kind);
 
-        for (const auto& issue : mapper.issues()) {
-            core::ParseDiagnostic diag;
-            diag.code = core::DiagnosticCode::InvalidSyntax;
-            diag.severity = core::DiagnosticSeverity::Error;
-            diag.message = issueMessage(issue.kind);
+        const quint64 issueStart = issue.sourceSpan.start().absoluteBitOffset();
+        const quint64 inputStart = ebspSpan.start().absoluteBitOffset();
+        const quint64 relativeStart = issueStart >= inputStart ? issueStart - inputStart : 0;
+        if (issueStart >= inputStart &&
+            relativeStart <= std::numeric_limits<quint64>::max() - request.logicalBitStart) {
+            const quint64 logicalStart = request.logicalBitStart + relativeStart;
             const auto diagRange = core::LogicalRange::create(
-                core::LogicalBitAddress(request.inputMapping->viewId(), 0),
+                core::LogicalBitAddress(request.inputMapping->viewId(), logicalStart),
                 issue.sourceSpan.bitLength());
             if (diagRange) {
                 diag.location = core::FieldLocation::create(*diagRange, {issue.sourceSpan});
             }
-            result.diagnostics.push_back(std::move(diag));
+        }
+        result.diagnostics.push_back(std::move(diag));
+    }
+
+    if (batch.status == H264EbspRbspMapStatus::Complete) {
+        result.status = mapper.issues().empty() ? DslExecutionStatus::Materialized
+                                                : DslExecutionStatus::InvalidSyntax;
+        if (!mapper.issues().empty()) {
+            result.errorMessage = QStringLiteral(
+                "H.264 EBSP conformance validation failed");
         }
     } else if (batch.status == H264EbspRbspMapStatus::Cancelled) {
         result.status = DslExecutionStatus::Cancelled;
