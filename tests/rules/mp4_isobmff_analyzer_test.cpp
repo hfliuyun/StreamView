@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace {
@@ -103,6 +104,47 @@ private:
     mutable std::size_t readCount_ = 0;
 };
 
+class ToggleFailureSource final : public streamview::core::RandomAccessSource {
+public:
+    explicit ToggleFailureSource(std::vector<std::byte> data)
+        : data_(std::move(data)), visibleSize_(data_.size()) {}
+
+    [[nodiscard]] quint64 sizeBytes() const noexcept override { return visibleSize_; }
+    [[nodiscard]] QString identity() const override { return QStringLiteral("toggle"); }
+
+    void failReads(bool fail) const noexcept { failReads_ = fail; }
+    void setVisibleSize(quint64 size) const noexcept {
+        visibleSize_ = std::min(size, static_cast<quint64>(data_.size()));
+    }
+
+    [[nodiscard]] streamview::core::SourceReadResult
+    readAt(quint64 byteOffset, std::span<std::byte> destination) const override {
+        if (failReads_) {
+            return {streamview::core::SourceReadStatus::Error, 0, QStringLiteral("I/O device fault")};
+        }
+        if (destination.empty()) {
+            return {streamview::core::SourceReadStatus::Complete, 0, {}};
+        }
+        if (byteOffset >= visibleSize_) {
+            return {streamview::core::SourceReadStatus::EndOfSource, 0, {}};
+        }
+        const auto offset = static_cast<std::size_t>(byteOffset);
+        const auto count = std::min({destination.size(), data_.size() - offset,
+                                     static_cast<std::size_t>(visibleSize_ - byteOffset)});
+        std::copy_n(data_.data() + offset, count, destination.data());
+        return {count == destination.size()
+                    ? streamview::core::SourceReadStatus::Complete
+                    : streamview::core::SourceReadStatus::EndOfSource,
+                count,
+                {}};
+    }
+
+private:
+    std::vector<std::byte> data_;
+    mutable quint64 visibleSize_ = 0;
+    mutable bool failReads_ = false;
+};
+
 [[nodiscard]] std::vector<std::byte> readFixtureBytes(const QString& relativePath) {
     const QString fullPath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/") + relativePath;
     QFile file(fullPath);
@@ -115,6 +157,51 @@ private:
         return static_cast<std::byte>(ch);
     });
     return result;
+}
+
+[[nodiscard]] std::optional<streamview::core::AnalysisNodeId> findSampleTableWindow(
+    const streamview::core::AnalysisTree& tree,
+    const streamview::rules::Mp4IsobmffAnalysisBatch& batch,
+    quint64 boxType) {
+    if (batch.boxNodes.size() < 2) return std::nullopt;
+    auto moov = tree.node(batch.boxNodes[1]);
+    if (!moov || moov->children().empty()) return std::nullopt;
+    auto moovStruct = tree.node(moov->children().front());
+    if (!moovStruct || moovStruct->children().empty()) return std::nullopt;
+    auto moovPayload = tree.node(moovStruct->children().back());
+    if (!moovPayload || moovPayload->children().empty()) return std::nullopt;
+    auto trakStruct = tree.node(moovPayload->children().front());
+    if (!trakStruct || trakStruct->children().empty()) return std::nullopt;
+    auto trakPayload = tree.node(trakStruct->children().back());
+    if (!trakPayload || trakPayload->children().empty()) return std::nullopt;
+    auto mdiaStruct = tree.node(trakPayload->children().front());
+    if (!mdiaStruct || mdiaStruct->children().empty()) return std::nullopt;
+    auto mdiaPayload = tree.node(mdiaStruct->children().back());
+    if (!mdiaPayload || mdiaPayload->children().empty()) return std::nullopt;
+    auto minfStruct = tree.node(mdiaPayload->children().front());
+    if (!minfStruct || minfStruct->children().empty()) return std::nullopt;
+    auto minfPayload = tree.node(minfStruct->children().back());
+    if (!minfPayload || minfPayload->children().empty()) return std::nullopt;
+    auto stblStruct = tree.node(minfPayload->children().front());
+    if (!stblStruct || stblStruct->children().empty()) return std::nullopt;
+    auto stblPayload = tree.node(stblStruct->children().back());
+    if (!stblPayload) return std::nullopt;
+
+    for (const auto boxId : stblPayload->children()) {
+        auto boxStruct = tree.node(boxId);
+        if (!boxStruct || boxStruct->children().size() < 2) continue;
+        auto typeNode = tree.node(boxStruct->children()[1]);
+        if (!typeNode || typeNode->value().toULongLong() != boxType) continue;
+        auto payload = tree.node(boxStruct->children().back());
+        if (!payload || payload->children().empty()) continue;
+        auto payloadStruct = tree.node(payload->children().front());
+        if (!payloadStruct) continue;
+        for (const auto childId : payloadStruct->children()) {
+            auto child = tree.node(childId);
+            if (child && child->metadata().window.has_value()) return childId;
+        }
+    }
+    return std::nullopt;
 }
 
 [[nodiscard]] streamview::rules::RuleCatalogLookupResult createMockRuleResult(
@@ -184,8 +271,11 @@ private slots:
     void handlesLargeSizeHandlerReferenceBoxWireOrder();
     void rejectsUnsupportedFullBoxVersionWithoutV0Fallback();
     void analyzesSampleTableBoxesV0();
+    void decodesAllSampleTableWindowsWithSourceSpans();
+    void analyzesLargeSizeAndEofSampleTableBoxes();
     void analyzesSampleSizeUniformWithoutTable();
     void decodesSampleTableWindowsWithPagingAndBudget();
+    void handlesSampleTableWindowFailures();
     void handlesUnsupportedSampleTableVersions();
 };
 
@@ -1730,6 +1820,112 @@ void Mp4IsobmffAnalyzerTest::analyzesSampleTableBoxesV0() {
     QCOMPARE(analyzer->tree().node(analyzer->tree().rootId())->diagnostics().size(), std::size_t{0});
 }
 
+void Mp4IsobmffAnalyzerTest::decodesAllSampleTableWindowsWithSourceSpans() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5g_sample_tables_v0.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+    const auto& tree = analyzer->tree();
+
+    struct Expected final {
+        quint64 type;
+        quint64 windowStartBits;
+        quint32 entrySizeBits;
+        quint64 entryCount;
+        quint64 firstValue;
+    };
+    const std::vector<Expected> expected = {
+        {0x73747473, 64, 64, 2, 10},
+        {0x73747363, 64, 96, 2, 1},
+        {0x7374737A, 96, 32, 3, 100},
+        {0x7374636F, 64, 32, 2, 1000},
+        {0x636F3634, 64, 64, 2, 0x100000000ULL},
+    };
+
+    for (const auto& expectation : expected) {
+        const auto windowNodeId = findSampleTableWindow(tree, batch, expectation.type);
+        QVERIFY(windowNodeId.has_value());
+
+        const auto window = tree.node(*windowNodeId);
+        QVERIFY(window.has_value());
+        QVERIFY(window->location().has_value());
+        QCOMPARE(window->location()->logicalRange().start().bitOffset(),
+                 expectation.windowStartBits);
+        QCOMPARE(window->location()->logicalRange().bitLength(),
+                 static_cast<quint64>(expectation.entrySizeBits) * expectation.entryCount);
+
+        auto decoder = analyzer->windowDecoder(*windowNodeId);
+        QVERIFY(decoder.has_value());
+        const auto result = decoder->decodeWindow({0, 1});
+        QCOMPARE(result.status, streamview::rules::DslExecutionStatus::Materialized);
+        QCOMPARE(result.decodedEntryCount, quint64{1});
+        QCOMPARE(result.entryNodes.size(), std::size_t{1});
+
+        const auto entry = tree.node(result.entryNodes.front());
+        QVERIFY(entry.has_value());
+        QVERIFY(!entry->children().empty());
+        quint64 sourceBits = 0;
+        for (const auto fieldId : entry->children()) {
+            const auto field = tree.node(fieldId);
+            QVERIFY(field.has_value());
+            QVERIFY(field->location().has_value());
+            for (const auto& span : field->location()->sourceSpans()) sourceBits += span.bitLength();
+        }
+        QCOMPARE(sourceBits, static_cast<quint64>(expectation.entrySizeBits));
+
+        const auto firstField = tree.node(entry->children().front());
+        QVERIFY(firstField.has_value());
+        QCOMPARE(firstField->location()->logicalRange().start().bitOffset(), quint64{0});
+        QCOMPARE(firstField->value().toULongLong(), expectation.firstValue);
+    }
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesLargeSizeAndEofSampleTableBoxes() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5g_largesize_and_eof_tables.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+    QCOMPARE(batch.boxNodes.size(), std::size_t{3});
+
+    const auto sttsWindowId = findSampleTableWindow(analyzer->tree(), batch, 0x73747473);
+    const auto stszWindowId = findSampleTableWindow(analyzer->tree(), batch, 0x7374737A);
+    QVERIFY(sttsWindowId.has_value());
+    QVERIFY(stszWindowId.has_value());
+
+    const auto sttsWindow = analyzer->tree().node(*sttsWindowId);
+    const auto stszWindow = analyzer->tree().node(*stszWindowId);
+    QVERIFY(sttsWindow.has_value());
+    QVERIFY(stszWindow.has_value());
+    QCOMPARE(sttsWindow->metadata().window->entryCount, quint64{2});
+    QCOMPARE(sttsWindow->metadata().window->entrySizeBits, quint32{64});
+    QCOMPARE(stszWindow->metadata().window->entryCount, quint64{2});
+    QCOMPARE(stszWindow->metadata().window->entrySizeBits, quint32{32});
+
+    auto sttsDecoder = analyzer->windowDecoder(*sttsWindowId);
+    auto stszDecoder = analyzer->windowDecoder(*stszWindowId);
+    QVERIFY(sttsDecoder.has_value());
+    QVERIFY(stszDecoder.has_value());
+    const auto sttsResult = sttsDecoder->decodeWindow({0, 2});
+    const auto stszResult = stszDecoder->decodeWindow({0, 2});
+    QCOMPARE(sttsResult.status, streamview::rules::DslExecutionStatus::Materialized);
+    QCOMPARE(stszResult.status, streamview::rules::DslExecutionStatus::Materialized);
+
+    const auto sttsFirst = analyzer->tree().node(sttsResult.entryNodes.front());
+    const auto stszFirst = analyzer->tree().node(stszResult.entryNodes.front());
+    QVERIFY(sttsFirst.has_value());
+    QVERIFY(stszFirst.has_value());
+    QCOMPARE(analyzer->tree().node(sttsFirst->children().front())->value().toULongLong(), quint64{7});
+    QCOMPARE(analyzer->tree().node(stszFirst->children().front())->value().toULongLong(), quint64{111});
+}
+
 void Mp4IsobmffAnalyzerTest::analyzesSampleSizeUniformWithoutTable() {
     const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5g_stsz_uniform.mp4"));
     MemorySource source(bytes);
@@ -1799,16 +1995,6 @@ void Mp4IsobmffAnalyzerTest::decodesSampleTableWindowsWithPagingAndBudget() {
     MemorySource source(bytes);
     QString errorMessage;
 
-    const auto loaded = streamview::rules::loadMp4IsobmffRulePackage();
-    QVERIFY(loaded.succeeded());
-    const auto* svfmtSource = loaded.package->fileContents(QStringLiteral("src/mp4_isobmff.svfmt"));
-    QVERIFY(svfmtSource != nullptr);
-    const auto parseRes = streamview::rules::DslParser::parse(QString::fromUtf8(*svfmtSource));
-    QVERIFY(parseRes.succeeded());
-    const auto compileRes = streamview::rules::DslCompiler::compile(parseRes.program);
-    QVERIFY(compileRes.succeeded());
-    const auto& program = *compileRes.program;
-
     auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
     QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
 
@@ -1846,55 +2032,130 @@ void Mp4IsobmffAnalyzerTest::decodesSampleTableWindowsWithPagingAndBudget() {
     QVERIFY(windowNode->metadata().window.has_value());
     QCOMPARE(windowNode->metadata().window->entryCount, quint64{200});
 
-    auto mutableTree = std::make_shared<streamview::core::AnalysisTree>(analyzer->tree());
-    auto budget = std::make_shared<streamview::rules::RunnerExecutionBudget>();
-    const auto span = *streamview::core::SourceSpan::create(streamview::core::SourceBitAddress(0), bytes.size() * 8U);
-    const auto mapping = *streamview::core::SourceMapping::create(streamview::core::LogicalViewId(1), {span});
+    auto decoder = analyzer->windowDecoder(windowNodeId);
+    QVERIFY(decoder.has_value());
 
-    streamview::rules::WindowDecoder decoder(program, source, mapping, mutableTree, windowNodeId, budget);
-
-    // Page 0: decode 50 entries
+    // Page 0: decode 100 entries.
     streamview::rules::WindowDecodeRequest req1;
     req1.pageIndex = 0;
-    req1.pageSize = 50;
-    auto res1 = decoder.decodeWindow(req1);
+    req1.pageSize = 100;
+    auto res1 = decoder->decodeWindow(req1);
     QCOMPARE(res1.status, streamview::rules::DslExecutionStatus::Materialized);
-    QCOMPARE(res1.decodedEntryCount, quint64{50});
-    auto winNodeAfter1 = mutableTree->node(windowNodeId);
+    QCOMPARE(res1.decodedEntryCount, quint64{100});
+    auto winNodeAfter1 = analyzer->tree().node(windowNodeId);
     QVERIFY(winNodeAfter1.has_value());
-    QCOMPARE(winNodeAfter1->children().size(), std::size_t{50});
+    QCOMPARE(winNodeAfter1->children().size(), std::size_t{100});
 
-    const auto firstEntry = mutableTree->node(winNodeAfter1->children().front());
+    const auto firstEntry = analyzer->tree().node(winNodeAfter1->children().front());
     QVERIFY(firstEntry.has_value());
-    const auto firstEntryVal = mutableTree->node(firstEntry->children().front());
+    const auto firstEntryVal = analyzer->tree().node(firstEntry->children().front());
     QVERIFY(firstEntryVal.has_value());
+    QVERIFY(firstEntryVal->location().has_value());
+    QCOMPARE(firstEntryVal->location()->logicalRange().start().bitOffset(), quint64{0});
+    QCOMPARE(firstEntryVal->location()->logicalRange().bitLength(), quint64{32});
+    QVERIFY(!firstEntryVal->location()->sourceSpans().empty());
     QCOMPARE(firstEntryVal->value().toULongLong(), quint64{500});
 
-    // Page 1: decode next 50 entries (total 100)
+    // Page 1 with a smaller page size overlaps entries 75..99 and adds 50 new entries.
     streamview::rules::WindowDecodeRequest req2;
     req2.pageIndex = 1;
-    req2.pageSize = 50;
-    auto res2 = decoder.decodeWindow(req2);
+    req2.pageSize = 75;
+    auto res2 = decoder->decodeWindow(req2);
     QCOMPARE(res2.status, streamview::rules::DslExecutionStatus::Materialized);
-    QCOMPARE(res2.decodedEntryCount, quint64{50});
-    auto winNodeAfter2 = mutableTree->node(windowNodeId);
+    QCOMPARE(res2.decodedEntryCount, quint64{75});
+    QCOMPARE(res2.entryNodes.size(), std::size_t{75});
+    for (std::size_t i = 0; i < 25; ++i) {
+        QCOMPARE(res2.entryNodes[i], res1.entryNodes[i + 75]);
+    }
+    auto winNodeAfter2 = analyzer->tree().node(windowNodeId);
     QVERIFY(winNodeAfter2.has_value());
-    QCOMPARE(winNodeAfter2->children().size(), std::size_t{100});
+    QCOMPARE(winNodeAfter2->children().size(), std::size_t{150});
 
     // Repeat Page 0: should reuse nodes without duplicate allocation
-    auto res3 = decoder.decodeWindow(req1);
+    auto res3 = decoder->decodeWindow(req1);
     QCOMPARE(res3.status, streamview::rules::DslExecutionStatus::Materialized);
-    auto winNodeAfter3 = mutableTree->node(windowNodeId);
+    QCOMPARE(res3.entryNodes, res1.entryNodes);
+    auto winNodeAfter3 = analyzer->tree().node(windowNodeId);
     QVERIFY(winNodeAfter3.has_value());
-    QCOMPARE(winNodeAfter3->children().size(), std::size_t{100});
+    QCOMPARE(winNodeAfter3->children().size(), std::size_t{150});
 
     // Budget limit enforcement
-    budget->remainingNodes = 5;
+    const auto nodeCountBeforeBudget = analyzer->tree().nodeCount();
+    analyzer->budget()->remainingNodes = 5;
     streamview::rules::WindowDecodeRequest req3;
-    req3.pageIndex = 2;
+    req3.pageIndex = 3;
     req3.pageSize = 50;
-    auto res4 = decoder.decodeWindow(req3);
+    auto res4 = decoder->decodeWindow(req3);
     QCOMPARE(res4.status, streamview::rules::DslExecutionStatus::ResourceLimit);
+    QCOMPARE(res4.decodedEntryCount, quint64{2});
+    QCOMPARE(analyzer->tree().node(windowNodeId)->children().size(), std::size_t{152});
+    QCOMPARE(analyzer->tree().nodeCount(), nodeCountBeforeBudget + 4U);
+}
+
+void Mp4IsobmffAnalyzerTest::handlesSampleTableWindowFailures() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5g_sample_tables_v0.mp4"));
+
+    {
+        MemorySource source(bytes);
+        QString errorMessage;
+        auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+        const auto windowNodeId = findSampleTableWindow(analyzer->tree(), batch, 0x73747473);
+        QVERIFY(windowNodeId.has_value());
+
+        streamview::core::CancellationSource cancellation;
+        analyzer->budget()->cancellation = cancellation.token();
+        (void)cancellation.requestCancellation();
+        auto decoder = analyzer->windowDecoder(*windowNodeId);
+        QVERIFY(decoder.has_value());
+        const auto result = decoder->decodeWindow({0, 1});
+        QCOMPARE(result.status, streamview::rules::DslExecutionStatus::Cancelled);
+        QCOMPARE(analyzer->tree().node(*windowNodeId)->children().size(), std::size_t{0});
+    }
+
+    {
+        ToggleFailureSource source(bytes);
+        QString errorMessage;
+        auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+        const auto windowNodeId = findSampleTableWindow(analyzer->tree(), batch, 0x73747473);
+        QVERIFY(windowNodeId.has_value());
+        source.failReads(true);
+
+        auto decoder = analyzer->windowDecoder(*windowNodeId);
+        QVERIFY(decoder.has_value());
+        const auto result = decoder->decodeWindow({0, 1});
+        QCOMPARE(result.status, streamview::rules::DslExecutionStatus::SourceError);
+        QCOMPARE(analyzer->tree().node(*windowNodeId)->children().size(), std::size_t{0});
+    }
+
+    {
+        ToggleFailureSource source(bytes);
+        QString errorMessage;
+        auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+        QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+        const auto batch = analyzer->analyzeBatch();
+        QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+        const auto windowNodeId = findSampleTableWindow(analyzer->tree(), batch, 0x7374737A);
+        QVERIFY(windowNodeId.has_value());
+        const auto window = analyzer->tree().node(*windowNodeId);
+        QVERIFY(window.has_value());
+        QVERIFY(window->location().has_value());
+        QVERIFY(!window->location()->sourceSpans().empty());
+        const auto firstEntryByte = window->location()->sourceSpans().front().start().byteOffset();
+        source.setVisibleSize(firstEntryByte + 4U);
+
+        auto decoder = analyzer->windowDecoder(*windowNodeId);
+        QVERIFY(decoder.has_value());
+        const auto result = decoder->decodeWindow({0, 3});
+        QCOMPARE(result.status, streamview::rules::DslExecutionStatus::TruncatedSource);
+        QCOMPARE(result.decodedEntryCount, quint64{1});
+        QCOMPARE(analyzer->tree().node(*windowNodeId)->children().size(), std::size_t{1});
+    }
 }
 
 void Mp4IsobmffAnalyzerTest::handlesUnsupportedSampleTableVersions() {
