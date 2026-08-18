@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-3b-1 — 格式中立 Compound Structural Execution 基座
-Next Action: 等待主 Agent 复审 Task P5i-3b-1；未经复审不得开始 Task P5i-3b-2、transform provider、session context、manifest target 或官方 H.264 规则
-Last Verification: Task P5i-3b-1 — Hosted CI Run 32161664428 (Ubuntu job 95791750040, macOS job 95791750114, Windows job 95791750153 all success); local dev/ci/sanitize 42/42 passed; CompoundStructuralRunner 22/22; official rules 4/4 Rule OK; git diff --check clean
-Blockers: Review of P5i-3b-1 required before P5i-3b-2
+Last Completed Step: Task P5i-3b-1-R — 主 Agent 深审并修正 compound payload slice、deferred finalization、exact consumption、transaction hook 与测试有效性
+Next Action: 下发 Task P5i-3b-2：实现格式中立 PayloadTransformProvider/Registry、disjoint mapping 与独立 excluded spans；复审前不得开始 session context、manifest target、官方 H.264 规则或 P5i-4
+Last Verification: Task P5i-3b-1-R — Fix commit cf146ffbeaed13fccc6307a9d76a117e592a1f36; Hosted CI Run 32164456931 (macOS job 95800669490, Windows job 95800669524, Ubuntu job 95800669528 all success); local dev/ci/sanitize 42/42 passed; CompoundStructuralRunner 24 named cases / Qt 26/26; git diff --check clean
+Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -2457,3 +2457,13 @@ Blockers: Review of P5i-3b-1 required before P5i-3b-2
      - Commit SHA：`2487c7f04ec3f567207ad2f2217c259c011be1ef`；
      - Hosted CI Run `32161664428`：Ubuntu 24.04（Job `95791750040`）、macOS 15（Job `95791750114`）、Windows 2022（Job `95791750153`）三平台全部 success。
   终审结论：P5i-3b-1 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-3b-1；未经复审不得开始 Task P5i-3b-2，也不得实现 transform provider、session context、manifest target 或官方 H.264 规则。
+- 2026-08-19：完成 Task P5i-3b-1-R —— 主 Agent 深审并直接修正 Compound Structural Execution 基座（原始交付 HEAD `7f9cdc6d6b4f3a851458c74bb0ee530dd45432f3`，修复提交 `cf146ffbeaed13fccc6307a9d76a117e592a1f36`）：
+  1. 原交付不能直接通过：合法非零 `payloadLogicalStart` 同时执行 full-mapping reader `seek` 与 VM `logicalStart` 偏移，导致 reader/mapping 校验失败，并会重复偏移字段坐标与 exact-consumption；修复为 `BitReader::fromMappingSlice`，slice reader 从 0 消费且 VM 保留原逻辑起点做坐标回映。
+  2. 修复 payload exact-consumption 状态机：原 payload VM 已先转为 `Materialized`，runner 随后无法把 trailing-bits 结果转为 `Invalid` 或附诊断；现在 header 与 payload 均通过 VM 私有 deferred execution 路径保持 `Indexing`，在 exact check 与 transaction commit 成功后按 payload -> header 顺序终结。`deferMaterialization` 不再暴露于通用 `DslExecutionOptions`。
+  3. `requireExactConsumption` 现在对有无 payload 的 header 都生效；原实现只在 header-only 分支检查，带 payload 时可能静默接受 header mapping 尾部未消费 bit。新增 compound header trailing-bits 回归并锁定 payload 不执行、header `Invalid` 与 rollback exactly once。
+  4. transaction hook 改为在树节点成功终结前执行；commit/rollback 的异常被捕获并 fail closed，commit 异常触发 best-effort rollback，避免异常穿透留下无结果的半提交树。成功测试同时断言 commit 时 header/payload 仍为 `Indexing`。
+  5. 修正测试真实性：原所谓 `22 项完整测试` 实际是 20 个具名行为场景，加 `initTestCase` 与 Qt 自动 `cleanupTestCase` 后总计 `22/22`；三个“阶段取消”用例都在 execute 前预取消，所谓溢出测试也未触发任何溢出分支。补正后为 24 个具名行为场景、Qt `26/26`，真实覆盖 header VM 取消、阶段间取消、payload VM 取消、payload 内共享 instruction/node budget 耗尽、精确总预算成功、非零 payload logical start 与根源坐标、payload trailing-bits 节点诊断、同树重复执行、hook 异常和扩展 preflight 合同。
+  6. 预算累计改为验证 payload 计数不超过剩余额度后相加；由于 VM 上限与剩余额度共同保证和不超过原始 limit，不再保留无法在合法输入下触发的饱和溢出测试声明。
+  7. 边界保持不变：未修改官方规则、manifest、package version、transform provider、session context 或 UI，未引入格式专属 C++ 逻辑。子代理报告中的“实现 Commit/记录 Commit”字段误填文件名，实际提交仍以 Git 原始值 `2487c7f04ec3f567207ad2f2217c259c011be1ef` 与 `7f9cdc6d6b4f3a851458c74bb0ee530dd45432f3` 为准。
+  8. 验证：本地 dev、ci、sanitize 三套完整构建与 CTest 均 `42/42`，sanitize 零报告；定向套件 24 个具名场景、Qt `26/26`；`git diff --check` 与 `markdown_hygiene` 通过。Hosted CI Run `32164456931` 对修复提交全绿：macOS-15 / Qt 6.11.1 job `95800669490`、Windows-2022 / Qt 6.10.1 job `95800669524`、Ubuntu-24.04 / Qt 6.11.1 job `95800669528`。
+  终审结论：原 P5i-3b-1 报告不直接通过；主 Agent 补正后 P5i-3b-1-R 通过。Next Action 切换为 Task P5i-3b-2，只实现格式中立 transform provider/registry、disjoint mapping 与独立 excluded spans；session context、manifest target、官方 H.264 规则及 P5i-4 继续阻断。
