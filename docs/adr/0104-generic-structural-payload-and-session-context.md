@@ -22,7 +22,7 @@ In Tasks P5i-1 and P5i-2 ([ADR-0103](0103-cross-layer-structured-entry-execution
      ```text
      error: Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type
      ```
-   - *Fact*: DSL 0.1 struct bodies only support primitive fields (`bits`, `ue`, `se`, `ff_coded`), computed fields, lazy regions, `compressed_payload`, assertions, and trailers. Structs cannot instantiate nested sub-structures or invoke structures from `switch` arms.
+   - *Fact*: this tested structural-switch form is rejected. DSL 0.1 still has other struct-body control-flow and container forms; this probe does not prove that every nested representation is impossible.
 
 2. **Payload Dispatch Statically Bound to Scan Sequences**:
    - `tests/probes/p5i3/probe_q2_unbound_payload.svfmt` and `tests/probes/p5i3/probe_q2_sequence_entry_mismatch.svfmt` attempted to declare `payload<rbsp>` on non-sequence targets or with mismatched entry declarations.
@@ -39,21 +39,23 @@ In Tasks P5i-1 and P5i-2 ([ADR-0103](0103-cross-layer-structured-entry-execution
      ```text
      error: A DSL program may contain only one entry
      ```
-   - *Fact*: A `.svfmt` file can declare only one top-level `entry`. Because DSL 0.1 lacks cross-file module imports, creating a separate `.svfmt` for NAL units would require duplicating all 1200+ lines of H.264 syntax.
+   - *Fact*: a `.svfmt` file can declare only one top-level `entry`. The manifest currently also rejects duplicate source paths (`src/rules/rule_package.cpp:384-425`), but that is a package-schema policy, not proof that an alternative source layout must duplicate the entire Annex-B file. The target-selection decision below must change that policy or choose another reuse strategy.
 
 4. **Coupled Transformation and Lack of Structural EBSP Unescaping**:
-   - *Source Audit Fact*: `H264EbspRbspMapper` is instantiated exclusively inside `src/rules/h264_annex_b_analyzer.cpp:688`. No generic transformed view layer exists for structural execution. `StructuralEntryRunner::execute` (`src/rules/structural_entry_runner.cpp:30-40`) reads physical bytes directly via `BitReader(baseSource, sourceMapping)` without unescaping support.
+   - *Source Audit Fact*: `H264EbspRbspMapper` is instantiated inside `src/rules/h264_annex_b_analyzer.cpp:666-693`. No generic transformed view layer exists for structural execution. `StructuralEntryRunner::execute` validates the entry at `src/rules/structural_entry_runner.cpp:28-40` and constructs `BitReader(baseSource, sourceMapping)` at `:87-103`, so it currently reads the supplied physical mapping without unescaping support.
 
 5. **Stateless Structural Execution and Missing Context Resolution**:
    - *Source Audit Fact*: `StructuralEntryRunner::execute` (`src/rules/structural_entry_runner.cpp:78-95`) invokes `DslExecutor::decodeStruct` with an empty `DslContextValueResolver()`.
-   - When a structure imports context (e.g. `import SequenceParameterSet context ...` in `PictureParameterSetRbsp` at `src/rules/official/org.streamview.h264/src/h264_annex_b.svfmt:393-403`), `DslVirtualMachine` (`src/rules/dsl_vm.cpp:718-743`) returns `DslExecutionStatus::InvalidDefinition` / `DependencyUnavailable` because no context directory is injected.
-   - `RuleExecutionSession` (`src/rules/rule_execution_session.h:71-100`) contains the complete context publishing and lookup engine, but is currently private to streaming analyzers.
+   - When a structure imports context (e.g. `PictureParameterSetRbsp` at `src/rules/official/org.streamview.h264/src/h264_annex_b.svfmt:393-403`), the current structural runner supplies no resolver (`src/rules/structural_entry_runner.cpp:87-103`), and the VM returns `InvalidDefinition` with `Imported context value resolver is unavailable` (`src/rules/dsl_vm.cpp:718-743`). A missing producer in a real session is a separate `DependencyUnavailable` result.
+   - `RuleExecutionSession` (`src/rules/rule_execution_session.h:71-100`) owns context publication for the streaming analyzers; it is not yet a reusable compound structural executor and currently binds one source pointer and one tree identity (`src/rules/rule_execution_session.cpp:48-61`).
 
 ---
 
 ## Decision
 
-To resolve these architectural limitations without introducing H.264-specific C++ logic or unconstrained general recursive call stacks, StreamView adopts a generic, format-neutral structural payload dispatch architecture.
+To resolve these architectural limitations without introducing H.264-specific orchestration or unconstrained general recursive call stacks, StreamView adopts a bounded structural payload dispatch architecture. “Format-neutral” applies to the compound dispatcher and its contracts; a transform provider may be registered by a format capability and must not leak format names into the generic runner.
+
+This ADR is a design contract only. P5i-3b must implement it in separately reviewable capability commits before any official H.264 package change. P5i-4 remains blocked until those commits are reviewed.
 
 ### 1. Structural Payload Dispatch DSL Syntax, AST, and Typed IR
 
@@ -69,7 +71,8 @@ To resolve these architectural limitations without introducing H.264-specific C+
    When `TargetName` is a `struct`:
    - `controller_field` must be an unsigned scalar `bits<N>` field declared unconditionally at the top level of `TargetName`.
    - Each `case` maps a constant integer value to a declared payload structure name or `empty`.
-   - A structural entry point may execute a compound structure consisting of `TargetName` followed by its dispatched payload.
+   - A structural entry point executes a compound structure consisting of `TargetName` followed by at most one dispatched payload.
+   - The header end must be byte-aligned before a byte-oriented transform is selected; otherwise compilation or execution fails with `InvalidDefinition` before any transform read.
 
 2. **AST & IR Model**:
    - `DslPayloadTargetKind` enum: `Sequence`, `Structure`.
@@ -80,7 +83,7 @@ To resolve these architectural limitations without introducing H.264-specific C+
    - `TargetName` must match a declared struct in `program.structs` (or a scan in `program.scans`).
    - `controllerFieldName` must be an unsigned bits field in `TargetName`.
    - All case targets must be valid declared structs or `empty`.
-   - Duplicate cases are rejected as `DuplicateName`.
+   - Duplicate cases are rejected as `DuplicateName`; missing targets, non-scalar controllers, ambiguous names, and unknown view providers are typed-definition failures.
 
 ---
 
@@ -88,43 +91,43 @@ To resolve these architectural limitations without introducing H.264-specific C+
 
 When executing a structural entrypoint with payload dispatch:
 
-1. **Header Phase**:
-   - The root AST node is created for the header structure (e.g. `NalUnit`).
-   - Header fields (`forbidden_zero_bit`, `nal_ref_idc`, `nal_unit_type`) are decoded into the root node.
-   - Their `FieldLocation` spans map directly to the initial bytes of the input `SourceMapping`.
+1. **Compound transaction**:
+   - The analysis tree keeps its existing root container. The header structure is an `Indexing` child while both phases run; this is required because `AnalysisTree::appendChild` only accepts an `Indexing` parent (`src/core/analysis_model.cpp:118-135`).
+   - The compound executor owns one cumulative instruction/node budget and one cancellation token. It stages context publication and commits it only after header and payload success.
+   - A tree snapshot may remove newly appended nodes, but context side effects require a separate staged directory or transaction; `AnalysisTree::restore` alone is insufficient.
 
-2. **Dispatch & Transformation Phase**:
-   - The runner extracts the scalar value of `controller_field` from the decoded header fields.
-   - Remaining bytes in the input view after the header (from `headerBitLength` to `sourceMapping.logicalBitLength()`) form the payload slice.
-   - If `view_kind` is specified (e.g. `rbsp`), the runner creates a transformed `SourceMapping` for the payload slice (e.g. excluding emulation prevention bytes), mapping each logical payload bit back to the root source physical spans.
+2. **Header phase**:
+   - Header fields are decoded into the header child and their `FieldLocation` spans map directly to the input `SourceMapping`.
+   - The header bit length is recorded from actual VM consumption. A non-byte-aligned boundary is rejected before any byte-oriented transform.
 
-3. **Payload Phase**:
-   - The matched payload structure is decoded using the transformed `SourceMapping`.
-   - The payload structure AST node is attached as a child under the root header node.
-   - All payload field coordinates correctly reflect physical root source coordinates via the transformed mapping.
+3. **Dispatch and transformation phase**:
+   - The runner reads the controller value from the decoded header and slices the remaining logical range.
+   - `PayloadTransformProvider` returns a forwarded `SourceMapping`, a separate list of excluded physical spans, inspected-byte accounting, diagnostics, and a terminal status. Excluded bytes are not inserted into `SourceMapping`, because `FieldLocation` requires forwarded span length to equal logical length (`src/core/coordinates.cpp:45-61`).
 
-4. **Partial Tree & Diagnostic Contract**:
-   - If header decoding fails: the tree contains header fields decoded prior to failure with attached diagnostics; no payload is executed.
-   - If payload decoding fails (truncation, syntax error, missing dependency): the root node retains the materialized header, and the payload child node records the partial state and diagnostic.
+4. **Payload phase and finalization**:
+   - The selected payload structure is decoded under the still-indexing header and then attached as its child. Only after this phase does the compound executor transition the header to `Materialized`.
+   - Header failure commits the partial header and no payload. Payload failure commits the partial tree and diagnostics but rolls back staged context. The final header state is `Invalid`, `WaitingDependency`, `Cancelled`, `Unsupported`, or `Materialized` according to the terminal result; a failed result must not be described as a fully materialized header.
 
 ---
 
 ### 3. Transformed Source Views and Boundary Error Handling
 
 1. **Transformation Provider**:
-   - Generalize the unescaping logic from `H264EbspRbspMapper` into a reusable, format-neutral view transformation interface (`PayloadTransformProvider` / `PayloadTransformRegistry`).
-   - Supported built-in transform kinds: `None` (identity slice), `Rbsp` (H.264 / H.265 emulation prevention byte unescaping).
+   - Generalize the mapping contract, not the codec policy, into `PayloadTransformProvider` / `PayloadTransformRegistry`. The generic runner sees an opaque `view_kind`, a provider result, and terminal statuses; it does not contain NAL, H.264, or H.265 names.
+   - `none` is the identity provider. `rbsp` is a capability-registered provider wrapping the existing H.264 mapper policy; its prohibited-sequence diagnostics remain outside the generic dispatcher. Unknown providers return a typed `Unsupported`/`InvalidDefinition` result rather than silently treating bytes as identity.
+   - A provider accepts a possibly disjoint logical `SourceMapping`; it must not assume the current mapper's single contiguous `SourceSpan` input.
 
 2. **Span and Coordinate Invariants**:
-   - Input `SourceMapping` must be byte-aligned and non-empty.
-   - Transformed mapping preserves excluded spans (`0x03` bytes) so that raw byte selection accurately highlights non-contiguous physical spans.
+   - Input `SourceMapping` and the header-to-payload boundary must be byte-aligned and non-empty.
+   - The transformed `SourceMapping` contains only forwarded spans. Excluded spans (`0x03` bytes for the registered RBSP provider) are returned separately as `{sourceSpan, outputBitOffset}` records so raw selection can highlight them without violating `FieldLocation` length invariants.
    - Arithmetic on bit offsets is strictly checked against `std::numeric_limits<quint64>::max()` to prevent coordinate overflow.
 
 3. **Error Propagation**:
    - `EndOfSource` / truncation during payload decoding triggers `DslExecutionStatus::TruncatedSource`.
    - Fault-injected `SourceReadStatus::Error` triggers `DslExecutionStatus::SourceError`.
    - Cancellation token checks occur before header execution, before transformation mapping, and during VM instruction loops.
-   - Resource limits (step budget) are enforced across header + payload execution.
+   - Resource limits are split into a shared compound instruction/node budget and a provider inspection budget; both are cumulative and checked for overflow. Cancellation and source errors are terminal for the current compound operation.
+   - Structural cancellation must define whether a committed prefix is resumable; it must not inherit Annex-B's “committed NAL is never retried” rule without an explicit contract.
 
 ---
 
@@ -132,14 +135,13 @@ When executing a structural entrypoint with payload dispatch:
 
 1. **Session Ownership Principle**:
    - Context directories cannot be passed as unmanaged pointers to stateless runners.
-   - `RuleExecutionSession` is promoted to the standard engine for stateful rule execution in both streaming and structural contexts.
-   - `AnalysisSession` (or the navigation controller) owns a `RuleExecutionSession` per active format stream.
+   - P5i-3b must add a compound structural execution API around the existing `RuleExecutionSession`; simply calling its current one-structure `run` twice is insufficient because each call has its own limits and the session currently binds one source pointer and one tree identity (`src/rules/rule_execution_session.cpp:48-61`).
+   - The context owner is scoped to one source identity, package/program, and context scope. It may serve multiple presentation trees only after the context definition records stop relying on an ambiguous tree-local `AnalysisNodeId`, or all related nodes are kept in one tree. Navigation must not silently share context across different sources.
 
 2. **Context Lifecycle Across Structural Executions**:
-   - When a producer structure (e.g. SPS) executes successfully, `RuleExecutionSession` publishes its context definition (e.g. `seq_parameter_set_id`) and stores the exported values in its internal `ContextDirectory`.
-   - When a subsequent consumer structure (e.g. PPS) executes within the same session, `RuleExecutionSession` resolves the context import from the previously published definition.
-   - If a consumer executes before a producer (e.g. PPS before SPS), `RuleExecutionSession` returns `DependencyUnavailable` and attaches an explanatory diagnostic.
-   - Context is scoped by `contextScopeId` and reset on session clear or navigation stack reset.
+   - A producer definition is staged until exact consumption, imports, dependency generations, and registration all succeed; payload failure must not leak a producer into the directory.
+   - A consumer resolves by source position and exact dependency generation, not merely by call order. Missing and stale producers are `DependencyUnavailable`; an absent resolver is the separate `InvalidDefinition` already observed at `src/rules/dsl_vm.cpp:718-743`.
+   - Context reset requires an explicit session clear/replace API. The current fixed `contextScopeId` has no reset operation, so P5i-3b must add one or document replacement as the only reset mechanism.
 
 ---
 
@@ -149,49 +151,50 @@ We evaluate four potential reuse options for multi-entrypoint packages:
 
 1. **Option 1: Multiple `entry` statements in single `.svfmt`**:
    - Causes grammar ambiguity over which entry is active without target naming.
-2. **Option 2: Manifest Target Selection (`rule.toml` entry selection)**:
-   - `rule.toml` `entrypoints` explicitly specify `entry = "StructName"` or `entry = "SequenceName"` within a shared `.svfmt` path.
-   - The compiler compiles the entire `.svfmt` and resolves the requested entrypoint target directly from `program.structs` or `program.scans`.
-   - If `entry` is omitted in `rule.toml`, it falls back to the file's default `entry` declaration.
+2. **Option 2: Manifest Target Selection (`rule.toml` target selection)**:
+   - This is the selected direction, but it is a manifest schema change, not a documentation-only field addition. Manifest version 2 adds optional `target = "StructName"`/`"SequenceName"` to an entrypoint; version 1 remains readable with the target omitted.
+   - The compiler receives one shared `compileForTarget(program, optional target)` operation. Omitted target uses the file's default `entry`; specified target resolves exactly one struct or scan and binds the typed entry. Unknown targets, struct/scan ambiguity, malformed identifiers, and target/source mismatches are rejected before execution.
+   - v2 permits multiple entrypoints to share a source path only when their `(source, target-or-default)` pair is unique. `RulePackageEntryPoint` carries the optional target, and all analyzers and structural navigation use the same target-aware compiler path.
 3. **Option 3: Separate source files (`path = "src/h264_nal.svfmt"`)**:
-   - Duplicates all 1200+ lines of H.264 syntax definitions. High maintenance burden and drift risk.
+   - Avoids manifest schema work but may duplicate only the required structure subset; it is not inherently a full-file copy. It remains a fallback if target-aware compilation cannot preserve package compatibility.
 4. **Option 4: Cross-file struct module imports**:
    - Excessive compiler complexity for v0.1.
 
-**Decision**: Adopt **Option 2 (Manifest Target Selection)**.
-This allows `org.streamview.h264` to expose both `video.h264.annex-b` (sequence entry `nal_units`) and `video.h264.nal` (structural entry `NalUnit`) from the single shared `src/h264_annex_b.svfmt` file with zero code duplication.
+**Decision**: Adopt **Option 2 (Manifest Target Selection)** subject to the v2 schema and compiler contract above. Changing the official manifest changes its content hash; the H.264 package must therefore receive a SemVer/content-version update in the later package slice. Catalog lookup remains selection-only; target binding belongs to the shared compiler API and must be tested separately.
 
 ---
 
 ### 6. Progressive Annex-B Runner Convergence
 
-- The progressive `H264AnnexBAnalyzer` and the structural execution path will share the exact same `RuleExecutionSession` and payload transformation routines.
-- No parallel or divergent EBSP/RBSP mapping logic will exist.
-- Existing Annex B parsing behavior and test suites will experience zero regression.
+- The progressive `H264AnnexBAnalyzer` and structural execution will share the transform-provider contract and policy implementation, but not necessarily the same compound-session lifetime.
+- The existing Annex-B mapper's incremental prefix, issue, cancellation, and retry semantics must be preserved by an adapter; a mechanical rename is not sufficient.
+- Existing Annex-B behavior is a later regression gate. This ADR does not claim any analyzer count has been rerun.
 
 ---
 
 ### 7. Safety, Complexity Bounding, and Format Neutrality
 
 - **Strictly Bounded Execution**: Structural payload dispatch is strictly single-level (one header + at most one payload structure). General recursive call stacks are forbidden.
-- **Format-Neutral Runtime**: The C++ runtime contains zero format-specific names (`nal_unit_type`, `FourCC`, `avcC`, `SPS`, `PPS`, `H264`). All format semantics reside purely in `.svfmt` declarative rules.
-- **Bounded Transformation Language**: Transformations are selected from a fixed enumeration of robust, tested mapping kinds (`None`, `Rbsp`).
+- **Format-Neutral Orchestration**: The generic dispatcher contains no format-specific field names or FourCCs. Existing context kinds and registered transform providers may carry format policy; that policy must remain outside the generic dispatcher and be explicitly registered.
+- **Bounded Transformation Language**: Transformations are selected from declared provider identifiers with a finite provider contract. Unknown identifiers fail closed; the ADR does not claim that a hard-coded `Rbsp` enum is format-neutral.
 
 ---
 
-## Verification Matrix
+## P5i-3b Acceptance Matrix (Planned; Not Executed in P5i-3a)
 
 | Test Identifier | Category | Input Fixture / Condition | Execution Path | Expected Status | Key Assertions |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `test_parser_structural_payload_dispatch` | DSL Parser / IR | Valid and malformed `payload<rbsp> Struct switch` declarations | `DslCompiler::compile` | Success for valid; specific diagnostics for invalid | AST and Typed IR correctly encode `DslPayloadTargetKind::Structure`, controller index, and cases. |
-| `test_structural_payload_header_and_payload_success` | Core Execution | Synthetic NAL fixture with header + SPS-like payload | `RuleExecutionSession` structural execution | `Materialized` | Header fields and payload fields present in single tree; coordinates match exact physical source spans. |
-| `test_structural_payload_ebsp_excluded_spans` | Transformation | Synthetic NAL payload containing `0x00000301` | Transformed view execution | `Materialized` | Emulation prevention byte excluded from logical length; payload fields mapped across excluded span. |
+| `test_structural_payload_header_and_payload_success` | Core Execution | Synthetic NAL fixture with header + SPS-like payload | Compound structural execution | `Materialized` | Header remains `Indexing` until payload append; final tree and coordinates are exact. |
+| `test_structural_payload_ebsp_excluded_spans` | Transformation | Synthetic NAL payload containing `0x00000301`, including a disjoint input mapping | Registered transform provider | `Materialized` | Forwarded mapping and separate excluded-span records are correct; malformed sequences fail closed. |
 | `test_structural_payload_empty_and_default_cases` | Edge Cases | Controller matching `empty` case and unhandled case | Structural payload runner | `Materialized` / `Unsupported` | Empty case produces materialized header with no payload child; unhandled case emits unsupported diagnostic. |
-| `test_structural_payload_truncation_and_error` | Fault Injection | Truncated payload bytes and I/O error injected source | Structural payload runner | `TruncatedSource` / `SourceError` | Partial tree retains header; payload node marked with matching diagnostic and state. |
+| `test_structural_payload_truncation_and_error` | Fault Injection | Truncated payload bytes and I/O error injected source | Compound structural execution | `TruncatedSource` / `SourceError` | Partial tree retains header; staged context is rolled back; payload node carries the matching diagnostic. |
+| `test_structural_payload_cancel_and_budget` | Limits / Cancellation | Pre-cancel, mid-transform cancel, and low cumulative header+payload limits | Compound structural execution | `Cancelled` / `ResourceLimit` | Shared instruction/node budget and transform inspection budget are cumulative and non-overflowing. |
 | `test_session_context_producer_consumer_chain` | Context Lifecycle | Sequential execution of SPS producer followed by PPS consumer in same `RuleExecutionSession` | `RuleExecutionSession::run` on SPS then PPS | `Materialized` on both | PPS imports SPS context values (`profile_idc`, `chroma_format_idc`) successfully. |
 | `test_session_context_missing_dependency` | Context Lifecycle | Execution of PPS consumer without prior SPS producer | `RuleExecutionSession::run` on PPS alone | `DependencyUnavailable` | Returns `DependencyUnavailable` status with diagnostic identifying missing context ID. |
-| `test_manifest_target_resolution` | Package / Manifest | `rule.toml` declaring multiple entrypoints with distinct `entry` targets | `RulePackageCatalog::resolveByFormat` | `Found` for each target | Selected entrypoint resolves and compiles target struct or sequence without syntax duplication. |
-| `test_h264_annex_b_zero_regression` | Regression | Full `tests/rules/h264_annex_b_analyzer_test.cpp` suite | `H264AnnexBAnalyzer` on Annex-B bitstream | `Success` (all tests pass) | Full 125/125 test suite passes with identical AST output. |
+| `test_manifest_target_resolution` | Package / Manifest | Manifest v2 with shared source and distinct `target` values | Catalog plus `compileForTarget` | `Found` for each target | Unknown target, duplicate `(source,target)`, omitted default target, and struct/scan ambiguity are rejected. |
+| `test_context_transaction_and_tree_identity` | Context Lifecycle | Producer/payload failure, stale generation, and a second presentation tree | Compound context session | `DependencyUnavailable` / rollback | No failed compound publishes a definition; source identity is enforced without ambiguous tree-local IDs. |
+| `test_h264_annex_b_zero_regression` | Regression | Full `tests/rules/h264_annex_b_analyzer_test.cpp` suite | `H264AnnexBAnalyzer` on Annex-B bitstream | `Success` (all tests pass) | Full 174/174 Qt test cases pass with identical AST output. |
 | `test_aac_mp4_zero_regression` | Regression | All AAC and MP4 analyzer test suites | `AacAdtsAnalyzer`, `Mp4IsobmffAnalyzer` | `Success` (all tests pass) | Zero regressions across all official formats. |
 
 ---
@@ -200,10 +203,10 @@ This allows `org.streamview.h264` to expose both `video.h264.annex-b` (sequence 
 
 ### Positive
 - **Format-Neutral Modularity**: Enables decoding of MP4 codec configuration payloads (`avcC` SPS/PPS) through clean declarative DSL rules without C++ format coupling.
-- **Zero Syntax Duplication**: Manifest target resolution allows `video.h264.annex-b` and `video.h264.nal` to share the same 1200+ lines of H.264 syntax in `src/h264_annex_b.svfmt`.
-- **Deterministic Context Propagation**: `RuleExecutionSession` provides audited, session-managed SPS->PPS context resolution without polluting stateless runners.
-- **Unified Transformation Engine**: Eliminates dual implementations of EBSP/RBSP mapping.
+- **Shared Source Contract**: Manifest target resolution can allow `video.h264.annex-b` and `video.h264.nal` to share one source file, subject to the v2 parser and target-aware compiler implementation.
+- **Deterministic Context Propagation**: A compound context owner can provide audited SPS->PPS resolution without passing an unmanaged directory into the dispatcher.
+- **Explicit Transformation Boundary**: Forwarded spans, excluded spans, provider diagnostics, and cancellation/retry semantics are defined separately from tree presentation.
 
 ### Negative / Trade-offs
 - Requires extending DSL parser, IR, and compiler to support structural `payload` declarations.
-- Requires updating `RulePackageCatalog` and `RuleExecutionSession` to support manifest entry target selection and structural execution.
+- Requires a v2 manifest reader, target-aware compilation, a compound tree/context transaction, and a registered transform provider before official H.264 consumption can begin.
