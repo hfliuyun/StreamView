@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-3b-3-R — H.264 RBSP Payload Transform Provider 合同与证据整改
-Next Action: 下发 Task P5i-3b-4（session-owned compound context lifecycle）；未经复审不得开始 manifest target、官方 H.264 规则入口或 P5i-4 UI
-Last Verification: Task P5i-3b-3-R — review fix `c044d89924b181c99d631ab63cd008853445b157`; Hosted CI Run `32176872694` (Windows job `95840733635`, Ubuntu job `95840733661`, macOS job `95840733883` all success); local dev/ci/sanitize CTest `43/43` passed; PayloadTransformTest 33 named cases / Qt `35/35`; CompoundStructuralRunnerTest 37 named cases / Qt `39/39`; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
+Last Completed Step: Task P5i-3b-4 — Session-Owned Compound Context Lifecycle
+Next Action: 等待主 Agent 复审 Task P5i-3b-4；未经复审不得开始 manifest target selection、官方 H.264 规则入口或 P5i-4 UI
+Last Verification: Task P5i-3b-4 — feat `b2d82cadf9052e45a30aa997fc81bd58c3ce8faf`; Hosted CI Run `32179164705` (macOS job `95847924656`, Windows job `95847924679`, Ubuntu job `95847924780` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer errors; RuleExecutionSessionTest 57/57 passed (12 new compound context tests); official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2521,5 +2521,42 @@ Blockers: None
   3. 测试真实性修正：原所谓“6 种畸形序列”实际为 5 种 issue kind 加一个合法的 terminal `00 00 03`；原 EOF 用例因 mapping 超过 `source.sizeBytes()` 只触发 `InvalidDefinition`。整改后用 advertised-size source 真实触发 mapper EOF -> `SourceError`，并分别锁定跨 64 KiB buffer 的 SourceError 前缀、1024-byte 中途取消前缀、inspection-budget 前缀、非零 logical start 诊断位置及 compound runner 对 conformance issue 的 fail-closed/rollback 行为。
   4. 证据勘误：子代理报告填写的 docs commit `0eec4d745c4ba03e2307519a4e0946d49ef57b85` 不存在，真实记录提交为 `0eec4d7f44701090cbe8ae359c881926782db2ea`；原记录声称 `git diff --check` 干净，但其新增 EOF 空行实际触发 `new blank line at EOF`，本次已删除并复跑通过。
   5. 验证：本地 dev、ci、sanitize 三套完整构建与 CTest 均 `43/43`，sanitize 零报告；PayloadTransformTest 33 个具名场景 / Qt `35/35`，CompoundStructuralRunnerTest 37 个具名场景 / Qt `39/39`；四个官方规则均 `Rule OK`；`markdown_hygiene` 与 `git diff --check` 通过。Hosted CI Run `32176872694`：Windows-2022 / Qt 6.10.1 job `95840733635`、Ubuntu-24.04 / Qt 6.11.1 job `95840733661`、macOS-15 / Qt 6.11.1 job `95840733883` 全部 success。
-  6. 边界保持：未实现 session context、manifest target、官方 H.264 规则入口、package version 变更或 P5i-4 UI；generic compound runner 未引入格式专属逻辑。
   终审结论：原 Task P5i-3b-3 报告不直接通过；主 Agent 完成 P5i-3b-3-R 修正并通过完整本地矩阵与 Hosted CI。Next Action 切换为 Task P5i-3b-4，单独实现 session-owned compound context lifecycle；manifest target、官方 H.264 规则入口与 P5i-4 UI 继续阻断。
+- 2026-08-19：完成 Task P5i-3b-4 —— Session-Owned Compound Context Lifecycle（实现提交 `b2d82cadf9052e45a30aa997fc81bd58c3ce8faf`）：
+  1. 架构实现：
+     - 在 `RuleExecutionSession` 中增加格式中立的 `CompoundRuleExecutionRequest` 和 `CompoundRuleExecutionResult`。
+     - 为 `RuleExecutionSession` 增加 `runCompound()` 与 `reset()` 生命周期管理接口，由 session 独占拥有 `ContextDirectory` 和 `ContextPayload` 存储，禁止外部 unmanaged 生命周期。
+     - 将 session 上下文解析器 `contextValueResolver` 注入 `CompoundStructuralRunner`，贯穿 header VM 与 deferred payload VM 两个阶段。
+     - 实现严格的暂存发布机制（staged publication）：header 或 payload 产生的上下文定义在 VM 阶段暂存，只有在 exact consumption、payload 物化、预算检查和事务提交 hook 全部成功后，才原子注册到 `ContextDirectory` 中。
+     - 实现失败即回滚机制（rollback）：在语法错误、截断、依赖不可用、资源超限、取消或 commit hook 抛出异常时，完整丢弃暂存定义并回滚分析树，保证失败执行绝不污染后续 context lookup。
+     - 支持同一 session 内按源位置顺序解析：producer 成功后后续 consumer 能正确解析其 import；缺失 producer 或 producer 失败时均返回 `DependencyUnavailable`；同一 key 重定义时，依 consumer 源位置精准选择最近一次有效 generation；禁止向后读取未来定义；禁止跨 source/tree 混用。
+     - 提供显式 `session.reset()`：重置后旧定义、暂存状态和 source/tree 绑定彻底清除，可安全重新绑定新分析源与树。
+  2. 测试覆盖（`tests/rules/rule_execution_session_test.cpp`）：
+     - 全量通过 57/57 槽位，其中新增 12 个通用复合上下文测试用例，覆盖：
+       - `compoundPublishesContextDefinitionFromHeaderAndResolvesInSubsequentConsumer`
+       - `compoundPublishesContextDefinitionFromPayloadAndResolvesInSubsequentConsumer`
+       - `compoundDependencyUnavailableWhenProducerMissing`
+       - `compoundFailedProducerDoesNotPublishAndLeavesConsumerUnavailable`
+       - `compoundRedefinitionSelectsLatestGenerationBeforeConsumerPosition`
+       - `compoundFutureDefinitionIsolation`
+       - `compoundSourceAndTreeIsolation`
+       - `compoundSessionResetClearsAllDefinitionsAndBindsNewSource`
+       - `compoundTransactionRollbackOnCommitHookFailure`
+       - `compoundCancellationAcrossAllPhases`
+       - `compoundSharedBudgetExhaustionInSession`
+       - `compoundContextResolutionInBothHeaderAndPayloadPhases`
+  3. 验证矩阵：
+     - 本地 dev / ci / sanitize 三套完整构建与 CTest 均通过 `43/43`（全量 43 个测试套件，零 sanitizer 报错）；
+     - 四个官方规则 `svtool rule check` 全部通过 (`Rule OK`)；
+     - `git diff --check` 与 `markdown_hygiene` 全部通过；
+     - Hosted CI Run `32179164705`：
+       - macOS-15 / Qt 6.11.1 (job `95847924656`): `success`
+       - Windows-2022 / Qt 6.10.1 (job `95847924679`): `success`
+       - Ubuntu-24.04 / Qt 6.11.1 (job `95847924780`): `success`
+  4. 边界保持：
+     - 未实现 manifest target selection；
+     - 未添加官方 H.264 结构型规则入口；
+     - 未修改官方 `.svfmt` 文件；
+     - 未升级 `rule.toml` 版本；
+     - 未实现 P5i-4 UI 导航或在通用 runtime 中引入任何格式专属名称与分支。
+  终审结论：Task P5i-3b-4 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-3b-4；未经复审不得开始 manifest target selection、官方 H.264 规则入口或 P5i-4 UI。
