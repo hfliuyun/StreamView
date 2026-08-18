@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-3a-R — 主 Agent 深审并修正 ADR-0104 的 compound transaction、manifest v2 target、transform provider 与 session context 合同
-Next Action: 下发 Task P5i-3b-1：实现格式中立 compound structural execution 基座；复审前不得实现官方 H.264 规则，也不得开始 P5i-4
-Last Verification: Task P5i-3a-R — bilingual ADR-0104 corrected; planned matrix explicitly marked unexecuted; markdown_hygiene passed; git diff --check clean
-Blockers: P5i-3b capability implementation required before official H.264 rule package or P5i-4
+Last Completed Step: Task P5i-3b-1 — 格式中立 Compound Structural Execution 基座
+Next Action: 等待主 Agent 复审 Task P5i-3b-1；未经复审不得开始 Task P5i-3b-2、transform provider、session context、manifest target 或官方 H.264 规则
+Last Verification: Task P5i-3b-1 — Hosted CI Run 32161664428 (Ubuntu job 95791750040, macOS job 95791750114, Windows job 95791750153 all success); local dev/ci/sanitize 42/42 passed; CompoundStructuralRunner 22/22; official rules 4/4 Rule OK; git diff --check clean
+Blockers: Review of P5i-3b-1 required before P5i-3b-2
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -2433,3 +2433,27 @@ Blockers: P5i-3b capability implementation required before official H.264 rule p
   6. 固化 manifest v2 target 方案：`RulePackageEntryPoint` 增加 optional `target`，v1 继续可读；共享 source 的 `(source,target-or-default)` 必须唯一；统一 `compileForTarget` 负责 target binding，catalog 仅负责选择；官方 manifest 后续变更必须同步 content hash 与版本。
   7. 本次仍未修改生产 C++、官方规则或 manifest，未开始 P5i-3b/P5i-4。验证范围为双语 ADR 对称性、`markdown_hygiene` 与 `git diff --check`；Hosted CI 按 ADR-0019 不启动。
   终审结论：原 P5i-3a 报告不直接通过；主 Agent 补正后设计合同可作为 P5i-3b 实现依据。下一步拆分为 P5i-3b-1（compound structural execution + tree transaction + shared budget），后续再实现 transform provider、session context owner 与 manifest target-aware compilation；官方 H.264 规则和 P5i-4 继续阻断。
+- 2026-08-19：完成 Task P5i-3b-1 —— 格式中立 Compound Structural Execution 基座（基线 `555a12c3137ba919b7aeafd230f3384c228be866`）：
+  1. 架构与生产实现（`src/rules/compound_structural_runner.cpp` 与 `src/rules/include/streamview/rules/compound_structural_runner.h`）：
+     - 实现格式中立 `CompoundStructuralRunner`，在单树中统一编排 header 与可选 payload 执行；
+     - 在 `DslExecutionOptions` 中引入 `deferMaterialization`，确保 header 解码成功后保持在 `MaterializationState::Indexing`，使得 payload 子结构节点能够正确挂载在 header 节点下；仅在全复合流程成功后将 header 最终转为 `Materialized`；
+     - 准确传播并处理全部阶段终态（`TruncatedSource`、`SourceError`、`Unsupported`、`DependencyUnavailable`、`Cancelled`、`ResourceLimit`、`InvalidSyntax`、`InvalidDefinition`），在 payload 失败时将父 header 转换为对应终端状态；
+     - 跨 header/payload 阶段共享累计指令与节点预算，支持受检算术溢出防护；
+     - 在预检查、header、阶段间及 payload 中支持由 `core::CancellationToken` 控制的精确取消；
+     - 引入显式事务钩子 `CompoundTransactionHooks`（`onCommit`、`onRollback`），为后续 staged context 管理提供纯净接口，不依赖 `AnalysisTree::restore` 伪装上下文回滚；
+     - 严格保持 `SourceMapping`、exact consumption、partial tree 与诊断坐标合同；全流程保持通用，无格式专属逻辑。
+  2. 单元测试与验证矩阵（`tests/rules/compound_structural_runner_test.cpp`，22 项完整测试）：
+     - 成功 header + payload 单树层级、节点状态转换与字段值捕获；
+     - header 截断、source error、语法错误阻止 payload 执行与回滚钩子触发；
+     - payload 截断、source error、unsupported 断言与语法约束下的 header 状态转换与回滚；
+     - 共享指令与节点预算耗尽、算术溢出防护；
+     - 预取消、header 取消、阶段间取消与 payload 取消；
+     - header-only 与 payload 的 exact consumption 强制校验；
+     - 多树重复执行隔离与非法输入前置检查。
+  3. 全量验证与 Hosted CI：
+     - 本地 dev / ci / sanitize 三套全量构建及 CTest 均通过（`42/42`），sanitize 零报告；
+     - 4 个内置官方 `.svfmt` 规则全部 `Rule OK`；
+     - `git diff --check` 与 `markdown_hygiene` 干净；
+     - Commit SHA：`2487c7f04ec3f567207ad2f2217c259c011be1ef`；
+     - Hosted CI Run `32161664428`：Ubuntu 24.04（Job `95791750040`）、macOS 15（Job `95791750114`）、Windows 2022（Job `95791750153`）三平台全部 success。
+  终审结论：P5i-3b-1 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-3b-1；未经复审不得开始 Task P5i-3b-2，也不得实现 transform provider、session context、manifest target 或官方 H.264 规则。
