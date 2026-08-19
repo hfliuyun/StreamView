@@ -43,7 +43,7 @@ struct ContextKey final {
 
 struct ContextDefinitionSpec final {
     ContextKey key;
-    SourceSpan sourceSpan;
+    std::vector<SourceSpan> sourceSpans;
     AnalysisNodeId analysisNodeId;
     std::vector<ContextDefinitionId> dependencies;
 };
@@ -51,7 +51,7 @@ struct ContextDefinitionSpec final {
 struct ContextDefinition final {
     ContextDefinitionId id;
     ContextKey key;
-    SourceSpan sourceSpan;
+    std::vector<SourceSpan> sourceSpans;
     AnalysisNodeId analysisNodeId;
     std::vector<ContextDefinitionId> dependencies;
 };

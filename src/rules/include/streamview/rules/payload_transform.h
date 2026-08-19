@@ -90,4 +90,7 @@ private:
     std::unordered_map<QString, std::shared_ptr<const PayloadTransformProvider>> providers_;
 };
 
+/// Registry containing the transform capabilities bundled with StreamView.
+[[nodiscard]] const PayloadTransformRegistry& bundledPayloadTransformRegistry();
+
 } // namespace streamview::rules

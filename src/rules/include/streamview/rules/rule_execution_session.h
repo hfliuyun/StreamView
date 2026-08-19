@@ -36,6 +36,7 @@ struct RuleExecutionRequest final {
     core::AnalysisTree* tree = nullptr;
     core::AnalysisNodeId parentId;
     std::optional<core::SourceSpan> enclosingSourceSpan;
+    std::vector<core::SourceSpan> enclosingSourceSpans;
     bool requireExactConsumption = true;
     DslExecutionOptions options;
 };
@@ -83,6 +84,7 @@ struct CompoundRuleExecutionRequest final {
     core::AnalysisTree* tree = nullptr;
     core::AnalysisNodeId parentId;
     std::optional<core::SourceSpan> enclosingSourceSpan;
+    std::vector<core::SourceSpan> enclosingSourceSpans;
 
     DslExecutionOptions options;
     bool requireExactConsumption = true;

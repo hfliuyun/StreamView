@@ -37,6 +37,44 @@ namespace {
     return RuleExecutionStatus::InvalidDefinition;
 }
 
+[[nodiscard]] std::optional<std::vector<core::SourceSpan>> enclosingSourceSpans(
+    const std::optional<core::SourceSpan>& legacySpan,
+    const std::vector<core::SourceSpan>& spans) {
+    std::vector<core::SourceSpan> requested = spans;
+    if (requested.empty() && legacySpan.has_value()) {
+        requested.push_back(*legacySpan);
+    }
+    const auto normalized =
+        core::SourceMapping::create(core::LogicalViewId(1), std::move(requested));
+    if (!normalized || normalized->logicalBitLength() == 0) {
+        return std::nullopt;
+    }
+    return normalized->sourceSpans();
+}
+
+[[nodiscard]] bool mappingIsWithin(
+    const core::SourceMapping& mapping,
+    quint64 logicalStart,
+    const std::vector<core::SourceSpan>& enclosingSpans) {
+    if (logicalStart > mapping.logicalBitLength()) {
+        return false;
+    }
+    const quint64 logicalLength = mapping.logicalBitLength() - logicalStart;
+    const auto range = core::LogicalRange::create(
+        core::LogicalBitAddress(mapping.viewId(), logicalStart), logicalLength);
+    const auto location = range ? mapping.locate(*range) : std::nullopt;
+    return location && std::all_of(
+                           location->sourceSpans().begin(), location->sourceSpans().end(),
+                           [&enclosingSpans](const core::SourceSpan& span) {
+                               return std::any_of(
+                                   enclosingSpans.begin(), enclosingSpans.end(),
+                                   [&span](const core::SourceSpan& enclosing) {
+                                       return enclosing.start() <= span.start() &&
+                                              span.endExclusive() <= enclosing.endExclusive();
+                                   });
+                           });
+}
+
 } // namespace
 
 const RuleExecutionSession::ContextPayload*
@@ -69,25 +107,15 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
 
     const DslTypedStruct& structure = program_.structs.at(request.structureIndex);
     const bool usesContext = structure.contextDefinition || !structure.contextImports.empty();
-    if (usesContext &&
-        (!request.enclosingSourceSpan || request.enclosingSourceSpan->bitLength() == 0)) {
+    const auto enclosingSpans = enclosingSourceSpans(
+        request.enclosingSourceSpan, request.enclosingSourceSpans);
+    if (usesContext && !enclosingSpans) {
         result.errorMessage =
             QStringLiteral("Context execution requires a non-empty enclosing source span");
         return result;
     }
     if (usesContext) {
-        const auto executionRange = core::LogicalRange::create(
-            core::LogicalBitAddress(request.mapping->viewId(), request.logicalStart),
-            logicalLength);
-        const auto executionLocation =
-            executionRange ? request.mapping->locate(*executionRange) : std::nullopt;
-        if (!executionLocation ||
-            std::any_of(executionLocation->sourceSpans().begin(),
-                        executionLocation->sourceSpans().end(),
-                        [&enclosing = *request.enclosingSourceSpan](const core::SourceSpan& span) {
-                            return span.start() < enclosing.start() ||
-                                   enclosing.endExclusive() < span.endExclusive();
-                        })) {
+        if (!mappingIsWithin(*request.mapping, request.logicalStart, *enclosingSpans)) {
             result.errorMessage =
                 QStringLiteral("Context execution mapping is outside its enclosing source span");
             return result;
@@ -135,10 +163,10 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
         core::ContextLookupResult lookup;
         if (importKey.has_value()) {
             const core::ContextKey key{import.kind, contextScopeId_, *importKey};
-            lookup = contextDirectory_.resolveBefore(key, request.enclosingSourceSpan->start());
+            lookup = contextDirectory_.resolveBefore(key, enclosingSpans->front().start());
         } else {
             lookup = contextDirectory_.resolveLatestBefore(import.kind, contextScopeId_,
-                                                           request.enclosingSourceSpan->start());
+                                                           enclosingSpans->front().start());
         }
         if (!lookup.found()) {
             return {
@@ -336,7 +364,7 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
         const DslExecutionContextValue& dependencyValue = values.dependencies.at(index);
         const core::ContextKey key{dependency.kind, contextScopeId_, dependencyValue.value};
         const core::ContextLookupResult lookup =
-            contextDirectory_.resolveBefore(key, request.enclosingSourceSpan->start());
+            contextDirectory_.resolveBefore(key, enclosingSpans->front().start());
         if (!lookup.found()) {
             result.status = RuleExecutionStatus::DependencyUnavailable;
             result.errorMessage =
@@ -367,7 +395,7 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
 
     core::ContextDefinitionSpec specification{
         {definition.kind, contextScopeId_, values.key.value},
-        *request.enclosingSourceSpan,
+        *enclosingSpans,
         *result.execution.structureNode,
         std::move(dependencies),
     };
@@ -464,31 +492,19 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
         (payloadStructure != nullptr &&
          (payloadStructure->contextDefinition || !payloadStructure->contextImports.empty()));
 
-    if (usesStaticContext &&
-        (!request.enclosingSourceSpan || request.enclosingSourceSpan->bitLength() == 0)) {
+    const auto enclosingSpans = enclosingSourceSpans(
+        request.enclosingSourceSpan, request.enclosingSourceSpans);
+    if (usesStaticContext && !enclosingSpans) {
         result.status = RuleExecutionStatus::InvalidDefinition;
         result.errorMessage =
             QStringLiteral("Context execution requires a non-empty enclosing source span");
         return result;
     }
-    const auto mappingIsWithinEnclosing =
-        [&request](const core::SourceMapping& mapping, quint64 logicalStart) {
-            if (!request.enclosingSourceSpan ||
-                logicalStart > mapping.logicalBitLength()) {
-                return false;
-            }
-            const quint64 logicalLength = mapping.logicalBitLength() - logicalStart;
-            const auto range = core::LogicalRange::create(
-                core::LogicalBitAddress(mapping.viewId(), logicalStart), logicalLength);
-            const auto location = range ? mapping.locate(*range) : std::nullopt;
-            return location &&
-                   std::none_of(
-                       location->sourceSpans().begin(), location->sourceSpans().end(),
-                       [&enclosing = *request.enclosingSourceSpan](const core::SourceSpan& span) {
-                           return span.start() < enclosing.start() ||
-                                  enclosing.endExclusive() < span.endExclusive();
-                       });
-        };
+    const auto mappingIsWithinEnclosing = [&enclosingSpans](
+                                              const core::SourceMapping& mapping,
+                                              quint64 logicalStart) {
+        return enclosingSpans && mappingIsWithin(mapping, logicalStart, *enclosingSpans);
+    };
 
     if (usesStaticContext) {
         if (!mappingIsWithinEnclosing(*request.headerMapping, 0)) {
@@ -552,10 +568,10 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
         core::ContextLookupResult lookup;
         if (importKey.has_value()) {
             const core::ContextKey key{import.kind, contextScopeId_, *importKey};
-            lookup = contextDirectory_.resolveBefore(key, request.enclosingSourceSpan->start());
+            lookup = contextDirectory_.resolveBefore(key, enclosingSpans->front().start());
         } else {
             lookup = contextDirectory_.resolveLatestBefore(import.kind, contextScopeId_,
-                                                           request.enclosingSourceSpan->start());
+                                                           enclosingSpans->front().start());
         }
         if (!lookup.found()) {
             return {
@@ -764,7 +780,7 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
                     const core::ContextKey dependencyKey{dependency.kind, contextScopeId_,
                                                          dependencyValue.value};
                     const auto lookup = nextDirectory.resolveBefore(
-                        dependencyKey, request.enclosingSourceSpan->start());
+                        dependencyKey, enclosingSpans->front().start());
                     if (!lookup.found()) {
                         failTransaction(
                             DslExecutionStatus::DependencyUnavailable,
@@ -782,7 +798,7 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
                 }
                 core::ContextDefinitionSpec spec{
                     {definition.kind, contextScopeId_, values->key.value},
-                    *request.enclosingSourceSpan,
+                    *enclosingSpans,
                     *nodeId,
                     std::move(dependencies),
                 };
@@ -894,8 +910,7 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
         const bool selectedPayloadUsesContext =
             selectedPayload.contextDefinition || !selectedPayload.contextImports.empty();
         if (selectedPayloadUsesContext) {
-            if (!request.enclosingSourceSpan ||
-                request.enclosingSourceSpan->bitLength() == 0) {
+            if (!enclosingSpans) {
                 throw std::runtime_error(
                     "Selected payload context requires a non-empty enclosing source span");
             }

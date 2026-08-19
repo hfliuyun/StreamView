@@ -3767,6 +3767,60 @@ class RuleExecutionSessionTest final : public QObject {
         QCOMPARE(tree->node(*result.execution.headerNodeId)->state(),
                  streamview::core::MaterializationState::Invalid);
     }
+
+    void compoundContextPreservesDisjointEnclosingSpans() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header { bits<8> kind; }
+            @context("h264-sps", id)
+            struct Payload {
+                bits<8> id;
+                bits<8> value @context_export;
+            }
+            payload<none> Header switch (kind) {
+                case 2: Payload;
+            }
+            entry Header;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const MemorySource source(bytes({2, 7, 0xFF, 9}));
+        const auto firstSpan = SourceSpan::create(SourceBitAddress(0), 16);
+        const auto secondSpan = SourceSpan::create(SourceBitAddress(24), 8);
+        QVERIFY(firstSpan.has_value());
+        QVERIFY(secondSpan.has_value());
+        const auto mapping = SourceMapping::create(
+            streamview::core::LogicalViewId(1), {*firstSpan, *secondSpan});
+        QVERIFY(mapping.has_value());
+        auto tree = AnalysisTree::create(QStringLiteral("disjoint-context"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+
+        CompoundRuleExecutionRequest request;
+        request.source = &source;
+        request.headerMapping = &*mapping;
+        request.headerStructureIndex =
+            *compiled.program->structureIndex(QStringLiteral("Header"));
+        request.payloadMapping = &*mapping;
+        request.tree = &*tree;
+        request.parentId = tree->rootId();
+        request.autoDispatchPayload = true;
+        request.enclosingSourceSpans = {*firstSpan, *secondSpan};
+
+        const auto result = session.runCompound(request);
+
+        QCOMPARE(result.status, RuleExecutionStatus::Materialized);
+        QVERIFY(result.publishedDefinition.has_value());
+        const auto definition =
+            session.contextDirectory().definition(*result.publishedDefinition);
+        QVERIFY(definition.has_value());
+        QCOMPARE(definition->sourceSpans.size(), std::size_t(2));
+        QCOMPARE(definition->sourceSpans.at(0).start(), firstSpan->start());
+        QCOMPARE(definition->sourceSpans.at(0).bitLength(), firstSpan->bitLength());
+        QCOMPARE(definition->sourceSpans.at(1).start(), secondSpan->start());
+        QCOMPARE(definition->sourceSpans.at(1).bitLength(), secondSpan->bitLength());
+    }
 };
 
 QTEST_APPLESS_MAIN(RuleExecutionSessionTest)

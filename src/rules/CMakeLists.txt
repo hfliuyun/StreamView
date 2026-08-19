@@ -22,6 +22,7 @@ add_library(streamview_rules STATIC
     structural_entry_runner.cpp
     compound_structural_runner.cpp
     payload_transform.cpp
+    bundled_payload_transforms.cpp
     h264_rbsp_payload_transform_provider.cpp
     rule_catalog.cpp
     rule_package_archive.cpp

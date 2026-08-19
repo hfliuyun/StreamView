@@ -320,6 +320,7 @@ private slots:
     void registryRejectDuplicateRegistration();
     void registryRejectNullOrEmptyProvider();
     void registryFindKnownAndUnknownProvider();
+    void bundledRegistryOwnsRegisteredCapabilities();
     void registryUnregisterCustomProvider();
     void registryResetRestoresBuiltinsOnly();
 
@@ -613,6 +614,15 @@ void PayloadTransformTest::registryFindKnownAndUnknownProvider() {
 
     const auto unknown = registry.findProvider(QStringLiteral("non_existent_provider"));
     QCOMPARE(unknown, nullptr);
+}
+
+void PayloadTransformTest::bundledRegistryOwnsRegisteredCapabilities() {
+    const auto& registry = streamview::rules::bundledPayloadTransformRegistry();
+
+    QVERIFY(registry.findProvider(QStringLiteral("none")) != nullptr);
+    const auto rbsp = registry.findProvider(QStringLiteral("rbsp"));
+    QVERIFY(rbsp != nullptr);
+    QCOMPARE(rbsp->identifier(), QStringLiteral("rbsp"));
 }
 
 void PayloadTransformTest::registryUnregisterCustomProvider() {

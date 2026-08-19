@@ -19,8 +19,32 @@ bool isKnownKind(ContextDefinitionKind kind) noexcept {
     return false;
 }
 
-bool overlaps(const SourceSpan& left, const SourceSpan& right) noexcept {
-    return left.start() < right.endExclusive() && right.start() < left.endExclusive();
+SourceBitAddress sourceStart(const std::vector<SourceSpan>& spans) noexcept {
+    return spans.front().start();
+}
+
+SourceBitAddress sourceEnd(const std::vector<SourceSpan>& spans) noexcept {
+    return spans.back().endExclusive();
+}
+
+bool spansOverlap(const std::vector<SourceSpan>& left,
+                  const std::vector<SourceSpan>& right) noexcept {
+    std::size_t leftIndex = 0;
+    std::size_t rightIndex = 0;
+    while (leftIndex < left.size() && rightIndex < right.size()) {
+        const SourceSpan& leftSpan = left.at(leftIndex);
+        const SourceSpan& rightSpan = right.at(rightIndex);
+        if (leftSpan.start() < rightSpan.endExclusive() &&
+            rightSpan.start() < leftSpan.endExclusive()) {
+            return true;
+        }
+        if (leftSpan.endExclusive() <= rightSpan.start()) {
+            ++leftIndex;
+        } else {
+            ++rightIndex;
+        }
+    }
+    return false;
 }
 
 } // namespace
@@ -35,12 +59,14 @@ ContextDirectory::definition(ContextDefinitionId id) const {
 
 ContextRegistrationResult
 ContextDirectory::registerDefinition(ContextDefinitionSpec spec) {
-    if (!isKnownKind(spec.key.kind) || spec.sourceSpan.bitLength() == 0 ||
-        spec.analysisNodeId.value() == 0) {
+    auto normalizedLocation = SourceMapping::create(LogicalViewId(1), spec.sourceSpans);
+    if (!isKnownKind(spec.key.kind) || !normalizedLocation ||
+        normalizedLocation->logicalBitLength() == 0 || spec.analysisNodeId.value() == 0) {
         return {ContextRegistrationStatus::InvalidDefinition,
                 std::nullopt,
                 QStringLiteral("Context definition metadata is invalid")};
     }
+    spec.sourceSpans = normalizedLocation->sourceSpans();
     std::vector<ContextDefinitionId> checkedDependencies;
     checkedDependencies.reserve(spec.dependencies.size());
     for (const auto dependencyId : spec.dependencies) {
@@ -52,7 +78,8 @@ ContextDirectory::registerDefinition(ContextDefinitionSpec spec) {
                     std::nullopt,
                     QStringLiteral("Context definition dependency metadata is invalid")};
         }
-        const auto currentDependency = resolveBefore(dependency->key, spec.sourceSpan.start());
+        const auto currentDependency = resolveBefore(dependency->key,
+                                                     sourceStart(spec.sourceSpans));
         if (!currentDependency.found() ||
             currentDependency.definition->id != dependencyId) {
             return {ContextRegistrationStatus::DependencyUnavailable,
@@ -78,31 +105,31 @@ ContextDirectory::registerDefinition(ContextDefinitionSpec spec) {
         }
         throw;
     }
-    const auto insertion = std::lower_bound(
-        keyDefinitions.begin(),
-        keyDefinitions.end(),
-        spec.sourceSpan.start(),
-        [this](ContextDefinitionId existingId, SourceBitAddress position) {
-            return definitions_.at(static_cast<std::size_t>(existingId.value() - 1))
-                       .sourceSpan.start() < position;
+    const bool overlapsExisting = std::any_of(
+        keyDefinitions.begin(), keyDefinitions.end(), [this, &spec](ContextDefinitionId id) {
+            return spansOverlap(
+                definitions_.at(static_cast<std::size_t>(id.value() - 1)).sourceSpans,
+                spec.sourceSpans);
         });
-    const auto overlapsAt = [this, &spec](ContextDefinitionId existingId) {
-        return overlaps(definitions_.at(static_cast<std::size_t>(existingId.value() - 1))
-                            .sourceSpan,
-                        spec.sourceSpan);
-    };
-    if ((insertion != keyDefinitions.end() && overlapsAt(*insertion)) ||
-        (insertion != keyDefinitions.begin() && overlapsAt(*std::prev(insertion)))) {
+    if (overlapsExisting) {
         return {ContextRegistrationStatus::DuplicateDefinition,
                 std::nullopt,
                 QStringLiteral("Context definitions for one key cannot overlap")};
     }
+    const auto insertion = std::lower_bound(
+        keyDefinitions.begin(),
+        keyDefinitions.end(),
+        sourceEnd(spec.sourceSpans),
+        [this](ContextDefinitionId existingId, SourceBitAddress position) {
+            return definitions_.at(static_cast<std::size_t>(existingId.value() - 1))
+                       .sourceSpans.back().endExclusive() < position;
+        });
 
     const ContextDefinitionId id(static_cast<quint64>(definitions_.size()) + 1);
     try {
         definitions_.push_back(ContextDefinition{id,
                                                  spec.key,
-                                                 spec.sourceSpan,
+                                                 std::move(spec.sourceSpans),
                                                  spec.analysisNodeId,
                                                  std::move(spec.dependencies)});
     } catch (...) {
@@ -136,7 +163,7 @@ ContextLookupResult ContextDirectory::resolveBefore(
         sourcePosition,
         [this](SourceBitAddress position, ContextDefinitionId definitionId) {
             return position < definitions_.at(static_cast<std::size_t>(definitionId.value() - 1))
-                                  .sourceSpan.endExclusive();
+                                  .sourceSpans.back().endExclusive();
         });
     if (firstAfterPosition == found->second.begin()) {
         return {};
@@ -212,7 +239,7 @@ ContextLookupResult ContextDirectory::resolveLatestBefore(
             sourcePosition,
             [this](SourceBitAddress position, ContextDefinitionId definitionId) {
                 return position < definitions_.at(static_cast<std::size_t>(definitionId.value() - 1))
-                                      .sourceSpan.endExclusive();
+                                      .sourceSpans.back().endExclusive();
             });
         if (firstAfterPosition == it->second.begin()) {
             continue;
@@ -221,9 +248,9 @@ ContextLookupResult ContextDirectory::resolveLatestBefore(
         const auto& candidate =
             definitions_.at(static_cast<std::size_t>(candidateId.value() - 1));
         if (!latestCandidateId.has_value() ||
-            candidate.sourceSpan.endExclusive() > latestEndPosition) {
+            candidate.sourceSpans.back().endExclusive() > latestEndPosition) {
             latestCandidateId = candidateId;
-            latestEndPosition = candidate.sourceSpan.endExclusive();
+            latestEndPosition = candidate.sourceSpans.back().endExclusive();
         }
     }
 
