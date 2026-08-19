@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-4b — MainWindow 子格式导航、面包屑与双向视图集成
-Next Action: 主 Agent 复审 Task P5i-4b；未经复审不得开始后续切片（Task P5j 等）
-Last Verification: Task P5i-4b — Docs SHA `73c245b66d3a9bb7bbd6d36e2f1cb7596ae6be71`; Impl SHA `4b462a72d3e6759c24fe9a5c9f68b20b5bb4e42c`; Hosted CI Run `32264055821` (Ubuntu job `96104070768`, Windows job `96104070898`, macOS job `96104071002` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; MainWindowTest `22/22` passed; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
+Last Completed Step: Task P5i-4b-R — MainWindow 活动子树发布隔离、完整面包屑与 UI 回归整改
+Next Action: 下发 Task P5j-0（Phase 5 container sample navigation 口径与实际能力差距审计）；未经审计结论不得实现 P5j 后续切片或关闭 Phase 5
+Last Verification: Task P5i-4b-R — Fix SHA `ea61e397c49f8b5bc682037f7bd4f328613cbcd3`; Hosted CI Run `32267561422` (Ubuntu job `96115684523`, Windows job `96115684701`, macOS job `96115685017` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; MainWindowTest `23/23` passed; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2772,3 +2772,10 @@ Blockers: None
      - 未修改 AAC/H.264/MP4 analyzer 行为；
      - 未修改、删除或提交未跟踪 `scratch/`。
   终审结论：Task P5i-4b 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-4b；未经复审不得开始后续切片。
+- 2026-08-19：完成 Task P5i-4b-R —— 主 Agent 深审并直接整改 MainWindow 活动子树发布隔离、面包屑与 UI 验证合同（原实现 `4b462a72d3e6759c24fe9a5c9f68b20b5bb4e42c`，修复提交 `ea61e397c49f8b5bc682037f7bd4f328613cbcd3`）：
+  1. 原交付不能直接通过：根分析仍有排队批次时，进入子格式后 `advanceAnalysis()` 会继续把根树发布到当前子树模型并以根树刷新 FieldInspector；面包屑只显示根入口与最内层 frame，不能表达多层导航；普通节点上的 Enter/Return 被无条件吞键；进入/返回后目标索引不可恢复时可能保留陈旧 inspector/raw highlight；900x600/1280x800 测试仅断言 `isVisible()`，不能证明布局无重叠或文字不裁剪；所谓 disjoint-spans UI 测试只验证了单 bit。
+  2. 活动树发布隔离：根分析继续推进、缓存与状态更新，但仅当导航深度为 0 时向 `AnalysisTreeModel` append/update 根节点及刷新根节点 inspector，保证 queued root batch 不覆盖正在展示的 child active tree。
+  3. 导航展示修正：MainWindow 维护与成功 enter/return 同步的 presentation breadcrumb format 链，打开新源时清空；Enter/Return 仅在实际目标格式导航被处理时消费；成功进入后若 child root 无法映射则立即语义回退，返回后父目标索引无效则显式清空 selection、inspector 与 raw highlight，避免跨 model reset 的陈旧展示。
+  4. 回归验证补强：新增 `pendingRootAnalysisDoesNotReplaceActiveChildTree`，在根 MP4 增量发布期间进入 ASC 并确认后续批次不替换活动子树；H.264 UI 测试直接断言 `num_units_in_tick` 与 `time_scale` 跨两个 `0x03` 防竞争排除字节的物理高亮空洞；布局测试验证导航栏、树、raw view 与两侧 dock 的实际窗口几何不越界、不相交，并验证面包屑文字可容纳；MainWindowTest 为 `23/23`。
+  5. 验证结果：本地 dev、ci、sanitize 三套完整 CTest 均 `43/43` passed，sanitize 零报告；四个官方规则均 `Rule OK`；`git diff --check` 与 `markdown_hygiene` 通过；Hosted CI Run `32267561422`：Ubuntu-24.04 / Qt 6.11.1 job `96115684523`、Windows-2022 / Qt 6.10.1 job `96115684701`、macOS-15 / Qt 6.11.1 job `96115685017` 全部 `completed | success`。
+  6. 边界与后续：未修改 AnalysisSession、SessionDocument schema、DSL/runtime、analyzer 或官方规则包。P5i-4b-R 只闭合 `avcC` SPS/PPS 与 `esds` ASC 配置载荷的 UI 导航；不得据此勾选“从 MP4 sample 进入 H.264/AAC”或关闭 Phase 5。Next Action 切换为 Task P5j-0，先审计产品所称 container sample navigation 与实际 `mdat` sample 路由、sample-table 组合、`stss`/`ctts` 和 ffprobe 验收缺口。
