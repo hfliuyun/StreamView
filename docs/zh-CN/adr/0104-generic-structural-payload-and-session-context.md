@@ -214,6 +214,12 @@
      - 依赖缺失（如在无先前 SPS 情况下执行 PPS）返回 `RuleExecutionStatus::DependencyUnavailable`，且不发布任何被污染的上下文。
      - 源截断或语法/一致性错误原子回滚，不污染上下文。
 
+3. **单映射复合执行合同（P5i-4a）**：
+   - 当调用方提供覆盖整个子格式 payload 的单一连续 `SourceMapping`（`headerMapping == payloadMapping` 且 `payloadLogicalStart == 0`、`autoDispatchPayload = true`）时，header 消费受限于声明的 header 字段，而非整个映射长度。
+   - 若选中 payload 结构体分支，payload 输入逻辑起点自动建立在 `headerBitsConsumed`，输入比特长度为 `mapping.logicalBitLength() - headerBitsConsumed`。
+   - 若选中 empty 分支，精确消费要求 `headerBitsConsumed == mapping.logicalBitLength()`。
+   - 这确保调用方（如 `AnalysisSession::enterChildFormat`）无需预先了解各格式头部尺寸或手动切分 span，实现完全格式中立的子格式执行。
+
 ---
 
 ## P5i-3b 验收矩阵（计划；P5i-3a 未执行）
