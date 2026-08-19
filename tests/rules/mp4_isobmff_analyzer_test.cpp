@@ -228,9 +228,11 @@ void verifyLazySourceBytes(const streamview::core::AnalysisNode& node,
 }
 
 [[nodiscard]] streamview::rules::RuleCatalogLookupResult createMockRuleResult(
-    const QString& svfmtContent) {
-    const QByteArray toml = QByteArrayLiteral(
-        "manifest-version = 1\n\n"
+    const QString& svfmtContent,
+    const std::optional<QString>& target = std::nullopt) {
+    QByteArray toml = QByteArrayLiteral("manifest-version = ");
+    toml += target.has_value() ? QByteArrayLiteral("2\n\n") : QByteArrayLiteral("1\n\n");
+    toml += QByteArrayLiteral(
         "[package]\n"
         "id = \"test.mp4\"\n"
         "version = \"0.1.0\"\n"
@@ -243,7 +245,11 @@ void verifyLazySourceBytes(const streamview::core::AnalysisNode& node,
         "[[entrypoints]]\n"
         "id = \"main\"\n"
         "format = \"video.mp4\"\n"
-        "source = \"src/main.svfmt\"\n"
+        "source = \"src/main.svfmt\"\n");
+    if (target.has_value()) {
+        toml += QByteArrayLiteral("target = \"") + target->toUtf8() + QByteArrayLiteral("\"\n");
+    }
+    toml += QByteArrayLiteral(
         "profiles = [\"default\"]\n"
         "depth = \"structure\"\n");
 
@@ -284,6 +290,8 @@ private slots:
     void retainsQueuedRecordsAcrossInFlightCancellation();
     void chargesRunnerCreatedBoxNodesToSharedBudget();
     void exposesWindowDecoderWithWindowLocalCoordinates();
+    void honorsExplicitStructTargetWhenCreatingAnalyzer();
+    void rejectsNonMp4ScanTargetWhenCreatingAnalyzer();
     void loadsBundledMp4PackageSuccessfully();
     void analyzesStandardFtypBoxAndBrands();
     void analyzesLargesize64BitBox();
@@ -320,6 +328,64 @@ void Mp4IsobmffAnalyzerTest::failsCleanlyWhenNoRulePackageInstalled() {
     auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, invalidRule, &errorMsg);
     QVERIFY(!analyzer.has_value());
     QVERIFY(!errorMsg.isEmpty());
+}
+
+void Mp4IsobmffAnalyzerTest::honorsExplicitStructTargetWhenCreatingAnalyzer() {
+    const QString dsl = QStringLiteral(
+        "struct DefaultBox { bits<32> default_size; bits<32> default_type; }\n"
+        "struct SelectedBox { bits<32> selected_size; bits<32> selected_type; }\n"
+        "entry DefaultBox;\n");
+    const auto ruleLookup =
+        createMockRuleResult(dsl, QStringLiteral("SelectedBox"));
+
+    std::vector<std::byte> raw(8);
+    raw[3] = std::byte{8};
+    MemorySource source(std::move(raw));
+    QString errorMessage;
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(
+        source, ruleLookup, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qUtf8Printable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+    QCOMPARE(batch.boxNodes.size(), std::size_t(1));
+
+    const auto& tree = analyzer->tree();
+    const auto box = tree.node(batch.boxNodes.front());
+    QVERIFY(box.has_value());
+    QCOMPARE(box->children().size(), std::size_t(1));
+    const auto selected = tree.node(box->children().front());
+    QVERIFY(selected.has_value());
+    QCOMPARE(selected->name(), QStringLiteral("SelectedBox"));
+
+    std::vector<QString> fieldNames;
+    for (const auto childId : selected->children()) {
+        const auto child = tree.node(childId);
+        QVERIFY(child.has_value());
+        fieldNames.push_back(child->name());
+    }
+    const std::vector<QString> expectedFieldNames{
+        QStringLiteral("selected_size"), QStringLiteral("selected_type")};
+    QCOMPARE(fieldNames, expectedFieldNames);
+}
+
+void Mp4IsobmffAnalyzerTest::rejectsNonMp4ScanTargetWhenCreatingAnalyzer() {
+    const QString dsl = QStringLiteral(
+        "struct Box { bits<32> size; bits<32> type; }\n"
+        "@index(progressive) sequence<Box> WrongScan = scan(h264_start_code);\n"
+        "entry Box;\n");
+    const auto ruleLookup =
+        createMockRuleResult(dsl, QStringLiteral("WrongScan"));
+
+    std::vector<std::byte> raw(8);
+    raw[3] = std::byte{8};
+    MemorySource source(std::move(raw));
+    QString errorMessage;
+    const auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(
+        source, ruleLookup, &errorMessage);
+
+    QVERIFY(!analyzer.has_value());
+    QCOMPARE(errorMessage, QStringLiteral("Resolved MP4 rule has no MP4 box entry"));
 }
 
 void Mp4IsobmffAnalyzerTest::analyzesSingleLevelContainerReEntry() {

@@ -3908,6 +3908,57 @@ private slots:
         QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::UnknownReference));
     }
 
+    void compileForTargetValidatesIdentifierBoundaries() {
+        const QString validTarget = QStringLiteral("_") + QString(62, QLatin1Char('a')) +
+                                    QStringLiteral("9");
+        QCOMPARE(validTarget.size(), qsizetype(64));
+        const auto parsed = DslParser::parse(
+            QStringLiteral("struct %1 { bits<8> value; }\nentry %1;\n").arg(validTarget));
+        QVERIFY(parsed.succeeded());
+
+        const auto accepted = DslCompiler::compileForTarget(parsed.program, validTarget);
+        QVERIFY(accepted.succeeded());
+        QCOMPARE(accepted.program->entry.kind, DslEntryKind::Structure);
+        const auto structureIndex = accepted.program->structureIndex(validTarget);
+        QVERIFY(structureIndex.has_value());
+        QCOMPARE(accepted.program->entry.targetIndex, *structureIndex);
+
+        const QString oversizedTarget = validTarget + QStringLiteral("a");
+        QCOMPARE(oversizedTarget.size(), qsizetype(65));
+        const auto rejected =
+            DslCompiler::compileForTarget(parsed.program, oversizedTarget);
+        QVERIFY(!rejected.succeeded());
+        QVERIFY(hasDiagnostic(rejected, DslDiagnosticCode::UnknownReference));
+        QVERIFY(std::any_of(rejected.diagnostics.begin(),
+                            rejected.diagnostics.end(),
+                            [](const auto& diagnostic) {
+                                return diagnostic.message.contains(
+                                    QStringLiteral("is not a valid DSL identifier"));
+                            }));
+    }
+
+    void compileForTargetRejectsAmbiguousTarget() {
+        auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Unit { bits<8> value; }
+            @index(progressive) sequence<Unit> Units = scan(h264_start_code);
+            entry Unit;
+        )"));
+        QVERIFY(parsed.succeeded());
+        parsed.program.scans.front().name = QStringLiteral("Unit");
+
+        const auto compiled =
+            DslCompiler::compileForTarget(parsed.program, QStringLiteral("Unit"));
+
+        QVERIFY(!compiled.succeeded());
+        QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::DuplicateName));
+        QVERIFY(std::any_of(compiled.diagnostics.begin(),
+                            compiled.diagnostics.end(),
+                            [](const auto& diagnostic) {
+                                return diagnostic.message.contains(
+                                    QStringLiteral("ambiguous between struct and sequence"));
+                            }));
+    }
+
     void compileForTargetDoesNotMutateAst() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             struct First { bits<8> a; }

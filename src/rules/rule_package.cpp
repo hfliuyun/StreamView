@@ -1,5 +1,7 @@
 #include <streamview/rules/rule_package.h>
 
+#include "dsl_identifier.h"
+
 #include <QCryptographicHash>
 #include <QRegularExpression>
 #include <QSet>
@@ -272,28 +274,6 @@ requiredStringArray(const toml::table& table,
     return result;
 }
 
-[[nodiscard]] bool isDslIdentifier(QStringView text) noexcept {
-    if (text.isEmpty() || text.size() > 64) {
-        return false;
-    }
-    const QChar first = text.at(0);
-    if (first != QLatin1Char('_') &&
-        !(first >= QLatin1Char('a') && first <= QLatin1Char('z')) &&
-        !(first >= QLatin1Char('A') && first <= QLatin1Char('Z'))) {
-        return false;
-    }
-    for (qsizetype i = 1; i < text.size(); ++i) {
-        const QChar c = text.at(i);
-        if (c != QLatin1Char('_') &&
-            !(c >= QLatin1Char('a') && c <= QLatin1Char('z')) &&
-            !(c >= QLatin1Char('A') && c <= QLatin1Char('Z')) &&
-            !(c >= QLatin1Char('0') && c <= QLatin1Char('9'))) {
-            return false;
-        }
-    }
-    return true;
-}
-
 [[nodiscard]] std::optional<RulePackageManifest>
 parseManifest(const QByteArray& bytes, QString* errorMessage) {
     if (bytes.startsWith("\xEF\xBB\xBF")) {
@@ -416,20 +396,11 @@ parseManifest(const QByteArray& bytes, QString* errorMessage) {
             setError(errorMessage, QStringLiteral("Each entrypoint must be a table"));
             return std::nullopt;
         }
-        if (*manifestVersion == 1) {
-            if (!tableHasOnly(*table,
-                              {"id", "format", "source", "profiles", "depth", "detector"},
-                              u"entrypoints",
-                              errorMessage)) {
-                return std::nullopt;
-            }
-        } else {
-            if (!tableHasOnly(*table,
-                              {"id", "format", "source", "profiles", "depth", "detector", "target"},
-                              u"entrypoints",
-                              errorMessage)) {
-                return std::nullopt;
-            }
+        if (!tableHasOnly(*table,
+                          {"id", "format", "source", "profiles", "depth", "detector", "target"},
+                          u"entrypoints",
+                          errorMessage)) {
+            return std::nullopt;
         }
         auto id = requiredString(*table, "id", u"entrypoints", errorMessage);
         auto format = requiredString(*table, "format", u"entrypoints", errorMessage);
@@ -459,7 +430,7 @@ parseManifest(const QByteArray& bytes, QString* errorMessage) {
             if (!targetValue) {
                 return std::nullopt;
             }
-            if (!isDslIdentifier(*targetValue)) {
+            if (!detail::isDslIdentifier(*targetValue)) {
                 setError(errorMessage, QStringLiteral("Entrypoint target is not a valid DSL identifier"));
                 return std::nullopt;
             }
