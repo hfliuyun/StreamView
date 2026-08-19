@@ -3,9 +3,12 @@
 #include <streamview/core/paged_cache.h>
 #include <streamview/core/source.h>
 #include <streamview/core/source_pager.h>
+#include <streamview/rules/aac_adts_analyzer.h>
 #include <streamview/rules/analysis_cache.h>
 #include <streamview/rules/analysis_cache_owner.h>
+#include <streamview/rules/h264_annex_b_analyzer.h>
 #include <streamview/rules/h264_annex_b_detector.h>
+#include <streamview/rules/mp4_isobmff_analyzer.h>
 #include <streamview/rules/rule_catalog.h>
 #include <streamview/rules/rule_package.h>
 
@@ -20,6 +23,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <span>
@@ -30,17 +34,24 @@ using streamview::app::AnalysisBatchStatus;
 using streamview::app::AnalysisSession;
 using streamview::app::AnalysisSessionCacheOptions;
 using streamview::app::AnalysisSessionCacheStatus;
+using streamview::app::AnalysisSessionNavigationResult;
+using streamview::app::AnalysisSessionNavigationStatus;
 using streamview::app::AnalysisSessionRestoreStatus;
+using streamview::app::AnalysisSessionReturnResult;
+using streamview::app::AnalysisSessionReturnStatus;
+using streamview::app::NavigationFrame;
 using streamview::app::RawDisplayMode;
 using streamview::app::SessionAnnotation;
 using streamview::app::SessionBookmark;
 using streamview::app::SessionDocument;
 using streamview::app::SessionUserState;
+using streamview::core::AnalysisNodeId;
 using streamview::core::MaterializationState;
 using streamview::core::PagedCachePageKind;
 using streamview::core::RandomAccessSource;
 using streamview::core::SourceReadResult;
 using streamview::core::SourceReadStatus;
+using streamview::rules::RulePackageCatalog;
 
 namespace {
 
@@ -215,6 +226,68 @@ private:
     mutable quint64 lastOffset_ = 0;
     mutable std::size_t lastRequestSize_ = 0;
 };
+
+[[nodiscard]] streamview::rules::RulePackageCatalog makeCatalogWithOfficialPackages() {
+    streamview::rules::RulePackageCatalog catalog;
+    auto aac = streamview::rules::loadAacAdtsRulePackage();
+    if (aac.succeeded() && aac.package.has_value()) {
+        (void)catalog.registerPackage(std::move(*aac.package));
+    }
+    auto h264 = streamview::rules::loadH264AnnexBRulePackage();
+    if (h264.succeeded() && h264.package.has_value()) {
+        (void)catalog.registerPackage(std::move(*h264.package));
+    }
+    auto mp4 = streamview::rules::loadMp4IsobmffRulePackage();
+    if (mp4.succeeded() && mp4.package.has_value()) {
+        (void)catalog.registerPackage(std::move(*mp4.package));
+    }
+    return catalog;
+}
+
+[[nodiscard]] std::optional<AnalysisNodeId> findNodeByTargetFormat(
+    const streamview::core::AnalysisTree& tree,
+    AnalysisNodeId currentId,
+    const QString& targetFormat) {
+    const auto node = tree.node(currentId);
+    if (!node) {
+        return std::nullopt;
+    }
+    if (node->metadata().targetFormat.has_value() && *node->metadata().targetFormat == targetFormat) {
+        return currentId;
+    }
+    for (const auto childId : node->children()) {
+        if (auto found = findNodeByTargetFormat(tree, childId, targetFormat)) {
+            return found;
+        }
+    }
+    return std::nullopt;
+}
+
+void collectNodesByTargetFormat(
+    const streamview::core::AnalysisTree& tree,
+    AnalysisNodeId currentId,
+    const QString& targetFormat,
+    std::vector<AnalysisNodeId>& results) {
+    const auto node = tree.node(currentId);
+    if (!node) {
+        return;
+    }
+    if (node->metadata().targetFormat.has_value() && *node->metadata().targetFormat == targetFormat) {
+        results.push_back(currentId);
+    }
+    for (const auto childId : node->children()) {
+        collectNodesByTargetFormat(tree, childId, targetFormat, results);
+    }
+}
+
+[[nodiscard]] std::vector<AnalysisNodeId> findAllNodesByTargetFormat(
+    const streamview::core::AnalysisTree& tree,
+    AnalysisNodeId currentId,
+    const QString& targetFormat) {
+    std::vector<AnalysisNodeId> results;
+    collectNodesByTargetFormat(tree, currentId, targetFormat, results);
+    return results;
+}
 
 } // namespace
 
@@ -995,6 +1068,266 @@ private slots:
 
         const auto batch = session->analyzeBatch();
         QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
+    }
+
+    void navigatesIntoAacAscSubFormatAndReturnsToParent() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        QString errorMessage;
+        auto session = AnalysisSession::openFile(fixturePath, &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+
+        const auto batch = session->analyzeBatch();
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
+
+        const auto catalog = makeCatalogWithOfficialPackages();
+        const auto ascNodeOpt = findNodeByTargetFormat(session->tree(), session->tree().rootId(), QStringLiteral("audio.aac.asc"));
+        QVERIFY(ascNodeOpt.has_value());
+        const auto ascNodeId = *ascNodeOpt;
+
+        const auto navResult = session->enterChildFormat(ascNodeId, catalog);
+        QVERIFY2(navResult.succeeded(), qPrintable(navResult.errorMessage));
+        QCOMPARE(navResult.status, AnalysisSessionNavigationStatus::Entered);
+        QCOMPARE(session->navigationDepth(), std::size_t{1});
+        QVERIFY(session->canReturnToParent());
+
+        const auto* frame = session->currentNavigationFrame();
+        QVERIFY(frame != nullptr);
+        QCOMPARE(frame->parentTargetNodeId, ascNodeId);
+        QCOMPARE(frame->targetFormat, QStringLiteral("audio.aac.asc"));
+
+        const auto& childTree = session->activeTree();
+        const auto childRootNode = childTree.node(childTree.rootId());
+        QVERIFY(childRootNode.has_value());
+        QVERIFY(!childRootNode->children().empty());
+
+        const auto structNode = childTree.node(childRootNode->children().front());
+        QVERIFY(structNode.has_value());
+        QCOMPARE(structNode->name(), QStringLiteral("AudioSpecificConfig"));
+        QCOMPARE(structNode->children().size(), std::size_t{6});
+
+        // Verify fields and coordinates: root physical offset 146 (bit offset 1168)
+        const auto aotNode = childTree.node(structNode->children()[0]);
+        QVERIFY(aotNode.has_value());
+        QCOMPARE(aotNode->name(), QStringLiteral("audio_object_type"));
+        QCOMPARE(aotNode->value(), quint64{2});
+        QVERIFY(aotNode->location().has_value());
+        QVERIFY(!aotNode->location()->sourceSpans().empty());
+        QCOMPARE(aotNode->location()->sourceSpans().front().start().absoluteBitOffset(), quint64{1168});
+        QCOMPARE(aotNode->location()->sourceSpans().front().bitLength(), quint64{5});
+
+        const auto sfiNode = childTree.node(structNode->children()[1]);
+        QVERIFY(sfiNode.has_value());
+        QCOMPARE(sfiNode->name(), QStringLiteral("sampling_frequency_index"));
+        QCOMPARE(sfiNode->value(), quint64{4});
+        QVERIFY(sfiNode->location().has_value());
+        QCOMPARE(sfiNode->location()->sourceSpans().front().start().absoluteBitOffset(), quint64{1173});
+        QCOMPARE(sfiNode->location()->sourceSpans().front().bitLength(), quint64{4});
+
+        const auto retResult = session->returnToParent();
+        QCOMPARE(retResult.status, AnalysisSessionReturnStatus::Returned);
+        QVERIFY(retResult.restoredParentTargetNodeId.has_value());
+        QCOMPARE(*retResult.restoredParentTargetNodeId, ascNodeId);
+        QCOMPARE(session->navigationDepth(), std::size_t{0});
+        QVERIFY(!session->canReturnToParent());
+        QCOMPARE(&session->activeTree(), &session->tree());
+    }
+
+    void navigatesIntoH264SpsAndPpsWithContextSharing() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_avc1_avcC.mp4");
+        QString errorMessage;
+        auto session = AnalysisSession::openFile(fixturePath, &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+
+        const auto batch = session->analyzeBatch();
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
+
+        const auto catalog = makeCatalogWithOfficialPackages();
+        const auto nalNodes = findAllNodesByTargetFormat(session->tree(), session->tree().rootId(), QStringLiteral("video.h264.nal"));
+        QCOMPARE(nalNodes.size(), std::size_t{3});
+        const auto spsNodeId = nalNodes[0];
+        const auto ppsNodeId = nalNodes[1];
+
+        // 1. Enter SPS NAL
+        const auto spsNav = session->enterChildFormat(spsNodeId, catalog);
+        QVERIFY2(spsNav.succeeded(), qPrintable(spsNav.errorMessage));
+        QCOMPARE(spsNav.status, AnalysisSessionNavigationStatus::Entered);
+        QCOMPARE(session->navigationDepth(), std::size_t{1});
+        QVERIFY(session->canReturnToParent());
+
+        const auto& spsTree = session->activeTree();
+        QVERIFY(spsNav.childRootStructureNodeId.has_value());
+        const auto spsHeaderNode = spsTree.node(*spsNav.childRootStructureNodeId);
+        QVERIFY(spsHeaderNode.has_value());
+        QCOMPARE(spsHeaderNode->name(), QStringLiteral("NalUnitHeader"));
+
+        // Has SPS RBSP child in the same tree
+        QVERIFY(!spsHeaderNode->children().empty());
+        const auto spsRbspNode = spsTree.node(spsHeaderNode->children().back());
+        QVERIFY(spsRbspNode.has_value());
+        QCOMPARE(spsRbspNode->name(), QStringLiteral("SequenceParameterSetRbsp"));
+
+        // 2. Return to MP4 root
+        const auto spsRet = session->returnToParent();
+        QCOMPARE(spsRet.status, AnalysisSessionReturnStatus::Returned);
+        QVERIFY(spsRet.restoredParentTargetNodeId.has_value());
+        QCOMPARE(*spsRet.restoredParentTargetNodeId, spsNodeId);
+        QCOMPARE(session->navigationDepth(), std::size_t{0});
+        QCOMPARE(&session->activeTree(), &session->tree());
+
+        // 3. Enter PPS NAL (shares session context from SPS)
+        const auto ppsNav = session->enterChildFormat(ppsNodeId, catalog);
+        QVERIFY2(ppsNav.succeeded(), qPrintable(ppsNav.errorMessage));
+        QCOMPARE(ppsNav.status, AnalysisSessionNavigationStatus::Entered);
+        QCOMPARE(session->navigationDepth(), std::size_t{1});
+
+        const auto& ppsTree = session->activeTree();
+        QVERIFY(ppsNav.childRootStructureNodeId.has_value());
+        const auto ppsHeaderNode = ppsTree.node(*ppsNav.childRootStructureNodeId);
+        QVERIFY(ppsHeaderNode.has_value());
+        QCOMPARE(ppsHeaderNode->name(), QStringLiteral("NalUnitHeader"));
+        QVERIFY(!ppsHeaderNode->children().empty());
+        const auto ppsRbspNode = ppsTree.node(ppsHeaderNode->children().back());
+        QVERIFY(ppsRbspNode.has_value());
+        QCOMPARE(ppsRbspNode->name(), QStringLiteral("PictureParameterSetRbsp"));
+
+        // 4. Return to parent
+        const auto ppsRet = session->returnToParent();
+        QCOMPARE(ppsRet.status, AnalysisSessionReturnStatus::Returned);
+        QCOMPARE(session->navigationDepth(), std::size_t{0});
+        QCOMPARE(&session->activeTree(), &session->tree());
+    }
+
+    void standalonePpsWithoutPriorSpsFailsWithDependencyUnavailableAndPreservesState() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_avc1_avcC.mp4");
+        QString errorMessage;
+        auto session = AnalysisSession::openFile(fixturePath, &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+
+        const auto batch = session->analyzeBatch();
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
+
+        const auto catalog = makeCatalogWithOfficialPackages();
+        const auto nalNodes = findAllNodesByTargetFormat(session->tree(), session->tree().rootId(), QStringLiteral("video.h264.nal"));
+        QCOMPARE(nalNodes.size(), std::size_t{3});
+        const auto ppsNodeId = nalNodes[1];
+
+        // Directly enter PPS without SPS execution
+        const auto ppsNav = session->enterChildFormat(ppsNodeId, catalog);
+        QCOMPARE(ppsNav.status, AnalysisSessionNavigationStatus::DependencyUnavailable);
+        QVERIFY(!ppsNav.succeeded());
+        QCOMPARE(session->navigationDepth(), std::size_t{0});
+        QVERIFY(!session->canReturnToParent());
+        QCOMPARE(&session->activeTree(), &session->tree());
+    }
+
+    void enterChildFormatFailsClosedOnNodeNotFoundAndMissingTargetFormat() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        auto session = AnalysisSession::openFile(fixturePath);
+        QVERIFY(session != nullptr);
+        const auto batch = session->analyzeBatch();
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
+
+        const auto catalog = makeCatalogWithOfficialPackages();
+
+        // 1. Node not found
+        const auto res1 = session->enterChildFormat(AnalysisNodeId(99999), catalog);
+        QCOMPARE(res1.status, AnalysisSessionNavigationStatus::NodeNotFound);
+        QCOMPARE(session->navigationDepth(), std::size_t{0});
+        QCOMPARE(&session->activeTree(), &session->tree());
+
+        // 2. Root node has no target format
+        const auto res2 = session->enterChildFormat(session->tree().rootId(), catalog);
+        QCOMPARE(res2.status, AnalysisSessionNavigationStatus::MissingTargetFormat);
+        QCOMPARE(session->navigationDepth(), std::size_t{0});
+        QCOMPARE(&session->activeTree(), &session->tree());
+    }
+
+    void enterChildFormatFailsClosedOnCatalogResolutionErrors() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        auto session = AnalysisSession::openFile(fixturePath);
+        QVERIFY(session != nullptr);
+        const auto batch = session->analyzeBatch();
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
+
+        const auto ascNodeOpt = findNodeByTargetFormat(session->tree(), session->tree().rootId(), QStringLiteral("audio.aac.asc"));
+        QVERIFY(ascNodeOpt.has_value());
+
+        // Empty catalog -> MissingContent
+        RulePackageCatalog emptyCatalog;
+        const auto res = session->enterChildFormat(*ascNodeOpt, emptyCatalog);
+        QCOMPARE(res.status, AnalysisSessionNavigationStatus::MissingContent);
+        QCOMPARE(session->navigationDepth(), std::size_t{0});
+        QCOMPARE(&session->activeTree(), &session->tree());
+    }
+
+    void returnToParentAtRootIsNoOp() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        auto session = AnalysisSession::openFile(fixturePath);
+        QVERIFY(session != nullptr);
+
+        const auto ret = session->returnToParent();
+        QCOMPARE(ret.status, AnalysisSessionReturnStatus::AtRoot);
+        QVERIFY(!ret.restoredParentTargetNodeId.has_value());
+        QCOMPARE(ret.activeTree, &session->tree());
+        QCOMPARE(session->navigationDepth(), std::size_t{0});
+    }
+
+    void supportsRepeatedEnterAndReturnCyclesWithoutStaleState() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        auto session = AnalysisSession::openFile(fixturePath);
+        QVERIFY(session != nullptr);
+        const auto batch = session->analyzeBatch();
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
+
+        const auto catalog = makeCatalogWithOfficialPackages();
+        const auto ascNodeOpt = findNodeByTargetFormat(session->tree(), session->tree().rootId(), QStringLiteral("audio.aac.asc"));
+        QVERIFY(ascNodeOpt.has_value());
+        const auto ascNodeId = *ascNodeOpt;
+
+        for (int cycle = 0; cycle < 3; ++cycle) {
+            const auto navResult = session->enterChildFormat(ascNodeId, catalog);
+            QVERIFY2(navResult.succeeded(), qPrintable(navResult.errorMessage));
+            QCOMPARE(session->navigationDepth(), std::size_t{1});
+            QVERIFY(session->canReturnToParent());
+
+            const auto retResult = session->returnToParent();
+            QCOMPARE(retResult.status, AnalysisSessionReturnStatus::Returned);
+            QCOMPARE(session->navigationDepth(), std::size_t{0});
+            QCOMPARE(&session->activeTree(), &session->tree());
+        }
+    }
+
+    void sessionDocumentPersistenceIgnoresNavigationStack() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString docPath = directory.filePath(QStringLiteral("saved.svdoc"));
+
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        auto session = AnalysisSession::openFile(fixturePath);
+        QVERIFY(session != nullptr);
+        const auto batch = session->analyzeBatch();
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
+
+        const auto catalog = makeCatalogWithOfficialPackages();
+        const auto ascNodeOpt = findNodeByTargetFormat(session->tree(), session->tree().rootId(), QStringLiteral("audio.aac.asc"));
+        QVERIFY(ascNodeOpt.has_value());
+        const auto ascNodeId = *ascNodeOpt;
+
+        const auto navResult = session->enterChildFormat(ascNodeId, catalog);
+        QVERIFY(navResult.succeeded());
+        QCOMPARE(session->navigationDepth(), std::size_t{1});
+
+        SessionUserState state;
+        state.view.selectedSourceBitOffset = 1168;
+        QString saveError;
+        QVERIFY2(session->saveSession(docPath, state, &saveError), qPrintable(saveError));
+
+        const auto restore = AnalysisSession::restoreSession(docPath, catalog);
+        QCOMPARE(restore.status, AnalysisSessionRestoreStatus::Restored);
+        QVERIFY(restore.session != nullptr);
+        QCOMPARE(restore.session->navigationDepth(), std::size_t{0});
+        QVERIFY(!restore.session->canReturnToParent());
+        QCOMPARE(&restore.session->activeTree(), &restore.session->tree());
     }
 };
 

@@ -8,11 +8,17 @@
 #include <streamview/rules/aac_adts_analyzer.h>
 #include <streamview/rules/aac_adts_detector.h>
 #include <streamview/rules/analysis_cache_owner.h>
+#include <streamview/rules/dsl.h>
+#include <streamview/rules/dsl_ir.h>
 #include <streamview/rules/h264_annex_b_analyzer.h>
 #include <streamview/rules/h264_annex_b_detector.h>
 #include <streamview/rules/mp4_box_detector.h>
 #include <streamview/rules/mp4_isobmff_analyzer.h>
+#include <streamview/rules/payload_transform.h>
 #include <streamview/rules/rule_catalog.h>
+#include <streamview/rules/rule_execution_session.h>
+#include <streamview/rules/rule_package.h>
+#include <streamview/rules/structural_entry_runner.h>
 
 #include <QString>
 #include <QtGlobal>
@@ -21,6 +27,7 @@
 #include <future>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -58,6 +65,62 @@ struct AnalysisBatchResult final {
 
     [[nodiscard]] bool complete() const noexcept {
         return status == AnalysisBatchStatus::Complete;
+    }
+};
+
+struct NavigationFrame final {
+    core::AnalysisNodeId parentTargetNodeId;
+    QString targetFormat;
+    std::shared_ptr<const rules::RulePackage> package;
+    rules::RulePackageEntryPoint entryPoint;
+    core::SourceMapping sourceMapping;
+    std::shared_ptr<core::AnalysisTree> tree;
+    core::AnalysisNodeId childRootStructureNodeId;
+};
+
+enum class AnalysisSessionNavigationStatus : quint8 {
+    Entered,
+    NodeNotFound,
+    MissingTargetFormat,
+    InvalidTargetLocation,
+    MissingContent,
+    VersionConflict,
+    IncompatibleLanguage,
+    IncompatibleEngine,
+    InvalidRulePackage,
+    InvalidDefinition,
+    Unsupported,
+    TruncatedSource,
+    InvalidSyntax,
+    DependencyUnavailable,
+    SourceError,
+    Cancelled,
+    ResourceLimit,
+};
+
+struct AnalysisSessionNavigationResult final {
+    AnalysisSessionNavigationStatus status = AnalysisSessionNavigationStatus::InvalidDefinition;
+    std::optional<core::AnalysisNodeId> childRootStructureNodeId;
+    std::shared_ptr<core::AnalysisTree> tree;
+    QString errorMessage;
+
+    [[nodiscard]] bool succeeded() const noexcept {
+        return status == AnalysisSessionNavigationStatus::Entered && tree != nullptr;
+    }
+};
+
+enum class AnalysisSessionReturnStatus : quint8 {
+    Returned,
+    AtRoot,
+};
+
+struct AnalysisSessionReturnResult final {
+    AnalysisSessionReturnStatus status = AnalysisSessionReturnStatus::AtRoot;
+    std::optional<core::AnalysisNodeId> restoredParentTargetNodeId;
+    const core::AnalysisTree* activeTree = nullptr;
+
+    [[nodiscard]] bool returned() const noexcept {
+        return status == AnalysisSessionReturnStatus::Returned;
     }
 };
 
@@ -135,6 +198,20 @@ public:
                                    const SessionUserState& userState,
                                    QString* errorMessage = nullptr) const;
 
+    [[nodiscard]] AnalysisSessionNavigationResult enterChildFormat(
+        core::AnalysisNodeId nodeId,
+        const rules::RulePackageCatalog& catalog,
+        const rules::StructuralExecutionOptions& options = {});
+    [[nodiscard]] AnalysisSessionReturnResult returnToParent();
+    [[nodiscard]] const core::AnalysisTree& activeTree() const noexcept {
+        return navigationStack_.empty() ? tree() : *navigationStack_.back().tree;
+    }
+    [[nodiscard]] std::size_t navigationDepth() const noexcept { return navigationStack_.size(); }
+    [[nodiscard]] bool canReturnToParent() const noexcept { return !navigationStack_.empty(); }
+    [[nodiscard]] const NavigationFrame* currentNavigationFrame() const noexcept {
+        return navigationStack_.empty() ? nullptr : &navigationStack_.back();
+    }
+
 private:
     AnalysisSession(std::unique_ptr<core::RandomAccessSource> source,
                     QString sourcePath,
@@ -159,6 +236,11 @@ private:
     void acceptCacheWrite(rules::AnalysisCacheOwnerWriteSubmission submission);
     void publishCachePages(const rules::H264AnnexBAnalysisBatch& batch);
 
+    struct SubFormatSession final {
+        std::shared_ptr<core::AnalysisTree> tree;
+        std::unique_ptr<rules::RuleExecutionSession> ruleSession;
+    };
+
     std::unique_ptr<core::RandomAccessSource> source_;
     QString sourcePath_;
     core::SourcePage initialPage_;
@@ -174,6 +256,8 @@ private:
     quint64 nextProgressiveCachePageIndex_ = 0;
     bool materializedCacheSubmitted_ = false;
     bool analysisStarted_ = false;
+    std::vector<NavigationFrame> navigationStack_;
+    std::unordered_map<QString, SubFormatSession> subFormatSessions_;
 };
 
 enum class AnalysisSessionRestoreStatus : quint8 {

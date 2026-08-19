@@ -470,7 +470,27 @@ CompoundStructuralRunner::execute(const DslTypedProgram& program,
             QStringLiteral("Header execution did not produce a structure node"));
     }
 
-    if (request.requireExactConsumption &&
+    const bool singleMappingAutoDispatch =
+        request.autoDispatchPayload && (request.headerMapping == request.payloadMapping);
+
+    if (headerResult.bitsConsumed == 0 || (headerResult.bitsConsumed % 8U) != 0 ||
+        headerResult.bitsConsumed > request.headerMapping->logicalBitLength()) {
+        core::ParseDiagnostic diag;
+        diag.code = core::DiagnosticCode::InvalidSyntax;
+        diag.severity = core::DiagnosticSeverity::Error;
+        diag.message = QStringLiteral("Header consumed invalid or unaligned bits");
+        if (!request.tree->markPartial(*result.headerNodeId, core::MaterializationState::Invalid,
+                                       std::move(diag))) {
+            return rollbackAndReturn(
+                DslExecutionStatus::InvalidDefinition,
+                QStringLiteral("Failed to invalidate header"));
+        }
+        return rollbackAndReturn(
+            DslExecutionStatus::InvalidSyntax,
+            QStringLiteral("Header consumed invalid or unaligned bits"));
+    }
+
+    if (!singleMappingAutoDispatch && request.requireExactConsumption &&
         headerResult.bitsConsumed != request.headerMapping->logicalBitLength()) {
         core::ParseDiagnostic diag;
         diag.code = core::DiagnosticCode::InvalidSyntax;
@@ -538,6 +558,23 @@ CompoundStructuralRunner::execute(const DslTypedProgram& program,
         result.selectedPayloadCaseValue = matchedCase->value;
         if (!matchedCase->structureIndex.has_value()) {
             result.selectedPayloadStructureIndex = std::nullopt;
+            if (singleMappingAutoDispatch && request.requireExactConsumption &&
+                headerResult.bitsConsumed != request.headerMapping->logicalBitLength()) {
+                core::ParseDiagnostic diag;
+                diag.code = core::DiagnosticCode::InvalidSyntax;
+                diag.severity = core::DiagnosticSeverity::Error;
+                diag.message = QStringLiteral("Header did not consume all available logical bits");
+                if (!request.tree->markPartial(*result.headerNodeId,
+                                               core::MaterializationState::Invalid,
+                                               std::move(diag))) {
+                    return rollbackAndReturn(
+                        DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("Failed to invalidate an incompletely consumed header"));
+                }
+                return rollbackAndReturn(
+                    DslExecutionStatus::InvalidSyntax,
+                    QStringLiteral("Header did not consume all available logical bits"));
+            }
             return finalizeHeaderOnly();
         }
 
@@ -626,8 +663,12 @@ CompoundStructuralRunner::execute(const DslTypedProgram& program,
                                  QStringLiteral("Payload inspection budget is exhausted"));
     }
 
+    quint64 effectivePayloadLogicalStart = request.payloadLogicalStart;
+    if (singleMappingAutoDispatch && request.payloadLogicalStart == 0) {
+        effectivePayloadLogicalStart = headerResult.bitsConsumed;
+    }
     const quint64 payloadInputBitLength =
-        request.payloadMapping->logicalBitLength() - request.payloadLogicalStart;
+        request.payloadMapping->logicalBitLength() - effectivePayloadLogicalStart;
     if (payloadInputBitLength == 0) {
         core::ParseDiagnostic diag;
         diag.code = core::DiagnosticCode::InvalidSyntax;
@@ -642,7 +683,7 @@ CompoundStructuralRunner::execute(const DslTypedProgram& program,
     PayloadTransformRequest transformReq;
     transformReq.source = request.source;
     transformReq.inputMapping = request.payloadMapping;
-    transformReq.logicalBitStart = request.payloadLogicalStart;
+    transformReq.logicalBitStart = effectivePayloadLogicalStart;
     transformReq.logicalBitLength = payloadInputBitLength;
     transformReq.cancellation = request.options.cancellation;
     transformReq.maximumInspectedBytes = request.options.limits.maximumInspectedBytes;
