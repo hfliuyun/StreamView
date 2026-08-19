@@ -20,6 +20,7 @@ using streamview::core::SourceReadStatus;
 using streamview::core::SourcePager;
 using streamview::core::SourceSpan;
 using streamview::rules::DslParser;
+using streamview::rules::DslPayloadTargetKind;
 using streamview::rules::H264AnnexBAnalysisBatch;
 using streamview::rules::H264AnnexBAnalysisStatus;
 using streamview::rules::H264AnnexBAnalyzer;
@@ -983,7 +984,8 @@ private slots:
         QVERIFY(parsed.program.payloadDispatch.has_value());
         const auto& dispatch = *parsed.program.payloadDispatch;
         QCOMPARE(dispatch.viewKind, QStringLiteral("rbsp"));
-        QCOMPARE(dispatch.sequenceName, QStringLiteral("nal_units"));
+        QCOMPARE(dispatch.targetKind, DslPayloadTargetKind::Sequence);
+        QCOMPARE(dispatch.targetName, QStringLiteral("nal_units"));
         QCOMPARE(dispatch.controllerFieldName, QStringLiteral("nal_unit_type"));
         QCOMPARE(dispatch.cases.size(), std::size_t(8));
         QCOMPARE(dispatch.cases.at(0).value, quint64(1));

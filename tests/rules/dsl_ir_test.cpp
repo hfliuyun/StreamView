@@ -17,6 +17,7 @@ using streamview::rules::DslEndian;
 using streamview::rules::DslEntryKind;
 using streamview::rules::DslOpcode;
 using streamview::rules::DslParser;
+using streamview::rules::DslPayloadTargetKind;
 using streamview::rules::DslScalarType;
 using streamview::rules::DslTypedExpressionKind;
 using streamview::rules::DslValueTypeKind;
@@ -2342,7 +2343,8 @@ private slots:
         const auto& program = *compiled.program;
         QVERIFY(program.payloadDispatch.has_value());
         const auto& dispatch = *program.payloadDispatch;
-        QCOMPARE(dispatch.scanIndex, quint32(0));
+        QCOMPARE(dispatch.targetKind, DslPayloadTargetKind::Sequence);
+        QCOMPARE(dispatch.targetIndex, quint32(0));
         QCOMPARE(dispatch.controllerFieldIndex, quint32(1));
         QCOMPARE(dispatch.viewKind, QStringLiteral("rbsp"));
         QCOMPARE(dispatch.metadata.description, QStringLiteral("Payload selection."));
@@ -2364,6 +2366,67 @@ private slots:
                              [](const auto& instruction) {
                                  return instruction.opcode > DslOpcode::EndStructure;
                              }));
+    }
+
+    void compilesStructuralPayloadDispatchWithOpaqueViewKind() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header { bits<8> kind; }
+            struct Body { bits<8> value; }
+            payload<none> Header switch (kind) {
+                case 1: Body;
+                case 2: empty;
+            }
+            @index(progressive)
+            sequence<Header> headers = scan(h264_start_code);
+            entry headers;
+        )"));
+        QVERIFY2(parsed.succeeded(), parsed.diagnostics.empty()
+                                         ? ""
+                                         : qPrintable(parsed.diagnostics.front().message));
+
+        const auto compiled =
+            DslCompiler::compileForTarget(parsed.program, QStringLiteral("Header"));
+
+        QVERIFY2(compiled.succeeded(), compiled.diagnostics.empty()
+                                           ? ""
+                                           : qPrintable(compiled.diagnostics.front().message));
+        QVERIFY(compiled.program->payloadDispatch.has_value());
+        const auto& dispatch = *compiled.program->payloadDispatch;
+        QCOMPARE(dispatch.targetKind, DslPayloadTargetKind::Structure);
+        const auto headerIndex = compiled.program->structureIndex(QStringLiteral("Header"));
+        QVERIFY(headerIndex.has_value());
+        QCOMPARE(dispatch.targetIndex, *headerIndex);
+        QCOMPARE(compiled.program->payloadDispatchHeaderStructureIndex(), headerIndex);
+        QCOMPARE(dispatch.viewKind, QStringLiteral("none"));
+        QCOMPARE(compiled.program->entry.kind, DslEntryKind::Structure);
+        QCOMPARE(compiled.program->entry.targetIndex, *headerIndex);
+    }
+
+    void targetAwareCompilerRejectsEntryDispatchHeaderMismatch() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct DefaultEntry { bits<8> value; }
+            struct Header { bits<8> kind; }
+            struct Body { bits<8> value; }
+            payload<none> Header switch (kind) {
+                case 1: Body;
+            }
+            entry DefaultEntry;
+        )"));
+        QVERIFY2(parsed.succeeded(), parsed.diagnostics.empty()
+                                         ? ""
+                                         : qPrintable(parsed.diagnostics.front().message));
+
+        const auto defaultEntry = DslCompiler::compile(parsed.program);
+        const auto headerEntry =
+            DslCompiler::compileForTarget(parsed.program, QStringLiteral("Header"));
+        const auto payloadEntry =
+            DslCompiler::compileForTarget(parsed.program, QStringLiteral("Body"));
+
+        QVERIFY(!defaultEntry.succeeded());
+        QVERIFY(hasDiagnostic(defaultEntry, DslDiagnosticCode::InvalidPayloadDispatch));
+        QVERIFY(headerEntry.succeeded());
+        QVERIFY(!payloadEntry.succeeded());
+        QVERIFY(hasDiagnostic(payloadEntry, DslDiagnosticCode::InvalidPayloadDispatch));
     }
 
     void rejectsPayloadDispatchThatSurvivesParsingWithAnInvalidController() {

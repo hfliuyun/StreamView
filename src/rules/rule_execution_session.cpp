@@ -459,45 +459,39 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
             ? &program_.structs.at(*request.payloadStructureIndex)
             : nullptr;
 
-    bool anyDispatchPayloadUsesContext = false;
-    if (request.autoDispatchPayload && program_.payloadDispatch.has_value()) {
-        for (const auto& payloadCase : program_.payloadDispatch->cases) {
-            if (payloadCase.structureIndex.has_value() &&
-                *payloadCase.structureIndex < program_.structs.size()) {
-                const auto& ps = program_.structs.at(*payloadCase.structureIndex);
-                if (ps.contextDefinition || !ps.contextImports.empty()) {
-                    anyDispatchPayloadUsesContext = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    const bool usesContext =
+    const bool usesStaticContext =
         headerStructure.contextDefinition || !headerStructure.contextImports.empty() ||
         (payloadStructure != nullptr &&
-         (payloadStructure->contextDefinition || !payloadStructure->contextImports.empty())) ||
-        anyDispatchPayloadUsesContext;
+         (payloadStructure->contextDefinition || !payloadStructure->contextImports.empty()));
 
-    if (usesContext &&
+    if (usesStaticContext &&
         (!request.enclosingSourceSpan || request.enclosingSourceSpan->bitLength() == 0)) {
         result.status = RuleExecutionStatus::InvalidDefinition;
         result.errorMessage =
             QStringLiteral("Context execution requires a non-empty enclosing source span");
         return result;
     }
-    if (usesContext) {
-        const auto headerRange =
-            core::LogicalRange::create(core::LogicalBitAddress(request.headerMapping->viewId(), 0),
-                                       request.headerMapping->logicalBitLength());
-        const auto headerLocation =
-            headerRange ? request.headerMapping->locate(*headerRange) : std::nullopt;
-        if (!headerLocation ||
-            std::any_of(headerLocation->sourceSpans().begin(), headerLocation->sourceSpans().end(),
-                        [&enclosing = *request.enclosingSourceSpan](const core::SourceSpan& span) {
-                            return span.start() < enclosing.start() ||
-                                   enclosing.endExclusive() < span.endExclusive();
-                        })) {
+    const auto mappingIsWithinEnclosing =
+        [&request](const core::SourceMapping& mapping, quint64 logicalStart) {
+            if (!request.enclosingSourceSpan ||
+                logicalStart > mapping.logicalBitLength()) {
+                return false;
+            }
+            const quint64 logicalLength = mapping.logicalBitLength() - logicalStart;
+            const auto range = core::LogicalRange::create(
+                core::LogicalBitAddress(mapping.viewId(), logicalStart), logicalLength);
+            const auto location = range ? mapping.locate(*range) : std::nullopt;
+            return location &&
+                   std::none_of(
+                       location->sourceSpans().begin(), location->sourceSpans().end(),
+                       [&enclosing = *request.enclosingSourceSpan](const core::SourceSpan& span) {
+                           return span.start() < enclosing.start() ||
+                                  enclosing.endExclusive() < span.endExclusive();
+                       });
+        };
+
+    if (usesStaticContext) {
+        if (!mappingIsWithinEnclosing(*request.headerMapping, 0)) {
             result.status = RuleExecutionStatus::InvalidDefinition;
             result.errorMessage =
                 QStringLiteral("Context execution mapping is outside its enclosing source span");
@@ -505,23 +499,8 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
         }
 
         if (request.payloadMapping != nullptr) {
-            const quint64 payloadLogicalLength =
-                request.payloadLogicalStart <= request.payloadMapping->logicalBitLength()
-                    ? (request.payloadMapping->logicalBitLength() - request.payloadLogicalStart)
-                    : 0;
-            const auto payloadRange =
-                core::LogicalRange::create(core::LogicalBitAddress(request.payloadMapping->viewId(),
-                                                                   request.payloadLogicalStart),
-                                           payloadLogicalLength);
-            const auto payloadLocation =
-                payloadRange ? request.payloadMapping->locate(*payloadRange) : std::nullopt;
-            if (!payloadLocation ||
-                std::any_of(
-                    payloadLocation->sourceSpans().begin(), payloadLocation->sourceSpans().end(),
-                    [&enclosing = *request.enclosingSourceSpan](const core::SourceSpan& span) {
-                        return span.start() < enclosing.start() ||
-                               enclosing.endExclusive() < span.endExclusive();
-                    })) {
+            if (!mappingIsWithinEnclosing(*request.payloadMapping,
+                                          request.payloadLogicalStart)) {
                 result.status = RuleExecutionStatus::InvalidDefinition;
                 result.errorMessage = QStringLiteral(
                     "Context execution mapping is outside its enclosing source span");
@@ -888,18 +867,46 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
                               QStringLiteral("materialized-node"), false)) {
         return result;
     }
-    if ((request.payloadStructureIndex.has_value() || request.autoDispatchPayload) &&
-        !applyRemainingBudget(compoundLimits_.maximumInspectedBytes, compoundBytesInspected_,
-                              request.options.limits.maximumInspectedBytes,
-                              &compoundReq.options.limits.maximumInspectedBytes,
-                              QStringLiteral("inspection"), true)) {
-        return result;
+    if (request.payloadStructureIndex.has_value() || request.autoDispatchPayload) {
+        const bool autoInspectionExhausted =
+            request.autoDispatchPayload && compoundLimits_.maximumInspectedBytes != 0 &&
+            compoundBytesInspected_ >= compoundLimits_.maximumInspectedBytes;
+        if (autoInspectionExhausted) {
+            compoundReq.options.limits.maximumInspectedBytes = 0;
+            compoundReq.inspectionBudgetExhausted = true;
+        } else if (!applyRemainingBudget(compoundLimits_.maximumInspectedBytes,
+                                         compoundBytesInspected_,
+                                         request.options.limits.maximumInspectedBytes,
+                                         &compoundReq.options.limits.maximumInspectedBytes,
+                                         QStringLiteral("inspection"), true)) {
+            return result;
+        }
     }
     compoundReq.requireExactConsumption = request.requireExactConsumption;
     compoundReq.headerContextValueResolver = headerContextValueResolver;
     compoundReq.payloadContextValueResolver = payloadContextValueResolver;
     compoundReq.autoDispatchPayload = request.autoDispatchPayload;
     compoundReq.payloadContextResolverFactory = [&](quint32 payloadStructureIndex) {
+        if (payloadStructureIndex >= program_.structs.size()) {
+            throw std::runtime_error("Selected payload structure index is out of range");
+        }
+        const DslTypedStruct& selectedPayload = program_.structs.at(payloadStructureIndex);
+        const bool selectedPayloadUsesContext =
+            selectedPayload.contextDefinition || !selectedPayload.contextImports.empty();
+        if (selectedPayloadUsesContext) {
+            if (!request.enclosingSourceSpan ||
+                request.enclosingSourceSpan->bitLength() == 0) {
+                throw std::runtime_error(
+                    "Selected payload context requires a non-empty enclosing source span");
+            }
+            if (!mappingIsWithinEnclosing(*request.headerMapping, 0) ||
+                request.payloadMapping == nullptr ||
+                !mappingIsWithinEnclosing(*request.payloadMapping,
+                                          request.payloadLogicalStart)) {
+                throw std::runtime_error(
+                    "Selected payload context mapping is outside its enclosing source span");
+            }
+        }
         return makeContextValueResolver(payloadPhase, payloadStructureIndex);
     };
     compoundReq.transactionHooks = compoundHooks;

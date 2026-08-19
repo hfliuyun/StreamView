@@ -30,6 +30,7 @@ using streamview::core::SourceSpan;
 using streamview::rules::CompoundRuleExecutionRequest;
 using streamview::rules::CompoundRuleExecutionResult;
 using streamview::rules::DslCompiler;
+using streamview::rules::DslExecutionLimits;
 using streamview::rules::DslExecutionStatus;
 using streamview::rules::DslParser;
 using streamview::rules::H264RbspPayloadTransformProvider;
@@ -3587,6 +3588,184 @@ class RuleExecutionSessionTest final : public QObject {
 
         QCOMPARE(limitedSession.runCompound(req1).status, RuleExecutionStatus::Materialized);
         QCOMPARE(limitedSession.runCompound(req2).status, RuleExecutionStatus::ResourceLimit);
+    }
+
+    void compoundAutoDispatchIgnoresContextRequirementsInUnselectedCases() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header { bits<8> kind; }
+            @context("h264-sps", id)
+            struct ContextPayload {
+                bits<8> id;
+                bits<8> value @context_export;
+            }
+            payload<none> Header switch (kind) {
+                case 1: empty;
+                case 2: ContextPayload;
+            }
+            entry Header;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const MemorySource source(bytes({1, 0, 3, 0}));
+        const auto emptyHeader = makeView(1, 0, 8);
+        const auto emptyPayload = makeView(2, 8, 8);
+        const auto unmatchedHeader = makeView(3, 16, 8);
+        const auto unmatchedPayload = makeView(4, 24, 8);
+        auto tree = AnalysisTree::create(QStringLiteral("unselected-context"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+        const auto headerIndex = *compiled.program->structureIndex(QStringLiteral("Header"));
+
+        int prepareCount = 0;
+        int commitWithResultCount = 0;
+        int commitCount = 0;
+        int rollbackCount = 0;
+        CompoundRuleExecutionRequest request;
+        request.source = &source;
+        request.headerMapping = &emptyHeader->mapping;
+        request.headerStructureIndex = headerIndex;
+        request.payloadMapping = &emptyPayload->mapping;
+        request.tree = &*tree;
+        request.parentId = tree->rootId();
+        request.autoDispatchPayload = true;
+        request.transactionHooks.onPrepareCommit = [&](const auto&) {
+            ++prepareCount;
+            return std::nullopt;
+        };
+        request.transactionHooks.onCommitWithResult = [&](const auto&) {
+            ++commitWithResultCount;
+        };
+        request.transactionHooks.onCommit = [&]() { ++commitCount; };
+        request.transactionHooks.onRollback = [&]() { ++rollbackCount; };
+
+        const auto empty = session.runCompound(request);
+        QCOMPARE(empty.status, RuleExecutionStatus::Materialized);
+        QCOMPARE(prepareCount, 1);
+        QCOMPARE(commitWithResultCount, 1);
+        QCOMPARE(commitCount, 1);
+        QCOMPARE(rollbackCount, 0);
+        QCOMPARE(session.publishedDefinitionCount(), std::size_t(0));
+
+        request.headerMapping = &unmatchedHeader->mapping;
+        request.payloadMapping = &unmatchedPayload->mapping;
+        const auto unmatched = session.runCompound(request);
+        QCOMPARE(unmatched.status, RuleExecutionStatus::Unsupported);
+        QCOMPARE(prepareCount, 1);
+        QCOMPARE(commitWithResultCount, 1);
+        QCOMPARE(commitCount, 1);
+        QCOMPARE(rollbackCount, 1);
+        QCOMPARE(session.publishedDefinitionCount(), std::size_t(0));
+    }
+
+    void compoundAutoDispatchAllowsEmptyCaseAfterInspectionBudgetExhaustion() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header { bits<8> kind; }
+            struct Body { bits<8> value; }
+            payload<none> Header switch (kind) {
+                case 1: empty;
+                case 2: Body;
+            }
+            entry Header;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const MemorySource source(bytes({2, 0xAA, 1, 0, 2, 0xBB}));
+        const auto bodyHeader = makeView(1, 0, 8);
+        const auto bodyPayload = makeView(2, 8, 8);
+        const auto emptyHeader = makeView(3, 16, 8);
+        const auto emptyPayload = makeView(4, 24, 8);
+        const auto exhaustedHeader = makeView(5, 32, 8);
+        const auto exhaustedPayload = makeView(6, 40, 8);
+        auto tree = AnalysisTree::create(QStringLiteral("empty-after-inspection"));
+        QVERIFY(tree.has_value());
+        DslExecutionLimits limits;
+        limits.maximumInspectedBytes = 1;
+        RuleExecutionSession session(*compiled.program, 0, limits);
+        const auto headerIndex = *compiled.program->structureIndex(QStringLiteral("Header"));
+
+        CompoundRuleExecutionRequest request;
+        request.source = &source;
+        request.headerMapping = &bodyHeader->mapping;
+        request.headerStructureIndex = headerIndex;
+        request.payloadMapping = &bodyPayload->mapping;
+        request.tree = &*tree;
+        request.parentId = tree->rootId();
+        request.autoDispatchPayload = true;
+
+        const auto body = session.runCompound(request);
+        QCOMPARE(body.status, RuleExecutionStatus::Materialized);
+        QCOMPARE(body.execution.inspectedByteCount, quint64(1));
+
+        request.headerMapping = &emptyHeader->mapping;
+        request.payloadMapping = &emptyPayload->mapping;
+        const auto empty = session.runCompound(request);
+        QCOMPARE(empty.status, RuleExecutionStatus::Materialized);
+        QCOMPARE(empty.execution.inspectedByteCount, quint64(0));
+        QCOMPARE(empty.execution.selectedPayloadStructureIndex, std::nullopt);
+
+        int rollbackCount = 0;
+        request.headerMapping = &exhaustedHeader->mapping;
+        request.payloadMapping = &exhaustedPayload->mapping;
+        request.transactionHooks.onRollback = [&]() { ++rollbackCount; };
+        const auto exhausted = session.runCompound(request);
+        QCOMPARE(exhausted.status, RuleExecutionStatus::ResourceLimit);
+        QCOMPARE(exhausted.execution.inspectedByteCount, quint64(0));
+        QCOMPARE(rollbackCount, 1);
+        QVERIFY(exhausted.execution.headerNodeId.has_value());
+        QCOMPARE(tree->node(*exhausted.execution.headerNodeId)->state(),
+                 streamview::core::MaterializationState::Invalid);
+    }
+
+    void compoundAutoDispatchRejectsSelectedContextWithoutEnclosingSpan() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header { bits<8> kind; }
+            @context("h264-sps", id)
+            struct ContextPayload {
+                bits<8> id;
+                bits<8> value @context_export;
+            }
+            payload<none> Header switch (kind) {
+                case 1: empty;
+                case 2: ContextPayload;
+            }
+            entry Header;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const MemorySource source(bytes({2, 4, 8}));
+        const auto header = makeView(1, 0, 8);
+        const auto payload = makeView(2, 8, 16);
+        auto tree = AnalysisTree::create(QStringLiteral("selected-context-no-envelope"));
+        QVERIFY(tree.has_value());
+        RuleExecutionSession session(*compiled.program);
+        const auto headerIndex = *compiled.program->structureIndex(QStringLiteral("Header"));
+
+        int rollbackCount = 0;
+        CompoundRuleExecutionRequest request;
+        request.source = &source;
+        request.headerMapping = &header->mapping;
+        request.headerStructureIndex = headerIndex;
+        request.payloadMapping = &payload->mapping;
+        request.tree = &*tree;
+        request.parentId = tree->rootId();
+        request.autoDispatchPayload = true;
+        request.transactionHooks.onRollback = [&]() { ++rollbackCount; };
+
+        const auto result = session.runCompound(request);
+
+        QCOMPARE(result.status, RuleExecutionStatus::InvalidDefinition);
+        QVERIFY(result.errorMessage.contains(QStringLiteral("enclosing source span")));
+        QCOMPARE(rollbackCount, 1);
+        QCOMPARE(session.publishedDefinitionCount(), std::size_t(0));
+        QVERIFY(result.execution.headerNodeId.has_value());
+        QCOMPARE(tree->node(*result.execution.headerNodeId)->state(),
+                 streamview::core::MaterializationState::Invalid);
     }
 };
 

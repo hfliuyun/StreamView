@@ -1723,10 +1723,10 @@ private:
         expect(DslTokenKind::Less, QStringLiteral("'<' after payload"));
         expectIdentifier(&dispatch.viewKind, QStringLiteral("payload view kind"));
         expect(DslTokenKind::Greater, QStringLiteral("'>' after payload view kind"));
-        expectIdentifier(&dispatch.sequenceName, QStringLiteral("payload sequence name"));
+        expectIdentifier(&dispatch.targetName, QStringLiteral("payload target name"));
         if (!matchIdentifier(QStringLiteral("switch"))) {
             error(DslDiagnosticCode::MissingToken,
-                  QStringLiteral("Expected switch after the payload sequence name"));
+                  QStringLiteral("Expected switch after the payload target name"));
         }
         expect(DslTokenKind::LeftParen, QStringLiteral("'(' after switch"));
         dispatch.controllerRange = current().range;
@@ -3746,13 +3746,7 @@ private:
         return false;
     }
 
-    void validatePayloadDispatch(const DslPayloadDispatch& dispatch) {
-        if (dispatch.viewKind != QStringLiteral("rbsp")) {
-            result_.diagnostics.push_back(
-                {DslDiagnosticCode::InvalidPayloadDispatch,
-                 QStringLiteral("The only accepted payload view kind is rbsp"),
-                 dispatch.range});
-        }
+    void validatePayloadDispatch(DslPayloadDispatch& dispatch) {
         if (dispatch.cases.empty()) {
             result_.diagnostics.push_back(
                 {DslDiagnosticCode::InvalidPayloadDispatch,
@@ -3762,31 +3756,45 @@ private:
 
         const DslProgressiveScan* scan = nullptr;
         for (const DslProgressiveScan& candidate : result_.program.scans) {
-            if (candidate.name == dispatch.sequenceName) {
+            if (candidate.name == dispatch.targetName) {
                 scan = &candidate;
                 break;
             }
         }
-        if (scan == nullptr) {
+        const DslStruct* targetStructure = nullptr;
+        for (const DslStruct& candidate : result_.program.structs) {
+            if (candidate.name == dispatch.targetName) {
+                targetStructure = &candidate;
+                break;
+            }
+        }
+        if (scan != nullptr && targetStructure != nullptr) {
             result_.diagnostics.push_back(
-                {DslDiagnosticCode::UnknownReference,
-                 QStringLiteral("A payload dispatch must name a declared sequence"),
+                {DslDiagnosticCode::InvalidPayloadDispatch,
+                 QStringLiteral("A payload dispatch target is ambiguous"),
                  dispatch.range});
             return;
         }
-        if (result_.program.entry.targetName != scan->name) {
+        if (scan == nullptr && targetStructure == nullptr) {
             result_.diagnostics.push_back(
-                {DslDiagnosticCode::InvalidPayloadDispatch,
-                 QStringLiteral("A payload dispatch requires an entry naming its sequence"),
+                {DslDiagnosticCode::UnknownReference,
+                 QStringLiteral("A payload dispatch must name a declared sequence or structure"),
                  dispatch.range});
+            return;
         }
 
         const DslStruct* element = nullptr;
-        for (const DslStruct& candidate : result_.program.structs) {
-            if (candidate.name == scan->elementType) {
-                element = &candidate;
-                break;
+        if (scan != nullptr) {
+            dispatch.targetKind = DslPayloadTargetKind::Sequence;
+            for (const DslStruct& candidate : result_.program.structs) {
+                if (candidate.name == scan->elementType) {
+                    element = &candidate;
+                    break;
+                }
             }
+        } else {
+            dispatch.targetKind = DslPayloadTargetKind::Structure;
+            element = targetStructure;
         }
         if (element == nullptr) {
             return;
@@ -3807,15 +3815,15 @@ private:
             result_.diagnostics.push_back(
                 {code,
                  QStringLiteral("A payload controller must be an unsigned scalar bits field "
-                                "declared unconditionally at the top level of the sequence "
-                                "element structure"),
+                                "declared unconditionally at the top level of the target "
+                                "structure"),
                  dispatch.controllerRange});
         } else if (controller->encoding != DslFieldEncoding::Bits || controller->arrayLength) {
             result_.diagnostics.push_back(
                 {DslDiagnosticCode::InvalidPayloadDispatch,
                  QStringLiteral("A payload controller must be an unsigned scalar bits field "
-                                "declared unconditionally at the top level of the sequence "
-                                "element structure"),
+                                "declared unconditionally at the top level of the target "
+                                "structure"),
                  dispatch.controllerRange});
             controller = nullptr;
         }
@@ -3840,11 +3848,11 @@ private:
             if (payloadCase.kind != DslPayloadCaseKind::Structure) {
                 continue;
             }
-            if (payloadCase.targetName == scan->elementType) {
+            if (payloadCase.targetName == element->name) {
                 result_.diagnostics.push_back(
                     {DslDiagnosticCode::InvalidPayloadDispatch,
                      QStringLiteral(
-                         "A payload case target may not be the sequence element structure"),
+                         "A payload case target may not be the dispatch header structure"),
                      payloadCase.range});
                 continue;
             }
