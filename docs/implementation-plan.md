@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-3c-R — Official H.264 Standalone NAL 坐标证据审查整改
-Next Action: 主 Agent 复审 Task P5i-3c-R；未经复审不得开始 Task P5i-4（会话与 UI 导航切片）
-Last Verification: Task P5i-3c-R — Docs SHA `b3b5553370dda50772c69e4734a6e4416ca8e8f0`; Impl SHA `df9801d6e693867adaa67058963435b5fed0ff79`; repair Test SHA `7ac2fb639f28f1247117dbe58cf1e39c50591566`; Hosted CI Run `32253125757` (Windows job `96068527972`, Ubuntu job `96068528274`, macOS job `96068528228` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; StructuralEntryRunnerTest `26` and H264AnnexBAnalyzerTest `174` passed; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
+Last Completed Step: Task P5i-4a — AnalysisSession 语义导航栈与格式中立子格式执行
+Next Action: 主 Agent 复审 Task P5i-4a；未经复审不得开始 Task P5i-4b（UI 面包屑与视图集成）
+Last Verification: Task P5i-4a — Docs SHA `33c286a075dcf6654e8e974e64f84c31165a25e6`, `39bb40d9d83dfbc2a2eeffebfd78c3b708cf3112`; Impl SHA `44f14e2bed987d441990b08f3c3bf27ec3539fbb`; Hosted CI Run `32256128078` (Windows job `96078120911`, Ubuntu job `96078121197`, macOS job `96078121199` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; AnalysisSessionTest `32` passed; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2694,3 +2694,37 @@ Blockers: None
   4. Hosted CI Run `32253125757`：Windows-2022 / Qt 6.10.1 job `96068527972`、Ubuntu-24.04 / Qt 6.11.1 job `96068528274`、macOS-15 / Qt 6.11.1 job `96068528228` 全部 `completed | success`。
   5. 范围确认：未修改生产代码、通用 runtime、AAC/MP4 包、H.264 `.svfmt`；未进入 AnalysisSession、导航栈或 P5i-4 UI，未触及未跟踪 `scratch/`。
   终审结论：原 Task P5i-3c 报告在坐标证据上不完整；P5i-3c-R 修正后通过。Next Action 锁定为主 Agent 复审 Task P5i-3c-R；未经该复审不得开始 Task P5i-4。
+- 2026-08-19：完成 Task P5i-4a —— AnalysisSession 语义导航栈与格式中立子格式执行（Docs SHA `33c286a075dcf6654e8e974e64f84c31165a25e6`, `39bb40d9d83dfbc2a2eeffebfd78c3b708cf3112`；Impl SHA `44f14e2bed987d441990b08f3c3bf27ec3539fbb`）：
+  1. Docs-first（提交 `33c286a075dcf6654e8e974e64f84c31165a25e6` 与 `39bb40d9d83dfbc2a2eeffebfd78c3b708cf3112`）：
+     - 更新双语 ADR-0103，精确定义 `AnalysisSession` 非 QObject 导航栈、`NavigationFrame` 结构、`enterChildFormat` / `returnToParent` / `activeTree` / `navigationDepth` / `canReturnToParent` API 与 17 种结构化导航状态，明确 enter 失败原子回滚保护、根层 return no-op 与 SessionDocument 持久化边界；
+     - 更新双语 ADR-0104 第 8.3 节，精确定义单 SourceMapping 复合执行合同（`singleMappingAutoDispatch`），支持调用方传入目标节点完整映射由引擎自动推导 payload 起点。
+  2. 真实 Red 验证：
+     - 测试先行挂载 8 个 `AnalysisSession` 测试，提供最小桩代码后执行 `ctest -R "analysis_session" --preset dev` 触发真实行为 Red：未进入子格式时 `navResult.succeeded()` 为 false，导航深度为 0，PPS 依赖检查状态等均呈现预期失败。
+  3. 核心与测试实现（提交 `44f14e2bed987d441990b08f3c3bf27ec3539fbb`）：
+     - `src/app/analysis_session.h` / `src/app/analysis_session.cpp`：实现 `navigationStack_`、`NavigationFrame`、`enterChildFormat`、`returnToParent`、`activeTree`、`navigationDepth`、`canReturnToParent`；通过 `RulePackageCatalog::resolveByFormat` 与 `DslCompiler::compileForTarget` 绑定目标包与入口；
+     - `src/rules/compound_structural_runner.cpp`：支持 `singleMappingAutoDispatch` 单映射调用模式；
+     - `tests/app/analysis_session_test.cpp` 扩充 8 个端到端测试用例（`AnalysisSessionTest` 32 个用例全部通过）：
+       - `navigatesIntoAacAscSubFormatAndReturnsToParent`：真实 `mp4_p5h_mp4a_esds.mp4` 成功进入 `audio.aac.asc`，验证字段与物理源坐标，返回后恢复 MP4 active tree 与父节点 ID；
+       - `navigatesIntoH264SpsAndPpsWithContextSharing`：真实 `mp4_p5h_avc1_avcC.mp4` 依次进入 SPS 与 PPS `video.h264.nal`，验证 NAL Header 与 RBSP 处于同一分析树，PPS 成功共享 SPS context；
+       - `standalonePpsWithoutPriorSpsFailsWithDependencyUnavailableAndPreservesState`：无前置 SPS 时进入 PPS 失败返回 `DependencyUnavailable`，active tree 与栈深度保持不变；
+       - `enterChildFormatFailsClosedOnNodeNotFoundAndMissingTargetFormat`：针对不存在节点及无 `@target_format` 节点返回对应错误；
+       - `enterChildFormatFailsClosedOnCatalogResolutionErrors`：catalog 缺失时返回 `MissingContent`；
+       - `returnToParentAtRootIsNoOp`：根层 return 安全无副作用；
+       - `supportsRepeatedEnterAndReturnCyclesWithoutStaleState`：多次进出无陈旧状态残留；
+       - `sessionDocumentPersistenceIgnoresNavigationStack`：会话文档保存与恢复不污染导航栈；
+     - `tests/fixtures/generate_mp4_p5h_fixtures.py`：补齐合成 SPS VUI bitstream restriction 完整字段，同步更新 `tests/rules/mp4_isobmff_analyzer_test.cpp` 对应断言。
+  4. 全量跨平台与矩阵验证：
+     - 本地 dev / ci / sanitize 三套完整构建与 CTest 均全量 `43/43` 通过，sanitize 零警告/零报告；
+     - 四个官方规则文件（`h264_annex_b.svfmt`、`aac_adts.svfmt`、`aac_asc.svfmt`、`mp4_isobmff.svfmt`）`svtool rule check` 全部 `Rule OK`；
+     - `git diff --check` 与 `markdown_hygiene` 干净；
+     - Hosted CI Run `32256128078`：
+       - Windows-2022 / Qt 6.10.1 (job `96078120911`): `completed` | `success`
+       - Ubuntu-24.04 / Qt 6.11.1 (job `96078121197`): `completed` | `success`
+       - macOS-15 / Qt 6.11.1 (job `96078121199`): `completed` | `success`
+  5. 严格边界恪守：
+     - 未修改官方 `rule.toml`、`.svfmt` 或规则包版本；
+     - 未修改 `MainWindow`、UI 面包屑、QWidget 布局或 MainWindow 现有测试；
+     - 未在 `AnalysisSession` 或通用 runtime 中引入任何格式专属分支或硬编码；
+     - 未开始 Task P5i-4b 或 P5j；
+     - 未修改、删除或提交未跟踪 `scratch/`。
+  终审结论：Task P5i-4a 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-4a；未经复审不得开始 Task P5i-4b（UI 面包屑与视图集成）。
