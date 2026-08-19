@@ -83,7 +83,8 @@ This ADR is a design contract only. P5i-3b must implement it in separately revie
    - `TargetName` must match a declared struct in `program.structs` (or a scan in `program.scans`).
    - `controllerFieldName` must be an unsigned bits field in `TargetName`.
    - All case targets must be valid declared structs or `empty`.
-   - Duplicate cases are rejected as `DuplicateName`; missing targets, non-scalar controllers, ambiguous names, and unknown view providers are typed-definition failures.
+   - Duplicate cases are rejected as `DuplicateName`; missing targets, non-scalar controllers, and ambiguous target names are typed-definition failures.
+   - `viewKind` is an opaque DSL identifier. Parsing and compilation preserve it without consulting or hard-coding the provider set; the runtime registry resolves it, and an unregistered provider fails closed with `InvalidDefinition` before payload decoding.
 
 ---
 
@@ -99,14 +100,15 @@ When executing a structural entrypoint with payload dispatch:
      - *Explicit payload mode*: Caller explicitly passes `payloadStructureIndex`, `payloadMapping`, and `transformProviderId` (backward compatible).
      - *Auto typed-dispatch mode*: Caller sets `autoDispatchPayload = true` and supplies `payloadMapping`. The runner dynamically resolves the payload structure and transform provider from `program.payloadDispatch` and the decoded header controller field value.
      - Specifying both explicit `payloadStructureIndex` and `autoDispatchPayload = true` fails closed with `InvalidDefinition`.
-     - Requesting auto-dispatch when `program.payloadDispatch` is absent, when `dispatch.scanIndex` element struct does not match `headerStructureIndex`, or when `payloadMapping` is missing fails closed with `InvalidDefinition`.
+     - Requesting auto-dispatch when `program.payloadDispatch` is absent, when the structure resolved from `dispatch.targetKind` and `dispatch.targetIndex` does not match `headerStructureIndex`, or when `payloadMapping` is missing fails closed with `InvalidDefinition`.
+     - A sequence target resolves to its element structure. A structure target resolves directly to itself and may be executed either as the selected structural entry or as the element structure of the source file's default sequence entry; this permits manifest target selection without duplicating the shared rule source.
 
 2. **Header phase**:
    - Header fields are decoded into the header child and their `FieldLocation` spans map directly to the input `SourceMapping`.
    - The header bit length is recorded from actual VM consumption. A non-byte-aligned boundary is rejected before any byte-oriented transform.
 
 3. **Dispatch and transformation phase**:
-   - In auto-dispatch mode, the runner reads the scalar controller value at `dispatch.controllerFieldIndex` from the decoded header field values. If the controller field is missing, unpopulated, or non-scalar, execution fails closed with `InvalidDefinition`.
+   - In auto-dispatch mode, the runner reads the scalar controller value at `dispatch.controllerFieldIndex` from the decoded header field values. The runner revalidates that this index still names the declared, unconditional unsigned/enum scalar controller in the resolved header structure before trusting public or deserialized typed IR. If the controller field is missing, unpopulated, malformed, or points at another field, execution marks the header `Invalid`, emits `InvalidSyntax`, rolls back exactly once, and fails closed with `InvalidDefinition`.
    - Case resolution:
      - **Structure case**: Maps to a declared payload structure index. The runner queries `PayloadTransformRegistry` using the declared `dispatch.viewKind` stored in typed IR, slices the remaining logical range, transforms the payload input mapping, and decodes the selected payload structure. Execution result exposes `selectedPayloadStructureIndex` and `selectedPayloadCaseValue`.
      - **Empty case**: Maps to no structure (`empty`). No payload structure is decoded; the runner proceeds directly to commit the header-only transaction (`selectedPayloadStructureIndex = std::nullopt`, `selectedPayloadCaseValue` is set).
@@ -139,6 +141,8 @@ When executing a structural entrypoint with payload dispatch:
    - Fault-injected `SourceReadStatus::Error` triggers `DslExecutionStatus::SourceError`.
    - Cancellation token checks occur before header execution, before transformation mapping, and during VM instruction loops.
    - Resource limits are split into a shared compound instruction/node budget and a provider inspection budget; both are cumulative and checked for overflow. Cancellation and source errors are terminal for the current compound operation.
+   - Provider inspection budget is charged only after a structure case is selected. An `empty` or unmatched case performs no transform inspection and remains executable when the session inspection budget has reached zero.
+   - A throwing transform/context resolver factory is treated as an invalid runtime definition: the runner catches the exception, marks the header `Invalid`, rolls back exactly once, and returns `InvalidDefinition` rather than allowing an exception to escape its API.
    - Structural cancellation must define whether a committed prefix is resumable; it must not inherit Annex-B's “committed NAL is never retried” rule without an explicit contract.
 
 ---
@@ -154,6 +158,7 @@ When executing a structural entrypoint with payload dispatch:
    - A producer definition is staged until exact consumption, imports, dependency generations, and registration all succeed; payload failure must not leak a producer into the directory.
    - A consumer resolves by source position and exact dependency generation, not merely by call order. Missing and stale producers are `DependencyUnavailable`; an absent resolver is the separate `InvalidDefinition` already observed at `src/rules/dsl_vm.cpp:718-743`.
    - Context reset requires an explicit session clear/replace API. The current fixed `contextScopeId` has no reset operation, so P5i-3b must add one or document replacement as the only reset mechanism.
+   - For auto dispatch, payload context envelope validation and resolver construction occur only after the controller selects a structure case and before that payload VM starts. Context requirements in unselected cases must not reject an `empty` or context-free selected case.
 
 ---
 
