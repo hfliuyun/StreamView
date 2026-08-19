@@ -26,7 +26,7 @@ ContextDefinitionSpec definition(ContextKey key,
                                      {}) {
     const auto span = SourceSpan::create(SourceBitAddress(sourceBitOffset), bitLength);
     Q_ASSERT(span.has_value());
-    return ContextDefinitionSpec{key, *span, AnalysisNodeId(nodeId), std::move(dependencies)};
+    return ContextDefinitionSpec{key, {*span}, AnalysisNodeId(nodeId), std::move(dependencies)};
 }
 
 } // namespace
@@ -64,6 +64,34 @@ private slots:
         QCOMPARE(atSecondEnd.status, ContextLookupStatus::Found);
         QVERIFY(atSecondEnd.definition.has_value());
         QCOMPARE(atSecondEnd.definition->id, *second.definitionId);
+    }
+
+    void resolvesDisjointDefinitionsByCompletionWithoutOccupyingTheirGaps() {
+        ContextDirectory directory;
+        const ContextKey key{ContextDefinitionKind::H264SequenceParameterSet, 0, 3};
+        const auto outerFirst = SourceSpan::create(SourceBitAddress(0), 8);
+        const auto outerLast = SourceSpan::create(SourceBitAddress(100), 8);
+        const auto insideGap = SourceSpan::create(SourceBitAddress(50), 8);
+        QVERIFY(outerFirst.has_value());
+        QVERIFY(outerLast.has_value());
+        QVERIFY(insideGap.has_value());
+
+        const auto outer = directory.registerDefinition(
+            ContextDefinitionSpec{key,
+                                  {*outerFirst, *outerLast},
+                                  AnalysisNodeId(11),
+                                  {}});
+        const auto inner = directory.registerDefinition(
+            ContextDefinitionSpec{key, {*insideGap}, AnalysisNodeId(12), {}});
+
+        QCOMPARE(outer.status, ContextRegistrationStatus::Registered);
+        QCOMPARE(inner.status, ContextRegistrationStatus::Registered);
+        const auto afterInner = directory.resolveBefore(key, SourceBitAddress(58));
+        QVERIFY(afterInner.found());
+        QCOMPARE(afterInner.definition->id, *inner.definitionId);
+        const auto afterOuter = directory.resolveBefore(key, SourceBitAddress(108));
+        QVERIFY(afterOuter.found());
+        QCOMPARE(afterOuter.definition->id, *outer.definitionId);
     }
 
     void invalidatesAContextWhoseExactDependencyWasRedefined() {
@@ -158,7 +186,7 @@ private slots:
         QCOMPARE(atLater.definition->id, *later.definitionId);
         QCOMPARE(laterSnapshot->id, *later.definitionId);
         QCOMPARE(laterSnapshot->analysisNodeId, AnalysisNodeId(40));
-        QCOMPARE(laterSnapshot->sourceSpan.start().absoluteBitOffset(), quint64(80));
+        QCOMPARE(laterSnapshot->sourceSpans.front().start().absoluteBitOffset(), quint64(80));
     }
 
     void rejectsInvalidOrAmbiguousDefinitionsWithoutMutation() {
@@ -177,7 +205,7 @@ private slots:
         const auto emptySpan = SourceSpan::create(SourceBitAddress(48), 0);
         QVERIFY(emptySpan.has_value());
         result = directory.registerDefinition(ContextDefinitionSpec{
-            key, *emptySpan, AnalysisNodeId(52), {}});
+            key, {*emptySpan}, AnalysisNodeId(52), {}});
         QCOMPARE(result.status, ContextRegistrationStatus::InvalidDefinition);
 
         result = directory.registerDefinition(definition(key, 48, 8, 0));

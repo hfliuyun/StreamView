@@ -121,6 +121,40 @@ private:
     QString identity_;
 };
 
+class ToggleErrorMemorySource final : public RandomAccessSource {
+public:
+    explicit ToggleErrorMemorySource(std::vector<std::byte> bytes)
+        : bytes_(std::move(bytes)) {}
+
+    [[nodiscard]] quint64 sizeBytes() const noexcept override { return bytes_.size(); }
+    [[nodiscard]] QString identity() const override {
+        return QStringLiteral("toggle-error.mp4");
+    }
+    [[nodiscard]] SourceReadResult
+    readAt(quint64 byteOffset, std::span<std::byte> destination) const override {
+        if (failReads_) {
+            return {SourceReadStatus::Error, 0, QStringLiteral("injected navigation read error")};
+        }
+        if (byteOffset >= bytes_.size()) {
+            return {SourceReadStatus::EndOfSource, 0, {}};
+        }
+        const auto available = bytes_.size() - static_cast<std::size_t>(byteOffset);
+        const auto count = std::min(available, destination.size());
+        std::copy_n(bytes_.begin() + static_cast<std::ptrdiff_t>(byteOffset), count,
+                    destination.begin());
+        return {count == destination.size() ? SourceReadStatus::Complete
+                                            : SourceReadStatus::EndOfSource,
+                count,
+                {}};
+    }
+
+    void setFailReads(bool failReads) noexcept { failReads_ = failReads; }
+
+private:
+    std::vector<std::byte> bytes_;
+    bool failReads_ = false;
+};
+
 class OversizedSource final : public RandomAccessSource {
 public:
     explicit OversizedSource(bool* destroyed) : destroyed_(destroyed) {}
@@ -242,6 +276,75 @@ private:
         (void)catalog.registerPackage(std::move(*mp4.package));
     }
     return catalog;
+}
+
+[[nodiscard]] streamview::rules::RulePackageLoadResult
+makeTwoCompoundEntrypointPackage() {
+    const QByteArray manifest = QByteArrayLiteral(
+        "manifest-version = 2\n\n"
+        "[package]\n"
+        "id = \"org.example.compound\"\n"
+        "version = \"0.1.0\"\n"
+        "authors = [\"StreamView Tests\"]\n"
+        "license = \"Apache-2.0\"\n"
+        "dependencies = []\n\n"
+        "[compatibility]\n"
+        "language = \"0.1\"\n"
+        "engine = \">=0.1.0 <0.2.0\"\n\n"
+        "[[entrypoints]]\n"
+        "id = \"audio\"\n"
+        "format = \"audio.aac.asc\"\n"
+        "source = \"src/audio.svfmt\"\n"
+        "target = \"AudioHeader\"\n"
+        "profiles = [\"test\"]\n"
+        "depth = \"structural\"\n\n"
+        "[[entrypoints]]\n"
+        "id = \"video\"\n"
+        "format = \"video.h264.nal\"\n"
+        "source = \"src/video.svfmt\"\n"
+        "target = \"VideoHeader\"\n"
+        "profiles = [\"test\"]\n"
+        "depth = \"structural\"\n");
+    const QByteArray audio = QByteArrayLiteral(
+        "struct AudioHeader { bits<8> kind; }\n"
+        "struct AudioBody { @lazy(available_bytes()) bytes audio_data; }\n"
+        "payload<none> AudioHeader switch (kind) { case 18: AudioBody; }\n"
+        "entry AudioHeader;\n");
+    const QByteArray video = QByteArrayLiteral(
+        "struct VideoHeader { bits<8> kind; }\n"
+        "struct VideoBody { @lazy(available_bytes()) bytes video_data; }\n"
+        "payload<none> VideoHeader switch (kind) { case 103: VideoBody; }\n"
+        "entry VideoHeader;\n");
+    return streamview::rules::RulePackage::fromFiles({
+        {QStringLiteral("rule.toml"), manifest},
+        {QStringLiteral("src/audio.svfmt"), audio},
+        {QStringLiteral("src/video.svfmt"), video},
+    });
+}
+
+[[nodiscard]] streamview::rules::RulePackageLoadResult
+makeAudioNavigationPackage(const QByteArray& source) {
+    const QByteArray manifest = QByteArrayLiteral(
+        "manifest-version = 1\n\n"
+        "[package]\n"
+        "id = \"org.example.navigation\"\n"
+        "version = \"0.1.0\"\n"
+        "authors = [\"StreamView Tests\"]\n"
+        "license = \"Apache-2.0\"\n"
+        "dependencies = []\n\n"
+        "[compatibility]\n"
+        "language = \"0.1\"\n"
+        "engine = \">=0.1.0 <0.2.0\"\n\n"
+        "[[entrypoints]]\n"
+        "id = \"audio\"\n"
+        "format = \"audio.aac.asc\"\n"
+        "source = \"src/audio.svfmt\"\n"
+        "profiles = [\"test\"]\n"
+        "depth = \"structural\"\n");
+    return streamview::rules::RulePackage::fromFiles({
+        {QStringLiteral("rule.toml"), manifest},
+        {QStringLiteral("src/audio.svfmt"), source},
+    });
 }
 
 [[nodiscard]] std::optional<AnalysisNodeId> findNodeByTargetFormat(
@@ -1218,6 +1321,19 @@ private slots:
         QCOMPARE(session->navigationDepth(), std::size_t{0});
         QVERIFY(!session->canReturnToParent());
         QCOMPARE(&session->activeTree(), &session->tree());
+
+        const auto spsNav = session->enterChildFormat(nalNodes[0], catalog);
+        QVERIFY2(spsNav.succeeded(), qPrintable(spsNav.errorMessage));
+        const auto subRoot = session->activeTree().node(session->activeTree().rootId());
+        QVERIFY(subRoot.has_value());
+        QCOMPARE(subRoot->children().size(), std::size_t(1));
+        QCOMPARE(session->returnToParent().status, AnalysisSessionReturnStatus::Returned);
+
+        const auto recoveredPps = session->enterChildFormat(ppsNodeId, catalog);
+        QVERIFY2(recoveredPps.succeeded(), qPrintable(recoveredPps.errorMessage));
+        const auto ppsHeader = session->activeTree().node(*recoveredPps.childRootStructureNodeId);
+        QVERIFY(ppsHeader.has_value());
+        QCOMPARE(ppsHeader->name(), QStringLiteral("NalUnitHeader"));
     }
 
     void enterChildFormatFailsClosedOnNodeNotFoundAndMissingTargetFormat() {
@@ -1328,6 +1444,151 @@ private slots:
         QCOMPARE(restore.session->navigationDepth(), std::size_t{0});
         QVERIFY(!restore.session->canReturnToParent());
         QCOMPARE(&restore.session->activeTree(), &restore.session->tree());
+    }
+
+    void compoundNavigationDoesNotReuseAnotherEntrypointsProgram() {
+        QFile audioFile(QStringLiteral(
+            STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4"));
+        QFile videoFile(QStringLiteral(
+            STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_avc1_avcC.mp4"));
+        QVERIFY(audioFile.open(QIODevice::ReadOnly));
+        QVERIFY(videoFile.open(QIODevice::ReadOnly));
+        const QByteArray media = audioFile.readAll() + videoFile.readAll();
+        std::vector<std::byte> bytes(static_cast<std::size_t>(media.size()));
+        std::memcpy(bytes.data(), media.constData(), static_cast<std::size_t>(media.size()));
+
+        auto session = AnalysisSession::create(
+            std::make_unique<MemorySource>(std::move(bytes), QStringLiteral("combined.mp4")));
+        QVERIFY(session != nullptr);
+        while (!session->finished()) {
+            const auto batch = session->analyzeBatch();
+            QVERIFY(batch.status == AnalysisBatchStatus::InProgress ||
+                    batch.status == AnalysisBatchStatus::Complete);
+        }
+
+        const auto audioNode = findNodeByTargetFormat(
+            session->tree(), session->tree().rootId(), QStringLiteral("audio.aac.asc"));
+        const auto videoNode = findNodeByTargetFormat(
+            session->tree(), session->tree().rootId(), QStringLiteral("video.h264.nal"));
+        QVERIFY(audioNode.has_value());
+        QVERIFY(videoNode.has_value());
+
+        auto package = makeTwoCompoundEntrypointPackage();
+        QVERIFY2(package.succeeded(), qPrintable(package.errorMessage));
+        RulePackageCatalog catalog;
+        QVERIFY(catalog.registerPackage(std::move(*package.package)).succeeded());
+
+        const auto audioNavigation = session->enterChildFormat(*audioNode, catalog);
+        QVERIFY2(audioNavigation.succeeded(), qPrintable(audioNavigation.errorMessage));
+        QCOMPARE(session->activeTree()
+                     .node(*audioNavigation.childRootStructureNodeId)
+                     ->name(),
+                 QStringLiteral("AudioHeader"));
+        QCOMPARE(session->returnToParent().status, AnalysisSessionReturnStatus::Returned);
+
+        const auto videoNavigation = session->enterChildFormat(*videoNode, catalog);
+        QVERIFY2(videoNavigation.succeeded(), qPrintable(videoNavigation.errorMessage));
+        QCOMPARE(session->activeTree()
+                     .node(*videoNavigation.childRootStructureNodeId)
+                     ->name(),
+                 QStringLiteral("VideoHeader"));
+    }
+
+    void childExecutionFailuresPreserveActiveNavigationState() {
+        const QString fixturePath = QStringLiteral(
+            STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        const auto assertUnchanged = [](const AnalysisSession& session,
+                                        const streamview::core::AnalysisTree* rootTree,
+                                        std::size_t rootNodeCount) {
+            QCOMPARE(session.navigationDepth(), std::size_t(0));
+            QVERIFY(!session.canReturnToParent());
+            QCOMPARE(&session.activeTree(), rootTree);
+            QCOMPARE(session.tree().nodeCount(), rootNodeCount);
+        };
+        const auto makeCatalog = [](const QByteArray& source) {
+            auto package = makeAudioNavigationPackage(source);
+            if (!package.succeeded()) {
+                return std::optional<RulePackageCatalog>{};
+            }
+            RulePackageCatalog catalog;
+            const auto registered = catalog.registerPackage(std::move(*package.package));
+            if (!registered.succeeded()) {
+                return std::optional<RulePackageCatalog>{};
+            }
+            return std::optional<RulePackageCatalog>(std::move(catalog));
+        };
+
+        {
+            auto session = AnalysisSession::openFile(fixturePath);
+            QVERIFY(session != nullptr);
+            QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+            const auto nodeId = findNodeByTargetFormat(
+                session->tree(), session->tree().rootId(), QStringLiteral("audio.aac.asc"));
+            QVERIFY(nodeId.has_value());
+            const auto* rootTree = &session->tree();
+            const auto rootNodeCount = rootTree->nodeCount();
+            auto catalog = makeCatalog(
+                QByteArrayLiteral("struct Audio { bits<16> value; } entry Audio;\n"));
+            QVERIFY(catalog.has_value());
+
+            streamview::core::CancellationSource cancellation;
+            QVERIFY(cancellation.requestCancellation());
+            streamview::rules::StructuralExecutionOptions options;
+            options.cancellation = cancellation.token();
+            const auto cancelled = session->enterChildFormat(*nodeId, *catalog, options);
+            QCOMPARE(cancelled.status, AnalysisSessionNavigationStatus::Cancelled);
+            assertUnchanged(*session, rootTree, rootNodeCount);
+
+            options = {};
+            options.limits.maximumInstructions = 1;
+            const auto limited = session->enterChildFormat(*nodeId, *catalog, options);
+            QCOMPARE(limited.status, AnalysisSessionNavigationStatus::ResourceLimit);
+            assertUnchanged(*session, rootTree, rootNodeCount);
+        }
+
+        {
+            auto session = AnalysisSession::openFile(fixturePath);
+            QVERIFY(session != nullptr);
+            QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+            const auto nodeId = findNodeByTargetFormat(
+                session->tree(), session->tree().rootId(), QStringLiteral("audio.aac.asc"));
+            QVERIFY(nodeId.has_value());
+            const auto* rootTree = &session->tree();
+            const auto rootNodeCount = rootTree->nodeCount();
+            auto catalog = makeCatalog(
+                QByteArrayLiteral("struct Audio { bits<24> value; } entry Audio;\n"));
+            QVERIFY(catalog.has_value());
+
+            const auto truncated = session->enterChildFormat(*nodeId, *catalog);
+            QCOMPARE(truncated.status, AnalysisSessionNavigationStatus::TruncatedSource);
+            assertUnchanged(*session, rootTree, rootNodeCount);
+        }
+
+        {
+            QFile fixture(fixturePath);
+            QVERIFY(fixture.open(QIODevice::ReadOnly));
+            const QByteArray media = fixture.readAll();
+            std::vector<std::byte> bytes(static_cast<std::size_t>(media.size()));
+            std::memcpy(bytes.data(), media.constData(), static_cast<std::size_t>(media.size()));
+            auto source = std::make_unique<ToggleErrorMemorySource>(std::move(bytes));
+            auto* sourceControl = source.get();
+            auto session = AnalysisSession::create(std::move(source));
+            QVERIFY(session != nullptr);
+            QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+            const auto nodeId = findNodeByTargetFormat(
+                session->tree(), session->tree().rootId(), QStringLiteral("audio.aac.asc"));
+            QVERIFY(nodeId.has_value());
+            const auto* rootTree = &session->tree();
+            const auto rootNodeCount = rootTree->nodeCount();
+            auto catalog = makeCatalog(
+                QByteArrayLiteral("struct Audio { bits<16> value; } entry Audio;\n"));
+            QVERIFY(catalog.has_value());
+
+            sourceControl->setFailReads(true);
+            const auto sourceError = session->enterChildFormat(*nodeId, *catalog);
+            QCOMPARE(sourceError.status, AnalysisSessionNavigationStatus::SourceError);
+            assertUnchanged(*session, rootTree, rootNodeCount);
+        }
     }
 };
 
