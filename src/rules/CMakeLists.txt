@@ -6,6 +6,7 @@ add_library(streamview_rules STATIC
     analysis_cache_owner.cpp
     analysis_cache_payload.cpp
     dsl.cpp
+    dsl_identifier.h
     dsl_ir.cpp
     dsl_executor.cpp
     dsl_vm.cpp

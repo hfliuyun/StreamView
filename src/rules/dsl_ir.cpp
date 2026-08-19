@@ -1,5 +1,7 @@
 #include <streamview/rules/dsl_ir.h>
 
+#include "dsl_identifier.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <functional>
@@ -408,32 +410,6 @@ const DslTypedPayloadCase* DslTypedPayloadDispatch::find(quint64 value) const no
     }
     return nullptr;
 }
-
-namespace {
-
-[[nodiscard]] bool isValidDslIdentifier(QStringView text) noexcept {
-    if (text.isEmpty() || text.size() > 64) {
-        return false;
-    }
-    const QChar first = text.at(0);
-    if (first != QLatin1Char('_') &&
-        !(first >= QLatin1Char('a') && first <= QLatin1Char('z')) &&
-        !(first >= QLatin1Char('A') && first <= QLatin1Char('Z'))) {
-        return false;
-    }
-    for (qsizetype i = 1; i < text.size(); ++i) {
-        const QChar c = text.at(i);
-        if (c != QLatin1Char('_') &&
-            !(c >= QLatin1Char('a') && c <= QLatin1Char('z')) &&
-            !(c >= QLatin1Char('A') && c <= QLatin1Char('Z')) &&
-            !(c >= QLatin1Char('0') && c <= QLatin1Char('9'))) {
-            return false;
-        }
-    }
-    return true;
-}
-
-} // namespace
 
 DslCompileResult DslCompiler::compile(const DslProgram& program) {
     return compileForTarget(program, std::nullopt);
@@ -3970,7 +3946,7 @@ DslCompileResult DslCompiler::compileForTarget(const DslProgram& program,
         }
     } else {
         const QString& targetName = *target;
-        if (!isValidDslIdentifier(targetName)) {
+        if (!detail::isDslIdentifier(targetName)) {
             addDiagnostic(result.diagnostics,
                           DslDiagnosticCode::UnknownReference,
                           QStringLiteral("Target '%1' is not a valid DSL identifier").arg(targetName),

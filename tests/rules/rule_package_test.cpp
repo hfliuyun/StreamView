@@ -82,6 +82,34 @@ packageFiles(const QByteArray& manifestBytes = manifest(),
     return RulePackage::fromFiles(packageFiles(manifest(version, language, engine), source));
 }
 
+[[nodiscard]] QByteArray version2ManifestWithTarget(const QString& target) {
+    QByteArray result = QByteArrayLiteral(
+        "manifest-version = 2\n"
+        "\n"
+        "[package]\n"
+        "id = \"org.example.packet\"\n"
+        "version = \"0.1.0\"\n"
+        "authors = [\"Example Author\"]\n"
+        "license = \"MIT\"\n"
+        "dependencies = []\n"
+        "\n"
+        "[compatibility]\n"
+        "language = \"0.1\"\n"
+        "engine = \">=0.1.0 <0.2.0\"\n"
+        "\n"
+        "[[entrypoints]]\n"
+        "id = \"packet\"\n"
+        "format = \"application.example.packet\"\n"
+        "source = \"src/packet.svfmt\"\n"
+        "target = \"");
+    result += target.toUtf8();
+    result += QByteArrayLiteral(
+        "\"\n"
+        "profiles = [\"baseline\"]\n"
+        "depth = \"header\"\n");
+    return result;
+}
+
 } // namespace
 
 class RulePackageTest final : public QObject {
@@ -426,6 +454,8 @@ private slots:
                                   extra)));
         QCOMPARE(loaded.status, RulePackageLoadStatus::InvalidManifest);
         QVERIFY(!loaded.package.has_value());
+        QCOMPARE(loaded.errorMessage,
+                 QStringLiteral("Entrypoint target is not permitted in version 1"));
     }
 
     void loadsVersion2PackageWithOmittedAndExplicitTargets() {
@@ -503,6 +533,27 @@ private slots:
         QVERIFY(!loaded.package.has_value());
     }
 
+    void validatesVersion2TargetIdentifierBoundaries() {
+        const QString validTarget = QStringLiteral("_") + QString(62, QLatin1Char('a')) +
+                                    QStringLiteral("9");
+        QCOMPARE(validTarget.size(), qsizetype(64));
+        const auto accepted =
+            RulePackage::fromFiles(packageFiles(version2ManifestWithTarget(validTarget)));
+        QCOMPARE(accepted.status, RulePackageLoadStatus::Loaded);
+        QVERIFY(accepted.package.has_value());
+        QCOMPARE(accepted.package->manifest().entryPoints.front().target,
+                 std::optional<QString>(validTarget));
+
+        const QString oversizedTarget = validTarget + QStringLiteral("a");
+        QCOMPARE(oversizedTarget.size(), qsizetype(65));
+        const auto rejected =
+            RulePackage::fromFiles(packageFiles(version2ManifestWithTarget(oversizedTarget)));
+        QCOMPARE(rejected.status, RulePackageLoadStatus::InvalidManifest);
+        QVERIFY(!rejected.package.has_value());
+        QCOMPARE(rejected.errorMessage,
+                 QStringLiteral("Entrypoint target is not a valid DSL identifier"));
+    }
+
     void rejectsVersion2PackageWithDuplicateSourceAndTargetPair() {
         QByteArray v2Manifest = QByteArrayLiteral(
             "manifest-version = 2\n"
@@ -537,6 +588,86 @@ private slots:
         const auto loaded = RulePackage::fromFiles(packageFiles(v2Manifest));
         QCOMPARE(loaded.status, RulePackageLoadStatus::InvalidManifest);
         QVERIFY(!loaded.package.has_value());
+    }
+
+    void rejectsVersion2PackageWithDuplicateDefaultTargetsForSharedSource() {
+        const QByteArray v2Manifest = QByteArrayLiteral(
+            "manifest-version = 2\n"
+            "\n"
+            "[package]\n"
+            "id = \"org.example.packet\"\n"
+            "version = \"0.1.0\"\n"
+            "authors = [\"Example Author\"]\n"
+            "license = \"MIT\"\n"
+            "dependencies = []\n"
+            "\n"
+            "[compatibility]\n"
+            "language = \"0.1\"\n"
+            "engine = \">=0.1.0 <0.2.0\"\n"
+            "\n"
+            "[[entrypoints]]\n"
+            "id = \"ep1\"\n"
+            "format = \"application.example.one\"\n"
+            "source = \"src/packet.svfmt\"\n"
+            "profiles = [\"baseline\"]\n"
+            "depth = \"header\"\n"
+            "\n"
+            "[[entrypoints]]\n"
+            "id = \"ep2\"\n"
+            "format = \"application.example.two\"\n"
+            "source = \"src/packet.svfmt\"\n"
+            "profiles = [\"baseline\"]\n"
+            "depth = \"header\"\n");
+
+        const auto loaded = RulePackage::fromFiles(packageFiles(v2Manifest));
+        QCOMPARE(loaded.status, RulePackageLoadStatus::InvalidManifest);
+        QVERIFY(!loaded.package.has_value());
+    }
+
+    void supportsVersion2SharedSourceWithDefaultAndExplicitTargets() {
+        const QByteArray v2Manifest = QByteArrayLiteral(
+            "manifest-version = 2\n"
+            "\n"
+            "[package]\n"
+            "id = \"org.example.packet\"\n"
+            "version = \"0.1.0\"\n"
+            "authors = [\"Example Author\"]\n"
+            "license = \"MIT\"\n"
+            "dependencies = []\n"
+            "\n"
+            "[compatibility]\n"
+            "language = \"0.1\"\n"
+            "engine = \">=0.1.0 <0.2.0\"\n"
+            "\n"
+            "[[entrypoints]]\n"
+            "id = \"default-ep\"\n"
+            "format = \"application.example.default\"\n"
+            "source = \"src/shared.svfmt\"\n"
+            "profiles = [\"baseline\"]\n"
+            "depth = \"header\"\n"
+            "\n"
+            "[[entrypoints]]\n"
+            "id = \"targeted-ep\"\n"
+            "format = \"application.example.targeted\"\n"
+            "source = \"src/shared.svfmt\"\n"
+            "target = \"StructB\"\n"
+            "profiles = [\"baseline\"]\n"
+            "depth = \"header\"\n");
+        std::vector<RulePackageFile> files = {
+            {QStringLiteral("rule.toml"), v2Manifest},
+            {QStringLiteral("src/shared.svfmt"),
+             QByteArrayLiteral("struct StructA { bits<8> a; }\n"
+                               "struct StructB { bits<16> b; }\n"
+                               "entry StructA;\n")},
+        };
+
+        const auto loaded = RulePackage::fromFiles(std::move(files));
+        QCOMPARE(loaded.status, RulePackageLoadStatus::Loaded);
+        QVERIFY(loaded.package.has_value());
+        QCOMPARE(loaded.package->manifest().entryPoints.size(), std::size_t(2));
+        QCOMPARE(loaded.package->manifest().entryPoints[0].target, std::nullopt);
+        QCOMPARE(loaded.package->manifest().entryPoints[1].target,
+                 std::optional<QString>(QStringLiteral("StructB")));
     }
 
     void supportsVersion2SharedSourceWithDistinctTargets() {

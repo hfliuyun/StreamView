@@ -224,21 +224,26 @@ Mp4IsobmffAnalyzer::create(const core::RandomAccessSource& source,
     }
 
     quint32 headerStructIndex = 0;
-    if (compiled.program->entry.kind == DslEntryKind::Sequence &&
-        compiled.program->entry.targetIndex < compiled.program->scans.size()) {
-        headerStructIndex = compiled.program->scans[compiled.program->entry.targetIndex].elementStructIndex;
-    } else {
-        bool found = false;
-        for (quint32 i = 0; i < compiled.program->structs.size(); ++i) {
-            if (compiled.program->structs[i].name == resolvedRule.entryPoint->id) {
-                headerStructIndex = i;
-                found = true;
-                break;
+    if (compiled.program->entry.kind == DslEntryKind::Structure &&
+        compiled.program->entry.targetIndex < compiled.program->structs.size()) {
+        headerStructIndex = compiled.program->entry.targetIndex;
+    } else if (compiled.program->entry.kind == DslEntryKind::Sequence &&
+               compiled.program->entry.targetIndex < compiled.program->scans.size()) {
+        const DslTypedScan& entryScan =
+            compiled.program->scans.at(compiled.program->entry.targetIndex);
+        if (entryScan.scanner != DslScannerKind::Mp4Box ||
+            entryScan.elementStructIndex >= compiled.program->structs.size()) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("Resolved MP4 rule has no MP4 box entry");
             }
+            return std::nullopt;
         }
-        if (!found && !compiled.program->structs.empty()) {
-            headerStructIndex = 0;
+        headerStructIndex = entryScan.elementStructIndex;
+    } else {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Resolved MP4 rule has no MP4 box entry");
         }
+        return std::nullopt;
     }
 
     auto treeOpt = core::AnalysisTree::create(QStringLiteral("mp4_isobmff"));
