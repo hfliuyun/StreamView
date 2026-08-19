@@ -1,6 +1,6 @@
 # StreamView 规则包格式
 
-状态：已接受的 version 1 契约。英文
+状态：已接受的 version 1 与 version 2 契约。英文
 [规则包格式](../rule-packages.md) 是规范文本；本文是持续维护的中文伴随说明。
 
 ## Package 模型
@@ -9,7 +9,7 @@
 可以来自一个确定性的 `.svrule` ZIP 容器；两种形式必须产生相同的 content hash 与 package
 identity。
 
-version 1 package 是自包含数据，只包含 DSL source、文档和可分发测试数据，不包含原生可执行
+version 1 与 version 2 package 是自包含数据，只包含 DSL source、文档和可分发测试数据，不包含原生可执行
 代码、symbolic link、运行时依赖解析或网络引用。package content 永远不会获得 file、process、
 environment、network、pointer 或 native-library access。
 
@@ -17,14 +17,14 @@ package 根目录必须且只能有一个 `rule.toml` manifest。其他可接受
 或 `tests/` 下。manifest source path 必须指向 `src/` 下的 `.svfmt` 普通文件；documentation
 path 必须指向 `docs/` 下的普通文件。未被 manifest 引用的数据仍然参与验证与 content hash。
 
-## Manifest Version 1
+## Manifest Version 1 与 Version 2
 
-`rule.toml` 使用不带 BOM 的 UTF-8 TOML 1.0。version 1 schema 如下；除了 `detector` 外，
+`rule.toml` 使用不带 BOM 的 UTF-8 TOML 1.0。version 1 与 version 2 schema 如下；除了 `detector` 以及 version 2 中的可选 `target` 外，
 展示的 scalar 与 table key 都是必需项，完整 `documentation` array 可省略；未知 key 或 table
 会被拒绝。
 
 ```toml
-manifest-version = 1
+manifest-version = 2
 
 [package]
 id = "org.streamview.h264"
@@ -41,6 +41,7 @@ engine = ">=0.1.0 <0.2.0"
 id = "annex-b"
 format = "video.h264.annex-b"
 source = "src/h264_annex_b.svfmt"
+target = "AnnexBStream"
 profiles = ["baseline", "main", "high"]
 depth = "nal-header"
 detector = "h264-annex-b"
@@ -56,7 +57,7 @@ path = "docs/zh-CN/h264-annex-b.md"
 
 字段含义如下：
 
-- `manifest-version` 选择本 schema，值必须是整数 `1`。
+- `manifest-version` 选择本 schema，值必须是整数 `1` 或 `2`。非 `1` 或 `2` 的版本值会被拒绝。
 - `package.id` 是稳定 package 名，由 2 到 8 个小写 ASCII 点分 segment 组成。segment
   以 `a-z` 开头，后续只含 `a-z`、`0-9` 或 `-`；每段最多 32 字符，完整 ID 最多 128
   字符。
@@ -67,9 +68,9 @@ path = "docs/zh-CN/h264-annex-b.md"
   文本原样作为 catalog version。
 - `package.authors` 包含 1 到 16 个非空 display string，每项最多 256 UTF-8 byte。作者声明
   不会授予 trust 或额外权限。
-- `package.license` 是非空 SPDX license-expression 文本，最多 256 ASCII 字符；version 1
-  只验证这种表示，不声称进行 registry lookup、expression canonicalization 或 license approval。
-- `package.dependencies` 必须是空数组；version 1 不支持非空依赖图或 runtime dependency
+- `package.license` 是非空 SPDX license-expression 文本，最多 256 ASCII 字符；只验证这种表示，
+  不声称进行 registry lookup、expression canonicalization 或 license approval。
+- `package.dependencies` 必须是空数组；version 1 与 2 均不支持非空依赖图或 runtime dependency
   resolution。
 - `compatibility.language` 声明一个 canonical `MAJOR.MINOR` DSL contract。language major
   为零时，entry point 只有在它等于运行引擎的 `languageVersion()` 时才能激活；major 一及
@@ -85,14 +86,25 @@ path = "docs/zh-CN/h264-annex-b.md"
   `source` 是 `src/` 下以 `.svfmt` 结尾的 canonical package path。`profiles` 包含 1 到
   64 个使用 entry-ID 语法的互异 token。`depth` 是一个描述覆盖深度的同类 token。可选
   `detector` 用 entry-ID 语法命名 host detector；它只是 metadata，不是 package 内可执行代码。
-  version 1 已知 `h264-annex-b`；未知 detector 不妨碍 package 进入 catalog，但该 entry 的自动
-  detection 会明确报告 unsupported。没有 detector 的 entry 仍可手动选择。entry-point ID 与
-  source path 都必须唯一。
+  未知 detector 不妨碍 package 进入 catalog，但该 entry 的自动 detection 会明确报告 unsupported。
+  没有 detector 的 entry 仍可手动选择。
+- `entrypoints.target` 是用于 entrypoint 目标选择的可选 DSL 标识符（ADR-0104）：
+  - 在 `manifest-version = 1` 中不允许出现 `target`。若 version 1 manifest 包含 `target`，
+    规则包将被拒绝。在 version 1 中，package 内各 entrypoint 的 `source` 路径必须互异。
+  - 在 `manifest-version = 2` 中，`target` 为可选字段。若指定，`target` 必须是有效的非空
+    DSL 标识符（1 到 64 个 ASCII 字母、数字或下划线，以字母或下划线开头）。
+  - 若省略 `target`，目标感知编译器默认绑定 `.svfmt` 源文件中声明的顶层 `entry`。
+  - 若指定 `target`，目标感知编译器在源文件中查找并绑定对应名称的 `struct` 或 `sequence`（scan）
+    作为活动入口。
+  - 在 version 2 中，当且仅当每个 `(source, target-or-default)` 二元组在 package 内唯一时，
+    多个 entrypoint 可以共享相同的 `source` 路径。重复的 `(source, target-or-default)` 二元组会被拒绝。
+  - 未知的 target 名称、格式错误的 target 标识符或存在歧义的 target（例如同时匹配同名 struct 和 scan）
+    必须在执行前返回确定性错误并拒绝。
 - `documentation` 包含 0 到 64 项。`language` 是互异、匹配
   `[a-z]{2,3}(-[A-Z]{2})?` 的 ASCII tag；`path` 是 `docs/` 下互异的 canonical package path。
 
 TOML table 顺序与不影响语义的写法不会改变解析结果，但 manifest 原始 byte 是 logical tree
-的一部分。因此只修改空白也会有意改变 package content hash。
+的一部分。因此只修改空白或 manifest 字段（如增加 `target` 或升级 `manifest-version`）也会有意改变 package content hash。
 
 ## Path 与 Tree 上限
 
