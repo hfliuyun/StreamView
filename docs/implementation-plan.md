@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-3b-4 — Session-Owned Compound Context Lifecycle
-Next Action: 等待主 Agent 复审 Task P5i-3b-4；未经复审不得开始 manifest target selection、官方 H.264 规则入口或 P5i-4 UI
-Last Verification: Task P5i-3b-4 — feat `b2d82cadf9052e45a30aa997fc81bd58c3ce8faf`; Hosted CI Run `32179164705` (macOS job `95847924656`, Windows job `95847924679`, Ubuntu job `95847924780` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer errors; RuleExecutionSessionTest 57/57 passed (12 new compound context tests); official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
+Last Completed Step: Task P5i-3b-4-R — 主 Agent 深审并修正 Session-Owned Compound Context Lifecycle 原子发布、阶段隔离与累计预算合同
+Next Action: Task P5i-3b-5 — 仅实现 manifest v2 target selection 与 target-aware compiler capability；不得修改官方 H.264 规则、不得升级规则包版本、不得开始 P5i-4 UI
+Last Verification: Task P5i-3b-4-R — fix `aaf6a79acd601417299599c18c12fc343013159f`; Hosted CI Run `32218348546` (Windows job `95963971304`, macOS job `95963971341`, Ubuntu job `95963971375` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; RuleExecutionSessionTest `69/69`; CompoundStructuralRunnerTest `39/39`; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2560,3 +2560,11 @@ Blockers: None
      - 未升级 `rule.toml` 版本；
      - 未实现 P5i-4 UI 导航或在通用 runtime 中引入任何格式专属名称与分支。
   终审结论：Task P5i-3b-4 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-3b-4；未经复审不得开始 manifest target selection、官方 H.264 规则入口或 P5i-4 UI。
+- 2026-08-19：完成 Task P5i-3b-4-R —— 主 Agent 深审并直接修正 session-owned compound context lifecycle（原实现 `b2d82cadf9052e45a30aa997fc81bd58c3ce8faf`，修复提交 `aaf6a79acd601417299599c18c12fc343013159f`）：
+  1. 原交付不能直接通过：用户 `onCommit` 在 session wrapper 与 compound runner 中各执行一次；header definition 先写 live directory，payload registration 或后续 hook 失败时会泄漏；发布期缺失依赖被降级为 `InvalidDefinition`；单一 resolver 会在 header/payload 具有相同 context kind/import index 时选择错误结构；首次运行期失败未锁定 source/tree identity；instruction/node/inspection budget 未跨 session 调用累计；commit 取消与 tree 终态不一致；上下文可能在最终 tree transition 失败前发布。
+  2. 真实旧实现 Red：在未修改的子代理生产代码上挂载首批 6 个回归后，RuleExecutionSessionTest 实测 `57 passed, 6 failed`；失败项为 `compoundCommitHooksRunExactlyOnceBeforePublication`、`compoundPublicationIsAtomicWhenSecondDefinitionConflicts`、`compoundPublicationReportsMissingDefinitionDependency`、`compoundUsesPhaseSpecificResolversForMatchingImportKinds`、`failedCompoundExecutionStillBindsSessionIdentity`、`compoundBudgetsAccumulateAcrossSessionExecutions`。原名 `compoundCancellationAcrossAllPhases` 实际只覆盖预取消，已诚实更名为 `compoundPreCancellationDoesNotPublishContext`。
+  3. 原子事务修正：`RuleExecutionSession` 只在 `ContextDirectory` 与 rules-owned payload 副本中准备 header/payload publication，runner 返回 `Materialized` 且 header/payload 均完成终态转换后才整体替换 live state；registration、dependency、prepare/result/commit hook、取消或最终化失败均丢弃副本并 exactly-once rollback。typed prepare failure 保留 `DependencyUnavailable` / `Cancelled` / `ResourceLimit` 等状态；rollback hook 异常才 fail closed 为 `InvalidDefinition`。
+  4. 阶段与生命周期修正：header/payload 使用独立 resolver，import cache key 扩展为 `(phase, structureIndex, importIndex)`；同一结构同时作为 header 与 payload 且使用不同 import key 的补充回归在中间实现上真实 Red、修正后 Green。source/tree 在进入 runner 前绑定；session constructor 固定 compound 总预算，单次请求只可进一步收紧剩余额度；成功、失败工作量均受检饱和累计，`reset()` 清空定义、绑定与累计量。
+  5. hook 与 API 修正：用户 `onCommitWithResult`、`onCommit` 与 `onPrepareCommit` 各至多运行一次；commit 阶段取消将节点终结为 `Cancelled` 且不发布；caller prepare rejection 触发一次 rollback。新增公共字段追加到 aggregate 末尾，保留既有 `CompoundTransactionHooks` 与 `CompoundStructuralExecutionRequest` 位置初始化顺序；最终化前预检两个节点均仍为 `Indexing`，防止 payload 已 `Materialized` 而 header 失败的半终态。
+  6. 最终测试与验证：RuleExecutionSessionTest 为 67 个具名场景、Qt `69/69`（含 init/cleanup）；CompoundStructuralRunnerTest 为 37 个具名场景、Qt `39/39`。dev、ci、sanitize 三套完整 CTest 均 `43/43`，sanitize 零报告；四个官方规则均 `Rule OK`；`markdown_hygiene` 与 `git diff --check` 通过。Hosted CI Run `32218348546`：Windows-2022 / Qt 6.10.1 job `95963971304`、macOS-15 / Qt 6.11.1 job `95963971341`、Ubuntu-24.04 / Qt 6.11.1 job `95963971375` 全部 success。
+  7. 边界保持：未修改 manifest、官方 `.svfmt`、`rule.toml` 或规则包版本；未加入 H.264 专属 runtime 分支；未开始 P5i-4 UI。终审结论：原 Task P5i-3b-4 报告不通过，P5i-3b-4-R 修正后通过。Next Action 切换为 Task P5i-3b-5，仅实现 manifest v2 target selection 与 target-aware compiler capability，官方 H.264 入口和 P5i-4 继续阻断。
