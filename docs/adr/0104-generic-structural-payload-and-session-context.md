@@ -193,7 +193,25 @@ We evaluate four potential reuse options for multi-entrypoint packages:
 
 - **Strictly Bounded Execution**: Structural payload dispatch is strictly single-level (one header + at most one payload structure). General recursive call stacks are forbidden.
 - **Format-Neutral Orchestration**: The generic dispatcher contains no format-specific field names or FourCCs. Existing context kinds and registered transform providers may carry format policy; that policy must remain outside the generic dispatcher and be explicitly registered.
-- **Bounded Transformation Language**: Transformations are selected from declared provider identifiers with a finite provider contract. Unknown identifiers fail closed; the ADR does not claim that a hard-coded `Rbsp` enum is format-neutral.
+---
+
+### 8. Official H.264 Standalone NAL Package Slice (P5i-3c)
+
+1. **Package Activation Contract**:
+   - `src/rules/official/org.streamview.h264/rule.toml` is upgraded to `manifest-version = 2` and package version `0.1.40`.
+   - The existing entrypoint `id = "annex-b"` for format `video.h264.annex-b` remains unchanged with no explicit target, compiling to the file's default `entry nal_units` sequence.
+   - A new entrypoint `id = "nal"` for format `video.h264.nal` is declared on the same source `src/h264_annex_b.svfmt` with `target = "NalUnitHeader"`.
+   - Reuses the existing 1200+ lines of DSL rules without duplicating syntax files.
+
+2. **Execution Semantics**:
+   - When compiled with target `NalUnitHeader`, `RulePackageCatalog::resolveByFormat(QStringLiteral("video.h264.nal"))` resolves the entrypoint and `DslCompiler::compileForTarget` binds `NalUnitHeader` as the structural entry with its associated `payload<rbsp>` dispatch.
+   - The standalone NAL execution runs through `CompoundStructuralRunner` and `RuleExecutionSession::runCompound` with `autoDispatchPayload = true`:
+     - Header (`NalUnitHeader`) is parsed and decoded.
+     - Controller field `nal_unit_type` dynamically determines the RBSP payload structure (e.g. `SequenceParameterSetRbsp` for type 7, `PictureParameterSetRbsp` for type 8, `AccessUnitDelimiterRbsp` for type 9, empty for types 10/11, or unhandled returning `Unsupported`).
+     - RBSP unescape transformation is performed by the registered `H264RbspPayloadTransformProvider` (`"rbsp"`). Forwarded mapping maps back to physical coordinates, while `0x03` emulation prevention bytes are retained as separate excluded spans without corrupting physical byte offsets.
+     - Context definition from SPS (`h264-sps`) is published in the `RuleExecutionSession` upon successful atomic completion, allowing subsequent PPS executions in the same session to resolve `context_value(sps_id, h264_sps, ...)` imports.
+     - Dependency unavailability (e.g. PPS executed without prior SPS) returns `RuleExecutionStatus::DependencyUnavailable` without publishing broken context definitions.
+     - Truncated source or syntax/conformance errors roll back atomically without context pollution.
 
 ---
 
