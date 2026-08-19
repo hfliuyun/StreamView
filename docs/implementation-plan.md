@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-3b-6-R — Typed Payload Dispatch 结构目标、会话预算与错误路径审查整改
-Next Action: 主 Agent 复审 Task P5i-3b-6-R；未经复审不得开始 Task P5i-3c，且不得修改官方 H.264 `.svfmt`/`rule.toml`、增加 `video.h264.nal` 或开始 P5i-4 UI
-Last Verification: Task P5i-3b-6-R — Docs SHA `77db91aecf45f6b24be11a7a9350c3bc44d0136d`; repair Impl SHA `64d6864180677d36dbf302fda90b79cf6747e4c2`; Hosted CI Run `32247925853` (Windows job `96052409600`, Ubuntu job `96052409940`, macOS job `96052409855` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; direct Qt totals DslTest `93`, DslIrTest `105`, CompoundStructuralRunnerTest `54`, RuleExecutionSessionTest `76`; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
+Last Completed Step: Task P5i-3c — Official H.264 Standalone NAL Package Slice
+Next Action: 主 Agent 复审 Task P5i-3c；未经复审不得开始 Task P5i-4（会话与 UI 导航切片）
+Last Verification: Task P5i-3c — Docs SHA `b3b5553b6cb51dcfbcaec8ae19b88ce83bbdd375`; Impl SHA `df9801d6e693867adaa67058963435b5fed0ff79`; Hosted CI Run `32250400413` (Windows job `96059863302`, Ubuntu job `96059863492`, macOS job `96059863594` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; direct Qt totals StructuralEntryRunnerTest `26`, H264AnnexBAnalyzerTest `174`; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2652,3 +2652,38 @@ Blockers: None
   5. 最终验证：四个官方规则均 `Rule OK`；dev、ci、sanitize 完整 CTest 均 `43/43` passed，sanitize 零报告；`markdown_hygiene` 与 `git diff --check` 通过。Hosted CI Run `32247925853`：Windows-2022 / Qt 6.10.1 job `96052409600`、Ubuntu-24.04 / Qt 6.11.1 job `96052409940`、macOS-15 / Qt 6.11.1 job `96052409855` 全部 success。
   6. 范围确认：未修改官方 `.svfmt` 或 `rule.toml`，未升级任何规则包、未增加 `video.h264.nal`，未引入格式专属 generic-runtime 分支，未进入 P5i-4 UI/navigation，未触及未跟踪 `scratch/`。
   终审结论：原 Task P5i-3b-6 报告不通过；P5i-3b-6-R 修正后通过。Next Action 锁定为主 Agent 复审 P5i-3b-6-R；未经该复审不得开始 Task P5i-3c。
+- 2026-08-19：完成 Task P5i-3c —— 官方 H.264 独立 NAL 规则包切片（基线 `d4bb78543da353c09ad20ec176765b32bf2818f6`，Docs commit `b3b5553b6cb51dcfbcaec8ae19b88ce83bbdd375`，Feat commit `df9801d6e693867adaa67058963435b5fed0ff79`）：
+  1. Docs-first（双语 ADR-0104）：
+     - 在双语 ADR-0104 第 8 节明确官方 H.264 独立 NAL 规则包切片合同：`src/rules/official/org.streamview.h264/rule.toml` 升级为 `manifest-version = 2` 与版本 `0.1.40`；保留既有 `video.h264.annex-b` 序列行为；新增 `video.h264.nal` 独立入口，指向相同的 `src/h264_annex_b.svfmt` 并指定 `target = "NalUnitHeader"`，完全复用 1200+ 行 DSL 规则；
+     - 明确独立 NAL 通过 `RulePackageCatalog::resolveByFormat(QStringLiteral("video.h264.nal"))` 解析并由 `DslCompiler::compileForTarget` 绑定为结构型入口，执行经由 `CompoundStructuralRunner` 与 `RuleExecutionSession` 自动分派 header 与 `payload<rbsp>`（SPS/PPS/AUD/SEI/empty 等），发布与解析 SPS/PPS session context，精确映射物理/逻辑区间并分离排除 `0x03` 防竞争字节。
+  2. 真实 Red 门禁核验：
+     - 在基线 `d4bb78543da353c09ad20ec176765b32bf2818f6` 上挂载新增测试，执行 `ctest -R "structural_entry_runner" --preset dev --output-on-failure`，准确记录 5 项真实失败：
+       - `resolvesOfficialH264StandaloneNalEntry`: 实际包版本为 `"0.1.39"`，期望 `"0.1.40"`；
+       - `executesOfficialH264StandaloneSpsNal`: `resolved.succeeded()` 返回 `FALSE`（`video.h264.nal` 格式不存在）；
+       - `executesOfficialH264StandalonePpsNalWithContextImport`: `resolved.succeeded()` 返回 `FALSE`；
+       - `executesOfficialH264StandalonePpsFailsWithoutSpsContext`: `resolved.succeeded()` 返回 `FALSE`；
+       - `executesOfficialH264StandaloneTruncatedAndMalformedNal`: `resolved.succeeded()` 返回 `FALSE`。
+  3. 规则包与测试实现：
+     - 将 `src/rules/official/org.streamview.h264/rule.toml` 升级至 `manifest-version = 2`、包版本 `0.1.40`，保留既有 `annex-b` 入口并新增 `video.h264.nal`（`target = "NalUnitHeader"`, `profiles = ["baseline", "main", "high"]`, `depth = "structural"`）；
+     - `tests/rules/structural_entry_runner_test.cpp` 扩充 6 个端到端测试（全部 26 个用例通过）：
+       - `resolvesOfficialH264StandaloneNalEntry`：通过 catalog 解析 `video.h264.nal`，验证 Found、正确的包版本 `0.1.40`、source `src/h264_annex_b.svfmt` 与 target `NalUnitHeader`；
+       - `executesOfficialH264StandaloneSpsNal`：执行单独 SPS NAL（0x67），header 与 SPS payload 位于同一分析树，发布 `h264-sps` 上下文；
+       - `executesOfficialH264StandalonePpsNalWithContextImport`：同一 session 中先 SPS 后 PPS（0x68），PPS 成功 import SPS 上下文值；
+       - `executesOfficialH264StandalonePpsFailsWithoutSpsContext`：无前置 SPS 时执行 PPS 返回 `DependencyUnavailable`，不发布污染 context；
+       - `executesOfficialH264StandaloneTruncatedAndMalformedNal`：覆盖截断 SPS（返回 `TruncatedSource`）、非法 EBSP `00 00 03 04`（返回 `InvalidSyntax`）、AUD NAL（0x69 0x10，返回 `Materialized`）；
+       - `executesOfficialH264StandaloneNalWithEmulationPreventionAndExactCoordinates`：含 `0x03` 防竞争字节的 SPS NAL 成功物化，断言 excluded spans 与跨 `0x03` 的 SAR 字段精确物理坐标。
+     - `tests/rules/h264_annex_b_analyzer_test.cpp` 更新 `loadsBundledRule` 断言版本 `0.1.40` 与 2 个 entrypoints（全部 174 个用例通过）。
+  4. 全量跨平台与矩阵验证：
+     - 本地 dev / ci / sanitize 三套完整构建与 CTest 均全量 `43/43` 通过，sanitize 零警告/零报告；
+     - 四个官方规则文件（`h264_annex_b.svfmt`、`aac_adts.svfmt`、`aac_asc.svfmt`、`mp4_isobmff.svfmt`）`svtool rule check` 全部 `Rule OK`；
+     - `git diff --check` 与 `markdown_hygiene` 干净；
+     - Hosted CI Run `32250400413`：
+       - Windows-2022 / Qt 6.10.1 (job `96059863302`): `completed` | `success`
+       - Ubuntu-24.04 / Qt 6.11.1 (job `96059863492`): `completed` | `success`
+       - macOS-15 / Qt 6.11.1 (job `96059863594`): `completed` | `success`
+  5. 严格边界恪守：
+     - 未修改通用 DSL/IR/compiler/VM/runner/session 生产代码；
+     - 未修改 AAC/MP4 包或其 rule.toml；
+     - 未实现 AnalysisSession、导航栈、MainWindow 或 P5i-4 UI；
+     - 未修改、删除或提交未跟踪 `scratch/`。
+  终审结论：Task P5i-3c 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-3c；未经复审不得开始 Task P5i-4（会话与 UI 导航切片）。
