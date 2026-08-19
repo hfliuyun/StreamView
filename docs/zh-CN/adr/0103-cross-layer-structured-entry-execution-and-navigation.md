@@ -220,6 +220,56 @@ struct AnalysisSessionReturnResult final {
    - **树到原始视图**：选中子 `AnalysisTree` 中的任一字段，获取 `node->location()->sourceSpans()`，并将 `RawDataView` 高亮更新为原根文件的精确物理字节偏移。
    - **原始视图到树**：点击 `RawDataView` 中的字节，检索当前活动 `AnalysisTree`（若处于导航中则为子树），并自动选中包含该字节的最具体叶子节点。
 
+#### 4.3 MainWindow 展示栈、面包屑与双向视图集成合同
+
+在任务 P5i-4b 中，`MainWindow` 集成 `AnalysisSession` 提供的语义导航栈：
+
+1. **关注点分离与展示所有权**：
+   - `AnalysisSession`（非 `QObject`）严格拥有语义导航栈（`navigationStack_`）、子格式执行流水线与共享会话上下文，不操作 Qt widget 或维护展示模型。
+   - `MainWindow` 拥有 UI 展示栈、`AnalysisTreeModel` 生命周期、`FieldInspector` 展示、`RawDataView` 选择状态、面包屑栏与 `navigationBackButton`。
+
+2. **分析树区域紧凑导航栏**：
+   - 在 `AnalysisTreeView` 上方放置紧凑导航工具栏：
+     - `QToolButton`（`objectName == "navigationBackButton"`），使用标准返回图标，提供 tooltip（`"Return to parent"`）与 accessible name（`"Return to parent format"`）。在根层（`navigationDepth() == 0`）禁用，在子格式中启用。
+     - 面包屑 `QLabel`（`objectName == "navigationBreadcrumbLabel"`），显示当前导航层级链（如根格式或子格式链 `video.h264.nal`、`audio.aac.asc`），不放置说明性帮助文案。
+   - 导航栏尺寸紧凑，在 900x600 与 1280x800 分辨率下均不挤压、覆盖分析树表头或 Dock 面板。
+
+3. **子格式进入触发与流程**：
+   - 带有 `@target_format` 的节点可通过以下方式进入：
+     - 在 `AnalysisTreeView` 中双击该节点项；
+     - 在该节点被选中并聚焦时按下键盘 Enter 或 Return 键。
+   - 无 `targetFormat` 的普通节点忽略上述手势，不触发导航。
+   - **进入成功（`Entered`）**：
+     - `MainWindow` 接收到 `status == Entered` 及 `childRootStructureNodeId` 的 `AnalysisSessionNavigationResult`；
+     - `AnalysisTreeModel` 将活动树切换为 `session.activeTree()`；
+     - 自动选中 `childRootStructureNodeId` 节点；
+     - `FieldInspector` 刷新并展示子根结构节点属性；
+     - `RawDataView` 高亮同步为子根节点的完整 `sourceSpans()`；
+     - 面包屑与 `navigationBackButton` 刷新为对应层级状态。
+   - **失败处理**：
+     - 若 `enterChildFormat` 返回任一失败状态（`MissingContent`、`VersionConflict`、`DependencyUnavailable`、`InvalidTargetLocation` 等）：
+     - `AnalysisTreeModel`、当前选择、`FieldInspector`、`RawDataView` 高亮与面包屑保持 100% 不变；
+     - 仅在状态栏显示 `result.errorMessage` 中的结构化错误信息。
+
+4. **返回父层流程**：
+   - 点击 `navigationBackButton`（或触发返回动作）时：
+   - 调用 `session.returnToParent()`；
+   - `AtRoot` 立即作为确定性 no-op 返回；
+   - `Returned`：
+     - `AnalysisTreeModel` 切换为恢复后的父级 `session.activeTree()`；
+     - 精确恢复对 `restoredParentTargetNodeId` 的选中；
+     - `FieldInspector` 与 `RawDataView` 高亮恢复为父节点的完整 `sourceSpans()`；
+     - 面包屑与 `navigationBackButton` 刷新状态（返回到根层时禁用）。
+
+5. **双向坐标映射与不连续区间**：
+   - `selectAnalysisNode` 与 `selectSourceBit` 完全在 `session.activeTree()` 上执行。
+   - **Tree -> Raw View**：在活动树中选择任一节点时，`RawDataView` 高亮 `node->location()->sourceSpans()` 返回的全部物理源区间。不连续区间绝不折叠或近似为单一连续区间。
+   - **Raw View -> Tree**：在 `RawDataView` 中点击物理源 bit 时，仅在 `session.activeTree()` 中检索覆盖该物理 bit 的最具体 `Materialized` 叶子节点。若活动树中无匹配节点，清除树选择与 `FieldInspector`，但保留 `RawDataView` 中刚点击的原始 bit 选择。
+
+6. **持久化与会话重置**：
+   - UI 展示栈与导航面包屑为纯进程内交互状态，不修改 `SessionDocument` schema。
+   - 打开新文件时清空 UI 展示栈，清空子格式导航帧，并将视图复位至根树。
+
 ---
 
 ### 5. 持久化边界
