@@ -279,7 +279,40 @@ CompoundStructuralRunner::execute(const DslTypedProgram& program,
                            QStringLiteral("Parent analysis node is not indexing"));
     }
 
-    if (request.payloadStructureIndex.has_value()) {
+    if (request.payloadStructureIndex.has_value() && request.autoDispatchPayload) {
+        return makeFailure(
+            DslExecutionStatus::InvalidDefinition,
+            QStringLiteral("Cannot specify both explicit payload structure index and auto-dispatch"));
+    }
+
+    if (request.autoDispatchPayload) {
+        if (!program.payloadDispatch.has_value()) {
+            return makeFailure(DslExecutionStatus::InvalidDefinition,
+                               QStringLiteral("Program does not declare a payload dispatch"));
+        }
+        if (program.payloadDispatch->scanIndex >= program.scans.size() ||
+            program.scans.at(program.payloadDispatch->scanIndex).elementStructIndex !=
+                request.headerStructureIndex) {
+            return makeFailure(
+                DslExecutionStatus::InvalidDefinition,
+                QStringLiteral("Payload dispatch element structure does not match header structure"));
+        }
+        if (request.payloadMapping == nullptr) {
+            return makeFailure(DslExecutionStatus::InvalidDefinition,
+                               QStringLiteral("Auto payload dispatch requires a payload mapping"));
+        }
+        if (request.payloadLogicalStart > request.payloadMapping->logicalBitLength()) {
+            return makeFailure(DslExecutionStatus::InvalidDefinition,
+                               QStringLiteral("Payload logical start is out of range"));
+        }
+        if ((request.payloadLogicalStart % 8U) != 0) {
+            return makeFailure(DslExecutionStatus::InvalidDefinition,
+                               QStringLiteral("Payload logical start is not byte-aligned"));
+        }
+        if (!validateMapping(*request.payloadMapping, &validationError)) {
+            return makeFailure(DslExecutionStatus::InvalidDefinition, validationError);
+        }
+    } else if (request.payloadStructureIndex.has_value()) {
         if (*request.payloadStructureIndex >= program.structs.size()) {
             return makeFailure(DslExecutionStatus::InvalidDefinition,
                                QStringLiteral("Payload structure index is out of range"));
@@ -427,8 +460,70 @@ CompoundStructuralRunner::execute(const DslTypedProgram& program,
             QStringLiteral("Header did not consume all available logical bits"));
     }
 
-    // 2. If no payload structure is requested
-    if (!request.payloadStructureIndex.has_value()) {
+    // 2. Resolve payload structure or finalize header-only execution
+    quint32 payloadStructureIndex = 0;
+    QString transformProviderId = request.transformProviderId;
+
+    if (request.autoDispatchPayload) {
+        const auto& dispatch = *program.payloadDispatch;
+        const quint32 controllerIndex = dispatch.controllerFieldIndex;
+        if (controllerIndex >= headerResult.fieldValues.size() ||
+            !headerResult.fieldValues.at(controllerIndex).has_value()) {
+            return rollbackAndReturn(
+                DslExecutionStatus::InvalidDefinition,
+                QStringLiteral("Payload dispatch controller field value is missing or unpopulated"));
+        }
+        const quint64 controllerValue = *headerResult.fieldValues.at(controllerIndex);
+        const auto* matchedCase = dispatch.find(controllerValue);
+        if (matchedCase == nullptr) {
+            core::ParseDiagnostic diag;
+            diag.code = core::DiagnosticCode::UnsupportedSyntax;
+            diag.severity = core::DiagnosticSeverity::Error;
+            diag.message =
+                QStringLiteral("Unhandled payload dispatch case: %1").arg(controllerValue);
+            (void)request.tree->markPartial(*result.headerNodeId,
+                                            core::MaterializationState::Unsupported,
+                                            std::move(diag));
+            return rollbackAndReturn(
+                DslExecutionStatus::Unsupported,
+                QStringLiteral("Unhandled payload dispatch case: %1").arg(controllerValue));
+        }
+
+        result.selectedPayloadCaseValue = matchedCase->value;
+        if (!matchedCase->structureIndex.has_value()) {
+            // Empty case: commit header only
+            result.selectedPayloadStructureIndex = std::nullopt;
+            if (!commitTransaction()) {
+                core::ParseDiagnostic diag;
+                diag.code = diagnosticCodeForFailure(result.status);
+                diag.severity = core::DiagnosticSeverity::Error;
+                diag.message = result.errorMessage;
+                (void)request.tree->markPartial(
+                    *result.headerNodeId, terminalStateForFailure(result.status), std::move(diag));
+                return result;
+            }
+
+            const auto headerNode = request.tree->node(*result.headerNodeId);
+            if (!headerNode || headerNode->state() != core::MaterializationState::Indexing) {
+                return rollbackAndReturn(
+                    DslExecutionStatus::InvalidDefinition,
+                    QStringLiteral("Header node changed before compound finalization"));
+            }
+            if (!request.tree->transition(*result.headerNodeId,
+                                          core::MaterializationState::Materialized)) {
+                return rollbackAndReturn(DslExecutionStatus::InvalidDefinition,
+                                         QStringLiteral("Failed to materialize header node"));
+            }
+            result.status = DslExecutionStatus::Materialized;
+            return result;
+        }
+
+        payloadStructureIndex = *matchedCase->structureIndex;
+        result.selectedPayloadStructureIndex = payloadStructureIndex;
+        if (!dispatch.viewKind.isEmpty()) {
+            transformProviderId = dispatch.viewKind;
+        }
+    } else if (!request.payloadStructureIndex.has_value()) {
         if (!commitTransaction()) {
             core::ParseDiagnostic diag;
             diag.code = diagnosticCodeForFailure(result.status);
@@ -452,6 +547,8 @@ CompoundStructuralRunner::execute(const DslTypedProgram& program,
         }
         result.status = DslExecutionStatus::Materialized;
         return result;
+    } else {
+        payloadStructureIndex = *request.payloadStructureIndex;
     }
 
     // 3. Intermediate Checks between Header and Payload
@@ -503,18 +600,18 @@ CompoundStructuralRunner::execute(const DslTypedProgram& program,
     // 4. Payload Transform and Execution Phase (appends payload under header node)
     const auto& registry = request.transformRegistry ? *request.transformRegistry
                                                      : PayloadTransformRegistry::instance();
-    const auto provider = registry.findProvider(request.transformProviderId);
+    const auto provider = registry.findProvider(transformProviderId);
     if (!provider) {
         core::ParseDiagnostic diag;
         diag.code = core::DiagnosticCode::InvalidSyntax;
         diag.severity = core::DiagnosticSeverity::Error;
         diag.message = QStringLiteral("Unknown payload transform provider: %1")
-                           .arg(request.transformProviderId);
+                           .arg(transformProviderId);
         (void)request.tree->markPartial(*result.headerNodeId, core::MaterializationState::Invalid,
                                         std::move(diag));
         return rollbackAndReturn(DslExecutionStatus::InvalidDefinition,
                                  QStringLiteral("Unknown payload transform provider: %1")
-                                     .arg(request.transformProviderId));
+                                     .arg(transformProviderId));
     }
 
     const quint64 payloadInputBitLength =
@@ -604,12 +701,14 @@ CompoundStructuralRunner::execute(const DslTypedProgram& program,
     payloadOptions.sequenceElementValues = headerResult.fieldValues;
 
     core::BitReader payloadReader(*request.source, transformedMapping);
-    const DslContextValueResolver& payloadContextValueResolver =
-        request.payloadContextValueResolver ? request.payloadContextValueResolver
-                                            : request.contextValueResolver;
+    const DslContextValueResolver payloadContextValueResolver =
+        request.payloadContextResolverFactory
+            ? request.payloadContextResolverFactory(payloadStructureIndex)
+            : (request.payloadContextValueResolver ? request.payloadContextValueResolver
+                                                   : request.contextValueResolver);
 
     const DslExecutionResult payloadResult = DslVirtualMachine::executeDeferred(
-        program, *request.payloadStructureIndex, payloadReader, transformedMapping, 0,
+        program, payloadStructureIndex, payloadReader, transformedMapping, 0,
         *request.tree, *result.headerNodeId, payloadOptions, payloadContextValueResolver);
 
     result.payloadNodeId = payloadResult.structureNode;

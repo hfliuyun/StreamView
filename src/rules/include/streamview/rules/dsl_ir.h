@@ -256,6 +256,7 @@ struct DslTypedPayloadDispatch final {
     quint32 controllerFieldIndex = 0;
     std::vector<DslTypedPayloadCase> cases;
     core::AnalysisNodeMetadata metadata;
+    QString viewKind;
 
     [[nodiscard]] const DslTypedPayloadCase* find(quint64 value) const noexcept;
 };

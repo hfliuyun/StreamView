@@ -2344,6 +2344,7 @@ private slots:
         const auto& dispatch = *program.payloadDispatch;
         QCOMPARE(dispatch.scanIndex, quint32(0));
         QCOMPARE(dispatch.controllerFieldIndex, quint32(1));
+        QCOMPARE(dispatch.viewKind, QStringLiteral("rbsp"));
         QCOMPARE(dispatch.metadata.description, QStringLiteral("Payload selection."));
         QCOMPARE(dispatch.cases.size(), std::size_t(2));
 

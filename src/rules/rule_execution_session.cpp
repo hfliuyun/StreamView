@@ -422,7 +422,20 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
         result.errorMessage = QStringLiteral("Compound rule execution request is invalid");
         return result;
     }
-    if (request.payloadStructureIndex.has_value()) {
+    if (request.payloadStructureIndex.has_value() && request.autoDispatchPayload) {
+        result.status = RuleExecutionStatus::InvalidDefinition;
+        result.errorMessage =
+            QStringLiteral("Cannot specify both explicit payload structure index and auto-dispatch");
+        return result;
+    }
+    if (request.autoDispatchPayload) {
+        if (request.payloadMapping == nullptr) {
+            result.status = RuleExecutionStatus::InvalidDefinition;
+            result.errorMessage =
+                QStringLiteral("Auto payload dispatch requires a payload mapping");
+            return result;
+        }
+    } else if (request.payloadStructureIndex.has_value()) {
         if (*request.payloadStructureIndex >= program_.structs.size() ||
             request.payloadMapping == nullptr) {
             result.status = RuleExecutionStatus::InvalidDefinition;
@@ -446,10 +459,25 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
             ? &program_.structs.at(*request.payloadStructureIndex)
             : nullptr;
 
+    bool anyDispatchPayloadUsesContext = false;
+    if (request.autoDispatchPayload && program_.payloadDispatch.has_value()) {
+        for (const auto& payloadCase : program_.payloadDispatch->cases) {
+            if (payloadCase.structureIndex.has_value() &&
+                *payloadCase.structureIndex < program_.structs.size()) {
+                const auto& ps = program_.structs.at(*payloadCase.structureIndex);
+                if (ps.contextDefinition || !ps.contextImports.empty()) {
+                    anyDispatchPayloadUsesContext = true;
+                    break;
+                }
+            }
+        }
+    }
+
     const bool usesContext =
         headerStructure.contextDefinition || !headerStructure.contextImports.empty() ||
         (payloadStructure != nullptr &&
-         (payloadStructure->contextDefinition || !payloadStructure->contextImports.empty()));
+         (payloadStructure->contextDefinition || !payloadStructure->contextImports.empty())) ||
+        anyDispatchPayloadUsesContext;
 
     if (usesContext &&
         (!request.enclosingSourceSpan || request.enclosingSourceSpan->bitLength() == 0)) {
@@ -707,10 +735,18 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
                 }
             };
 
+            const std::optional<quint32> actualPayloadStructureIndex =
+                request.payloadStructureIndex.has_value()
+                    ? request.payloadStructureIndex
+                    : execRes.selectedPayloadStructureIndex;
+
             verifyImports(headerPhase, request.headerStructureIndex, headerStructure,
                           execRes.headerContextImports, QStringLiteral("Header"));
-            if (payloadStructure != nullptr) {
-                verifyImports(payloadPhase, *request.payloadStructureIndex, *payloadStructure,
+            if (actualPayloadStructureIndex.has_value() &&
+                *actualPayloadStructureIndex < program_.structs.size()) {
+                const DslTypedStruct& actualPayloadStructure =
+                    program_.structs.at(*actualPayloadStructureIndex);
+                verifyImports(payloadPhase, *actualPayloadStructureIndex, actualPayloadStructure,
                               execRes.payloadContextImports, QStringLiteral("Payload"));
             }
 
@@ -777,9 +813,9 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
                                             core::ContextRegistrationStatus::DependencyUnavailable
                                         ? DslExecutionStatus::DependencyUnavailable
                                         : DslExecutionStatus::InvalidDefinition,
-                                    registration.errorMessage.isEmpty()
-                                        ? QStringLiteral("Context definition registration failed")
-                                        : registration.errorMessage);
+                                     registration.errorMessage.isEmpty()
+                                         ? QStringLiteral("Context definition registration failed")
+                                         : registration.errorMessage);
                 }
                 payload.definitionId = *registration.definitionId;
                 nextPayloads.push_back(std::move(payload));
@@ -788,8 +824,11 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
 
             stageDefinition(request.headerStructureIndex, headerStructure, execRes.headerNodeId,
                             execRes.headerContextValues, QStringLiteral("Header"));
-            if (payloadStructure != nullptr) {
-                stageDefinition(*request.payloadStructureIndex, *payloadStructure,
+            if (actualPayloadStructureIndex.has_value() &&
+                *actualPayloadStructureIndex < program_.structs.size()) {
+                const DslTypedStruct& actualPayloadStructure =
+                    program_.structs.at(*actualPayloadStructureIndex);
+                stageDefinition(*actualPayloadStructureIndex, actualPayloadStructure,
                                 execRes.payloadNodeId, execRes.payloadContextValues,
                                 QStringLiteral("Payload"));
             }
@@ -849,7 +888,7 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
                               QStringLiteral("materialized-node"), false)) {
         return result;
     }
-    if (request.payloadStructureIndex.has_value() &&
+    if ((request.payloadStructureIndex.has_value() || request.autoDispatchPayload) &&
         !applyRemainingBudget(compoundLimits_.maximumInspectedBytes, compoundBytesInspected_,
                               request.options.limits.maximumInspectedBytes,
                               &compoundReq.options.limits.maximumInspectedBytes,
@@ -859,6 +898,10 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
     compoundReq.requireExactConsumption = request.requireExactConsumption;
     compoundReq.headerContextValueResolver = headerContextValueResolver;
     compoundReq.payloadContextValueResolver = payloadContextValueResolver;
+    compoundReq.autoDispatchPayload = request.autoDispatchPayload;
+    compoundReq.payloadContextResolverFactory = [&](quint32 payloadStructureIndex) {
+        return makeContextValueResolver(payloadPhase, payloadStructureIndex);
+    };
     compoundReq.transactionHooks = compoundHooks;
 
     source_ = request.source;
