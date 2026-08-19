@@ -3,9 +3,11 @@
 #include <streamview/core/version.h>
 #include <streamview/rules/analysis_cache.h>
 #include <streamview/rules/analysis_cache_payload.h>
+#include <streamview/rules/h264_rbsp_payload_transform_provider.h>
 #include <streamview/rules/language_version.h>
 
 #include <chrono>
+#include <mutex>
 #include <utility>
 
 namespace streamview::app {
@@ -564,6 +566,295 @@ void AnalysisSession::publishCachePages(const rules::H264AnnexBAnalysisBatch& ba
         return;
     }
     acceptCacheWrite(cacheOwner_->writeMaterializedResult(std::move(exported.pages)));
+}
+
+AnalysisSessionReturnResult AnalysisSession::returnToParent() {
+    if (navigationStack_.empty()) {
+        return {AnalysisSessionReturnStatus::AtRoot, std::nullopt, &activeTree()};
+    }
+    const auto parentTargetNodeId = navigationStack_.back().parentTargetNodeId;
+    navigationStack_.pop_back();
+    return {AnalysisSessionReturnStatus::Returned, parentTargetNodeId, &activeTree()};
+}
+
+AnalysisSessionNavigationResult AnalysisSession::enterChildFormat(
+    core::AnalysisNodeId nodeId,
+    const rules::RulePackageCatalog& catalog,
+    const rules::StructuralExecutionOptions& options) {
+    static std::once_flag transformProvidersRegistered;
+    std::call_once(transformProvidersRegistered, []() {
+        (void)rules::PayloadTransformRegistry::instance().registerProvider(
+            std::make_shared<rules::H264RbspPayloadTransformProvider>());
+    });
+
+    AnalysisSessionNavigationResult result;
+
+    const auto& currentActiveTree = activeTree();
+    const auto targetNode = currentActiveTree.node(nodeId);
+    if (!targetNode) {
+        result.status = AnalysisSessionNavigationStatus::NodeNotFound;
+        result.errorMessage =
+            QStringLiteral("Target node was not found in the active analysis tree");
+        return result;
+    }
+
+    const auto& targetFormat = targetNode->metadata().targetFormat;
+    if (!targetFormat.has_value() || targetFormat->trimmed().isEmpty()) {
+        result.status = AnalysisSessionNavigationStatus::MissingTargetFormat;
+        result.errorMessage = QStringLiteral("Target node does not specify a target format");
+        return result;
+    }
+
+    const auto location = targetNode->location();
+    if (!location || location->sourceSpans().empty()) {
+        result.status = AnalysisSessionNavigationStatus::InvalidTargetLocation;
+        result.errorMessage = QStringLiteral("Target node has no source location");
+        return result;
+    }
+
+    if ((location->logicalRange().start().bitOffset() % 8U) != 0 ||
+        (location->logicalRange().bitLength() % 8U) != 0) {
+        result.status = AnalysisSessionNavigationStatus::InvalidTargetLocation;
+        result.errorMessage = QStringLiteral("Target node source location is not byte-aligned");
+        return result;
+    }
+
+    for (const auto& span : location->sourceSpans()) {
+        if (span.start().bitOffsetInByte() != 0 || (span.bitLength() % 8U) != 0) {
+            result.status = AnalysisSessionNavigationStatus::InvalidTargetLocation;
+            result.errorMessage =
+                QStringLiteral("Target node source location spans are not byte-aligned");
+            return result;
+        }
+    }
+
+    if (location->logicalRange().bitLength() == 0) {
+        result.status = AnalysisSessionNavigationStatus::InvalidTargetLocation;
+        result.errorMessage = QStringLiteral("Target node source location length is zero");
+        return result;
+    }
+
+    const auto mappingOpt = core::SourceMapping::create(core::LogicalViewId(1), location->sourceSpans());
+    if (!mappingOpt) {
+        result.status = AnalysisSessionNavigationStatus::InvalidTargetLocation;
+        result.errorMessage =
+            QStringLiteral("Failed to construct source mapping for target node");
+        return result;
+    }
+    const core::SourceMapping sourceMapping = *mappingOpt;
+
+    // Catalog resolution
+    const auto lookup = catalog.resolveByFormat(
+        *targetFormat, rules::languageVersion(), core::version());
+    if (!lookup.succeeded()) {
+        switch (lookup.status) {
+        case rules::RuleCatalogLookupStatus::MissingContent:
+            result.status = AnalysisSessionNavigationStatus::MissingContent;
+            break;
+        case rules::RuleCatalogLookupStatus::VersionConflict:
+            result.status = AnalysisSessionNavigationStatus::VersionConflict;
+            break;
+        case rules::RuleCatalogLookupStatus::IncompatibleLanguage:
+            result.status = AnalysisSessionNavigationStatus::IncompatibleLanguage;
+            break;
+        case rules::RuleCatalogLookupStatus::IncompatibleEngine:
+            result.status = AnalysisSessionNavigationStatus::IncompatibleEngine;
+            break;
+        default:
+            result.status = AnalysisSessionNavigationStatus::InvalidRulePackage;
+            break;
+        }
+        result.errorMessage = lookup.errorMessage;
+        return result;
+    }
+
+    const auto package = lookup.package;
+    if (!package || !lookup.entryPoint.has_value()) {
+        result.status = AnalysisSessionNavigationStatus::InvalidRulePackage;
+        result.errorMessage = QStringLiteral("Resolved package or entrypoint is invalid");
+        return result;
+    }
+    const auto entryPoint = *lookup.entryPoint;
+
+    const QByteArray* sourceBytes = package->fileContents(entryPoint.sourcePath);
+    if (!sourceBytes) {
+        result.status = AnalysisSessionNavigationStatus::InvalidRulePackage;
+        result.errorMessage =
+            QStringLiteral("Rule file not found in package: %1").arg(entryPoint.sourcePath);
+        return result;
+    }
+
+    const auto parseResult = rules::DslParser::parse(QString::fromUtf8(*sourceBytes));
+    if (!parseResult.succeeded()) {
+        result.status = AnalysisSessionNavigationStatus::InvalidDefinition;
+        result.errorMessage =
+            QStringLiteral("Failed to parse rule file: %1").arg(entryPoint.sourcePath);
+        return result;
+    }
+
+    const auto compileResult =
+        rules::DslCompiler::compileForTarget(parseResult.program, entryPoint.target);
+    if (!compileResult.succeeded() || !compileResult.program.has_value()) {
+        result.status = AnalysisSessionNavigationStatus::InvalidDefinition;
+        result.errorMessage =
+            QStringLiteral("Failed to compile rule file for target '%1'").arg(entryPoint.target.value_or(QString()));
+        return result;
+    }
+
+    const rules::DslTypedProgram& program = *compileResult.program;
+    if (program.entry.kind != rules::DslEntryKind::Structure) {
+        result.status = AnalysisSessionNavigationStatus::InvalidDefinition;
+        result.errorMessage = QStringLiteral("Compiled entry is not a structure entry");
+        return result;
+    }
+
+    const bool isCompound =
+        program.payloadDispatch.has_value() &&
+        (program.payloadDispatchHeaderStructureIndex() == program.entry.targetIndex);
+
+    if (isCompound) {
+        const QString packageKey = package->identity().packageId();
+        auto it = subFormatSessions_.find(packageKey);
+        if (it == subFormatSessions_.end()) {
+            auto treeOpt = core::AnalysisTree::create(packageKey);
+            if (!treeOpt) {
+                result.status = AnalysisSessionNavigationStatus::InvalidDefinition;
+                result.errorMessage = QStringLiteral("Failed to create sub-format analysis tree");
+                return result;
+            }
+            SubFormatSession subSession;
+            subSession.tree = std::make_shared<core::AnalysisTree>(std::move(*treeOpt));
+            subSession.ruleSession =
+                std::make_unique<rules::RuleExecutionSession>(program, 1);
+            it = subFormatSessions_.emplace(packageKey, std::move(subSession)).first;
+        }
+
+        auto& subSession = it->second;
+        auto treeSnapshot = subSession.tree->snapshot();
+
+        const auto enclosingSpan = core::SourceSpan::create(
+            location->sourceSpans().front().start(),
+            location->logicalRange().bitLength());
+
+        rules::CompoundRuleExecutionRequest request;
+        request.source = source_.get();
+        request.headerMapping = &sourceMapping;
+        request.headerStructureIndex = program.entry.targetIndex;
+        request.payloadMapping = &sourceMapping;
+        request.payloadLogicalStart = 0;
+        request.transformRegistry = &rules::PayloadTransformRegistry::instance();
+        request.tree = subSession.tree.get();
+        request.parentId = subSession.tree->rootId();
+        request.enclosingSourceSpan = enclosingSpan;
+        request.options.limits = options.limits;
+        request.options.cancellation = options.cancellation;
+        request.requireExactConsumption = true;
+        request.autoDispatchPayload = true;
+
+        const auto execRes = subSession.ruleSession->runCompound(request);
+        if (!execRes.materialized()) {
+            (void)subSession.tree->restore(std::move(treeSnapshot));
+            switch (execRes.status) {
+            case rules::RuleExecutionStatus::Unsupported:
+                result.status = AnalysisSessionNavigationStatus::Unsupported;
+                break;
+            case rules::RuleExecutionStatus::TruncatedSource:
+                result.status = AnalysisSessionNavigationStatus::TruncatedSource;
+                break;
+            case rules::RuleExecutionStatus::InvalidSyntax:
+                result.status = AnalysisSessionNavigationStatus::InvalidSyntax;
+                break;
+            case rules::RuleExecutionStatus::DependencyUnavailable:
+                result.status = AnalysisSessionNavigationStatus::DependencyUnavailable;
+                break;
+            case rules::RuleExecutionStatus::SourceError:
+                result.status = AnalysisSessionNavigationStatus::SourceError;
+                break;
+            case rules::RuleExecutionStatus::Cancelled:
+                result.status = AnalysisSessionNavigationStatus::Cancelled;
+                break;
+            case rules::RuleExecutionStatus::ResourceLimit:
+                result.status = AnalysisSessionNavigationStatus::ResourceLimit;
+                break;
+            default:
+                result.status = AnalysisSessionNavigationStatus::InvalidDefinition;
+                break;
+            }
+            result.errorMessage = execRes.errorMessage;
+            return result;
+        }
+
+        const auto childRootId =
+            execRes.execution.headerNodeId.value_or(subSession.tree->rootId());
+        NavigationFrame frame{
+            .parentTargetNodeId = nodeId,
+            .targetFormat = *targetFormat,
+            .package = package,
+            .entryPoint = entryPoint,
+            .sourceMapping = sourceMapping,
+            .tree = subSession.tree,
+            .childRootStructureNodeId = childRootId,
+        };
+
+        navigationStack_.push_back(std::move(frame));
+
+        result.status = AnalysisSessionNavigationStatus::Entered;
+        result.childRootStructureNodeId = childRootId;
+        result.tree = subSession.tree;
+        return result;
+    }
+
+    // Standard non-compound structure
+    const auto execRes =
+        rules::StructuralEntryRunner::execute(*source_, sourceMapping, program, options);
+    if (!execRes.succeeded()) {
+        switch (execRes.execution.status) {
+        case rules::DslExecutionStatus::Unsupported:
+            result.status = AnalysisSessionNavigationStatus::Unsupported;
+            break;
+        case rules::DslExecutionStatus::TruncatedSource:
+            result.status = AnalysisSessionNavigationStatus::TruncatedSource;
+            break;
+        case rules::DslExecutionStatus::InvalidSyntax:
+            result.status = AnalysisSessionNavigationStatus::InvalidSyntax;
+            break;
+        case rules::DslExecutionStatus::DependencyUnavailable:
+            result.status = AnalysisSessionNavigationStatus::DependencyUnavailable;
+            break;
+        case rules::DslExecutionStatus::SourceError:
+            result.status = AnalysisSessionNavigationStatus::SourceError;
+            break;
+        case rules::DslExecutionStatus::Cancelled:
+            result.status = AnalysisSessionNavigationStatus::Cancelled;
+            break;
+        case rules::DslExecutionStatus::ResourceLimit:
+            result.status = AnalysisSessionNavigationStatus::ResourceLimit;
+            break;
+        default:
+            result.status = AnalysisSessionNavigationStatus::InvalidDefinition;
+            break;
+        }
+        result.errorMessage = execRes.execution.errorMessage;
+        return result;
+    }
+
+    const auto childRootId = execRes.execution.structureNode.value_or(execRes.tree->rootId());
+    NavigationFrame frame{
+        .parentTargetNodeId = nodeId,
+        .targetFormat = *targetFormat,
+        .package = package,
+        .entryPoint = entryPoint,
+        .sourceMapping = sourceMapping,
+        .tree = execRes.tree,
+        .childRootStructureNodeId = childRootId,
+    };
+
+    navigationStack_.push_back(std::move(frame));
+
+    result.status = AnalysisSessionNavigationStatus::Entered;
+    result.childRootStructureNodeId = childRootId;
+    result.tree = execRes.tree;
+    return result;
 }
 
 } // namespace streamview::app

@@ -2456,7 +2456,7 @@ void Mp4IsobmffAnalyzerTest::analyzesAvc1AndAvcCDecoderConfiguration() {
     QCOMPARE(tree.node(avcCBox->children()[5])->value().toULongLong(), quint64{41}); // avcLevelIndication (0x29)
     QCOMPARE(tree.node(avcCBox->children()[7])->value().toULongLong(), quint64{3}); // lengthSizeMinusOne
     QCOMPARE(tree.node(avcCBox->children()[9])->value().toULongLong(), quint64{1}); // numOfSequenceParameterSets
-    QCOMPARE(tree.node(avcCBox->children()[10])->value().toULongLong(), quint64{25}); // sequenceParameterSetLength[0]
+    QCOMPARE(tree.node(avcCBox->children()[10])->value().toULongLong(), quint64{27}); // sequenceParameterSetLength[0]
 
     // SPS lazy target format & location
     const auto spsNode = tree.node(avcCBox->children()[11]);
@@ -2469,7 +2469,7 @@ void Mp4IsobmffAnalyzerTest::analyzesAvc1AndAvcCDecoderConfiguration() {
         std::byte{0x22}, std::byte{0x00}, std::byte{0x00}, std::byte{0x03},
         std::byte{0x00}, std::byte{0x02}, std::byte{0x00}, std::byte{0x00},
         std::byte{0x03}, std::byte{0x00}, std::byte{0x79}, std::byte{0x1E},
-        std::byte{0x30},
+        std::byte{0x30}, std::byte{0x63}, std::byte{0x70},
     };
     verifyLazySourceBytes(*spsNode, bytes, 178, expectedSps);
 
@@ -2481,7 +2481,7 @@ void Mp4IsobmffAnalyzerTest::analyzesAvc1AndAvcCDecoderConfiguration() {
     QCOMPARE(ppsNode->metadata().targetFormat, QStringLiteral("video.h264.nal"));
     const std::vector<std::byte> expectedPps = {
         std::byte{0x68}, std::byte{0xEE}, std::byte{0x3C}, std::byte{0x80}};
-    verifyLazySourceBytes(*ppsNode, bytes, 206, expectedPps);
+    verifyLazySourceBytes(*ppsNode, bytes, 208, expectedPps);
     QCOMPARE(tree.node(avcCBox->children()[15])->value().toBool(), true);
     QCOMPARE(tree.node(avcCBox->children()[17])->value().toULongLong(), quint64{1});
     QCOMPARE(tree.node(avcCBox->children()[19])->value().toULongLong(), quint64{0});
@@ -2492,7 +2492,7 @@ void Mp4IsobmffAnalyzerTest::analyzesAvc1AndAvcCDecoderConfiguration() {
     QCOMPARE(spsExtNode->metadata().targetFormat, QStringLiteral("video.h264.nal"));
     const std::vector<std::byte> expectedSpsExt = {
         std::byte{0x6D}, std::byte{0x00}, std::byte{0x01}};
-    verifyLazySourceBytes(*spsExtNode, bytes, 216, expectedSpsExt);
+    verifyLazySourceBytes(*spsExtNode, bytes, 218, expectedSpsExt);
 }
 
 void Mp4IsobmffAnalyzerTest::analyzesMp4aAndEsdsDecoderConfiguration() {
@@ -2734,7 +2734,7 @@ void Mp4IsobmffAnalyzerTest::analyzesLargesizeSampleDescriptionBoxes() {
     QVERIFY(stsdBox.has_value());
     QCOMPARE(tree.node(stsdBox->children()[0])->value().toULongLong(), quint64{1}); // size == 1
     QCOMPARE(tree.node(stsdBox->children()[2])->name(), QStringLiteral("stsd_largesize"));
-    QCOMPARE(tree.node(stsdBox->children()[2])->value().toULongLong(), quint64{178});
+    QCOMPARE(tree.node(stsdBox->children()[2])->value().toULongLong(), quint64{180});
 
     // 2. avc1 with largesize
     const auto stsdLargeEntries = tree.node(stsdBox->children()[7]);
@@ -2743,7 +2743,7 @@ void Mp4IsobmffAnalyzerTest::analyzesLargesizeSampleDescriptionBoxes() {
     QVERIFY(avc1Box.has_value());
     QCOMPARE(tree.node(avc1Box->children()[0])->value().toULongLong(), quint64{1}); // size == 1
     QCOMPARE(tree.node(avc1Box->children()[2])->name(), QStringLiteral("avc1_largesize"));
-    QCOMPARE(tree.node(avc1Box->children()[2])->value().toULongLong(), quint64{154});
+    QCOMPARE(tree.node(avc1Box->children()[2])->value().toULongLong(), quint64{156});
 
     // 3. avcC with largesize
     const auto avc1LargeChildren = tree.node(avc1Box->children().back());
@@ -2752,7 +2752,7 @@ void Mp4IsobmffAnalyzerTest::analyzesLargesizeSampleDescriptionBoxes() {
     QVERIFY(avcCBox.has_value());
     QCOMPARE(tree.node(avcCBox->children()[0])->value().toULongLong(), quint64{1}); // size == 1
     QCOMPARE(tree.node(avcCBox->children()[2])->name(), QStringLiteral("avcC_largesize"));
-    QCOMPARE(tree.node(avcCBox->children()[2])->value().toULongLong(), quint64{60});
+    QCOMPARE(tree.node(avcCBox->children()[2])->value().toULongLong(), quint64{62});
     QCOMPARE(tree.node(avcCBox->children()[3])->value().toULongLong(), quint64{1}); // configurationVersion
 
     // 4. audio stsd/mp4a/esds with largesize framing
@@ -2962,7 +2962,7 @@ void Mp4IsobmffAnalyzerTest::analyzesSizeZeroCodecConfigurationBoxes() {
         std::byte{0x22}, std::byte{0x00}, std::byte{0x00}, std::byte{0x03},
         std::byte{0x00}, std::byte{0x02}, std::byte{0x00}, std::byte{0x00},
         std::byte{0x03}, std::byte{0x00}, std::byte{0x79}, std::byte{0x1E},
-        std::byte{0x30},
+        std::byte{0x30}, std::byte{0x63}, std::byte{0x70},
     };
     verifyLazySourceBytes(*videoSps, bytes, 178, expectedSps);
 
@@ -2977,7 +2977,7 @@ void Mp4IsobmffAnalyzerTest::analyzesSizeZeroCodecConfigurationBoxes() {
     QCOMPARE(tree.node(audioEsds->children()[0])->value().toULongLong(), quint64{0});
     const auto audioAsc = tree.node(audioEsds->children().back());
     const std::vector<std::byte> expectedAsc = {std::byte{0x12}, std::byte{0x10}};
-    verifyLazySourceBytes(*audioAsc, bytes, 332, expectedAsc);
+    verifyLazySourceBytes(*audioAsc, bytes, 334, expectedAsc);
 }
 
 void Mp4IsobmffAnalyzerTest::rejectsInvalidDescriptorTagsAndFifthLengthBytes() {

@@ -152,6 +152,11 @@ target_compile_definitions(
 if(TARGET streamview_app)
     streamview_add_app_test(streamview_analysis_session_tests app/analysis_session_test.cpp)
     target_link_libraries(streamview_analysis_session_tests PRIVATE Qt6::Sql)
+    target_compile_definitions(
+        streamview_analysis_session_tests
+        PRIVATE
+            STREAMVIEW_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    )
     streamview_add_app_test(streamview_session_document_tests app/session_document_test.cpp)
     streamview_add_app_test(streamview_analysis_tree_model_tests app/analysis_tree_model_test.cpp)
     streamview_add_app_test(streamview_field_inspector_tests app/field_inspector_test.cpp)
