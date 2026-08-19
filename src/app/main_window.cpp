@@ -176,6 +176,7 @@ bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
     rawDataView_->clear();
     analysisModel_->clear();
     session_.reset();
+    navigationBreadcrumbFormats_.clear();
     candidate->enableCache(cacheOptions_);
     session_ = std::move(candidate);
 
@@ -209,21 +210,24 @@ void MainWindow::advanceAnalysis(quint64 generation) {
     }
 
     const auto batch = session_->analyzeBatch(kAnalysisBatchRecords, kAnalysisWorkBudget);
-    if (!batch.topLevelNodes.empty() &&
-        !analysisModel_->appendTopLevelNodes(session_->tree(), batch.topLevelNodes)) {
-        analysisModel_->resetFromTree(session_->tree());
+    const bool rootTreeIsActive = session_->navigationDepth() == 0;
+    if (rootTreeIsActive) {
+        if (!batch.topLevelNodes.empty() &&
+            !analysisModel_->appendTopLevelNodes(session_->tree(), batch.topLevelNodes)) {
+            analysisModel_->resetFromTree(session_->tree());
+            analysisModel_->updateFromTree(session_->tree());
+            ++analysisGeneration_;
+            statusBar()->showMessage(tr("Analysis tree publication failed"));
+            return;
+        }
         analysisModel_->updateFromTree(session_->tree());
-        ++analysisGeneration_;
-        statusBar()->showMessage(tr("Analysis tree publication failed"));
-        return;
     }
-    analysisModel_->updateFromTree(session_->tree());
     if (session_->finished() && session_->cacheWritesPending()) {
         QTimer::singleShot(0, this, [this, generation] { pollAnalysisCache(generation); });
     }
 
     const QModelIndex currentIndex = analysisTreeView_->currentIndex();
-    if (currentIndex.isValid()) {
+    if (rootTreeIsActive && session_->navigationDepth() == 0 && currentIndex.isValid()) {
         const auto currentId = analysisModel_->nodeIdAt(currentIndex);
         const auto currentNode = currentId ? session_->tree().node(*currentId) : std::nullopt;
         if (currentNode) {
@@ -309,8 +313,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     if (watched == analysisTreeView_ && event->type() == QEvent::KeyPress) {
         auto* keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter) {
-            enterChildFormatOnCurrentNode();
-            return true;
+            return enterChildFormatOnCurrentNode();
         }
     }
     return QMainWindow::eventFilter(watched, event);
@@ -320,50 +323,70 @@ void MainWindow::onTreeDoubleClicked(const QModelIndex& index) {
     if (index.isValid()) {
         analysisTreeView_->setCurrentIndex(index);
     }
-    enterChildFormatOnCurrentNode();
+    static_cast<void>(enterChildFormatOnCurrentNode());
 }
 
-void MainWindow::enterChildFormatOnCurrentNode() {
+bool MainWindow::enterChildFormatOnCurrentNode() {
     if (!session_) {
-        return;
+        return false;
     }
     const QModelIndex currentIndex = analysisTreeView_->currentIndex();
     if (!currentIndex.isValid()) {
-        return;
+        return false;
     }
     const auto nodeId = analysisModel_->nodeIdAt(currentIndex);
     if (!nodeId) {
-        return;
+        return false;
     }
     const auto node = session_->activeTree().node(*nodeId);
     if (!node || !node->metadata().targetFormat.has_value() ||
         node->metadata().targetFormat->trimmed().isEmpty()) {
-        return;
+        return false;
     }
+    const QString targetFormat = *node->metadata().targetFormat;
 
     const auto navResult = session_->enterChildFormat(*nodeId, catalog_);
     if (!navResult.succeeded()) {
         statusBar()->showMessage(tr("Cannot enter sub-format: %1").arg(navResult.errorMessage));
-        return;
+        return true;
     }
 
     analysisModel_->resetFromTree(session_->activeTree());
     analysisModel_->updateFromTree(session_->activeTree());
 
-    if (navResult.childRootStructureNodeId.has_value()) {
-        const QModelIndex childRootIndex =
-            analysisModel_->indexForNodeId(*navResult.childRootStructureNodeId);
-        if (childRootIndex.isValid()) {
-            analysisTreeView_->setCurrentIndex(childRootIndex);
-            selectAnalysisNode(childRootIndex);
+    const QModelIndex childRootIndex = navResult.childRootStructureNodeId.has_value()
+                                            ? analysisModel_->indexForNodeId(
+                                                  *navResult.childRootStructureNodeId)
+                                            : QModelIndex{};
+    if (!childRootIndex.isValid()) {
+        const auto rollback = session_->returnToParent();
+        if (rollback.returned()) {
+            analysisModel_->resetFromTree(session_->activeTree());
+            analysisModel_->updateFromTree(session_->activeTree());
+            const QModelIndex parentIndex = rollback.restoredParentTargetNodeId.has_value()
+                                                ? analysisModel_->indexForNodeId(
+                                                      *rollback.restoredParentTargetNodeId)
+                                                : QModelIndex{};
+            if (parentIndex.isValid()) {
+                analysisTreeView_->setCurrentIndex(parentIndex);
+                selectAnalysisNode(parentIndex);
+            } else {
+                analysisTreeView_->selectionModel()->clear();
+                fieldInspector_->clear();
+                clearSourceSelection();
+            }
         }
-    } else {
-        clearSourceSelection();
-        fieldInspector_->clear();
+        updateNavigationUI();
+        statusBar()->showMessage(tr("Cannot enter sub-format: child root is unavailable"));
+        return true;
     }
 
+    navigationBreadcrumbFormats_.append(targetFormat);
+    analysisTreeView_->setCurrentIndex(childRootIndex);
+    selectAnalysisNode(childRootIndex);
     analysisTreeView_->expandToDepth(1);
     updateNavigationUI();
+    return true;
 }
 
 void MainWindow::returnToParentFormat() {
@@ -373,6 +396,9 @@ void MainWindow::returnToParentFormat() {
 
     const auto retResult = session_->returnToParent();
     if (retResult.status == AnalysisSessionReturnStatus::Returned) {
+        if (!navigationBreadcrumbFormats_.isEmpty()) {
+            navigationBreadcrumbFormats_.removeLast();
+        }
         analysisModel_->resetFromTree(session_->activeTree());
         analysisModel_->updateFromTree(session_->activeTree());
 
@@ -386,6 +412,10 @@ void MainWindow::returnToParentFormat() {
                 }
                 analysisTreeView_->setCurrentIndex(parentIndex);
                 selectAnalysisNode(parentIndex);
+            } else {
+                analysisTreeView_->selectionModel()->clear();
+                clearSourceSelection();
+                fieldInspector_->clear();
             }
         } else {
             clearSourceSelection();
@@ -408,12 +438,9 @@ void MainWindow::updateNavigationUI() {
     const QString rootFormat = session_->ruleIdentity().entryPointId().isEmpty()
                                    ? session_->identity()
                                    : session_->ruleIdentity().entryPointId();
-    if (session_->navigationDepth() == 0) {
-        navigationBreadcrumbLabel_->setText(rootFormat);
-    } else if (const auto* frame = session_->currentNavigationFrame()) {
-        navigationBreadcrumbLabel_->setText(
-            QStringLiteral("%1 > %2").arg(rootFormat, frame->targetFormat));
-    }
+    QStringList breadcrumbParts{rootFormat};
+    breadcrumbParts.append(navigationBreadcrumbFormats_);
+    navigationBreadcrumbLabel_->setText(breadcrumbParts.join(QStringLiteral(" > ")));
 }
 
 void MainWindow::selectAnalysisNode(const QModelIndex& current) {

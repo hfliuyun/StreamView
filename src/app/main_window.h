@@ -4,6 +4,7 @@
 #include "source_selection.h"
 
 #include <QMainWindow>
+#include <QStringList>
 
 #include <memory>
 #include <cstdint>
@@ -49,7 +50,7 @@ private:
     void pollAnalysisCache(quint64 generation);
     void publishAnalysisStatus(AnalysisBatchStatus status,
                                const QString& errorMessage);
-    void enterChildFormatOnCurrentNode();
+    [[nodiscard]] bool enterChildFormatOnCurrentNode();
     void updateNavigationUI();
 
     QTreeView* analysisTreeView_ = nullptr;
@@ -63,6 +64,7 @@ private:
     std::unique_ptr<AnalysisSession> session_;
     rules::RulePackageCatalog catalog_;
     AnalysisSessionCacheOptions cacheOptions_;
+    QStringList navigationBreadcrumbFormats_;
     quint64 analysisGeneration_ = 0;
     bool rawLoaded_ = true;
     QString rawError_;

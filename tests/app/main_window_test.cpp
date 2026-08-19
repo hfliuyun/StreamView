@@ -3,6 +3,7 @@
 #include "raw_data_view.h"
 
 #include <QFile>
+#include <QDockWidget>
 #include <QLabel>
 #include <QSqlDatabase>
 #include <QSqlError>
@@ -14,6 +15,7 @@
 #include <QToolButton>
 #include <QTreeView>
 #include <QUuid>
+#include <QWidget>
 
 #include <optional>
 
@@ -89,6 +91,10 @@ QModelIndex findIndexByName(const QAbstractItemModel& model,
         }
     }
     return {};
+}
+
+QRect geometryInWindow(const QWidget& widget, const QWidget& window) {
+    return {widget.mapTo(&window, QPoint{}), widget.size()};
 }
 
 } // namespace
@@ -584,6 +590,33 @@ private slots:
         const QModelIndex spsRbspIndex = findIndexByName(*treeView->model(), QStringLiteral("SequenceParameterSetRbsp"));
         QVERIFY(spsRbspIndex.isValid());
 
+        // The RBSP structure crosses two excluded emulation-prevention bytes.
+        // Selecting it must preserve the forwarded disjoint source spans.
+        auto* rawView = window.findChild<RawDataView*>(QStringLiteral("rawDataView"));
+        QVERIFY(rawView != nullptr);
+        const auto selectedBitsAt = [rawView](int byteOffset) {
+            return rawView->model()
+                ->data(rawView->model()->index(byteOffset / 16,
+                                               RawDataModel::FirstByte + (byteOffset % 16)),
+                       RawDataModel::SelectedBitsRole)
+                .toUInt();
+        };
+        const QModelIndex numUnitsInTick =
+            findIndexByName(*treeView->model(), QStringLiteral("num_units_in_tick"));
+        QVERIFY(numUnitsInTick.isValid());
+        treeView->setCurrentIndex(numUnitsInTick);
+        QCOMPARE(selectedBitsAt(0xc0), 0xFFU);
+        QCOMPARE(selectedBitsAt(0xc1), 0U);
+        QCOMPARE(selectedBitsAt(0xc2), 0xFFU);
+
+        const QModelIndex timeScale =
+            findIndexByName(*treeView->model(), QStringLiteral("time_scale"));
+        QVERIFY(timeScale.isValid());
+        treeView->setCurrentIndex(timeScale);
+        QCOMPARE(selectedBitsAt(0xc5), 0xFFU);
+        QCOMPARE(selectedBitsAt(0xc6), 0U);
+        QCOMPARE(selectedBitsAt(0xc7), 0xFFU);
+
         // 2. Return to MP4 root
         backButton->click();
         QVERIFY(!backButton->isEnabled());
@@ -672,7 +705,7 @@ private slots:
         }
     }
 
-    void bidirectionalCoordinateSelectionPreservesDisjointSpansInActiveTree() {
+    void bidirectionalCoordinateSelectionUsesActiveTree() {
         const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
         MainWindow window;
         QString errorMessage;
@@ -735,6 +768,42 @@ private slots:
         QCOMPARE(window.currentSourceIdentity(), secondPath);
     }
 
+    void pendingRootAnalysisDoesNotReplaceActiveChildTree() {
+        const QString fixturePath = QStringLiteral(
+            STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        MainWindow window;
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        auto* backButton = window.findChild<QToolButton*>(QStringLiteral("navigationBackButton"));
+        QVERIFY(treeView != nullptr);
+        QVERIFY(backButton != nullptr);
+
+        bool entryRequested = false;
+        connect(treeView->model(), &QAbstractItemModel::rowsInserted, &window,
+                [&entryRequested, treeView] {
+                    if (entryRequested) {
+                        return;
+                    }
+                    const QModelIndex ascIndex =
+                        findIndexByName(*treeView->model(), QStringLiteral("asc_bytes1"));
+                    if (ascIndex.isValid()) {
+                        entryRequested = true;
+                        Q_EMIT treeView->doubleClicked(ascIndex);
+                    }
+                },
+                Qt::QueuedConnection);
+
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+        QTRY_VERIFY(entryRequested);
+        QTRY_VERIFY(backButton->isEnabled());
+        QTRY_VERIFY(findIndexByName(*treeView->model(),
+                                    QStringLiteral("audio_object_type")).isValid());
+        QTest::qWait(50);
+
+        QVERIFY(findIndexByName(*treeView->model(), QStringLiteral("audio_object_type")).isValid());
+        QVERIFY(!findIndexByName(*treeView->model(), QStringLiteral("asc_bytes1")).isValid());
+    }
+
     void layoutAndVisualFitAtDifferentResolutions() {
         const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
         MainWindow window;
@@ -746,12 +815,47 @@ private slots:
         auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
         auto* inspector = window.findChild<QWidget*>(QStringLiteral("fieldInspector"));
         auto* rawView = window.findChild<RawDataView*>(QStringLiteral("rawDataView"));
+        auto* navBar = window.findChild<QWidget*>(QStringLiteral("analysisTreeNavBar"));
+        auto* analysisDock = window.findChild<QDockWidget*>(QStringLiteral("analysisTreeDock"));
+        auto* inspectorDock = window.findChild<QDockWidget*>(QStringLiteral("fieldInspectorDock"));
 
         QVERIFY(backButton != nullptr);
         QVERIFY(breadcrumbLabel != nullptr);
         QVERIFY(treeView != nullptr);
         QVERIFY(inspector != nullptr);
         QVERIFY(rawView != nullptr);
+        QVERIFY(navBar != nullptr);
+        QVERIFY(analysisDock != nullptr);
+        QVERIFY(inspectorDock != nullptr);
+
+        QModelIndex ascIndex;
+        QTRY_VERIFY((ascIndex = findIndexByName(*treeView->model(),
+                                               QStringLiteral("asc_bytes1"))).isValid());
+        Q_EMIT treeView->doubleClicked(ascIndex);
+        QVERIFY(backButton->isEnabled());
+
+        const auto verifyLayout = [&] {
+            const QRect windowRect = window.rect();
+            const QRect navRect = geometryInWindow(*navBar, window);
+            const QRect treeRect = geometryInWindow(*treeView, window);
+            const QRect rawRect = geometryInWindow(*rawView, window);
+            const QRect analysisDockRect = geometryInWindow(*analysisDock, window);
+            const QRect inspectorDockRect = geometryInWindow(*inspectorDock, window);
+
+            QVERIFY(windowRect.contains(navRect));
+            QVERIFY(windowRect.contains(treeRect));
+            QVERIFY(windowRect.contains(rawRect));
+            QVERIFY(!navRect.isEmpty());
+            QVERIFY(!treeRect.isEmpty());
+            QVERIFY(!rawRect.isEmpty());
+            QVERIFY(!navRect.intersects(treeRect));
+            QVERIFY(!analysisDockRect.intersects(rawRect));
+            QVERIFY(!analysisDockRect.intersects(inspectorDockRect));
+            QVERIFY(!rawRect.intersects(inspectorDockRect));
+            QVERIFY(backButton->geometry().right() < breadcrumbLabel->geometry().left());
+            QVERIFY(breadcrumbLabel->fontMetrics().horizontalAdvance(breadcrumbLabel->text()) <=
+                    breadcrumbLabel->contentsRect().width());
+        };
 
         // Test 900x600
         window.resize(900, 600);
@@ -762,6 +866,7 @@ private slots:
         QVERIFY(treeView->isVisible());
         QVERIFY(inspector->isVisible());
         QVERIFY(rawView->isVisible());
+        verifyLayout();
 
         // Test 1280x800
         window.resize(1280, 800);
@@ -771,6 +876,7 @@ private slots:
         QVERIFY(treeView->isVisible());
         QVERIFY(inspector->isVisible());
         QVERIFY(rawView->isVisible());
+        verifyLayout();
     }
 };
 
