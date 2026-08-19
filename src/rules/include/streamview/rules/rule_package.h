@@ -65,6 +65,7 @@ struct RulePackageEntryPoint final {
     QStringList profiles;
     QString depth;
     std::optional<QString> detector;
+    std::optional<QString> target;
 };
 
 struct RulePackageDocumentation final {
