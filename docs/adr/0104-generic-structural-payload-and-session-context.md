@@ -91,22 +91,34 @@ This ADR is a design contract only. P5i-3b must implement it in separately revie
 
 When executing a structural entrypoint with payload dispatch:
 
-1. **Compound transaction**:
+1. **Compound transaction and execution modes**:
    - The analysis tree keeps its existing root container. The header structure is an `Indexing` child while both phases run; this is required because `AnalysisTree::appendChild` only accepts an `Indexing` parent (`src/core/analysis_model.cpp:118-135`).
    - The compound executor owns one cumulative instruction/node budget and one cancellation token. It stages context publication and commits it only after header and payload success.
    - A tree snapshot may remove newly appended nodes, but context side effects require a separate staged directory or transaction; `AnalysisTree::restore` alone is insufficient.
+   - **Execution Modes**: The runner supports two mutually exclusive payload modes:
+     - *Explicit payload mode*: Caller explicitly passes `payloadStructureIndex`, `payloadMapping`, and `transformProviderId` (backward compatible).
+     - *Auto typed-dispatch mode*: Caller sets `autoDispatchPayload = true` and supplies `payloadMapping`. The runner dynamically resolves the payload structure and transform provider from `program.payloadDispatch` and the decoded header controller field value.
+     - Specifying both explicit `payloadStructureIndex` and `autoDispatchPayload = true` fails closed with `InvalidDefinition`.
+     - Requesting auto-dispatch when `program.payloadDispatch` is absent, when `dispatch.scanIndex` element struct does not match `headerStructureIndex`, or when `payloadMapping` is missing fails closed with `InvalidDefinition`.
 
 2. **Header phase**:
    - Header fields are decoded into the header child and their `FieldLocation` spans map directly to the input `SourceMapping`.
    - The header bit length is recorded from actual VM consumption. A non-byte-aligned boundary is rejected before any byte-oriented transform.
 
 3. **Dispatch and transformation phase**:
-   - The runner reads the controller value from the decoded header and slices the remaining logical range.
+   - In auto-dispatch mode, the runner reads the scalar controller value at `dispatch.controllerFieldIndex` from the decoded header field values. If the controller field is missing, unpopulated, or non-scalar, execution fails closed with `InvalidDefinition`.
+   - Case resolution:
+     - **Structure case**: Maps to a declared payload structure index. The runner queries `PayloadTransformRegistry` using the declared `dispatch.viewKind` stored in typed IR, slices the remaining logical range, transforms the payload input mapping, and decodes the selected payload structure. Execution result exposes `selectedPayloadStructureIndex` and `selectedPayloadCaseValue`.
+     - **Empty case**: Maps to no structure (`empty`). No payload structure is decoded; the runner proceeds directly to commit the header-only transaction (`selectedPayloadStructureIndex = std::nullopt`, `selectedPayloadCaseValue` is set).
+     - **Unmatched case**: If the controller value does not match any declared case, execution terminates with `Unsupported` status and an `UnsupportedSyntax` diagnostic; the indexing header is marked unsupported and staged context is rolled back.
    - `PayloadTransformProvider` returns a forwarded `SourceMapping`, a separate list of excluded physical spans, inspected-byte accounting, diagnostics, and a terminal status. Excluded bytes are not inserted into `SourceMapping`, because `FieldLocation` requires forwarded span length to equal logical length (`src/core/coordinates.cpp:45-61`).
+   - Transform provider lookup is strictly format-neutral: generic runners resolve providers by opaque string identifier (`dispatch.viewKind`) through the registry; generic code must not contain hardcoded format names (e.g. H.264, NAL, SPS, PPS, or RBSP). Unknown providers return `InvalidDefinition`.
 
 4. **Payload phase and finalization**:
-   - The selected payload structure is decoded under the still-indexing header and then attached as its child. Only after this phase does the compound executor transition the header to `Materialized`.
-   - Header failure commits the partial header and no payload. Payload failure commits the partial tree and diagnostics but rolls back staged context. The final header state is `Invalid`, `WaitingDependency`, `Cancelled`, `Unsupported`, or `Materialized` according to the terminal result; a failed result must not be described as a fully materialized header.
+   - When a payload structure is selected (explicitly or via matched structure case), it is decoded under the still-indexing header with the remaining compound instruction and node budget.
+   - Staged context definitions and imports for the payload phase dynamically use the actually selected payload structure.
+   - Header failure commits the partial header and no payload. Payload failure commits the partial tree and diagnostics but rolls back staged context.
+   - Only after both header and payload (or header-only in empty case) succeed and commit hooks pass does the compound executor transition nodes to `Materialized`. The final header state is `Invalid`, `WaitingDependency`, `Cancelled`, `Unsupported`, or `Materialized` according to the terminal result; a failed result must not be described as a fully materialized header.
 
 ---
 

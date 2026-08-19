@@ -91,22 +91,34 @@
 
 当执行带有 payload 分派的结构型入口点时：
 
-1. **复合事务**：
+1. **复合事务与执行模式**：
    - 分析树保留已有 root container。头部结构体在两个阶段执行期间保持为 `Indexing` 子节点；这是因为 `AnalysisTree::appendChild` 只接受 `Indexing` parent（`src/core/analysis_model.cpp:118-135`）。
    - 复合执行器拥有一个累计 instruction/node budget 和一个 cancellation token。上下文发布必须暂存，只有 header 与 payload 都成功后才能提交。
    - tree snapshot 可以移除新追加的节点，但 context side effect 需要独立的 staged directory 或 transaction；仅调用 `AnalysisTree::restore` 不足以回滚上下文。
+   - **执行模式**：执行器支持两种互斥的 payload 执行模式：
+     - *显式 payload 模式*：调用方显式传入 `payloadStructureIndex`、`payloadMapping` 和 `transformProviderId`（保持向后兼容）。
+     - *自动 typed-dispatch 模式*：调用方设置 `autoDispatchPayload = true` 并提供 `payloadMapping`。执行器从 `program.payloadDispatch` 和已解码头部 controller 字段值动态解析 payload 结构体与变换 provider。
+     - 同时指定显式 `payloadStructureIndex` 与 `autoDispatchPayload = true` 时 fail closed，返回 `InvalidDefinition`。
+     - 在 `program.payloadDispatch` 缺失、`dispatch.scanIndex` 对应元素结构体与 `headerStructureIndex` 不匹配、或缺少 `payloadMapping` 时请求自动分派均 fail closed，返回 `InvalidDefinition`。
 
 2. **Header 阶段**：
    - 头部字段解码到 header child，其 `FieldLocation` 直接映射到输入 `SourceMapping`。
    - header bit length 必须取自 VM 实际消费量。若末尾未字节对齐，必须在任何字节型变换前拒绝。
 
 3. **分派与变换阶段**：
-   - 执行器从已解码的 header 读取 controller，并切分剩余逻辑范围。
+   - 在自动分派模式下，执行器从已解码的头部字段值中读取 `dispatch.controllerFieldIndex` 处的无符号标量 controller 值。若 controller 字段缺失、未填充或非标量，执行以 `InvalidDefinition` fail closed。
+   - Case 决策分支：
+     - **结构体分支（Structure case）**：映射到已声明的 payload 结构体索引。执行器使用 Typed IR 中保存的 `dispatch.viewKind` 标识符查询 `PayloadTransformRegistry`，切分剩余逻辑范围，变换载荷输入映射，并解码选中的 payload 结构体。执行结果暴露 `selectedPayloadStructureIndex` 与 `selectedPayloadCaseValue`。
+     - **空分支（Empty case）**：映射为无结构体（`empty`）。不解码任何 payload 结构体；执行器直接提交仅包含 header 的事务（`selectedPayloadStructureIndex = std::nullopt`，记录 `selectedPayloadCaseValue`）。
+     - **未匹配分支（Unmatched case）**：若 controller 值未匹配任何已声明 case，执行终止并返回 `Unsupported` 状态与 `UnsupportedSyntax` 诊断；Indexing header 标记为 unsupported 且回滚暂存的 context。
    - `PayloadTransformProvider` 返回转发的 `SourceMapping`、独立的排除物理 span 列表、inspection 计数、诊断和终态。排除字节不得塞进 `SourceMapping`，因为 `FieldLocation` 要求转发 span 的 bit 长度等于逻辑范围（`src/core/coordinates.cpp:45-61`）。
+   - 变换 provider 查找严格保持格式中立：通用 runner 仅凭 Typed IR 中的不透明字符串标识符（`dispatch.viewKind`）从 registry 查询 provider；通用代码中禁止硬编码格式专属名称（如 H.264、NAL、SPS、PPS 或 RBSP）。未知 provider 返回 `InvalidDefinition`。
 
 4. **Payload 阶段与终态**：
-   - 在 header 仍为 `Indexing` 时解码选中的 payload，并将其挂载为 child；此阶段完成后复合执行器才将 header 转为 `Materialized`。
-   - header 失败时提交 header partial 且不执行 payload。payload 失败时提交 partial tree 与诊断，但回滚 staged context。最终 header 状态必须按终态准确标记为 `Invalid`、`WaitingDependency`、`Cancelled`、`Unsupported` 或 `Materialized`；失败结果不得描述为已完整物化的 header。
+   - 当选定 payload 结构体时（显式指定或匹配到结构体分支），在 header 仍为 `Indexing` 时使用剩余的 compound instruction 和 node 预算解码该 payload。
+   - payload 阶段的暂存上下文定义与导入动态绑定于实际选中的 payload 结构体。
+   - header 失败时提交 header partial 且不执行 payload。payload 失败时提交 partial tree 与诊断，但回滚 staged context。
+   - 仅当 header 与 payload（或 empty case 下仅 header）均成功且 commit hooks 通过后，复合执行器才将节点转为 `Materialized`。最终 header 状态必须按终态准确标记为 `Invalid`、`WaitingDependency`、`Cancelled`、`Unsupported` 或 `Materialized`；失败结果不得描述为已完整物化的 header。
 
 ---
 
