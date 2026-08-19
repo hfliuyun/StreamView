@@ -3,6 +3,7 @@
 #include <streamview/core/source.h>
 #include <streamview/rules/dsl.h>
 #include <streamview/rules/dsl_ir.h>
+#include <streamview/rules/h264_rbsp_payload_transform_provider.h>
 #include <streamview/rules/rule_execution_session.h>
 
 #include <QTest>
@@ -31,6 +32,8 @@ using streamview::rules::CompoundRuleExecutionResult;
 using streamview::rules::DslCompiler;
 using streamview::rules::DslExecutionStatus;
 using streamview::rules::DslParser;
+using streamview::rules::H264RbspPayloadTransformProvider;
+using streamview::rules::PayloadTransformRegistry;
 using streamview::rules::RuleExecutionRequest;
 using streamview::rules::RuleExecutionSession;
 using streamview::rules::RuleExecutionStatus;
@@ -3286,12 +3289,304 @@ class RuleExecutionSessionTest final : public QObject {
             auto first = makeCompoundRequest(source, headerIndex, *firstHeader, *tree, payloadIndex,
                                              &*firstPayload, *firstEnclosing);
             auto second = makeCompoundRequest(source, headerIndex, *secondHeader, *tree,
-                                              payloadIndex, &*secondPayload, *secondEnclosing);
+                                               payloadIndex, &*secondPayload, *secondEnclosing);
             QVERIFY(session.runCompound(first).materialized());
             QCOMPARE(session.runCompound(second).status, RuleExecutionStatus::ResourceLimit);
             session.reset();
             QVERIFY(session.runCompound(second).materialized());
         }
+    }
+
+    void compoundAutoDispatchProducerConsumerContextChain() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct NalHeader {
+                bits<1> forbidden_zero_bit @equals(0);
+                bits<2> nal_ref_idc;
+                bits<5> nal_unit_type;
+            }
+
+            @context("h264-sps", sps_id)
+            struct SpsPayload {
+                bits<8> sps_id;
+                bits<8> profile_idc @context_export;
+            }
+
+            @context_import("h264-sps", sps_id)
+            struct PpsPayload {
+                bits<8> pps_id;
+                bits<8> sps_id;
+                bits<context_value(sps_id, h264_sps, profile_idc)> payload_field;
+            }
+
+            @index(progressive) sequence<NalHeader> NalUnits = scan(h264_start_code);
+
+            payload<rbsp> NalUnits switch (nal_unit_type) {
+                case 7: SpsPayload;
+                case 8: PpsPayload;
+            }
+
+            entry NalUnits;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        // SPS: 0x67 (type=7), sps_id=0, profile_idc=8 (2 bytes payload)
+        // PPS: 0x68 (type=8), pps_id=1, sps_id=0, payload_field=0xAA (8 bits, 3 bytes payload)
+        const auto streamData = bytes({0x67, 0, 8, 0x68, 1, 0, 0xAA});
+        const MemorySource source(streamData);
+
+        const auto spsHeader = makeView(1, 0, 8);
+        const auto spsPayload = makeView(2, 8, 16);
+        const auto spsEnclosing = SourceSpan::create(SourceBitAddress(0), 24);
+
+        const auto ppsHeader = makeView(3, 24, 8);
+        const auto ppsPayload = makeView(4, 32, 24);
+        const auto ppsEnclosing = SourceSpan::create(SourceBitAddress(24), 32);
+
+        PayloadTransformRegistry registry;
+        QVERIFY(registry.registerProvider(std::make_shared<H264RbspPayloadTransformProvider>()));
+
+        auto tree = AnalysisTree::create(QStringLiteral("compound-autodispatch-context"));
+        QVERIFY(tree.has_value());
+
+        RuleExecutionSession session(*compiled.program, 1);
+        const auto headerIndex = *compiled.program->structureIndex(QStringLiteral("NalHeader"));
+
+        CompoundRuleExecutionRequest spsReq;
+        spsReq.source = &source;
+        spsReq.headerMapping = &spsHeader->mapping;
+        spsReq.headerStructureIndex = headerIndex;
+        spsReq.payloadMapping = &spsPayload->mapping;
+        spsReq.transformRegistry = &registry;
+        spsReq.tree = &*tree;
+        spsReq.parentId = tree->rootId();
+        spsReq.enclosingSourceSpan = spsEnclosing;
+        spsReq.requireExactConsumption = true;
+        spsReq.autoDispatchPayload = true;
+
+        const auto spsRes = session.runCompound(spsReq);
+        QCOMPARE(spsRes.status, RuleExecutionStatus::Materialized);
+        QVERIFY(spsRes.publishedDefinition.has_value());
+
+        CompoundRuleExecutionRequest ppsReq;
+        ppsReq.source = &source;
+        ppsReq.headerMapping = &ppsHeader->mapping;
+        ppsReq.headerStructureIndex = headerIndex;
+        ppsReq.payloadMapping = &ppsPayload->mapping;
+        ppsReq.transformRegistry = &registry;
+        ppsReq.tree = &*tree;
+        ppsReq.parentId = tree->rootId();
+        ppsReq.enclosingSourceSpan = ppsEnclosing;
+        ppsReq.requireExactConsumption = true;
+        ppsReq.autoDispatchPayload = true;
+
+        const auto ppsRes = session.runCompound(ppsReq);
+        QCOMPARE(ppsRes.status, RuleExecutionStatus::Materialized);
+
+        // Verify PPS read width from SPS context
+        QCOMPARE(ppsRes.execution.payloadBitsConsumed, quint64(24));
+    }
+
+    void compoundAutoDispatchPayloadFailureDoesNotPublishHeaderDefinition() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct NalHeader {
+                bits<1> forbidden_zero_bit @equals(0);
+                bits<2> nal_ref_idc;
+                bits<5> nal_unit_type;
+            }
+
+            @context("h264-sps", sps_id)
+            struct SpsPayload {
+                bits<8> sps_id;
+                bits<8> profile_idc @context_export;
+                bits<8> extra_byte;
+            }
+
+            @index(progressive) sequence<NalHeader> NalUnits = scan(h264_start_code);
+
+            payload<rbsp> NalUnits switch (nal_unit_type) {
+                case 7: SpsPayload;
+            }
+
+            entry NalUnits;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        // SPS data has only 1 byte payload instead of 2 -> payload syntax failure
+        const auto spsData = bytes({0x67, 0});
+        const MemorySource spsSource(spsData);
+        const auto spsHeader = makeView(1, 0, 8);
+        const auto spsPayload = makeView(2, 8, 8);
+        const auto spsEnclosing = SourceSpan::create(SourceBitAddress(0), 16);
+
+        PayloadTransformRegistry registry;
+        QVERIFY(registry.registerProvider(std::make_shared<H264RbspPayloadTransformProvider>()));
+
+        auto tree = AnalysisTree::create(QStringLiteral("compound-autodispatch-fail"));
+        QVERIFY(tree.has_value());
+
+        RuleExecutionSession session(*compiled.program, 1);
+        const auto headerIndex = *compiled.program->structureIndex(QStringLiteral("NalHeader"));
+
+        CompoundRuleExecutionRequest spsReq;
+        spsReq.source = &spsSource;
+        spsReq.headerMapping = &spsHeader->mapping;
+        spsReq.headerStructureIndex = headerIndex;
+        spsReq.payloadMapping = &spsPayload->mapping;
+        spsReq.transformRegistry = &registry;
+        spsReq.tree = &*tree;
+        spsReq.parentId = tree->rootId();
+        spsReq.enclosingSourceSpan = spsEnclosing;
+        spsReq.requireExactConsumption = true;
+        spsReq.autoDispatchPayload = true;
+
+        const auto spsRes = session.runCompound(spsReq);
+        QCOMPARE(spsRes.status, RuleExecutionStatus::InvalidSyntax);
+        QCOMPARE(spsRes.publishedDefinition, std::nullopt);
+        QCOMPARE(session.publishedDefinitionCount(), std::size_t(0));
+    }
+
+    void compoundAutoDispatchHooksRunExactlyOnce() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct NalHeader {
+                bits<1> forbidden_zero_bit @equals(0);
+                bits<2> nal_ref_idc;
+                bits<5> nal_unit_type;
+            }
+            struct SpsPayload {
+                bits<8> sps_id;
+                bits<8> profile_idc;
+            }
+            @index(progressive) sequence<NalHeader> NalUnits = scan(h264_start_code);
+            payload<rbsp> NalUnits switch (nal_unit_type) {
+                case 7: SpsPayload;
+            }
+            entry NalUnits;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const auto data = bytes({0x67, 0, 8});
+        const MemorySource source(data);
+        const auto headerView = makeView(1, 0, 8);
+        const auto payloadView = makeView(2, 8, 16);
+
+        PayloadTransformRegistry registry;
+        QVERIFY(registry.registerProvider(std::make_shared<H264RbspPayloadTransformProvider>()));
+
+        auto tree = AnalysisTree::create(QStringLiteral("hooks-tree"));
+        QVERIFY(tree.has_value());
+
+        RuleExecutionSession session(*compiled.program);
+        const auto headerIndex = *compiled.program->structureIndex(QStringLiteral("NalHeader"));
+
+        int prepareCount = 0;
+        int commitWithResultCount = 0;
+        int commitCount = 0;
+        int rollbackCount = 0;
+
+        CompoundRuleExecutionRequest req;
+        req.source = &source;
+        req.headerMapping = &headerView->mapping;
+        req.headerStructureIndex = headerIndex;
+        req.payloadMapping = &payloadView->mapping;
+        req.transformRegistry = &registry;
+        req.tree = &*tree;
+        req.parentId = tree->rootId();
+        req.autoDispatchPayload = true;
+        req.transactionHooks.onPrepareCommit = [&](const auto&) {
+            ++prepareCount;
+            return std::nullopt;
+        };
+        req.transactionHooks.onCommitWithResult = [&](const auto&) {
+            ++commitWithResultCount;
+        };
+        req.transactionHooks.onCommit = [&]() {
+            ++commitCount;
+        };
+        req.transactionHooks.onRollback = [&]() {
+            ++rollbackCount;
+        };
+
+        const auto res = session.runCompound(req);
+        QCOMPARE(res.status, RuleExecutionStatus::Materialized);
+        QCOMPARE(prepareCount, 1);
+        QCOMPARE(commitWithResultCount, 1);
+        QCOMPARE(commitCount, 1);
+        QCOMPARE(rollbackCount, 0);
+    }
+
+    void compoundAutoDispatchAccumulatesSessionLimits() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct NalHeader {
+                bits<1> forbidden_zero_bit @equals(0);
+                bits<2> nal_ref_idc;
+                bits<5> nal_unit_type;
+            }
+            struct SpsPayload {
+                bits<8> sps_id;
+                bits<8> profile_idc;
+            }
+            @index(progressive) sequence<NalHeader> NalUnits = scan(h264_start_code);
+            payload<rbsp> NalUnits switch (nal_unit_type) {
+                case 7: SpsPayload;
+            }
+            entry NalUnits;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+
+        const auto data = bytes({0x67, 0, 8, 0x67, 1, 8});
+        const MemorySource source(data);
+        const auto firstHeader = makeView(1, 0, 8);
+        const auto firstPayload = makeView(2, 8, 16);
+        const auto secondHeader = makeView(3, 24, 8);
+        const auto secondPayload = makeView(4, 32, 16);
+
+        PayloadTransformRegistry registry;
+        QVERIFY(registry.registerProvider(std::make_shared<H264RbspPayloadTransformProvider>()));
+
+        auto tree = AnalysisTree::create(QStringLiteral("limits-tree"));
+        QVERIFY(tree.has_value());
+
+        const auto headerIndex = *compiled.program->structureIndex(QStringLiteral("NalHeader"));
+
+        // Probe one execution to determine instruction count
+        RuleExecutionSession probeSession(*compiled.program);
+        CompoundRuleExecutionRequest probeReq;
+        probeReq.source = &source;
+        probeReq.headerMapping = &firstHeader->mapping;
+        probeReq.headerStructureIndex = headerIndex;
+        probeReq.payloadMapping = &firstPayload->mapping;
+        probeReq.transformRegistry = &registry;
+        probeReq.tree = &*tree;
+        probeReq.parentId = tree->rootId();
+        probeReq.autoDispatchPayload = true;
+
+        const auto probeRes = probeSession.runCompound(probeReq);
+        QCOMPARE(probeRes.status, RuleExecutionStatus::Materialized);
+        const quint64 singleInst = probeRes.execution.instructionsExecuted;
+
+        // Set session limit to allow exactly 1 execution but not 2
+        streamview::rules::DslExecutionLimits limits;
+        limits.maximumInstructions = singleInst * 2U - 1U;
+
+        RuleExecutionSession limitedSession(*compiled.program, 0, limits);
+        auto req1 = probeReq;
+        req1.headerMapping = &firstHeader->mapping;
+        req1.payloadMapping = &firstPayload->mapping;
+
+        auto req2 = probeReq;
+        req2.headerMapping = &secondHeader->mapping;
+        req2.payloadMapping = &secondPayload->mapping;
+
+        QCOMPARE(limitedSession.runCompound(req1).status, RuleExecutionStatus::Materialized);
+        QCOMPARE(limitedSession.runCompound(req2).status, RuleExecutionStatus::ResourceLimit);
     }
 };
 

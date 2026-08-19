@@ -56,6 +56,8 @@ struct CompoundStructuralExecutionRequest final {
     CompoundTransactionHooks transactionHooks;
     DslContextValueResolver headerContextValueResolver;
     DslContextValueResolver payloadContextValueResolver;
+    bool autoDispatchPayload = false;
+    std::function<DslContextValueResolver(quint32)> payloadContextResolverFactory;
 };
 
 struct CompoundStructuralExecutionResult final {
@@ -77,6 +79,8 @@ struct CompoundStructuralExecutionResult final {
     std::vector<DslExecutionContextImport> headerContextImports;
     std::vector<DslExecutionContextImport> payloadContextImports;
     QString errorMessage;
+    std::optional<quint32> selectedPayloadStructureIndex;
+    std::optional<quint64> selectedPayloadCaseValue;
 
     [[nodiscard]] bool materialized() const noexcept {
         return status == DslExecutionStatus::Materialized;

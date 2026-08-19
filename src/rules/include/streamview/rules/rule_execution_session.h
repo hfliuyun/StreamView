@@ -87,6 +87,7 @@ struct CompoundRuleExecutionRequest final {
     DslExecutionOptions options;
     bool requireExactConsumption = true;
     CompoundTransactionHooks transactionHooks;
+    bool autoDispatchPayload = false;
 };
 
 struct CompoundRuleExecutionResult final {

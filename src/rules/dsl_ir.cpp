@@ -3978,6 +3978,7 @@ DslCompileResult DslCompiler::compileForTarget(const DslProgram& program,
         const DslPayloadDispatch& dispatch = *program.payloadDispatch;
         DslTypedPayloadDispatch typedDispatch;
         typedDispatch.metadata = metadataForAnnotations(dispatch.annotations);
+        typedDispatch.viewKind = dispatch.viewKind;
         bool valid = true;
         if (dispatch.viewKind != QStringLiteral("rbsp")) {
             addDiagnostic(result.diagnostics,
