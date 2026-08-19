@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-3b-5-R — Manifest target 执行路由与验证证据整改
-Next Action: Task P5i-3b-6 — 实现格式中立的 typed payload dispatch 自动选择与原子 compound 执行；仅完成 capability-only 切片，未经主 Agent 复审不得修改官方 H.264 `.svfmt`/`rule.toml`、不得增加 `video.h264.nal`、不得开始 P5i-4 UI
-Last Verification: Task P5i-3b-5-R — original impl `5671881907155307df7ca90f2a1c479c54b0f6fc`; remediation `b206356318c191193d6220e50f5cb6ba49b37d71`; Hosted CI Run `32223143530` (Windows job `95977416245`, Ubuntu job `95977416406`, macOS job `95977416421` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; DslIrTest `103/103`; RulePackageTest `23/23`; Mp4IsobmffAnalyzerTest `42/42`; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
+Last Completed Step: Task P5i-3b-6 — 格式中立 Typed Payload Dispatch 自动选择与原子 Compound 执行
+Next Action: 等待主 Agent 复审 Task P5i-3b-6；未经主 Agent 复审不得修改官方 H.264 `.svfmt`/`rule.toml`、不得增加 `video.h264.nal`、不得开始 Task P5i-3c 或 P5i-4 UI
+Last Verification: Task P5i-3b-6 — Docs SHA `77db91a3c75eb1f87965be2f6280436402434688`; Impl SHA `c55f23811d34ba2b0f5cdbba7c309dd449b64d23`; Hosted CI Run `32230524350` (Windows job `95999135180`, Ubuntu job `95999135412`, macOS job `95999135458` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; CompoundStructuralRunnerTest `48/48`; RuleExecutionSessionTest `71/71`; DslIrTest `104/104`; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2592,3 +2592,55 @@ Blockers: None
   5. 最终验证：`DslIrTest 103/103`、`RulePackageTest 23/23`、`Mp4IsobmffAnalyzerTest 42/42`；dev、ci、sanitize 三套完整 CTest 均 `43/43`，sanitize 零报告；四个官方规则均 `Rule OK`；`markdown_hygiene` 与 `git diff --check` 通过。Hosted CI Run `32223143530`：Windows-2022 / Qt 6.10.1 job `95977416245`、Ubuntu-24.04 / Qt 6.11.1 job `95977416406`、macOS-15 / Qt 6.11.1 job `95977416421` 全部 success。
   6. 后续门禁核对发现 typed payload execution 尚未闭环：manifest v2 可将 `video.h264.nal` 绑定到现有 `NalUnitHeader`，但 `CompoundRuleExecutionRequest` 仍要求 caller 在 header 执行前传入 `payloadStructureIndex`，无法按已解析 controller field 自动消费 `DslTypedPayloadDispatch`。因此下一步不是官方规则发布，而是 Task P5i-3b-6 capability-only：格式中立地在同一事务、同一累计预算与同一 session context 中完成 header -> typed case selection -> transform -> payload；empty/unhandled case、缺失 controller、取消、预算、失败回滚均须有确定性语义。官方 H.264 包、版本与 P5i-4 UI 继续阻断。
   终审结论：原 Task P5i-3b-5 报告不通过，P5i-3b-5-R 修正后通过。Next Action 切换为 Task P5i-3b-6；其复审通过后才可进入 Task P5i-3c 官方 H.264 Standalone NAL Package Slice。
+- 2026-08-19：完成 Task P5i-3b-6 —— 格式中立 Typed Payload Dispatch 自动选择与原子 Compound 执行（开工基线 `d1e1852dda71fe19e8955284a9e75f0f521b08de`，规范提交 `77db91a3c75eb1f87965be2f6280436402434688`，实现提交 `c55f23811d34ba2b0f5cdbba7c309dd449b64d23`）：
+  1. Docs-first 规范先行：
+     - 更新双语 `docs/adr/0104-generic-structural-payload-and-session-context.md` 与 `docs/zh-CN/adr/0104-generic-structural-payload-and-session-context.md`。
+     - 明确自动 dispatch 模式（`autoDispatchPayload = true`）与显式 `payloadStructureIndex` 互斥，同时请求时 fail closed 返回 `InvalidDefinition`。
+     - 明确 Header 成功物化后动态读取 `dispatch.controllerFieldIndex` 的标量字段值，并在 `dispatch.cases` 中查找匹配 case。
+     - 明确 structure case（存在 `structureIndex`）继续执行 payload；empty case（无 `structureIndex`）成功提交 header；未匹配 case 返回 `Unsupported` 并产生 `UnsupportedSyntax` 诊断，同时原子回滚暂存 context。
+     - 明确 `viewKind`（transform provider identifier）由 typed IR 保留并通过 `PayloadTransformRegistry` 解析，generic runner 不得硬编码 H.264/NAL/SPS/PPS/RBSP 等任何格式分支。
+     - 明确 payload context import/definition 动态绑定到实际选择的 payload structure，且在 header、transform、payload 或 hook 任一失败时 exactly-once 回滚，不发布任何 context。
+  2. 架构与生产实现：
+     - `DslTypedPayloadDispatch`（`src/rules/include/streamview/rules/dsl_ir.h` 与 `src/rules/dsl_ir.cpp`）：增加并持久化 `QString viewKind;`，由 compiler 从 AST `dispatch.viewKind` 填入。
+     - `CompoundStructuralRunner`（`src/rules/include/streamview/rules/compound_structural_runner.h` 与 `src/rules/compound_structural_runner.cpp`）：
+       - 在 `CompoundStructuralExecutionRequest` 末尾追加 `bool autoDispatchPayload = false;` 与 `std::function<DslContextValueResolver(quint32)> payloadContextResolverFactory;`，保持既有位置初始化源码兼容。
+       - 在 `CompoundStructuralExecutionResult` 末尾追加 `std::optional<quint32> selectedPayloadStructureIndex;` 与 `std::optional<quint64> selectedPayloadCaseValue;`。
+       - 实现自动 dispatch 执行闭环：预检 AST/IR dispatch 存在性与 controller 字段有效性 -> 执行 header -> 提取 controller 标量值 -> 匹配 case -> empty case 时将 header 提交为 `Materialized`；structure case 时按 `dispatch.viewKind` 查注册表执行 transform -> 通过 `payloadContextResolverFactory` 获取对应结构 resolver 并执行 payload VM -> 树事务原子提交。
+     - `RuleExecutionSession`（`src/rules/include/streamview/rules/rule_execution_session.h` 与 `src/rules/rule_execution_session.cpp`）：
+       - 在 `CompoundRuleExecutionRequest` 末尾追加 `bool autoDispatchPayload = false;`。
+       - `runCompound()` 接收 auto-dispatch 请求，注入 `payloadContextResolverFactory`；`onPrepareCommit` 中按 `execRes.selectedPayloadStructureIndex` 动态校验并暂存实际选中 payload 结构的 context import 与 context definition；失败时丢弃暂存并原子回滚。
+  3. 真实 Red 门禁核验：
+     - 在未修改生产代码的基线上挂载 auto-dispatch 测试，捕获编译期成员缺失错误（`autoDispatchPayload`、`selectedPayloadStructureIndex`、`selectedPayloadCaseValue` 缺失）。实现后全部 Green。
+  4. 测试覆盖：
+     - `tests/rules/compound_structural_runner_test.cpp`（46 个具名场景，Qt `48/48`）：
+       - `autoDispatchesStructureCaseAndMaterializesHeaderAndPayload`
+       - `autoDispatchesDifferentPayloadStructuresBasedOnControllerValue`
+       - `autoDispatchesEmptyCaseMaterializingHeaderOnly`
+       - `autoDispatchFailsClosedOnUnmatchedCaseWithUnsupportedStatus`
+       - `autoDispatchFailsClosedWhenControllerFieldIsOutOfRangeOrMissing`
+       - `autoDispatchFailsClosedWhenDispatchScanIndexDoesNotMatchHeader`
+       - `autoDispatchFailsClosedWhenTransformProviderIsUnknown`
+       - `autoDispatchFailsClosedWhenBothExplicitPayloadAndAutoDispatchAreRequested`
+       - `autoDispatchRollsBackAtomicallyOnPayloadFailure`
+     - `tests/rules/rule_execution_session_test.cpp`（69 个具名场景，Qt `71/71`）：
+       - `compoundAutoDispatchProducerConsumerContextChain`（SPS producer -> PPS consumer 自动分派与上下文链解析）
+       - `compoundAutoDispatchPayloadFailureDoesNotPublishHeaderDefinition`（payload 失败回滚且不发布 header definition）
+       - `compoundAutoDispatchHooksRunExactlyOnce`（事务 prepare/commit hooks exactly-once 保证）
+       - `compoundAutoDispatchAccumulatesSessionLimits`（跨多次 auto-dispatch 调用的 session 预算累计）
+     - `tests/rules/dsl_ir_test.cpp`（102 个具名场景，Qt `104/104`）：
+       - 验证 `DslTypedPayloadDispatch::viewKind` 正确保留 `"rbsp"` 标识符。
+  5. 全量跨平台与矩阵验证：
+     - 本地 dev / ci / sanitize 三套完整构建与 CTest 均全量 `43/43` 通过，sanitize 零警告/零报告；
+     - 四个官方规则文件（`h264_annex_b.svfmt`、`aac_adts.svfmt`、`aac_asc.svfmt`、`mp4_isobmff.svfmt`）`svtool rule check` 全部 `Rule OK`；
+     - `git diff --check` 与 `markdown_hygiene` 干净；
+     - Hosted CI Run `32230524350`：
+       - Windows-2022 / Qt 6.10.1 (job `95999135180`): `completed` | `success`
+       - Ubuntu-24.04 / Qt 6.11.1 (job `95999135412`): `completed` | `success`
+       - macOS-15 / Qt 6.11.1 (job `95999135458`): `completed` | `success`
+  6. 严格边界恪守：
+     - 未修改任何官方 `.svfmt` 或 `rule.toml`；
+     - 未升级 H.264/AAC/MP4 规则包版本；
+     - 未增加 `video.h264.nal` 官方入口；
+     - 未在通用 runner/session 中引入任何格式专属逻辑或硬编码分支；
+     - 未开始 P5i-4 UI / navigation 工作。
+  终审结论：Task P5i-3b-6 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-3b-6；未经复审不得修改官方 H.264 规则、不得升级规则包版本、不得开始 Task P5i-3c 或 P5i-4 UI。
