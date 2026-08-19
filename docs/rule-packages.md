@@ -1,8 +1,8 @@
 # StreamView Rule Package Format
 
-Status: accepted version 1 contract. This English document is normative; the
-maintained [Chinese companion](zh-CN/rule-packages.md) is provided for
-accessibility.
+Status: accepted version 1 and version 2 contracts. This English document is
+normative; the maintained [Chinese companion](zh-CN/rule-packages.md) is
+provided for accessibility.
 
 ## Package Model
 
@@ -10,7 +10,7 @@ A rule package is one validated logical tree of regular files. The same tree
 may be supplied as a local directory or as one deterministic `.svrule` ZIP
 container. Both forms produce the same content hash and package identity.
 
-Version 1 packages are self-contained data. They contain DSL sources,
+Version 1 and 2 packages are self-contained data. They contain DSL sources,
 documentation, and distributable test data, but no native executable code,
 symbolic links, runtime dependency resolution, or network references. Package
 content never receives file, process, environment, network, pointer, or native
@@ -22,15 +22,15 @@ files live below `src/`, `docs/`, or `tests/`. A manifest source path names a
 below `docs/`. Unreferenced data is still validated and included in the content
 hash.
 
-## Manifest Version 1
+## Manifest Versions 1 And 2
 
-`rule.toml` is UTF-8 TOML 1.0 without a byte-order mark. Manifest version 1 has
-the following schema. All shown scalar and table keys are required except
-`detector`; the complete `documentation` array is optional. Unknown keys or
-tables are rejected.
+`rule.toml` is UTF-8 TOML 1.0 without a byte-order mark. Manifest version 1 and
+version 2 have the following schema. All shown scalar and table keys are
+required except `detector` and the optional `target` in version 2; the complete
+`documentation` array is optional. Unknown keys or tables are rejected.
 
 ```toml
-manifest-version = 1
+manifest-version = 2
 
 [package]
 id = "org.streamview.h264"
@@ -47,6 +47,7 @@ engine = ">=0.1.0 <0.2.0"
 id = "annex-b"
 format = "video.h264.annex-b"
 source = "src/h264_annex_b.svfmt"
+target = "AnnexBStream"
 profiles = ["baseline", "main", "high"]
 depth = "nal-header"
 detector = "h264-annex-b"
@@ -62,7 +63,8 @@ path = "docs/zh-CN/h264-annex-b.md"
 
 The fields mean:
 
-- `manifest-version` selects this schema and must be the integer `1`.
+- `manifest-version` selects this schema and must be the integer `1` or `2`.
+  Values other than `1` and `2` are rejected.
 - `package.id` is the stable package name. It contains 2 through 8 lowercase
   ASCII dot-separated segments. Each segment begins with `a-z`, continues with
   `a-z`, `0-9`, or `-`, and contains at most 32 characters. The complete ID
@@ -76,10 +78,10 @@ The fields mean:
 - `package.authors` contains 1 through 16 non-empty display strings, each at
   most 256 UTF-8 bytes. Author claims do not grant trust or permissions.
 - `package.license` is non-empty SPDX license-expression text of at most 256
-  ASCII characters. Version 1 validates only that representation and does not
+  ASCII characters. The validator validates only that representation and does not
   claim registry lookup, expression canonicalization, or license approval.
 - `package.dependencies` must be an empty array. Non-empty dependency graphs
-  and runtime dependency resolution are not part of version 1.
+  and runtime dependency resolution are not part of version 1 or 2.
 - `compatibility.language` declares one canonical `MAJOR.MINOR` DSL contract.
   During language major zero it must equal the running engine's
   `languageVersion()` before activation. At language major one and later, the
@@ -99,17 +101,36 @@ The fields mean:
   `.svfmt`. `profiles` contains 1 through 64 unique tokens using the entry-ID
   grammar. `depth` is one such token describing declared analysis
   coverage. Optional `detector` names a host detector by the entry-ID grammar;
-  it is metadata, not executable package code. Version 1 knows
-  `h264-annex-b`; an unknown detector leaves the package catalogable but makes
-  automatic detection for that entry explicitly unsupported. With no detector,
-  the entry remains available for manual selection. Entry-point IDs and source
-  paths are both unique.
+  it is metadata, not executable package code. An unknown detector leaves the
+  package catalogable but makes automatic detection for that entry explicitly
+  unsupported. With no detector, the entry remains available for manual
+  selection.
+- `entrypoints.target` is an optional DSL identifier for entrypoint target
+  selection (ADR-0104):
+  - In `manifest-version = 1`, `target` is not permitted. If `target` appears in
+    a version 1 manifest, the package is rejected. In version 1, all `source`
+    paths across entrypoints must be strictly unique.
+  - In `manifest-version = 2`, `target` is optional. When specified, `target`
+    must be a valid non-empty DSL identifier (1 through 64 ASCII letters,
+    digits, or underscores, starting with a letter or underscore).
+  - When `target` is omitted, target-aware compilation binds the default
+    top-level `entry` declared in the `.svfmt` source file.
+  - When `target` is specified, target-aware compilation resolves and binds the
+    matching declared `struct` or `sequence` (scan) in that source file as the
+    entrypoint.
+  - In version 2, multiple entrypoints may share the same `source` path if and
+    only if each `(source, target-or-default)` pair is strictly unique within the
+    package. Duplicate `(source, target-or-default)` pairs are rejected.
+  - Unknown target names, malformed target identifiers, or ambiguous targets
+    (e.g., matching both a struct and a scan) are rejected with deterministic
+    errors before execution.
 - `documentation` contains zero through 64 records. `language` is a unique,
   ASCII tag matching `[a-z]{2,3}(-[A-Z]{2})?` and `path` is a unique canonical
   package path below `docs/`.
 
 TOML table order and insignificant syntax do not change the parsed fields, but
 the manifest's original bytes are part of the logical tree. Editing whitespace
+or modifying manifest keys (such as adding `target` or updating `manifest-version`)
 therefore intentionally changes the package content hash.
 
 ## Paths And Tree Limits
