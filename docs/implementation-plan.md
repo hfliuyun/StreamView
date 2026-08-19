@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-3b-5 — Manifest v2 Target Selection 与 Target-Aware Compiler Capability
-Next Action: 等待主 Agent 复审 Task P5i-3b-5；未经复审不得修改官方 H.264 规则、不得升级规则包版本、不得开始 P5i-4 UI
-Last Verification: Task P5i-3b-5 — spec docs `3decde100f7b0a7c493ec19db458f334bf462be2`; impl `5671881907155307df7ca90f2a1c479c54b0f6fc`; Hosted CI Run `32219696703` (Windows job `95967742101`, macOS job `95967742195`, Ubuntu job `95967742327` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; DslIrTest `101/101`; RulePackageTest `26/26`; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
+Last Completed Step: Task P5i-3b-5-R — Manifest target 执行路由与验证证据整改
+Next Action: Task P5i-3b-6 — 实现格式中立的 typed payload dispatch 自动选择与原子 compound 执行；仅完成 capability-only 切片，未经主 Agent 复审不得修改官方 H.264 `.svfmt`/`rule.toml`、不得增加 `video.h264.nal`、不得开始 P5i-4 UI
+Last Verification: Task P5i-3b-5-R — original impl `5671881907155307df7ca90f2a1c479c54b0f6fc`; remediation `b206356318c191193d6220e50f5cb6ba49b37d71`; Hosted CI Run `32223143530` (Windows job `95977416245`, Ubuntu job `95977416406`, macOS job `95977416421` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; DslIrTest `103/103`; RulePackageTest `23/23`; Mp4IsobmffAnalyzerTest `42/42`; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2568,12 +2568,12 @@ Blockers: None
   5. hook 与 API 修正：用户 `onCommitWithResult`、`onCommit` 与 `onPrepareCommit` 各至多运行一次；commit 阶段取消将节点终结为 `Cancelled` 且不发布；caller prepare rejection 触发一次 rollback。新增公共字段追加到 aggregate 末尾，保留既有 `CompoundTransactionHooks` 与 `CompoundStructuralExecutionRequest` 位置初始化顺序；最终化前预检两个节点均仍为 `Indexing`，防止 payload 已 `Materialized` 而 header 失败的半终态。
   6. 最终测试与验证：RuleExecutionSessionTest 为 67 个具名场景、Qt `69/69`（含 init/cleanup）；CompoundStructuralRunnerTest 为 37 个具名场景、Qt `39/39`。dev、ci、sanitize 三套完整 CTest 均 `43/43`，sanitize 零报告；四个官方规则均 `Rule OK`；`markdown_hygiene` 与 `git diff --check` 通过。Hosted CI Run `32218348546`：Windows-2022 / Qt 6.10.1 job `95963971304`、macOS-15 / Qt 6.11.1 job `95963971341`、Ubuntu-24.04 / Qt 6.11.1 job `95963971375` 全部 success。
   7. 边界保持：未修改 manifest、官方 `.svfmt`、`rule.toml` 或规则包版本；未加入 H.264 专属 runtime 分支；未开始 P5i-4 UI。终审结论：原 Task P5i-3b-4 报告不通过，P5i-3b-4-R 修正后通过。Next Action 切换为 Task P5i-3b-5，仅实现 manifest v2 target selection 与 target-aware compiler capability，官方 H.264 入口和 P5i-4 继续阻断。
-- 2026-08-19：完成 Task P5i-3b-5 —— Manifest v2 Target Selection 与 Target-Aware Compiler Capability（开工基线 `1c24923d2553651543bf67f7f3d099ec2ffe2057`，规范提交 `3decde100f7b0a7c493ec19db458f334bf462be2`，实现提交 `5671881907155307df7ca90f2a1c479c54b0f6fc`）：
+- 2026-08-19：完成 Task P5i-3b-5 —— Manifest v2 Target Selection 与 Target-Aware Compiler Capability（开工基线 `1c24923d2553651543bf67f7f3d099ec2ffe2057`，规范提交 `3decde12fea047e3fbe51f50b9184dacae142a33`，实现提交 `5671881907155307df7ca90f2a1c479c54b0f6fc`）：
   1. Docs-first 规范先行：更新中英文 `docs/rule-packages.md` 与 `docs/zh-CN/rule-packages.md`，精确定义 Manifest Version 1/2 规范。v1 保持原有 6 字段语义并严禁 `target`；v2 在 `[[entrypoints]]` 引入可选 `target` 字段（1..64 字符标准 DSL identifier）；v2 唯一性约束为 `(source, target-or-default)` 组合，同 source 允许绑定不同 target，重复 pair 确定性拒绝。
   2. 结构与解析实现：在 `RulePackageEntryPoint` 末尾追加 `std::optional<QString> target`，保持既有 aggregate 初始化顺序兼容；`parseManifest` 支持 `manifest-version = 1` 与 `2`，并在 v1 出现 target 时拒绝，v2 对非 DSL identifier 格式 target 确定性报错；v1 严格校验 sourcePath 唯一性，v2 严格校验 `(source, target)` pair 唯一性。
   3. Target-Aware 编译能力：新增 `DslCompiler::compileForTarget(program, target)`，`compile(program)` 委托其传 `std::nullopt` 保持零回归；target 为空时解析源文件默认 `entry`，target 指定时精确解析对应的 struct 或 sequence，unknown target 报错 `UnknownReference`，歧义 target 报错 `DuplicateName`，全过程不修改输入 AST。
   4. 规则分析器统一路由：`aac_adts_analyzer.cpp`、`h264_annex_b_analyzer.cpp`、`mp4_isobmff_analyzer.cpp` 统一调用 `DslCompiler::compileForTarget(parsed.program, resolvedRule.entryPoint->target)`。
-  5. 真实 Red/Green：在未修改的旧 C++ 代码上挂载测试，真实捕获 `DslCompiler::compileForTarget` 与 `RulePackageEntryPoint::target` 缺失编译错误（7 处 `dsl_ir_test.cpp` 错误、4 处 `rule_package_test.cpp` 错误）。实现后 `DslIrTest`（101/101）、`RulePackageTest`（26/26）全部通过。
+  5. 真实 Red/Green：在未修改的旧 C++ 代码上挂载测试，真实捕获 `DslCompiler::compileForTarget` 与 `RulePackageEntryPoint::target` 缺失编译错误（7 处 `dsl_ir_test.cpp` 错误、4 处 `rule_package_test.cpp` 错误）。实现后 `DslIrTest`（101/101）、`RulePackageTest`（20/20）全部通过。
   6. 全量构建与跨平台验证：
      - 本地 dev / ci / sanitize 三套构建与 CTest 全量 43/43 全部通过，sanitize 零报告；
      - 四个官方规则 `svtool rule check` 全部通过（`Rule OK`）；
@@ -2584,3 +2584,11 @@ Blockers: None
        - Ubuntu-24.04 / Qt 6.11.1 (job `95967742327`): `success`
   7. 边界保持：未修改官方 `.svfmt` 或 `rule.toml`；未升级规则包版本；未添加 `video.h264.nal` 入口；未引入 H.264 专属 dispatch 分支；未开始 P5i-4 UI。
   终审结论：Task P5i-3b-5 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-3b-5；未经复审不得修改官方 H.264 规则、不得升级规则包版本、不得开始 P5i-4 UI。
+- 2026-08-19：完成 Task P5i-3b-5-R —— 主 Agent 深审并直接修正 Manifest v2 target 执行路由与验证证据（原实现 `5671881907155307df7ca90f2a1c479c54b0f6fc`，修复提交 `b206356318c191193d6220e50f5cb6ba49b37d71`）：
+  1. 原交付不能直接通过：`DslCompiler` 已将显式 struct target 写入 typed entry，但 `Mp4IsobmffAnalyzer` 又按 manifest entrypoint id 查结构，查不到时静默退回 struct 0；真实旧实现 Red `honorsExplicitStructTargetWhenCreatingAnalyzer` 得到 `DefaultBox`，期望 `SelectedBox`。相邻 sequence 路由也未验证 scanner kind，非 `mp4_box` target 会被 MP4 runner 错误接管。
+  2. analyzer 路由修正：MP4 struct entry 直接使用 `compiled.program->entry.targetIndex`；sequence entry 仅接受索引有效的 `DslScannerKind::Mp4Box` 且校验 element struct index，其他 entry 全部 fail closed。新增显式 struct target 与错误 scanner target 端到端回归，默认 bundled MP4 `entry boxes` 保持不变。
+  3. manifest/compiler 合同收口：抽取私有共享 `dsl_identifier.h`，消除 parser 与 compiler 两套 ASCII identifier 判定；v1 `target` 返回确定性的版本专属错误；补齐 64 字符接受、65 字符拒绝、`_` 首字符与尾随数字、默认/显式 target 共享 source、重复默认 pair 拒绝、struct/sequence 二义性等边界。
+  4. 证据更正：原记录中的规范 SHA `3decde100...` 不存在，真实值为 `3decde12fea047e3fbe51f50b9184dacae142a33`；原 `RulePackageTest 26/26` 与直接执行不符，原实现真实 Qt 总数为 `20/20`。本记录保留原执行历史并修正上述可审计字段。
+  5. 最终验证：`DslIrTest 103/103`、`RulePackageTest 23/23`、`Mp4IsobmffAnalyzerTest 42/42`；dev、ci、sanitize 三套完整 CTest 均 `43/43`，sanitize 零报告；四个官方规则均 `Rule OK`；`markdown_hygiene` 与 `git diff --check` 通过。Hosted CI Run `32223143530`：Windows-2022 / Qt 6.10.1 job `95977416245`、Ubuntu-24.04 / Qt 6.11.1 job `95977416406`、macOS-15 / Qt 6.11.1 job `95977416421` 全部 success。
+  6. 后续门禁核对发现 typed payload execution 尚未闭环：manifest v2 可将 `video.h264.nal` 绑定到现有 `NalUnitHeader`，但 `CompoundRuleExecutionRequest` 仍要求 caller 在 header 执行前传入 `payloadStructureIndex`，无法按已解析 controller field 自动消费 `DslTypedPayloadDispatch`。因此下一步不是官方规则发布，而是 Task P5i-3b-6 capability-only：格式中立地在同一事务、同一累计预算与同一 session context 中完成 header -> typed case selection -> transform -> payload；empty/unhandled case、缺失 controller、取消、预算、失败回滚均须有确定性语义。官方 H.264 包、版本与 P5i-4 UI 继续阻断。
+  终审结论：原 Task P5i-3b-5 报告不通过，P5i-3b-5-R 修正后通过。Next Action 切换为 Task P5i-3b-6；其复审通过后才可进入 Task P5i-3c 官方 H.264 Standalone NAL Package Slice。
