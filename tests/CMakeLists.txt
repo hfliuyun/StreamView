@@ -164,6 +164,11 @@ if(TARGET streamview_app)
     streamview_add_app_test(streamview_raw_data_view_tests app/raw_data_view_test.cpp)
     streamview_add_app_test(streamview_main_window_tests app/main_window_test.cpp)
     target_link_libraries(streamview_main_window_tests PRIVATE Qt6::Sql)
+    target_compile_definitions(
+        streamview_main_window_tests
+        PRIVATE
+            STREAMVIEW_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    )
 endif()
 streamview_add_rules_test(
     streamview_h264_annex_b_analyzer_tests
