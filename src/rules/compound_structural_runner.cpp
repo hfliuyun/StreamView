@@ -10,13 +10,45 @@ namespace streamview::rules {
 
 namespace {
 
-[[nodiscard]] CompoundStructuralExecutionResult makeFailure(
-    DslExecutionStatus status,
-    const QString& message) {
+[[nodiscard]] CompoundStructuralExecutionResult makeFailure(DslExecutionStatus status,
+                                                            const QString& message) {
     CompoundStructuralExecutionResult res;
     res.status = status;
     res.errorMessage = message;
     return res;
+}
+
+[[nodiscard]] core::MaterializationState
+terminalStateForFailure(DslExecutionStatus status) noexcept {
+    switch (status) {
+    case DslExecutionStatus::Cancelled:
+        return core::MaterializationState::Cancelled;
+    case DslExecutionStatus::DependencyUnavailable:
+        return core::MaterializationState::WaitingDependency;
+    case DslExecutionStatus::Unsupported:
+        return core::MaterializationState::Unsupported;
+    default:
+        return core::MaterializationState::Invalid;
+    }
+}
+
+[[nodiscard]] core::DiagnosticCode diagnosticCodeForFailure(DslExecutionStatus status) noexcept {
+    switch (status) {
+    case DslExecutionStatus::Cancelled:
+        return core::DiagnosticCode::Cancelled;
+    case DslExecutionStatus::DependencyUnavailable:
+        return core::DiagnosticCode::DependencyUnavailable;
+    case DslExecutionStatus::Unsupported:
+        return core::DiagnosticCode::UnsupportedSyntax;
+    case DslExecutionStatus::TruncatedSource:
+        return core::DiagnosticCode::TruncatedSource;
+    case DslExecutionStatus::SourceError:
+        return core::DiagnosticCode::SourceError;
+    case DslExecutionStatus::ResourceLimit:
+        return core::DiagnosticCode::ResourceLimit;
+    default:
+        return core::DiagnosticCode::InvalidSyntax;
+    }
 }
 
 [[nodiscard]] bool validateMapping(const core::SourceMapping& mapping, QString* errorMessage) {
@@ -45,7 +77,7 @@ namespace {
 }
 
 [[nodiscard]] bool spanContainedInMapping(const core::SourceMapping& mapping,
-                                           const core::SourceSpan& candidate) noexcept {
+                                          const core::SourceSpan& candidate) noexcept {
     const auto candidateEnd = candidate.endExclusive();
     for (const auto& span : mapping.sourceSpans()) {
         if (candidate.start() >= span.start() && candidateEnd <= span.endExclusive()) {
@@ -60,18 +92,17 @@ namespace {
     return left.start() < right.endExclusive() && right.start() < left.endExclusive();
 }
 
-[[nodiscard]] std::optional<core::SourceMapping> requestedInputMapping(
-    const PayloadTransformRequest& request) {
+[[nodiscard]] std::optional<core::SourceMapping>
+requestedInputMapping(const PayloadTransformRequest& request) {
     if (request.inputMapping == nullptr || request.logicalBitLength == 0 ||
         request.logicalBitStart > request.inputMapping->logicalBitLength() ||
         request.logicalBitLength >
             request.inputMapping->logicalBitLength() - request.logicalBitStart) {
         return std::nullopt;
     }
-    const auto logicalAddress = core::LogicalBitAddress(
-        request.inputMapping->viewId(), request.logicalBitStart);
-    const auto logicalRange = core::LogicalRange::create(
-        logicalAddress, request.logicalBitLength);
+    const auto logicalAddress =
+        core::LogicalBitAddress(request.inputMapping->viewId(), request.logicalBitStart);
+    const auto logicalRange = core::LogicalRange::create(logicalAddress, request.logicalBitLength);
     if (!logicalRange) {
         return std::nullopt;
     }
@@ -79,8 +110,7 @@ namespace {
     if (!location) {
         return std::nullopt;
     }
-    return core::SourceMapping::create(
-        request.inputMapping->viewId(), location->sourceSpans());
+    return core::SourceMapping::create(request.inputMapping->viewId(), location->sourceSpans());
 }
 
 [[nodiscard]] bool validateTransformResult(const PayloadTransformRequest& request,
@@ -113,8 +143,8 @@ namespace {
 
     for (const auto& forwardedSpan : transformResult.forwardedMapping->sourceSpans()) {
         if (!spanContainedInMapping(*allowedMapping, forwardedSpan)) {
-            *errorMessage = QStringLiteral(
-                "Forwarded mapping escapes the requested payload logical range");
+            *errorMessage =
+                QStringLiteral("Forwarded mapping escapes the requested payload logical range");
             return false;
         }
     }
@@ -128,8 +158,8 @@ namespace {
             return false;
         }
         if (!spanContainedInMapping(*allowedMapping, excluded.sourceSpan)) {
-            *errorMessage = QStringLiteral(
-                "Excluded span escapes the requested payload logical range");
+            *errorMessage =
+                QStringLiteral("Excluded span escapes the requested payload logical range");
             return false;
         }
         if ((excluded.outputBitOffset % 8U) != 0 ||
@@ -137,8 +167,7 @@ namespace {
             *errorMessage = QStringLiteral("Excluded span output offset is out of range");
             return false;
         }
-        if (std::numeric_limits<quint64>::max() - excludedBits <
-            excluded.sourceSpan.bitLength()) {
+        if (std::numeric_limits<quint64>::max() - excludedBits < excluded.sourceSpan.bitLength()) {
             *errorMessage = QStringLiteral("Excluded span length arithmetic overflow");
             return false;
         }
@@ -164,16 +193,15 @@ namespace {
     const quint64 forwardedBits = transformResult.forwardedMapping->logicalBitLength();
     if (std::numeric_limits<quint64>::max() - forwardedBits < excludedBits ||
         forwardedBits + excludedBits != request.logicalBitLength) {
-        *errorMessage = QStringLiteral(
-            "Forwarded and excluded spans do not cover the input logical range");
+        *errorMessage =
+            QStringLiteral("Forwarded and excluded spans do not cover the input logical range");
         return false;
     }
     return true;
 }
 
-[[nodiscard]] std::optional<QString> invokeTransactionHook(
-    const std::function<void()>& hook,
-    const QString& hookName) noexcept {
+[[nodiscard]] std::optional<QString> invokeTransactionHook(const std::function<void()>& hook,
+                                                           const QString& hookName) noexcept {
     if (!hook) {
         return std::nullopt;
     }
@@ -181,8 +209,7 @@ namespace {
         hook();
         return std::nullopt;
     } catch (const std::exception& error) {
-        return QStringLiteral("%1 hook failed: %2")
-            .arg(hookName, QString::fromUtf8(error.what()));
+        return QStringLiteral("%1 hook failed: %2").arg(hookName, QString::fromUtf8(error.what()));
     } catch (...) {
         return QStringLiteral("%1 hook failed with an unknown exception").arg(hookName);
     }
@@ -190,8 +217,7 @@ namespace {
 
 [[nodiscard]] std::optional<QString> invokeTransactionHookWithResult(
     const std::function<void(const CompoundStructuralExecutionResult&)>& hook,
-    const CompoundStructuralExecutionResult& result,
-    const QString& hookName) noexcept {
+    const CompoundStructuralExecutionResult& result, const QString& hookName) noexcept {
     if (!hook) {
         return std::nullopt;
     }
@@ -199,22 +225,41 @@ namespace {
         hook(result);
         return std::nullopt;
     } catch (const std::exception& error) {
-        return QStringLiteral("%1 hook failed: %2")
-            .arg(hookName, QString::fromUtf8(error.what()));
+        return QStringLiteral("%1 hook failed: %2").arg(hookName, QString::fromUtf8(error.what()));
     } catch (...) {
         return QStringLiteral("%1 hook failed with an unknown exception").arg(hookName);
     }
 }
 
+[[nodiscard]] std::optional<CompoundTransactionFailure>
+invokeTransactionPrepare(const std::function<std::optional<CompoundTransactionFailure>(
+                             const CompoundStructuralExecutionResult&)>& hook,
+                         const CompoundStructuralExecutionResult& result) noexcept {
+    if (!hook) {
+        return std::nullopt;
+    }
+    try {
+        return hook(result);
+    } catch (const std::exception& error) {
+        return CompoundTransactionFailure{
+            DslExecutionStatus::InvalidDefinition,
+            QStringLiteral("Commit preparation failed: %1").arg(QString::fromUtf8(error.what()))};
+    } catch (...) {
+        return CompoundTransactionFailure{
+            DslExecutionStatus::InvalidDefinition,
+            QStringLiteral("Commit preparation failed with an unknown exception")};
+    }
+}
+
 } // namespace
 
-CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
-    const DslTypedProgram& program,
-    const CompoundStructuralExecutionRequest& request) {
+CompoundStructuralExecutionResult
+CompoundStructuralRunner::execute(const DslTypedProgram& program,
+                                  const CompoundStructuralExecutionRequest& request) {
     CompoundStructuralExecutionResult result;
 
-    if (request.source == nullptr || request.headerMapping == nullptr ||
-        request.tree == nullptr || request.headerStructureIndex >= program.structs.size()) {
+    if (request.source == nullptr || request.headerMapping == nullptr || request.tree == nullptr ||
+        request.headerStructureIndex >= program.structs.size()) {
         return makeFailure(DslExecutionStatus::InvalidDefinition,
                            QStringLiteral("Compound execution request is invalid"));
     }
@@ -259,18 +304,16 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
                            QStringLiteral("Payload mapping requires a payload structure"));
     }
 
-    if (request.options.cancellation &&
-        request.options.cancellation->isCancellationRequested()) {
+    if (request.options.cancellation && request.options.cancellation->isCancellationRequested()) {
         return makeFailure(DslExecutionStatus::Cancelled,
                            QStringLiteral("Compound execution was cancelled before starting"));
     }
 
-    const auto rollbackAndReturn = [&](DslExecutionStatus status,
-                                       const QString& message) {
+    const auto rollbackAndReturn = [&](DslExecutionStatus status, const QString& message) {
         result.status = status;
         result.errorMessage = message;
-        if (const auto hookError = invokeTransactionHook(
-                request.transactionHooks.onRollback, QStringLiteral("Rollback"))) {
+        if (const auto hookError = invokeTransactionHook(request.transactionHooks.onRollback,
+                                                         QStringLiteral("Rollback"))) {
             result.status = DslExecutionStatus::InvalidDefinition;
             if (!result.errorMessage.isEmpty()) {
                 result.errorMessage += QStringLiteral("; ");
@@ -281,6 +324,37 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
     };
 
     const auto commitTransaction = [&]() {
+        const auto failIfCancelled = [&]() {
+            if (!request.options.cancellation ||
+                !request.options.cancellation->isCancellationRequested()) {
+                return false;
+            }
+            result.status = DslExecutionStatus::Cancelled;
+            result.errorMessage = QStringLiteral("Compound execution was cancelled during commit");
+            if (const auto rollbackError = invokeTransactionHook(
+                    request.transactionHooks.onRollback, QStringLiteral("Rollback"))) {
+                result.status = DslExecutionStatus::InvalidDefinition;
+                result.errorMessage += QStringLiteral("; ") + *rollbackError;
+            }
+            return true;
+        };
+        if (failIfCancelled()) {
+            return false;
+        }
+        if (const auto prepareFailure =
+                invokeTransactionPrepare(request.transactionHooks.onPrepareCommit, result)) {
+            result.status = prepareFailure->status;
+            result.errorMessage = prepareFailure->errorMessage;
+            if (const auto rollbackError = invokeTransactionHook(
+                    request.transactionHooks.onRollback, QStringLiteral("Rollback"))) {
+                result.status = DslExecutionStatus::InvalidDefinition;
+                result.errorMessage += QStringLiteral("; ") + *rollbackError;
+            }
+            return false;
+        }
+        if (failIfCancelled()) {
+            return false;
+        }
         if (const auto resultHookError = invokeTransactionHookWithResult(
                 request.transactionHooks.onCommitWithResult, result, QStringLiteral("Commit"))) {
             result.status = DslExecutionStatus::InvalidDefinition;
@@ -291,33 +365,32 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
             }
             return false;
         }
-        const auto hookError = invokeTransactionHook(
-            request.transactionHooks.onCommit, QStringLiteral("Commit"));
-        if (!hookError) {
-            return true;
+        if (failIfCancelled()) {
+            return false;
         }
-        result.status = DslExecutionStatus::InvalidDefinition;
-        result.errorMessage = *hookError;
-        if (const auto rollbackError = invokeTransactionHook(
-                request.transactionHooks.onRollback, QStringLiteral("Rollback"))) {
-            result.errorMessage += QStringLiteral("; ") + *rollbackError;
+        const auto hookError =
+            invokeTransactionHook(request.transactionHooks.onCommit, QStringLiteral("Commit"));
+        if (hookError) {
+            result.status = DslExecutionStatus::InvalidDefinition;
+            result.errorMessage = *hookError;
+            if (const auto rollbackError = invokeTransactionHook(
+                    request.transactionHooks.onRollback, QStringLiteral("Rollback"))) {
+                result.errorMessage += QStringLiteral("; ") + *rollbackError;
+            }
+            return false;
         }
-        return false;
+        return !failIfCancelled();
     };
 
     // 1. Header Execution Phase (keeps header in Indexing state)
     core::BitReader headerReader(*request.source, *request.headerMapping);
+    const DslContextValueResolver& headerContextValueResolver =
+        request.headerContextValueResolver ? request.headerContextValueResolver
+                                           : request.contextValueResolver;
 
     const DslExecutionResult headerResult = DslVirtualMachine::executeDeferred(
-        program,
-        request.headerStructureIndex,
-        headerReader,
-        *request.headerMapping,
-        0,
-        *request.tree,
-        request.parentId,
-        request.options,
-        request.contextValueResolver);
+        program, request.headerStructureIndex, headerReader, *request.headerMapping, 0,
+        *request.tree, request.parentId, request.options, headerContextValueResolver);
 
     result.headerNodeId = headerResult.structureNode;
     result.headerBitsConsumed = headerResult.bitsConsumed;
@@ -343,8 +416,7 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
         diag.code = core::DiagnosticCode::InvalidSyntax;
         diag.severity = core::DiagnosticSeverity::Error;
         diag.message = QStringLiteral("Header did not consume all available logical bits");
-        if (!request.tree->markPartial(*result.headerNodeId,
-                                       core::MaterializationState::Invalid,
+        if (!request.tree->markPartial(*result.headerNodeId, core::MaterializationState::Invalid,
                                        std::move(diag))) {
             return rollbackAndReturn(
                 DslExecutionStatus::InvalidDefinition,
@@ -359,16 +431,22 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
     if (!request.payloadStructureIndex.has_value()) {
         if (!commitTransaction()) {
             core::ParseDiagnostic diag;
-            diag.code = core::DiagnosticCode::InvalidSyntax;
+            diag.code = diagnosticCodeForFailure(result.status);
             diag.severity = core::DiagnosticSeverity::Error;
             diag.message = result.errorMessage;
-            (void)request.tree->markPartial(*result.headerNodeId,
-                                            core::MaterializationState::Invalid,
-                                            std::move(diag));
+            (void)request.tree->markPartial(
+                *result.headerNodeId, terminalStateForFailure(result.status), std::move(diag));
             return result;
         }
 
-        if (!request.tree->transition(*result.headerNodeId, core::MaterializationState::Materialized)) {
+        const auto headerNode = request.tree->node(*result.headerNodeId);
+        if (!headerNode || headerNode->state() != core::MaterializationState::Indexing) {
+            return rollbackAndReturn(
+                DslExecutionStatus::InvalidDefinition,
+                QStringLiteral("Header node changed before compound finalization"));
+        }
+        if (!request.tree->transition(*result.headerNodeId,
+                                      core::MaterializationState::Materialized)) {
             return rollbackAndReturn(DslExecutionStatus::InvalidDefinition,
                                      QStringLiteral("Failed to materialize header node"));
         }
@@ -377,16 +455,13 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
     }
 
     // 3. Intermediate Checks between Header and Payload
-    if (request.options.cancellation &&
-        request.options.cancellation->isCancellationRequested()) {
+    if (request.options.cancellation && request.options.cancellation->isCancellationRequested()) {
         core::ParseDiagnostic diag;
         diag.code = core::DiagnosticCode::Cancelled;
         diag.severity = core::DiagnosticSeverity::Error;
         diag.message = QStringLiteral("Execution was cancelled between header and payload");
-        (void)request.tree->markPartial(
-            *result.headerNodeId,
-            core::MaterializationState::Cancelled,
-            std::move(diag));
+        (void)request.tree->markPartial(*result.headerNodeId, core::MaterializationState::Cancelled,
+                                        std::move(diag));
 
         return rollbackAndReturn(
             DslExecutionStatus::Cancelled,
@@ -400,10 +475,8 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
         diag.code = core::DiagnosticCode::ResourceLimit;
         diag.severity = core::DiagnosticSeverity::Error;
         diag.message = QStringLiteral("Instruction budget exhausted after header execution");
-        (void)request.tree->markPartial(
-            *result.headerNodeId,
-            core::MaterializationState::Invalid,
-            std::move(diag));
+        (void)request.tree->markPartial(*result.headerNodeId, core::MaterializationState::Invalid,
+                                        std::move(diag));
 
         return rollbackAndReturn(
             DslExecutionStatus::ResourceLimit,
@@ -418,10 +491,8 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
         diag.code = core::DiagnosticCode::ResourceLimit;
         diag.severity = core::DiagnosticSeverity::Error;
         diag.message = QStringLiteral("Materialized node budget exhausted after header execution");
-        (void)request.tree->markPartial(
-            *result.headerNodeId,
-            core::MaterializationState::Invalid,
-            std::move(diag));
+        (void)request.tree->markPartial(*result.headerNodeId, core::MaterializationState::Invalid,
+                                        std::move(diag));
 
         return rollbackAndReturn(
             DslExecutionStatus::ResourceLimit,
@@ -438,14 +509,12 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
         diag.code = core::DiagnosticCode::InvalidSyntax;
         diag.severity = core::DiagnosticSeverity::Error;
         diag.message = QStringLiteral("Unknown payload transform provider: %1")
-            .arg(request.transformProviderId);
-        (void)request.tree->markPartial(
-            *result.headerNodeId,
-            core::MaterializationState::Invalid,
-            std::move(diag));
-        return rollbackAndReturn(
-            DslExecutionStatus::InvalidDefinition,
-            QStringLiteral("Unknown payload transform provider: %1").arg(request.transformProviderId));
+                           .arg(request.transformProviderId);
+        (void)request.tree->markPartial(*result.headerNodeId, core::MaterializationState::Invalid,
+                                        std::move(diag));
+        return rollbackAndReturn(DslExecutionStatus::InvalidDefinition,
+                                 QStringLiteral("Unknown payload transform provider: %1")
+                                     .arg(request.transformProviderId));
     }
 
     const quint64 payloadInputBitLength =
@@ -455,13 +524,10 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
         diag.code = core::DiagnosticCode::InvalidSyntax;
         diag.severity = core::DiagnosticSeverity::Error;
         diag.message = QStringLiteral("Payload logical length is zero");
-        (void)request.tree->markPartial(
-            *result.headerNodeId,
-            core::MaterializationState::Invalid,
-            std::move(diag));
-        return rollbackAndReturn(
-            DslExecutionStatus::InvalidDefinition,
-            QStringLiteral("Payload logical length is zero"));
+        (void)request.tree->markPartial(*result.headerNodeId, core::MaterializationState::Invalid,
+                                        std::move(diag));
+        return rollbackAndReturn(DslExecutionStatus::InvalidDefinition,
+                                 QStringLiteral("Payload logical length is zero"));
     }
 
     PayloadTransformRequest transformReq;
@@ -487,12 +553,9 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
         diag.code = core::DiagnosticCode::InvalidSyntax;
         diag.severity = core::DiagnosticSeverity::Error;
         diag.message = transformValidationError;
-        (void)request.tree->markPartial(
-            *result.headerNodeId,
-            core::MaterializationState::Invalid,
-            std::move(diag));
-        return rollbackAndReturn(DslExecutionStatus::InvalidDefinition,
-                                 transformValidationError);
+        (void)request.tree->markPartial(*result.headerNodeId, core::MaterializationState::Invalid,
+                                        std::move(diag));
+        return rollbackAndReturn(DslExecutionStatus::InvalidDefinition, transformValidationError);
     }
 
     if (!transformRes.succeeded()) {
@@ -506,33 +569,29 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
                 : core::MaterializationState::Invalid;
 
         core::ParseDiagnostic diag;
-        diag.code =
-            transformRes.status == DslExecutionStatus::Cancelled
-                ? core::DiagnosticCode::Cancelled
-            : transformRes.status == DslExecutionStatus::Unsupported
-                ? core::DiagnosticCode::UnsupportedSyntax
-            : transformRes.status == DslExecutionStatus::DependencyUnavailable
-                ? core::DiagnosticCode::DependencyUnavailable
-            : transformRes.status == DslExecutionStatus::TruncatedSource
-                ? core::DiagnosticCode::TruncatedSource
-            : transformRes.status == DslExecutionStatus::SourceError
-                ? core::DiagnosticCode::SourceError
-            : transformRes.status == DslExecutionStatus::ResourceLimit
-                ? core::DiagnosticCode::ResourceLimit
-                : core::DiagnosticCode::InvalidSyntax;
+        diag.code = transformRes.status == DslExecutionStatus::Cancelled
+                        ? core::DiagnosticCode::Cancelled
+                    : transformRes.status == DslExecutionStatus::Unsupported
+                        ? core::DiagnosticCode::UnsupportedSyntax
+                    : transformRes.status == DslExecutionStatus::DependencyUnavailable
+                        ? core::DiagnosticCode::DependencyUnavailable
+                    : transformRes.status == DslExecutionStatus::TruncatedSource
+                        ? core::DiagnosticCode::TruncatedSource
+                    : transformRes.status == DslExecutionStatus::SourceError
+                        ? core::DiagnosticCode::SourceError
+                    : transformRes.status == DslExecutionStatus::ResourceLimit
+                        ? core::DiagnosticCode::ResourceLimit
+                        : core::DiagnosticCode::InvalidSyntax;
         diag.severity = core::DiagnosticSeverity::Error;
         diag.message = transformRes.errorMessage.isEmpty()
-            ? QStringLiteral("Payload transform failed")
-            : transformRes.errorMessage;
+                           ? QStringLiteral("Payload transform failed")
+                           : transformRes.errorMessage;
 
-        (void)request.tree->markPartial(
-            *result.headerNodeId,
-            headerTerminalState,
-            std::move(diag));
+        (void)request.tree->markPartial(*result.headerNodeId, headerTerminalState, std::move(diag));
 
         const QString errorMessage = transformRes.errorMessage.isEmpty()
-            ? QStringLiteral("Payload transform failed")
-            : transformRes.errorMessage;
+                                         ? QStringLiteral("Payload transform failed")
+                                         : transformRes.errorMessage;
         return rollbackAndReturn(transformRes.status, errorMessage);
     }
 
@@ -545,17 +604,13 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
     payloadOptions.sequenceElementValues = headerResult.fieldValues;
 
     core::BitReader payloadReader(*request.source, transformedMapping);
+    const DslContextValueResolver& payloadContextValueResolver =
+        request.payloadContextValueResolver ? request.payloadContextValueResolver
+                                            : request.contextValueResolver;
 
     const DslExecutionResult payloadResult = DslVirtualMachine::executeDeferred(
-        program,
-        *request.payloadStructureIndex,
-        payloadReader,
-        transformedMapping,
-        0,
-        *request.tree,
-        *result.headerNodeId,
-        payloadOptions,
-        request.contextValueResolver);
+        program, *request.payloadStructureIndex, payloadReader, transformedMapping, 0,
+        *request.tree, *result.headerNodeId, payloadOptions, payloadContextValueResolver);
 
     result.payloadNodeId = payloadResult.structureNode;
     result.payloadBitsConsumed = payloadResult.bitsConsumed;
@@ -565,8 +620,7 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
 
     if (payloadResult.instructionsExecuted > instRemaining ||
         payloadResult.nodesCreated > nodesRemaining) {
-        (void)request.tree->transition(*result.headerNodeId,
-                                       core::MaterializationState::Invalid);
+        (void)request.tree->transition(*result.headerNodeId, core::MaterializationState::Invalid);
         return rollbackAndReturn(
             DslExecutionStatus::InvalidDefinition,
             QStringLiteral("Payload execution exceeded its remaining compound budget"));
@@ -597,14 +651,14 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
             diag.message = QStringLiteral("Payload did not consume all available logical bits");
             if (result.payloadNodeId) {
                 if (!request.tree->markPartial(*result.payloadNodeId,
-                                               core::MaterializationState::Invalid,
-                                               diag)) {
+                                               core::MaterializationState::Invalid, diag)) {
                     return rollbackAndReturn(
                         DslExecutionStatus::InvalidDefinition,
                         QStringLiteral("Failed to invalidate an incompletely consumed payload"));
                 }
             }
-            (void)request.tree->transition(*result.headerNodeId, core::MaterializationState::Invalid);
+            (void)request.tree->transition(*result.headerNodeId,
+                                           core::MaterializationState::Invalid);
             return rollbackAndReturn(
                 DslExecutionStatus::InvalidSyntax,
                 QStringLiteral("Payload did not consume all available logical bits"));
@@ -612,8 +666,7 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
     }
 
     if (!result.payloadNodeId) {
-        (void)request.tree->transition(*result.headerNodeId,
-                                       core::MaterializationState::Invalid);
+        (void)request.tree->transition(*result.headerNodeId, core::MaterializationState::Invalid);
         return rollbackAndReturn(
             DslExecutionStatus::InvalidDefinition,
             QStringLiteral("Payload execution did not produce a structure node"));
@@ -621,30 +674,45 @@ CompoundStructuralExecutionResult CompoundStructuralRunner::execute(
 
     if (!commitTransaction()) {
         core::ParseDiagnostic diag;
-        diag.code = core::DiagnosticCode::InvalidSyntax;
+        diag.code = diagnosticCodeForFailure(result.status);
         diag.severity = core::DiagnosticSeverity::Error;
         diag.message = result.errorMessage;
         (void)request.tree->markPartial(*result.payloadNodeId,
-                                        core::MaterializationState::Invalid,
-                                        diag);
+                                        terminalStateForFailure(result.status), diag);
         (void)request.tree->markPartial(*result.headerNodeId,
-                                        core::MaterializationState::Invalid,
-                                        std::move(diag));
+                                        terminalStateForFailure(result.status), std::move(diag));
         return result;
     }
 
+    const auto headerNode = request.tree->node(*result.headerNodeId);
+    const auto payloadNode = request.tree->node(*result.payloadNodeId);
+    if (!headerNode || !payloadNode ||
+        headerNode->state() != core::MaterializationState::Indexing ||
+        payloadNode->state() != core::MaterializationState::Indexing) {
+        core::ParseDiagnostic diagnostic;
+        diagnostic.code = core::DiagnosticCode::InvalidSyntax;
+        diagnostic.severity = core::DiagnosticSeverity::Error;
+        diagnostic.message = QStringLiteral("Compound nodes changed before finalization");
+        if (payloadNode && payloadNode->state() == core::MaterializationState::Indexing) {
+            (void)request.tree->markPartial(*result.payloadNodeId,
+                                            core::MaterializationState::Invalid, diagnostic);
+        }
+        if (headerNode && headerNode->state() == core::MaterializationState::Indexing) {
+            (void)request.tree->markPartial(
+                *result.headerNodeId, core::MaterializationState::Invalid, std::move(diagnostic));
+        }
+        return rollbackAndReturn(DslExecutionStatus::InvalidDefinition,
+                                 QStringLiteral("Compound nodes changed before finalization"));
+    }
     if (!request.tree->transition(*result.payloadNodeId,
                                   core::MaterializationState::Materialized)) {
-        (void)request.tree->transition(*result.headerNodeId,
-                                       core::MaterializationState::Invalid);
-        return rollbackAndReturn(
-            DslExecutionStatus::InvalidDefinition,
-            QStringLiteral("Failed to materialize payload node"));
+        (void)request.tree->transition(*result.headerNodeId, core::MaterializationState::Invalid);
+        return rollbackAndReturn(DslExecutionStatus::InvalidDefinition,
+                                 QStringLiteral("Failed to materialize payload node"));
     }
     if (!request.tree->transition(*result.headerNodeId, core::MaterializationState::Materialized)) {
-        return rollbackAndReturn(
-            DslExecutionStatus::InvalidDefinition,
-            QStringLiteral("Failed to materialize header node after payload"));
+        return rollbackAndReturn(DslExecutionStatus::InvalidDefinition,
+                                 QStringLiteral("Failed to materialize header node after payload"));
     }
     result.status = DslExecutionStatus::Materialized;
     return result;

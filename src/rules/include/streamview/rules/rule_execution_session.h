@@ -42,8 +42,7 @@ struct RuleExecutionRequest final {
 
 struct RuleImportedContextDefinition final {
     core::ContextDefinitionId definitionId;
-    core::ContextDefinitionKind kind =
-        core::ContextDefinitionKind::H264SequenceParameterSet;
+    core::ContextDefinitionKind kind = core::ContextDefinitionKind::H264SequenceParameterSet;
     quint32 structureIndex = 0;
     std::vector<quint64> values;
     std::vector<core::ContextDefinitionId> dependencies;
@@ -103,10 +102,11 @@ struct CompoundRuleExecutionResult final {
 };
 
 class RuleExecutionSession final {
-public:
-    explicit RuleExecutionSession(DslTypedProgram program,
-                                  quint64 contextScopeId = 0) noexcept
-        : program_(std::move(program)), contextScopeId_(contextScopeId) {}
+  public:
+    explicit RuleExecutionSession(DslTypedProgram program, quint64 contextScopeId = 0,
+                                  DslExecutionLimits compoundLimits = {}) noexcept
+        : program_(std::move(program)), contextScopeId_(contextScopeId),
+          compoundLimits_(compoundLimits) {}
     RuleExecutionSession(const RuleExecutionSession&) = delete;
     RuleExecutionSession(RuleExecutionSession&&) noexcept = default;
     RuleExecutionSession& operator=(const RuleExecutionSession&) = delete;
@@ -114,8 +114,8 @@ public:
 
     void reset(quint64 contextScopeId = 0) noexcept;
     [[nodiscard]] RuleExecutionResult run(const RuleExecutionRequest& request);
-    [[nodiscard]] CompoundRuleExecutionResult runCompound(
-        const CompoundRuleExecutionRequest& request);
+    [[nodiscard]] CompoundRuleExecutionResult
+    runCompound(const CompoundRuleExecutionRequest& request);
     [[nodiscard]] const DslTypedProgram& program() const noexcept { return program_; }
     [[nodiscard]] const core::ContextDirectory& contextDirectory() const noexcept {
         return contextDirectory_;
@@ -124,20 +124,17 @@ public:
     [[nodiscard]] std::size_t publishedDefinitionCount() const noexcept {
         return contextPayloads_.size();
     }
-    [[nodiscard]] const core::RandomAccessSource* boundSource() const noexcept {
-        return source_;
-    }
+    [[nodiscard]] const core::RandomAccessSource* boundSource() const noexcept { return source_; }
     [[nodiscard]] quint64 boundTreeIdentity() const noexcept { return treeIdentity_; }
 
-private:
+  private:
     struct ContextPayload final {
         core::ContextDefinitionId definitionId;
         quint32 structureIndex = 0;
         std::vector<quint64> values;
     };
 
-    [[nodiscard]] const ContextPayload*
-    contextPayload(core::ContextDefinitionId id) const noexcept;
+    [[nodiscard]] const ContextPayload* contextPayload(core::ContextDefinitionId id) const noexcept;
 
     DslTypedProgram program_;
     quint64 contextScopeId_ = 0;
@@ -145,6 +142,10 @@ private:
     quint64 treeIdentity_ = 0;
     core::ContextDirectory contextDirectory_;
     std::vector<ContextPayload> contextPayloads_;
+    DslExecutionLimits compoundLimits_;
+    quint64 compoundInstructionsExecuted_ = 0;
+    quint64 compoundNodesCreated_ = 0;
+    quint64 compoundBytesInspected_ = 0;
 };
 
 } // namespace streamview::rules

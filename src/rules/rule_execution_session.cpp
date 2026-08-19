@@ -4,6 +4,10 @@
 
 #include <algorithm>
 #include <functional>
+#include <limits>
+#include <map>
+#include <stdexcept>
+#include <tuple>
 #include <utility>
 
 namespace streamview::rules {
@@ -40,22 +44,19 @@ RuleExecutionSession::contextPayload(core::ContextDefinitionId id) const noexcep
     if (id.value() == 0 || id.value() > contextPayloads_.size()) {
         return nullptr;
     }
-    const ContextPayload& payload =
-        contextPayloads_.at(static_cast<std::size_t>(id.value() - 1));
+    const ContextPayload& payload = contextPayloads_.at(static_cast<std::size_t>(id.value() - 1));
     return payload.definitionId == id ? &payload : nullptr;
 }
 
 RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& request) {
     RuleExecutionResult result;
-    if (request.source == nullptr || request.mapping == nullptr ||
-        request.tree == nullptr ||
+    if (request.source == nullptr || request.mapping == nullptr || request.tree == nullptr ||
         request.structureIndex >= program_.structs.size()) {
         result.errorMessage = QStringLiteral("Rule execution request is invalid");
         return result;
     }
     if ((source_ != nullptr && source_ != request.source) ||
-        (treeIdentity_ != 0 &&
-         treeIdentity_ != request.tree->instanceIdentity())) {
+        (treeIdentity_ != 0 && treeIdentity_ != request.tree->instanceIdentity())) {
         result.errorMessage =
             QStringLiteral("Rule execution session belongs to a different analysis");
         return result;
@@ -64,13 +65,10 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
         result.errorMessage = QStringLiteral("Rule execution logical start is out of range");
         return result;
     }
-    const quint64 logicalLength =
-        request.mapping->logicalBitLength() - request.logicalStart;
+    const quint64 logicalLength = request.mapping->logicalBitLength() - request.logicalStart;
 
-    const DslTypedStruct& structure =
-        program_.structs.at(request.structureIndex);
-    const bool usesContext =
-        structure.contextDefinition || !structure.contextImports.empty();
+    const DslTypedStruct& structure = program_.structs.at(request.structureIndex);
+    const bool usesContext = structure.contextDefinition || !structure.contextImports.empty();
     if (usesContext &&
         (!request.enclosingSourceSpan || request.enclosingSourceSpan->bitLength() == 0)) {
         result.errorMessage =
@@ -86,19 +84,18 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
         if (!executionLocation ||
             std::any_of(executionLocation->sourceSpans().begin(),
                         executionLocation->sourceSpans().end(),
-                        [&enclosing = *request.enclosingSourceSpan](
-                            const core::SourceSpan& span) {
+                        [&enclosing = *request.enclosingSourceSpan](const core::SourceSpan& span) {
                             return span.start() < enclosing.start() ||
                                    enclosing.endExclusive() < span.endExclusive();
                         })) {
-            result.errorMessage = QStringLiteral(
-                "Context execution mapping is outside its enclosing source span");
+            result.errorMessage =
+                QStringLiteral("Context execution mapping is outside its enclosing source span");
             return result;
         }
     }
 
-    auto reader = core::BitReader::fromMappingSlice(
-        *request.source, *request.mapping, request.logicalStart, logicalLength);
+    auto reader = core::BitReader::fromMappingSlice(*request.source, *request.mapping,
+                                                    request.logicalStart, logicalLength);
     if (!reader) {
         result.errorMessage = QStringLiteral("Rule execution logical view is invalid");
         return result;
@@ -115,41 +112,33 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
             return status == DslExecutionStatus::Materialized && imported != nullptr;
         }
     };
-    std::vector<std::optional<RuleImportedContext>> importCache(
-        structure.contextImports.size());
-    const auto materializeImport =
-        [&](quint32 importIndex, std::optional<quint64> importKey) -> ImportMaterialization {
+    std::vector<std::optional<RuleImportedContext>> importCache(structure.contextImports.size());
+    const auto materializeImport = [&](quint32 importIndex,
+                                       std::optional<quint64> importKey) -> ImportMaterialization {
         if (importIndex >= structure.contextImports.size()) {
-            return {DslExecutionStatus::InvalidDefinition,
-                    nullptr,
+            return {DslExecutionStatus::InvalidDefinition, nullptr,
                     QStringLiteral("Context import index is out of range")};
         }
         if (importCache.at(importIndex)) {
             RuleImportedContext& cached = *importCache.at(importIndex);
             if (importKey.has_value()) {
                 return cached.key.value == *importKey
-                           ? ImportMaterialization{
-                                 DslExecutionStatus::Materialized, &cached, {}}
+                           ? ImportMaterialization{DslExecutionStatus::Materialized, &cached, {}}
                            : ImportMaterialization{
-                                 DslExecutionStatus::InvalidDefinition,
-                                 nullptr,
-                                 QStringLiteral(
-                                     "Context import key changed during one execution")};
+                                 DslExecutionStatus::InvalidDefinition, nullptr,
+                                 QStringLiteral("Context import key changed during one execution")};
             }
-            return ImportMaterialization{
-                DslExecutionStatus::Materialized, &cached, {}};
+            return ImportMaterialization{DslExecutionStatus::Materialized, &cached, {}};
         }
 
-        const DslTypedContextImport& import =
-            structure.contextImports.at(importIndex);
+        const DslTypedContextImport& import = structure.contextImports.at(importIndex);
         core::ContextLookupResult lookup;
         if (importKey.has_value()) {
             const core::ContextKey key{import.kind, contextScopeId_, *importKey};
-            lookup = contextDirectory_.resolveBefore(
-                key, request.enclosingSourceSpan->start());
+            lookup = contextDirectory_.resolveBefore(key, request.enclosingSourceSpan->start());
         } else {
-            lookup = contextDirectory_.resolveLatestBefore(
-                import.kind, contextScopeId_, request.enclosingSourceSpan->start());
+            lookup = contextDirectory_.resolveLatestBefore(import.kind, contextScopeId_,
+                                                           request.enclosingSourceSpan->start());
         }
         if (!lookup.found()) {
             return {
@@ -157,8 +146,7 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
                 nullptr,
                 lookup.status == core::ContextLookupStatus::DependencyUnavailable
                     ? QStringLiteral("Imported context generation is unavailable")
-                    : QStringLiteral(
-                          "Imported context was not defined before this structure"),
+                    : QStringLiteral("Imported context was not defined before this structure"),
             };
         }
 
@@ -175,32 +163,28 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
         QString closureError;
         std::function<bool(core::ContextDefinitionId)> appendDefinition;
         appendDefinition = [&](core::ContextDefinitionId definitionId) {
-            if (std::find(included.begin(), included.end(), definitionId) !=
-                included.end()) {
+            if (std::find(included.begin(), included.end(), definitionId) != included.end()) {
                 return true;
             }
             if (included.size() >= RuleImportedContext::maximumDefinitions()) {
                 closureStatus = DslExecutionStatus::ResourceLimit;
-                closureError = QStringLiteral(
-                    "Imported context dependency closure exceeds 64 definitions");
+                closureError =
+                    QStringLiteral("Imported context dependency closure exceeds 64 definitions");
                 return false;
             }
             const auto definition = contextDirectory_.definition(definitionId);
             const ContextPayload* payload = contextPayload(definitionId);
             if (!definition || payload == nullptr) {
                 closureStatus = DslExecutionStatus::InvalidDefinition;
-                closureError = QStringLiteral(
-                    "Imported context generation has no rules-owned payload");
+                closureError =
+                    QStringLiteral("Imported context generation has no rules-owned payload");
                 return false;
             }
             included.push_back(definitionId);
-            imported.definitions.push_back({definitionId,
-                                            definition->key.kind,
-                                            payload->structureIndex,
-                                            payload->values,
+            imported.definitions.push_back({definitionId, definition->key.kind,
+                                            payload->structureIndex, payload->values,
                                             definition->dependencies});
-            for (const core::ContextDefinitionId dependencyId :
-                 definition->dependencies) {
+            for (const core::ContextDefinitionId dependencyId : definition->dependencies) {
                 if (!appendDefinition(dependencyId)) {
                     return false;
                 }
@@ -212,72 +196,56 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
         }
 
         importCache.at(importIndex) = std::move(imported);
-        return {DslExecutionStatus::Materialized,
-                &*importCache.at(importIndex),
-                {}};
+        return {DslExecutionStatus::Materialized, &*importCache.at(importIndex), {}};
     };
     const DslContextValueResolver contextValueResolver =
         [&](const DslContextValueRequest& valueRequest) {
-        if (valueRequest.contextImportIndex >= structure.contextImports.size() ||
-            structure.contextImports.at(valueRequest.contextImportIndex).kind !=
-                valueRequest.importKind) {
-            return DslContextValueResolution{
-                DslExecutionStatus::InvalidDefinition,
-                0,
-                QStringLiteral("Imported context value request is invalid")};
-        }
-        const ImportMaterialization materialized = materializeImport(
-            valueRequest.contextImportIndex, valueRequest.importKey);
-        if (!materialized.materialized()) {
-            return DslContextValueResolution{
-                materialized.status, 0, materialized.errorMessage};
-        }
-
-        const RuleImportedContextDefinition* matchedDefinition = nullptr;
-        for (const RuleImportedContextDefinition& definition :
-             materialized.imported->definitions) {
-            if (definition.kind != valueRequest.definitionKind ||
-                definition.structureIndex != valueRequest.structureIndex) {
-                continue;
-            }
-            if (matchedDefinition != nullptr) {
+            if (valueRequest.contextImportIndex >= structure.contextImports.size() ||
+                structure.contextImports.at(valueRequest.contextImportIndex).kind !=
+                    valueRequest.importKind) {
                 return DslContextValueResolution{
-                    DslExecutionStatus::InvalidDefinition,
-                    0,
-                    QStringLiteral(
-                        "Imported context value publisher is ambiguous")};
+                    DslExecutionStatus::InvalidDefinition, 0,
+                    QStringLiteral("Imported context value request is invalid")};
             }
-            matchedDefinition = &definition;
-        }
-        if (matchedDefinition == nullptr ||
-            valueRequest.exportIndex >= matchedDefinition->values.size()) {
-            return DslContextValueResolution{
-                DslExecutionStatus::InvalidDefinition,
-                0,
-                QStringLiteral(
-                    "Imported context value descriptor does not match its payload")};
-        }
-        return DslContextValueResolution{
-            DslExecutionStatus::Materialized,
-            matchedDefinition->values.at(valueRequest.exportIndex),
-            {}};
-    };
-    result.execution = DslVirtualMachine::execute(program_,
-                                                  request.structureIndex,
-                                                  *reader,
-                                                  *request.mapping,
-                                                  request.logicalStart,
-                                                  *request.tree,
-                                                  request.parentId,
-                                                  request.options,
-                                                  contextValueResolver);
+            const ImportMaterialization materialized =
+                materializeImport(valueRequest.contextImportIndex, valueRequest.importKey);
+            if (!materialized.materialized()) {
+                return DslContextValueResolution{materialized.status, 0, materialized.errorMessage};
+            }
+
+            const RuleImportedContextDefinition* matchedDefinition = nullptr;
+            for (const RuleImportedContextDefinition& definition :
+                 materialized.imported->definitions) {
+                if (definition.kind != valueRequest.definitionKind ||
+                    definition.structureIndex != valueRequest.structureIndex) {
+                    continue;
+                }
+                if (matchedDefinition != nullptr) {
+                    return DslContextValueResolution{
+                        DslExecutionStatus::InvalidDefinition, 0,
+                        QStringLiteral("Imported context value publisher is ambiguous")};
+                }
+                matchedDefinition = &definition;
+            }
+            if (matchedDefinition == nullptr ||
+                valueRequest.exportIndex >= matchedDefinition->values.size()) {
+                return DslContextValueResolution{
+                    DslExecutionStatus::InvalidDefinition, 0,
+                    QStringLiteral("Imported context value descriptor does not match its payload")};
+            }
+            return DslContextValueResolution{DslExecutionStatus::Materialized,
+                                             matchedDefinition->values.at(valueRequest.exportIndex),
+                                             {}};
+        };
+    result.execution = DslVirtualMachine::execute(
+        program_, request.structureIndex, *reader, *request.mapping, request.logicalStart,
+        *request.tree, request.parentId, request.options, contextValueResolver);
     result.status = ruleStatus(result.execution.status);
     result.errorMessage = result.execution.errorMessage;
     if (!result.execution.materialized()) {
         return result;
     }
-    if (request.requireExactConsumption &&
-        result.execution.bitsConsumed != logicalLength) {
+    if (request.requireExactConsumption && result.execution.bitsConsumed != logicalLength) {
         result.status = RuleExecutionStatus::InvalidSyntax;
         result.errorMessage =
             result.execution.bitsConsumed < logicalLength
@@ -289,17 +257,14 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
 
     if (result.execution.contextImports.size() != structure.contextImports.size()) {
         result.status = RuleExecutionStatus::InvalidDefinition;
-        result.errorMessage =
-            QStringLiteral("Context import runtime values do not match typed IR");
+        result.errorMessage = QStringLiteral("Context import runtime values do not match typed IR");
         return result;
     }
     std::vector<RuleImportedContext> importedContexts;
     importedContexts.reserve(structure.contextImports.size());
-    for (std::size_t importIndex = 0;
-         importIndex < structure.contextImports.size();
+    for (std::size_t importIndex = 0; importIndex < structure.contextImports.size();
          ++importIndex) {
-        const DslTypedContextImport& import =
-            structure.contextImports.at(importIndex);
+        const DslTypedContextImport& import = structure.contextImports.at(importIndex);
         const DslExecutionContextImport& executionImport =
             result.execution.contextImports.at(importIndex);
         if (executionImport.kind != import.kind) {
@@ -312,16 +277,14 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
                 continue;
             }
             const ImportMaterialization materialized =
-                materializeImport(static_cast<quint32>(importIndex),
-                                  executionImport.key->value);
+                materializeImport(static_cast<quint32>(importIndex), executionImport.key->value);
             if (!materialized.materialized()) {
                 result.status = ruleStatus(materialized.status);
                 result.errorMessage = materialized.errorMessage;
                 core::ParseDiagnostic diagnostic;
                 diagnostic.code = result.status == RuleExecutionStatus::ResourceLimit
                                       ? core::DiagnosticCode::ResourceLimit
-                                  : result.status ==
-                                            RuleExecutionStatus::DependencyUnavailable
+                                  : result.status == RuleExecutionStatus::DependencyUnavailable
                                       ? core::DiagnosticCode::DependencyUnavailable
                                       : core::DiagnosticCode::InvalidSyntax;
                 diagnostic.severity = core::DiagnosticSeverity::Error;
@@ -369,11 +332,9 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
     std::vector<core::ContextDefinitionId> dependencies;
     dependencies.reserve(definition.dependencies.size());
     for (std::size_t index = 0; index < definition.dependencies.size(); ++index) {
-        const DslTypedContextDependency& dependency =
-            definition.dependencies.at(index);
+        const DslTypedContextDependency& dependency = definition.dependencies.at(index);
         const DslExecutionContextValue& dependencyValue = values.dependencies.at(index);
-        const core::ContextKey key{
-            dependency.kind, contextScopeId_, dependencyValue.value};
+        const core::ContextKey key{dependency.kind, contextScopeId_, dependencyValue.value};
         const core::ContextLookupResult lookup =
             contextDirectory_.resolveBefore(key, request.enclosingSourceSpan->start());
         if (!lookup.found()) {
@@ -413,10 +374,10 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
     const core::ContextRegistrationResult registration =
         contextDirectory_.registerDefinition(std::move(specification));
     if (!registration.succeeded()) {
-        result.status = registration.status ==
-                                core::ContextRegistrationStatus::DependencyUnavailable
-                            ? RuleExecutionStatus::DependencyUnavailable
-                            : RuleExecutionStatus::InvalidDefinition;
+        result.status =
+            registration.status == core::ContextRegistrationStatus::DependencyUnavailable
+                ? RuleExecutionStatus::DependencyUnavailable
+                : RuleExecutionStatus::InvalidDefinition;
         result.errorMessage = registration.errorMessage.isEmpty()
                                   ? QStringLiteral("Context definition registration failed")
                                   : registration.errorMessage;
@@ -426,11 +387,10 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
                               : core::DiagnosticCode::InvalidSyntax;
         diagnostic.severity = core::DiagnosticSeverity::Error;
         diagnostic.message = result.errorMessage;
-        diagnostic.fieldPath = structure.name + QLatin1Char('.') +
-                               structure.fields.at(definition.keyFieldIndex).name;
+        diagnostic.fieldPath =
+            structure.name + QLatin1Char('.') + structure.fields.at(definition.keyFieldIndex).name;
         diagnostic.location = values.key.location;
-        (void)request.tree->addDiagnostic(*result.execution.structureNode,
-                                          std::move(diagnostic));
+        (void)request.tree->addDiagnostic(*result.execution.structureNode, std::move(diagnostic));
         return result;
     }
 
@@ -448,13 +408,15 @@ void RuleExecutionSession::reset(quint64 contextScopeId) noexcept {
     source_ = nullptr;
     treeIdentity_ = 0;
     contextScopeId_ = contextScopeId;
+    compoundInstructionsExecuted_ = 0;
+    compoundNodesCreated_ = 0;
+    compoundBytesInspected_ = 0;
 }
 
 CompoundRuleExecutionResult
 RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
     CompoundRuleExecutionResult result;
-    if (request.source == nullptr || request.headerMapping == nullptr ||
-        request.tree == nullptr ||
+    if (request.source == nullptr || request.headerMapping == nullptr || request.tree == nullptr ||
         request.headerStructureIndex >= program_.structs.size()) {
         result.status = RuleExecutionStatus::InvalidDefinition;
         result.errorMessage = QStringLiteral("Compound rule execution request is invalid");
@@ -478,70 +440,60 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
         return result;
     }
 
-    const DslTypedStruct& headerStructure =
-        program_.structs.at(request.headerStructureIndex);
+    const DslTypedStruct& headerStructure = program_.structs.at(request.headerStructureIndex);
     const DslTypedStruct* payloadStructure =
         request.payloadStructureIndex.has_value()
             ? &program_.structs.at(*request.payloadStructureIndex)
             : nullptr;
 
     const bool usesContext =
-        headerStructure.contextDefinition ||
-        !headerStructure.contextImports.empty() ||
+        headerStructure.contextDefinition || !headerStructure.contextImports.empty() ||
         (payloadStructure != nullptr &&
-         (payloadStructure->contextDefinition ||
-          !payloadStructure->contextImports.empty()));
+         (payloadStructure->contextDefinition || !payloadStructure->contextImports.empty()));
 
     if (usesContext &&
-        (!request.enclosingSourceSpan ||
-         request.enclosingSourceSpan->bitLength() == 0)) {
+        (!request.enclosingSourceSpan || request.enclosingSourceSpan->bitLength() == 0)) {
         result.status = RuleExecutionStatus::InvalidDefinition;
         result.errorMessage =
             QStringLiteral("Context execution requires a non-empty enclosing source span");
         return result;
     }
     if (usesContext) {
-        const auto headerRange = core::LogicalRange::create(
-            core::LogicalBitAddress(request.headerMapping->viewId(), 0),
-            request.headerMapping->logicalBitLength());
+        const auto headerRange =
+            core::LogicalRange::create(core::LogicalBitAddress(request.headerMapping->viewId(), 0),
+                                       request.headerMapping->logicalBitLength());
         const auto headerLocation =
             headerRange ? request.headerMapping->locate(*headerRange) : std::nullopt;
         if (!headerLocation ||
-            std::any_of(headerLocation->sourceSpans().begin(),
-                        headerLocation->sourceSpans().end(),
-                        [&enclosing = *request.enclosingSourceSpan](
-                            const core::SourceSpan& span) {
+            std::any_of(headerLocation->sourceSpans().begin(), headerLocation->sourceSpans().end(),
+                        [&enclosing = *request.enclosingSourceSpan](const core::SourceSpan& span) {
                             return span.start() < enclosing.start() ||
                                    enclosing.endExclusive() < span.endExclusive();
                         })) {
             result.status = RuleExecutionStatus::InvalidDefinition;
-            result.errorMessage = QStringLiteral(
-                "Context execution mapping is outside its enclosing source span");
+            result.errorMessage =
+                QStringLiteral("Context execution mapping is outside its enclosing source span");
             return result;
         }
 
         if (request.payloadMapping != nullptr) {
             const quint64 payloadLogicalLength =
-                request.payloadLogicalStart <=
-                        request.payloadMapping->logicalBitLength()
-                    ? (request.payloadMapping->logicalBitLength() -
-                       request.payloadLogicalStart)
+                request.payloadLogicalStart <= request.payloadMapping->logicalBitLength()
+                    ? (request.payloadMapping->logicalBitLength() - request.payloadLogicalStart)
                     : 0;
-            const auto payloadRange = core::LogicalRange::create(
-                core::LogicalBitAddress(request.payloadMapping->viewId(),
-                                        request.payloadLogicalStart),
-                payloadLogicalLength);
+            const auto payloadRange =
+                core::LogicalRange::create(core::LogicalBitAddress(request.payloadMapping->viewId(),
+                                                                   request.payloadLogicalStart),
+                                           payloadLogicalLength);
             const auto payloadLocation =
-                payloadRange ? request.payloadMapping->locate(*payloadRange)
-                             : std::nullopt;
+                payloadRange ? request.payloadMapping->locate(*payloadRange) : std::nullopt;
             if (!payloadLocation ||
-                std::any_of(payloadLocation->sourceSpans().begin(),
-                            payloadLocation->sourceSpans().end(),
-                            [&enclosing = *request.enclosingSourceSpan](
-                                const core::SourceSpan& span) {
-                                return span.start() < enclosing.start() ||
-                                       enclosing.endExclusive() < span.endExclusive();
-                            })) {
+                std::any_of(
+                    payloadLocation->sourceSpans().begin(), payloadLocation->sourceSpans().end(),
+                    [&enclosing = *request.enclosingSourceSpan](const core::SourceSpan& span) {
+                        return span.start() < enclosing.start() ||
+                               enclosing.endExclusive() < span.endExclusive();
+                    })) {
                 result.status = RuleExecutionStatus::InvalidDefinition;
                 result.errorMessage = QStringLiteral(
                     "Context execution mapping is outside its enclosing source span");
@@ -560,50 +512,43 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
         }
     };
 
-    std::map<std::pair<quint32, quint32>, RuleImportedContext> importCache;
+    constexpr quint8 headerPhase = 0;
+    constexpr quint8 payloadPhase = 1;
+    std::map<std::tuple<quint8, quint32, quint32>, RuleImportedContext> importCache;
 
-    const auto materializeImport =
-        [&](quint32 structureIndex,
-            quint32 importIndex,
-            std::optional<quint64> importKey) -> ImportMaterialization {
+    const auto materializeImport = [&](quint8 phase, quint32 structureIndex, quint32 importIndex,
+                                       std::optional<quint64> importKey) -> ImportMaterialization {
         if (structureIndex >= program_.structs.size()) {
-            return {DslExecutionStatus::InvalidDefinition,
-                    nullptr,
+            return {DslExecutionStatus::InvalidDefinition, nullptr,
                     QStringLiteral("Structure index is out of range")};
         }
         const DslTypedStruct& st = program_.structs.at(structureIndex);
         if (importIndex >= st.contextImports.size()) {
-            return {DslExecutionStatus::InvalidDefinition,
-                    nullptr,
+            return {DslExecutionStatus::InvalidDefinition, nullptr,
                     QStringLiteral("Context import index is out of range")};
         }
-        const auto cacheKey = std::make_pair(structureIndex, importIndex);
+        const auto cacheKey = std::make_tuple(phase, structureIndex, importIndex);
         auto it = importCache.find(cacheKey);
         if (it != importCache.end()) {
             RuleImportedContext& cached = it->second;
             if (importKey.has_value()) {
                 return cached.key.value == *importKey
-                           ? ImportMaterialization{
-                                 DslExecutionStatus::Materialized, &cached, {}}
+                           ? ImportMaterialization{DslExecutionStatus::Materialized, &cached, {}}
                            : ImportMaterialization{
-                                 DslExecutionStatus::InvalidDefinition,
-                                 nullptr,
-                                 QStringLiteral(
-                                     "Context import key changed during one execution")};
+                                 DslExecutionStatus::InvalidDefinition, nullptr,
+                                 QStringLiteral("Context import key changed during one execution")};
             }
-            return ImportMaterialization{
-                DslExecutionStatus::Materialized, &cached, {}};
+            return ImportMaterialization{DslExecutionStatus::Materialized, &cached, {}};
         }
 
         const DslTypedContextImport& import = st.contextImports.at(importIndex);
         core::ContextLookupResult lookup;
         if (importKey.has_value()) {
             const core::ContextKey key{import.kind, contextScopeId_, *importKey};
-            lookup = contextDirectory_.resolveBefore(
-                key, request.enclosingSourceSpan->start());
+            lookup = contextDirectory_.resolveBefore(key, request.enclosingSourceSpan->start());
         } else {
-            lookup = contextDirectory_.resolveLatestBefore(
-                import.kind, contextScopeId_, request.enclosingSourceSpan->start());
+            lookup = contextDirectory_.resolveLatestBefore(import.kind, contextScopeId_,
+                                                           request.enclosingSourceSpan->start());
         }
         if (!lookup.found()) {
             return {
@@ -611,8 +556,7 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
                 nullptr,
                 lookup.status == core::ContextLookupStatus::DependencyUnavailable
                     ? QStringLiteral("Imported context generation is unavailable")
-                    : QStringLiteral(
-                          "Imported context was not defined before this structure"),
+                    : QStringLiteral("Imported context was not defined before this structure"),
             };
         }
 
@@ -629,32 +573,28 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
         QString closureError;
         std::function<bool(core::ContextDefinitionId)> appendDefinition;
         appendDefinition = [&](core::ContextDefinitionId definitionId) {
-            if (std::find(included.begin(), included.end(), definitionId) !=
-                included.end()) {
+            if (std::find(included.begin(), included.end(), definitionId) != included.end()) {
                 return true;
             }
             if (included.size() >= RuleImportedContext::maximumDefinitions()) {
                 closureStatus = DslExecutionStatus::ResourceLimit;
-                closureError = QStringLiteral(
-                    "Imported context dependency closure exceeds 64 definitions");
+                closureError =
+                    QStringLiteral("Imported context dependency closure exceeds 64 definitions");
                 return false;
             }
             const auto definition = contextDirectory_.definition(definitionId);
             const ContextPayload* payload = contextPayload(definitionId);
             if (!definition || payload == nullptr) {
                 closureStatus = DslExecutionStatus::InvalidDefinition;
-                closureError = QStringLiteral(
-                    "Imported context generation has no rules-owned payload");
+                closureError =
+                    QStringLiteral("Imported context generation has no rules-owned payload");
                 return false;
             }
             included.push_back(definitionId);
-            imported.definitions.push_back({definitionId,
-                                            definition->key.kind,
-                                            payload->structureIndex,
-                                            payload->values,
+            imported.definitions.push_back({definitionId, definition->key.kind,
+                                            payload->structureIndex, payload->values,
                                             definition->dependencies});
-            for (const core::ContextDefinitionId dependencyId :
-                 definition->dependencies) {
+            for (const core::ContextDefinitionId dependencyId : definition->dependencies) {
                 if (!appendDefinition(dependencyId)) {
                     return false;
                 }
@@ -669,230 +609,203 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
         return {DslExecutionStatus::Materialized, &insertedIt->second, {}};
     };
 
-    const auto findConsumerStructureIndex =
-        [&](quint32 importIndex, core::ContextDefinitionKind kind) -> std::optional<quint32> {
-        if (importIndex < headerStructure.contextImports.size() &&
-            headerStructure.contextImports.at(importIndex).kind == kind) {
-            return request.headerStructureIndex;
-        }
-        if (payloadStructure != nullptr &&
-            importIndex < payloadStructure->contextImports.size() &&
-            payloadStructure->contextImports.at(importIndex).kind == kind) {
-            return *request.payloadStructureIndex;
-        }
-        return std::nullopt;
-    };
-
-    const DslContextValueResolver contextValueResolver =
-        [&](const DslContextValueRequest& valueRequest) {
-        const auto consumerStructIndex = findConsumerStructureIndex(
-            valueRequest.contextImportIndex, valueRequest.importKind);
-        if (!consumerStructIndex.has_value()) {
-            return DslContextValueResolution{
-                DslExecutionStatus::InvalidDefinition,
-                0,
-                QStringLiteral("Imported context value request is invalid")};
-        }
-        const ImportMaterialization materialized = materializeImport(
-            *consumerStructIndex,
-            valueRequest.contextImportIndex,
-            valueRequest.importKey);
-        if (!materialized.materialized()) {
-            return DslContextValueResolution{
-                materialized.status, 0, materialized.errorMessage};
-        }
-
-        const RuleImportedContextDefinition* matchedDefinition = nullptr;
-        for (const RuleImportedContextDefinition& definition :
-             materialized.imported->definitions) {
-            if (definition.kind != valueRequest.definitionKind ||
-                definition.structureIndex != valueRequest.structureIndex) {
-                continue;
-            }
-            if (matchedDefinition != nullptr) {
+    const auto makeContextValueResolver = [&](quint8 phase, quint32 consumerStructureIndex) {
+        return DslContextValueResolver{[&, phase, consumerStructureIndex](
+                                           const DslContextValueRequest& valueRequest) {
+            const DslTypedStruct& consumerStructure = program_.structs.at(consumerStructureIndex);
+            if (valueRequest.contextImportIndex >= consumerStructure.contextImports.size() ||
+                consumerStructure.contextImports.at(valueRequest.contextImportIndex).kind !=
+                    valueRequest.importKind) {
                 return DslContextValueResolution{
-                    DslExecutionStatus::InvalidDefinition,
-                    0,
-                    QStringLiteral("Imported context value publisher is ambiguous")};
+                    DslExecutionStatus::InvalidDefinition, 0,
+                    QStringLiteral("Imported context value request is invalid")};
             }
-            matchedDefinition = &definition;
-        }
-        if (matchedDefinition == nullptr ||
-            valueRequest.exportIndex >= matchedDefinition->values.size()) {
-            return DslContextValueResolution{
-                DslExecutionStatus::InvalidDefinition,
-                0,
-                QStringLiteral(
-                    "Imported context value descriptor does not match its payload")};
-        }
-        return DslContextValueResolution{
-            DslExecutionStatus::Materialized,
-            matchedDefinition->values.at(valueRequest.exportIndex),
-            {}};
-    };
-
-    std::optional<core::ContextDefinitionId> publishedDefinitionId;
-    std::optional<DslExecutionStatus> importFailureStatus;
-    QString importFailureMessage;
-
-    CompoundTransactionHooks compoundHooks;
-    compoundHooks.onCommitWithResult = [&](const CompoundStructuralExecutionResult& execRes) {
-        // 1. Verify and materialize all declared header context imports
-        if (execRes.headerContextImports.size() != headerStructure.contextImports.size()) {
-            throw std::runtime_error("Header context import runtime values do not match typed IR");
-        }
-        for (std::size_t i = 0; i < headerStructure.contextImports.size(); ++i) {
-            const DslTypedContextImport& import = headerStructure.contextImports.at(i);
-            const DslExecutionContextImport& executionImport = execRes.headerContextImports.at(i);
-            if (executionImport.kind != import.kind) {
-                throw std::runtime_error("Header context import runtime kind is invalid");
+            const ImportMaterialization materialized =
+                materializeImport(phase, consumerStructureIndex, valueRequest.contextImportIndex,
+                                  valueRequest.importKey);
+            if (!materialized.materialized()) {
+                return DslContextValueResolution{materialized.status, 0, materialized.errorMessage};
             }
-            if (import.keyFieldIndex.has_value()) {
-                if (!executionImport.key.has_value() || !executionImport.key->location) {
+
+            const RuleImportedContextDefinition* matchedDefinition = nullptr;
+            for (const RuleImportedContextDefinition& definition :
+                 materialized.imported->definitions) {
+                if (definition.kind != valueRequest.definitionKind ||
+                    definition.structureIndex != valueRequest.structureIndex) {
                     continue;
                 }
-                const ImportMaterialization materialized = materializeImport(
-                    request.headerStructureIndex,
-                    static_cast<quint32>(i),
-                    executionImport.key->value);
-                if (!materialized.materialized()) {
-                    importFailureStatus = materialized.status;
-                    importFailureMessage = materialized.errorMessage;
-                    throw std::runtime_error(materialized.errorMessage.toStdString());
+                if (matchedDefinition != nullptr) {
+                    return DslContextValueResolution{
+                        DslExecutionStatus::InvalidDefinition, 0,
+                        QStringLiteral("Imported context value publisher is ambiguous")};
                 }
-                materialized.imported->key = *executionImport.key;
+                matchedDefinition = &definition;
             }
-        }
+            if (matchedDefinition == nullptr ||
+                valueRequest.exportIndex >= matchedDefinition->values.size()) {
+                return DslContextValueResolution{
+                    DslExecutionStatus::InvalidDefinition, 0,
+                    QStringLiteral("Imported context value descriptor does not match its payload")};
+            }
+            return DslContextValueResolution{DslExecutionStatus::Materialized,
+                                             matchedDefinition->values.at(valueRequest.exportIndex),
+                                             {}};
+        }};
+    };
+    const DslContextValueResolver headerContextValueResolver =
+        makeContextValueResolver(headerPhase, request.headerStructureIndex);
+    const DslContextValueResolver payloadContextValueResolver =
+        payloadStructure != nullptr
+            ? makeContextValueResolver(payloadPhase, *request.payloadStructureIndex)
+            : DslContextValueResolver{};
 
-        // 2. Verify and materialize all declared payload context imports
-        if (payloadStructure != nullptr) {
-            if (execRes.payloadContextImports.size() != payloadStructure->contextImports.size()) {
-                throw std::runtime_error("Payload context import runtime values do not match typed IR");
-            }
-            for (std::size_t i = 0; i < payloadStructure->contextImports.size(); ++i) {
-                const DslTypedContextImport& import = payloadStructure->contextImports.at(i);
-                const DslExecutionContextImport& executionImport = execRes.payloadContextImports.at(i);
-                if (executionImport.kind != import.kind) {
-                    throw std::runtime_error("Payload context import runtime kind is invalid");
+    std::optional<core::ContextDirectory> stagedContextDirectory;
+    std::optional<std::vector<ContextPayload>> stagedContextPayloads;
+    std::optional<core::ContextDefinitionId> stagedPublishedDefinitionId;
+    struct StagingFailure final {
+        DslExecutionStatus status = DslExecutionStatus::InvalidDefinition;
+        QString errorMessage;
+    };
+
+    CompoundTransactionHooks compoundHooks;
+    compoundHooks.onPrepareCommit = [&](const CompoundStructuralExecutionResult& execRes)
+        -> std::optional<CompoundTransactionFailure> {
+        try {
+            const auto failTransaction = [&](DslExecutionStatus status,
+                                             const QString& message) -> void {
+                throw StagingFailure{status, message};
+            };
+            const auto verifyImports = [&](quint8 executionPhase, quint32 structureIndex,
+                                           const DslTypedStruct& structure,
+                                           const std::vector<DslExecutionContextImport>& imports,
+                                           const QString& phaseName) {
+                if (imports.size() != structure.contextImports.size()) {
+                    failTransaction(
+                        DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("%1 context import runtime values do not match typed IR")
+                            .arg(phaseName));
                 }
-                if (import.keyFieldIndex.has_value()) {
-                    if (!executionImport.key.has_value() || !executionImport.key->location) {
+                for (std::size_t i = 0; i < structure.contextImports.size(); ++i) {
+                    const DslTypedContextImport& import = structure.contextImports.at(i);
+                    const DslExecutionContextImport& executionImport = imports.at(i);
+                    if (executionImport.kind != import.kind) {
+                        failTransaction(DslExecutionStatus::InvalidDefinition,
+                                        QStringLiteral("%1 context import runtime kind is invalid")
+                                            .arg(phaseName));
+                    }
+                    if (!import.keyFieldIndex.has_value() || !executionImport.key.has_value() ||
+                        !executionImport.key->location) {
                         continue;
                     }
-                    const ImportMaterialization materialized = materializeImport(
-                        *request.payloadStructureIndex,
-                        static_cast<quint32>(i),
-                        executionImport.key->value);
+                    const ImportMaterialization materialized =
+                        materializeImport(executionPhase, structureIndex, static_cast<quint32>(i),
+                                          executionImport.key->value);
                     if (!materialized.materialized()) {
-                        importFailureStatus = materialized.status;
-                        importFailureMessage = materialized.errorMessage;
-                        throw std::runtime_error(materialized.errorMessage.toStdString());
+                        failTransaction(materialized.status, materialized.errorMessage);
                     }
                     materialized.imported->key = *executionImport.key;
                 }
-            }
-        }
-
-        // 3. User commit hooks
-        if (request.transactionHooks.onCommitWithResult) {
-            request.transactionHooks.onCommitWithResult(execRes);
-        }
-        if (request.transactionHooks.onCommit) {
-            request.transactionHooks.onCommit();
-        }
-
-        // 4. Staged publication for Header (after user commit hooks succeed)
-        if (headerStructure.contextDefinition.has_value() &&
-            execRes.headerNodeId.has_value() &&
-            execRes.headerContextValues.has_value()) {
-            const DslTypedContextDefinition& def = *headerStructure.contextDefinition;
-            const DslExecutionContextValues& vals = *execRes.headerContextValues;
-            if (vals.dependencies.size() != def.dependencies.size() ||
-                vals.exports.size() != def.exportFieldIndices.size()) {
-                throw std::runtime_error("Header context runtime values do not match typed IR");
-            }
-            std::vector<core::ContextDefinitionId> dependencies;
-            dependencies.reserve(def.dependencies.size());
-            for (std::size_t i = 0; i < def.dependencies.size(); ++i) {
-                const DslTypedContextDependency& dep = def.dependencies.at(i);
-                const DslExecutionContextValue& depVal = vals.dependencies.at(i);
-                const core::ContextKey depKey{dep.kind, contextScopeId_, depVal.value};
-                const auto depLookup = contextDirectory_.resolveBefore(
-                    depKey, request.enclosingSourceSpan->start());
-                if (!depLookup.found()) {
-                    throw std::runtime_error("Context dependency was not defined before this structure");
-                }
-                dependencies.push_back(depLookup.definition->id);
-            }
-            ContextPayload payload;
-            payload.structureIndex = request.headerStructureIndex;
-            payload.values.reserve(vals.exports.size());
-            for (const auto& v : vals.exports) {
-                payload.values.push_back(v.value);
-            }
-            core::ContextDefinitionSpec spec{
-                {def.kind, contextScopeId_, vals.key.value},
-                *request.enclosingSourceSpan,
-                *execRes.headerNodeId,
-                std::move(dependencies),
             };
-            const auto reg = contextDirectory_.registerDefinition(std::move(spec));
-            if (!reg.succeeded()) {
-                throw std::runtime_error(reg.errorMessage.isEmpty()
-                                             ? "Context definition registration failed"
-                                             : reg.errorMessage.toStdString());
-            }
-            payload.definitionId = *reg.definitionId;
-            contextPayloads_.push_back(std::move(payload));
-            publishedDefinitionId = reg.definitionId;
-        }
 
-        // 5. Staged publication for Payload (after user commit hooks succeed)
-        if (payloadStructure != nullptr && payloadStructure->contextDefinition.has_value() &&
-            execRes.payloadNodeId.has_value() &&
-            execRes.payloadContextValues.has_value()) {
-            const DslTypedContextDefinition& def = *payloadStructure->contextDefinition;
-            const DslExecutionContextValues& vals = *execRes.payloadContextValues;
-            if (vals.dependencies.size() != def.dependencies.size() ||
-                vals.exports.size() != def.exportFieldIndices.size()) {
-                throw std::runtime_error("Payload context runtime values do not match typed IR");
+            verifyImports(headerPhase, request.headerStructureIndex, headerStructure,
+                          execRes.headerContextImports, QStringLiteral("Header"));
+            if (payloadStructure != nullptr) {
+                verifyImports(payloadPhase, *request.payloadStructureIndex, *payloadStructure,
+                              execRes.payloadContextImports, QStringLiteral("Payload"));
             }
-            std::vector<core::ContextDefinitionId> dependencies;
-            dependencies.reserve(def.dependencies.size());
-            for (std::size_t i = 0; i < def.dependencies.size(); ++i) {
-                const DslTypedContextDependency& dep = def.dependencies.at(i);
-                const DslExecutionContextValue& depVal = vals.dependencies.at(i);
-                const core::ContextKey depKey{dep.kind, contextScopeId_, depVal.value};
-                const auto depLookup = contextDirectory_.resolveBefore(
-                    depKey, request.enclosingSourceSpan->start());
-                if (!depLookup.found()) {
-                    throw std::runtime_error("Context dependency was not defined before this structure");
+
+            core::ContextDirectory nextDirectory = contextDirectory_;
+            std::vector<ContextPayload> nextPayloads = contextPayloads_;
+            std::optional<core::ContextDefinitionId> nextPublishedDefinitionId;
+            const auto stageDefinition = [&](quint32 structureIndex,
+                                             const DslTypedStruct& structure,
+                                             std::optional<core::AnalysisNodeId> nodeId,
+                                             const std::optional<DslExecutionContextValues>& values,
+                                             const QString& phase) {
+                if (!structure.contextDefinition.has_value()) {
+                    return;
                 }
-                dependencies.push_back(depLookup.definition->id);
-            }
-            ContextPayload payload;
-            payload.structureIndex = *request.payloadStructureIndex;
-            payload.values.reserve(vals.exports.size());
-            for (const auto& v : vals.exports) {
-                payload.values.push_back(v.value);
-            }
-            core::ContextDefinitionSpec spec{
-                {def.kind, contextScopeId_, vals.key.value},
-                *request.enclosingSourceSpan,
-                *execRes.payloadNodeId,
-                std::move(dependencies),
+                if (!nodeId.has_value() || !values.has_value()) {
+                    failTransaction(
+                        DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("%1 context execution did not produce publication values")
+                            .arg(phase));
+                }
+
+                const DslTypedContextDefinition& definition = *structure.contextDefinition;
+                if (values->dependencies.size() != definition.dependencies.size() ||
+                    values->exports.size() != definition.exportFieldIndices.size()) {
+                    failTransaction(
+                        DslExecutionStatus::InvalidDefinition,
+                        QStringLiteral("%1 context runtime values do not match typed IR")
+                            .arg(phase));
+                }
+
+                std::vector<core::ContextDefinitionId> dependencies;
+                dependencies.reserve(definition.dependencies.size());
+                for (std::size_t i = 0; i < definition.dependencies.size(); ++i) {
+                    const DslTypedContextDependency& dependency = definition.dependencies.at(i);
+                    const DslExecutionContextValue& dependencyValue = values->dependencies.at(i);
+                    const core::ContextKey dependencyKey{dependency.kind, contextScopeId_,
+                                                         dependencyValue.value};
+                    const auto lookup = nextDirectory.resolveBefore(
+                        dependencyKey, request.enclosingSourceSpan->start());
+                    if (!lookup.found()) {
+                        failTransaction(
+                            DslExecutionStatus::DependencyUnavailable,
+                            QStringLiteral(
+                                "Context dependency was not defined before this structure"));
+                    }
+                    dependencies.push_back(lookup.definition->id);
+                }
+
+                ContextPayload payload;
+                payload.structureIndex = structureIndex;
+                payload.values.reserve(values->exports.size());
+                for (const DslExecutionContextValue& value : values->exports) {
+                    payload.values.push_back(value.value);
+                }
+                core::ContextDefinitionSpec spec{
+                    {definition.kind, contextScopeId_, values->key.value},
+                    *request.enclosingSourceSpan,
+                    *nodeId,
+                    std::move(dependencies),
+                };
+                const auto registration = nextDirectory.registerDefinition(std::move(spec));
+                if (!registration.succeeded()) {
+                    failTransaction(registration.status ==
+                                            core::ContextRegistrationStatus::DependencyUnavailable
+                                        ? DslExecutionStatus::DependencyUnavailable
+                                        : DslExecutionStatus::InvalidDefinition,
+                                    registration.errorMessage.isEmpty()
+                                        ? QStringLiteral("Context definition registration failed")
+                                        : registration.errorMessage);
+                }
+                payload.definitionId = *registration.definitionId;
+                nextPayloads.push_back(std::move(payload));
+                nextPublishedDefinitionId = registration.definitionId;
             };
-            const auto reg = contextDirectory_.registerDefinition(std::move(spec));
-            if (!reg.succeeded()) {
-                throw std::runtime_error(reg.errorMessage.isEmpty()
-                                             ? "Context definition registration failed"
-                                             : reg.errorMessage.toStdString());
+
+            stageDefinition(request.headerStructureIndex, headerStructure, execRes.headerNodeId,
+                            execRes.headerContextValues, QStringLiteral("Header"));
+            if (payloadStructure != nullptr) {
+                stageDefinition(*request.payloadStructureIndex, *payloadStructure,
+                                execRes.payloadNodeId, execRes.payloadContextValues,
+                                QStringLiteral("Payload"));
             }
-            payload.definitionId = *reg.definitionId;
-            contextPayloads_.push_back(std::move(payload));
-            publishedDefinitionId = reg.definitionId;
+
+            stagedContextDirectory.emplace(std::move(nextDirectory));
+            stagedContextPayloads.emplace(std::move(nextPayloads));
+            stagedPublishedDefinitionId = nextPublishedDefinitionId;
+            if (request.transactionHooks.onPrepareCommit) {
+                return request.transactionHooks.onPrepareCommit(execRes);
+            }
+            return std::nullopt;
+        } catch (const StagingFailure& failure) {
+            return CompoundTransactionFailure{failure.status, failure.errorMessage};
         }
     };
+    compoundHooks.onCommitWithResult = request.transactionHooks.onCommitWithResult;
     compoundHooks.onCommit = request.transactionHooks.onCommit;
     compoundHooks.onRollback = request.transactionHooks.onRollback;
 
@@ -908,23 +821,71 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
     compoundReq.tree = request.tree;
     compoundReq.parentId = request.parentId;
     compoundReq.options = request.options;
+    const auto applyRemainingBudget = [&](quint64 sessionMaximum, quint64 consumed,
+                                          quint64 requestMaximum, quint64* effectiveMaximum,
+                                          const QString& budgetName, bool zeroMeansUnlimited) {
+        if (sessionMaximum == 0 && zeroMeansUnlimited) {
+            return true;
+        }
+        if (consumed >= sessionMaximum) {
+            result.status = RuleExecutionStatus::ResourceLimit;
+            result.errorMessage =
+                QStringLiteral("Compound session %1 budget is exhausted").arg(budgetName);
+            return false;
+        }
+        const quint64 sessionRemaining = sessionMaximum - consumed;
+        *effectiveMaximum = requestMaximum == 0 && zeroMeansUnlimited ? sessionRemaining
+                            : requestMaximum == 0                     ? 0
+                                                  : std::min(requestMaximum, sessionRemaining);
+        return true;
+    };
+    if (!applyRemainingBudget(compoundLimits_.maximumInstructions, compoundInstructionsExecuted_,
+                              request.options.limits.maximumInstructions,
+                              &compoundReq.options.limits.maximumInstructions,
+                              QStringLiteral("instruction"), false) ||
+        !applyRemainingBudget(compoundLimits_.maximumMaterializedNodes, compoundNodesCreated_,
+                              request.options.limits.maximumMaterializedNodes,
+                              &compoundReq.options.limits.maximumMaterializedNodes,
+                              QStringLiteral("materialized-node"), false)) {
+        return result;
+    }
+    if (request.payloadStructureIndex.has_value() &&
+        !applyRemainingBudget(compoundLimits_.maximumInspectedBytes, compoundBytesInspected_,
+                              request.options.limits.maximumInspectedBytes,
+                              &compoundReq.options.limits.maximumInspectedBytes,
+                              QStringLiteral("inspection"), true)) {
+        return result;
+    }
     compoundReq.requireExactConsumption = request.requireExactConsumption;
-    compoundReq.contextValueResolver = contextValueResolver;
+    compoundReq.headerContextValueResolver = headerContextValueResolver;
+    compoundReq.payloadContextValueResolver = payloadContextValueResolver;
     compoundReq.transactionHooks = compoundHooks;
 
+    source_ = request.source;
+    treeIdentity_ = request.tree->instanceIdentity();
     result.execution = CompoundStructuralRunner::execute(program_, compoundReq);
-    if (importFailureStatus.has_value()) {
-        result.status = ruleStatus(*importFailureStatus);
-        result.errorMessage = importFailureMessage;
-    } else {
-        result.status = ruleStatus(result.execution.status);
-        result.errorMessage = result.execution.errorMessage;
-    }
+    const auto accumulate = [](quint64* total, quint64 amount) {
+        *total = amount > std::numeric_limits<quint64>::max() - *total
+                     ? std::numeric_limits<quint64>::max()
+                     : *total + amount;
+    };
+    accumulate(&compoundInstructionsExecuted_, result.execution.instructionsExecuted);
+    accumulate(&compoundNodesCreated_, result.execution.nodesCreated);
+    accumulate(&compoundBytesInspected_, result.execution.inspectedByteCount);
+
+    result.status = ruleStatus(result.execution.status);
+    result.errorMessage = result.execution.errorMessage;
 
     if (result.materialized()) {
-        source_ = request.source;
-        treeIdentity_ = request.tree->instanceIdentity();
-        result.publishedDefinition = publishedDefinitionId;
+        if (!stagedContextDirectory.has_value() || !stagedContextPayloads.has_value()) {
+            result.status = RuleExecutionStatus::InvalidDefinition;
+            result.errorMessage =
+                QStringLiteral("Compound context transaction did not reach commit");
+            return result;
+        }
+        contextDirectory_ = std::move(*stagedContextDirectory);
+        contextPayloads_ = std::move(*stagedContextPayloads);
+        result.publishedDefinition = stagedPublishedDefinitionId;
         result.importedContexts.reserve(importCache.size());
         for (auto& [_, imported] : importCache) {
             result.importedContexts.push_back(std::move(imported));
