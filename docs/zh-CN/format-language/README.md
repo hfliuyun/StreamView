@@ -97,9 +97,10 @@ logical cursor。本切片只注册安全的未解释 boundary；typed on-demand
 queue state 和单调 identifier，但不定义持久 checkpoint。
 
 当前接受的 payload-dispatch 切片新增唯一的顶层
-`payload<rbsp> sequence switch (controller) { case integer: Structure; }` 声明。
-它把 sequence element 解码出的 controller 值绑定到解码派生 payload view 的结构；当该
-payload 不含任何语法元素时绑定到 `empty`。决定 payload 使用哪个结构的是规则，不是 runner。
+`payload<view_kind> TargetName switch (controller) { case integer: Structure; }` 声明。
+`TargetName` 可以是渐进 sequence 或 structure；不透明的 `view_kind` 由运行时 transform
+provider registry 解析。该声明把已解码 controller 值绑定到解码派生 payload view 的结构；
+未选择 payload 结构时绑定到 `empty`。决定 payload 使用哪个结构的是规则，不是 runner。
 
 当前接受的 H.264 trailing-bits 切片新增终结结构项 `rbsp_trailing_bits;`。它会消费必需的
 stop bit 与依当前位置决定的 RBSP 补零，而不引入通用对齐表达式或无界 loop。
@@ -484,9 +485,11 @@ primary       := integer | "true" | "false" | identifier
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`
   与 `@index(progressive) sequence<Element> name = scan(adts_frame);`。
   `Element` 必须是已声明结构。
-- 一个程序至多声明一个 payload 派发。其 view kind 必须是 `rbsp`，且必须命名一个已声明、
-  并且存在对应 `entry` 的渐进 sequence。controller 必须命名该 sequence 的 element structure
-  中、在顶层无条件声明的无符号 scalar `bits` 字段，宽度至多 64 bit，从而在每条路径上都
+- 一个程序至多声明一个 payload 派发。其 view kind 是保留到 Typed IR 并由运行时 provider
+  registry 解析的不透明 DSL identifier。派发目标必须命名已声明的渐进 sequence 或 structure；
+  target-aware compiler 要求实际选择的 entry 解析到同一个 header structure。controller 必须
+  命名该 header structure 中、在顶层无条件声明的无符号 scalar `bits` 或 enum 字段，宽度至多
+  64 bit，从而在每条路径上都
   保证存在。Exp-Golomb 字段、计算字段、数组元素、lazy region，以及位于 conditional、
   switch 或 repeat body 内部的字段一律拒绝作为 controller。case 值必须互异，并且能由
   controller 的声明宽度表示。每个 case 目标要么是已声明结构（且不得是 element structure
@@ -1546,8 +1549,8 @@ identifier；第一个实参是未知字段、更晚声明的字段、数组、`
 本身是 branch-local；以及出现在 pure-function body、condition、switch controller，或
 imported 与 sequence-element 等值 conditional 中的调用。
 
-payload 派发的非法示例包括：两个 payload 声明、`payload<ebsp>` 或其他 view kind、派发命名
-结构或未声明名称而非 sequence、所派发 sequence 没有 `entry`、未知 controller 名、以
+payload 派发的非法示例包括：两个 payload 声明、非法 view-kind identifier、未注册 view kind
+在运行时使用、派发目标为未声明或有二义性的名称、所选 entry 与派发 header 不匹配、未知 controller 名、以
 Exp-Golomb、计算字段、数组元素或 lazy region 作为 controller、controller 声明在 conditional、
 switch 或 repeat body 内部、case 值超出 controller 宽度、重复 case 值、没有 case 的派发、
 未声明或就是 element structure 本身的 case 目标、`default` arm，以及缺少 case 冒号或分号。
@@ -1665,24 +1668,30 @@ payload<rbsp> nal_units switch (nal_unit_type) {
 }
 ```
 
-该声明位于顶层，至多出现一次。`rbsp` 是当前唯一接受的 view kind，指 runtime 已经为每个
-sequence element 派生的 mapped payload view。声明之前的 annotation 成为该派发自身的 metadata。
+该声明位于顶层，至多出现一次。view kind 是 `none`、`rbsp` 等不透明 DSL identifier；parser
+与 compiler 只保留该值而不硬编码 provider 列表。runtime 通过 `PayloadTransformRegistry`
+解析，未知 provider 以 `InvalidDefinition` fail closed。目标既可以命名渐进 sequence，也可以
+命名 structure。声明之前的 annotation 成为该派发自身的 metadata。
 
 派发不新增 opcode。被选中的结构由 compiler 为每个已声明结构生成的同一套 `begin-structure`
 到 `end-structure` bytecode 执行，因此 case 目标没有特殊的 typed 形式。case 互异性、
 controller 解析和目标索引都在执行前完成校验；malformed 派发属于 invalid typed definition。
 
-运行时在 header 物化之后，从 element 已发布的 header 中读取 controller 值。
+运行时在 header 物化之后，从解析后的 header 中读取 controller 值。Sequence 目标解析为其
+element structure；Structure 目标直接解析为自身。`compileForTarget` 会拒绝解析结果与派发
+header 不一致的所选 entry。
 
-未列出的值不改变任何行为：payload 非空时仍是未解释 region，没有 payload 的 element 也不会
-获得 payload node。
+对渐进 sequence 执行而言，未列出的值不改变任何行为：payload 非空时仍是未解释 region，
+没有 payload 的 element 也不会获得 payload node。对复合结构执行而言，未列出的值返回
+`Unsupported`、将 header 标记为 unsupported，并回滚暂存 context。
 
 已列出的值一定会获得派生 payload view，view 为空时也不例外。决定 view 是否存在的是「是否
 存在 case」，而不是 payload 长度。描述了某个 payload 的规则因此总能拿到一个精确的 view 去
 解码。
 
-`empty` case 要求 payload view 的 logical length 恰好为零。非空 payload 在 payload path 上
-报告 `invalid-syntax`，并保留完整的 payload region 与全部 excluded region。
+在渐进 sequence 执行中，`empty` case 要求 payload view 的 logical length 恰好为零；非空
+payload 报告 `invalid-syntax`。在复合结构执行中，`empty` case 直接提交 header-only 事务，
+不调用 transform provider，也不扣减 inspection budget。
 
 结构 case 从 logical 零开始在 payload view 上执行其目标，父节点为 payload region node，
 并沿用与 header 相同的 execution option、沙箱预算和取消检查点。

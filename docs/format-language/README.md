@@ -113,12 +113,13 @@ The accepted progressive-index recovery slice keeps the existing
 resumable in the same analyzer. It preserves published nodes, scanner and queue
 state, and monotonic identifiers without defining persistent checkpoints.
 
-The accepted payload-dispatch slice adds a single top-level
-`payload<rbsp> sequence switch (controller) { case integer: Structure; }`
-declaration. It binds controller values decoded by a sequence element to the
-structure that decodes the derived payload view, or to `empty` when that
-payload carries no syntax elements. The rule, not the runner, decides which
-structure a payload uses.
+The accepted payload-dispatch slices add a single top-level
+`payload<view_kind> TargetName switch (controller) { case integer: Structure; }`
+declaration. `TargetName` may be a progressive sequence or a structure, while
+the opaque `view_kind` is resolved by the runtime transform-provider registry.
+The declaration binds decoded controller values to the structure that decodes
+the derived payload view, or to `empty` when no payload structure is selected.
+The rule, not the runner, decides which structure a payload uses.
 
 The accepted H.264 trailing-bits slice adds the terminal
 `rbsp_trailing_bits;` structure item. It consumes the required stop bit and
@@ -650,11 +651,14 @@ The static rules for this subset are:
   `@index(progressive) sequence<Element> name = scan(h264_start_code);`
   and `@index(progressive) sequence<Element> name = scan(adts_frame);`.
   `Element` must name a declared structure.
-- A program declares at most one payload dispatch. Its view kind must be
-  `rbsp`, and it must name a declared progressive sequence for which an `entry`
-  exists. The controller must name an unsigned scalar `bits` field of at most
-  64 bits declared unconditionally at the top level of that sequence's element
-  structure, so it is guaranteed on every path. Exp-Golomb fields, computed
+- A program declares at most one payload dispatch. Its view kind is an opaque
+  DSL identifier preserved into typed IR and resolved by the runtime provider
+  registry. The dispatch target must name a declared progressive sequence or
+  structure. The target-aware compiler requires the selected entry to resolve
+  to the same header structure. The controller must name an unsigned scalar
+  `bits` or enum field of at most 64 bits declared unconditionally at the top
+  level of that header structure, so it is guaranteed on every path.
+  Exp-Golomb fields, computed
   fields, array elements, lazy regions, and any field inside a conditional,
   switch, or repeat body are rejected as controllers. Case values must be
   distinct and must fit the controller's declared width. Each case target names
@@ -2076,10 +2080,13 @@ payload<rbsp> nal_units switch (nal_unit_type) {
 }
 ```
 
-The declaration is top-level and at most one may appear. `rbsp` is the only
-accepted view kind; it names the mapped payload view the runtime already
-derives for each sequence element. Annotations before the declaration become
-the dispatch's own metadata.
+The declaration is top-level and at most one may appear. The view kind is an
+opaque DSL identifier such as `none` or `rbsp`; parsing and compilation retain
+it without hard-coding a provider list. The runtime resolves it through
+`PayloadTransformRegistry`, and an unknown provider fails closed with
+`InvalidDefinition`. The target may name either a progressive sequence or a
+structure. Annotations before the declaration become the dispatch's own
+metadata.
 
 The dispatch adds no opcode. A selected structure is executed by the same
 `begin-structure` through `end-structure` bytecode the compiler emits for every
@@ -2087,20 +2094,27 @@ declared structure, so a case target has no special typed form. Case
 distinctness, controller resolution, and target indexes are validated before
 execution; a malformed dispatch is an invalid typed definition.
 
-At runtime the controller value is read from the element's published header
-after that header materializes.
+At runtime the controller value is read from the resolved header after that
+header materializes. Sequence targets resolve to their element structure;
+structure targets resolve directly to themselves. `compileForTarget` rejects a
+selected entry whose resolved header does not match the dispatch header.
 
-An unlisted value changes nothing. The payload stays an uninterpreted region
-when it is non-empty, and an element with no payload gets no payload node.
+For progressive sequence execution, an unlisted value changes nothing. The
+payload stays an uninterpreted region when it is non-empty, and an element with
+no payload gets no payload node. For compound structural execution, an
+unlisted value returns `Unsupported`, marks the header unsupported, and rolls
+back staged context.
 
 A listed value always receives the derived payload view, including when that
 view is empty. Presence of a case, not payload length, decides whether the view
 exists. A rule that describes a payload therefore always gets an exact view to
 decode against.
 
-An `empty` case requires the payload view's logical length to be exactly zero.
-A non-empty payload is `invalid-syntax` at the payload path and retains the
-complete payload region and every excluded region.
+In progressive sequence execution, an `empty` case requires the payload view's
+logical length to be exactly zero; a non-empty payload is `invalid-syntax`. In
+compound structural execution, an `empty` case commits the header-only
+transaction without invoking a transform provider or charging inspection
+budget.
 
 A structure case executes its target over the payload view from logical zero,
 parented under the payload region node, with the same execution options,
