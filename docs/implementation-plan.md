@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-4a-R — AnalysisSession 导航隔离、disjoint context 与失败原子性整改
-Next Action: 下发 Task P5i-4b（UI 面包屑与视图集成）；未经该任务完成及主 Agent 复审不得开始后续切片
-Last Verification: Task P5i-4a-R — Fix SHA `1ba33906f9e4d0836e73e1a09ef90c4aabe7f58f`; Hosted CI Run `32261256503` (Ubuntu job `96094800496`, macOS job `96094800870`, Windows job `96094801009` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; four official rules `Rule OK`; `git diff --check` and `markdown_hygiene` passed
+Last Completed Step: Task P5i-4b — MainWindow 子格式导航、面包屑与双向视图集成
+Next Action: 主 Agent 复审 Task P5i-4b；未经复审不得开始后续切片（Task P5j 等）
+Last Verification: Task P5i-4b — Docs SHA `73c245b66d3a9bb7bbd6d36e2f1cb7596ae6be71`; Impl SHA `4b462a72d3e6759c24fe9a5c9f68b20b5bb4e42c`; Hosted CI Run `32264055821` (Ubuntu job `96104070768`, Windows job `96104070898`, macOS job `96104071002` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; MainWindowTest `22/22` passed; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2735,3 +2735,40 @@ Blockers: None
   4. 失败回归补强：新增不同 compound entrypoint program 隔离、disjoint enclosing spans 保真、bundled registry 所有权、Cancelled/ResourceLimit/TruncatedSource/SourceError 导航状态保持，以及 PPS 失败后 SPS producer -> PPS consumer 恢复链测试；失败后 active tree、root node count、navigation depth 与 context publication 均保持原子。
   5. 验证结果：本地 dev、ci、sanitize 三套完整 CTest 均 `43/43` passed，sanitize 零报告；四个官方规则均 `Rule OK`；`git diff --check` 与 `markdown_hygiene` 通过；Hosted CI Run `32261256503`：Ubuntu-24.04 / Qt 6.11.1 job `96094800496`、macOS-15 / Qt 6.11.1 job `96094800870`、Windows-2022 / Qt 6.10.1 job `96094801009` 全部 `completed | success`。
   6. 边界保持：未修改官方规则包、`.svfmt`、`rule.toml`、SessionDocument schema 或 MainWindow/UI；未触及未跟踪 `scratch/`。终审结论：Task P5i-4a-R 通过。Next Action 切换为下发 Task P5i-4b，仅实现 UI 面包屑与视图集成。
+- 2026-08-19：完成 Task P5i-4b —— MainWindow 子格式导航、面包屑与双向视图集成（Docs SHA `73c245b66d3a9bb7bbd6d36e2f1cb7596ae6be71`；Impl SHA `4b462a72d3e6759c24fe9a5c9f68b20b5bb4e42c`）：
+  1. Docs-first（提交 `73c245b66d3a9bb7bbd6d36e2f1cb7596ae6be71`）：
+     - 更新双语 ADR-0103 补充第 4.3 节，精确定义 `MainWindow` UI presentation stack 所有权、`navigationBackButton` / `navigationBreadcrumbLabel` 导航工具栏规范、双击与键盘 Enter/Return 触发动作、进入失败 100% 状态不变性、返回父层选择/检查器/高亮恢复机制、双向坐标映射（`activeTree()` 检索最具体节点与不连续物理 spans 高亮）、以及 SessionDocument 持久化隔离边界。
+  2. 真实 Red 验证：
+     - 测试先行挂载 8 个 `MainWindowTest` 测试用例，执行 `ctest -R "main_window" --preset dev` 触发真实 Red：8 个导航用例因未定义导航工具栏而以 `'backButton != nullptr' returned FALSE` 预期失败。
+  3. 核心与测试实现（提交 `4b462a72d3e6759c24fe9a5c9f68b20b5bb4e42c`）：
+     - `src/app/main_window.h` / `src/app/main_window.cpp`：
+       - 在分析树 Dock 内构建紧凑导航栏，包含 `navigationBackButton`（标准返回图标、tooltip `"Return to parent"`、accessible name `"Return to parent format"`，根层禁用）与 `navigationBreadcrumbLabel`；
+       - 为 `analysisTreeView_` 安装事件过滤器与双击槽，支持双击及 Enter/Return 键触发进入子格式；
+       - `enterChildFormatOnCurrentNode` 调用 `session_->enterChildFormat`，成功后重置 `AnalysisTreeModel` 为 `session_->activeTree()` 并默认选中子根节点，失败时模型/选择/高亮/面包屑保持不变且状态栏提示错误；
+       - `returnToParentFormat` 调用 `session_->returnToParent`，恢复父级 `activeTree()`、精准恢复父节点选择并同步 FieldInspector 与完整物理源高亮；
+       - `selectAnalysisNode` 与 `selectSourceBit` 严格改用 `session_->activeTree()`，保留完整不连续源区间高亮，且子树外点击只清除树/检查器选择不清除原始视图点击位置；
+       - 格式中立包装配：在应用层通过 official package loader 注册 Catalog，MainWindow 无任何 codec/FourCC 硬编码分支；
+     - `tests/app/main_window_test.cpp` 扩充 8 个端到端测试用例（`MainWindowTest` 全部 22 个用例通过）：
+       - `navigatesIntoAacAscViaDoubleClickAndReturnsViaBackButton`：双击 MP4 ASC 节点进入 `audio.aac.asc`，验证面包屑更新、字段高亮（byte 146 掩码 `0xF8`），点击返回恢复 MP4 树及父节点选择；
+       - `navigatesIntoH264SpsAndPpsWithContextSharingViaKeyboard`：Enter 键分别进入 SPS 与 PPS NAL，验证 SPS 与 PPS 跨树共享 context 且 UI 正确切换；
+       - `navigationFailureLeavesStateUnchanged`：普通节点或失败进入不变更 UI 与模型状态；
+       - `rootReturnIsDeterministicNoOp`：根层返回按钮禁用且触发为确定性 no-op；
+       - `supportsRepeatedEnterAndReturnCyclesWithoutStaleIndices`：3 次循环进入/返回无陈旧 QModelIndex；
+       - `bidirectionalCoordinateSelectionPreservesDisjointSpansInActiveTree`：活动子树内 raw bit 选中最具体节点，子树外点击安全清除树选择；
+       - `openingNewFileResetsNavigationState`：打开新文件重置导航栈与面包屑；
+       - `layoutAndVisualFitAtDifferentResolutions`：900x600 与 1280x800 下导航栏、树、检查器与原始视图完整展示无挤压或重叠。
+  4. 全量跨平台与矩阵验证：
+     - 四个官方规则文件（`h264_annex_b.svfmt`、`aac_adts.svfmt`、`aac_asc.svfmt`、`mp4_isobmff.svfmt`）`svtool rule check` 全部 `Rule OK`；
+     - 本地 dev / ci / sanitize 三套完整构建与 CTest 均全量 `43/43` 通过，sanitize 零警告/零报告；
+     - `git diff --check` 与 `markdown_hygiene` 干净；
+     - Hosted CI Run `32264055821`：
+       - Ubuntu-24.04 / Qt 6.11.1 (job `96104070768`): `completed` | `success`
+       - Windows-2022 / Qt 6.10.1 (job `96104070898`): `completed` | `success`
+       - macOS-15 / Qt 6.11.1 (job `96104071002`): `completed` | `success`
+  5. 严格边界恪守：
+     - 未修改 `AnalysisSession` 导航语义或 SessionDocument 持久化 schema；
+     - 未修改 DSL/IR/compiler/VM/runner/session 通用 runtime；
+     - 未修改官方 `rule.toml`、`.svfmt` 或规则包版本；
+     - 未修改 AAC/H.264/MP4 analyzer 行为；
+     - 未修改、删除或提交未跟踪 `scratch/`。
+  终审结论：Task P5i-4b 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-4b；未经复审不得开始后续切片。
