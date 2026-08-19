@@ -14,6 +14,7 @@ using streamview::rules::DslFieldEncoding;
 using streamview::rules::DslLexer;
 using streamview::rules::DslParser;
 using streamview::rules::DslPayloadCaseKind;
+using streamview::rules::DslPayloadTargetKind;
 using streamview::rules::DslScalarType;
 using streamview::rules::DslSwitchArmKind;
 using streamview::rules::DslStructItemKind;
@@ -1845,7 +1846,8 @@ private slots:
         QVERIFY(result.program.payloadDispatch.has_value());
         const auto& dispatch = *result.program.payloadDispatch;
         QCOMPARE(dispatch.viewKind, QStringLiteral("rbsp"));
-        QCOMPARE(dispatch.sequenceName, QStringLiteral("nal_units"));
+        QCOMPARE(dispatch.targetKind, DslPayloadTargetKind::Sequence);
+        QCOMPARE(dispatch.targetName, QStringLiteral("nal_units"));
         QCOMPARE(dispatch.controllerFieldName, QStringLiteral("nal_unit_type"));
         QCOMPARE(dispatch.annotations.size(), std::size_t(1));
         QCOMPARE(dispatch.annotations.front().name, QStringLiteral("spec"));
@@ -1859,6 +1861,37 @@ private slots:
         QVERIFY(dispatch.cases.at(1).targetName.isEmpty());
         QCOMPARE(dispatch.cases.at(2).value, quint64(11));
         QCOMPARE(dispatch.cases.at(2).kind, DslPayloadCaseKind::Empty);
+    }
+
+    void parsesStructuralPayloadDispatchWithOpaqueViewKind() {
+        const auto identity = DslParser::parse(QStringLiteral(R"(
+            struct Header { bits<8> kind; }
+            struct Body { bits<8> value; }
+            payload<none> Header switch (kind) {
+                case 1: Body;
+            }
+            entry Header;
+        )"));
+        const auto custom = DslParser::parse(QStringLiteral(R"(
+            struct Header { bits<8> kind; }
+            struct Body { bits<8> value; }
+            payload<custom_view> Header switch (kind) {
+                case 1: Body;
+            }
+            entry Header;
+        )"));
+
+        QVERIFY2(identity.succeeded(), identity.diagnostics.empty()
+                                           ? ""
+                                           : qPrintable(identity.diagnostics.front().message));
+        QVERIFY2(custom.succeeded(), custom.diagnostics.empty()
+                                         ? ""
+                                         : qPrintable(custom.diagnostics.front().message));
+        QCOMPARE(identity.program.payloadDispatch->viewKind, QStringLiteral("none"));
+        QCOMPARE(identity.program.payloadDispatch->targetKind,
+                 DslPayloadTargetKind::Structure);
+        QCOMPARE(identity.program.payloadDispatch->targetName, QStringLiteral("Header"));
+        QCOMPARE(custom.program.payloadDispatch->viewKind, QStringLiteral("custom_view"));
     }
 
     void keepsPayloadAndEmptyUsableAsOrdinaryIdentifiers() {
@@ -1878,8 +1911,8 @@ private slots:
         QVERIFY(!result.program.payloadDispatch.has_value());
     }
 
-    void rejectsUnsupportedPayloadViewKindAndDuplicateDispatch() {
-        const auto badView = DslParser::parse(payloadSource(
+    void acceptsOpaquePayloadViewKindAndRejectsDuplicateDispatch() {
+        const auto opaqueView = DslParser::parse(payloadSource(
             QStringLiteral("payload<ebsp> nal_units switch (nal_unit_type) {\n"
                            "    case 9: AccessUnitDelimiterRbsp;\n"
                            "}\n")));
@@ -1891,7 +1924,7 @@ private slots:
                            "    case 10: empty;\n"
                            "}\n")));
 
-        QVERIFY(hasDiagnostic(badView, DslDiagnosticCode::InvalidPayloadDispatch));
+        QVERIFY(opaqueView.succeeded());
         QVERIFY(hasDiagnostic(duplicate, DslDiagnosticCode::DuplicateName));
     }
 
@@ -1908,7 +1941,7 @@ private slots:
             QStringLiteral("payload<rbsp> nal_units switch (nal_unit_type) {\n"
                            "    case 9: MissingRbsp;\n"
                            "}\n")));
-        const auto structureSequence = DslParser::parse(payloadSource(
+        const auto structureTarget = DslParser::parse(payloadSource(
             QStringLiteral("payload<rbsp> NalUnitHeader switch (nal_unit_type) {\n"
                            "    case 9: AccessUnitDelimiterRbsp;\n"
                            "}\n")));
@@ -1916,7 +1949,7 @@ private slots:
         QVERIFY(hasDiagnostic(unknownSequence, DslDiagnosticCode::UnknownReference));
         QVERIFY(hasDiagnostic(unknownController, DslDiagnosticCode::UnknownReference));
         QVERIFY(hasDiagnostic(unknownTarget, DslDiagnosticCode::UnknownReference));
-        QVERIFY(hasDiagnostic(structureSequence, DslDiagnosticCode::UnknownReference));
+        QVERIFY(structureTarget.succeeded());
     }
 
     void rejectsInvalidPayloadDispatchControllers() {
@@ -2009,7 +2042,7 @@ private slots:
         QVERIFY(hasDiagnostic(outOfRange, DslDiagnosticCode::ConstraintOutOfRange));
     }
 
-    void rejectsPayloadDispatchWithoutMatchingEntry() {
+    void defersPayloadDispatchEntryBindingToTargetAwareCompiler() {
         const auto result = DslParser::parse(QStringLiteral(R"(
             struct NalUnitHeader { bits<5> nal_unit_type; }
             struct AccessUnitDelimiterRbsp { bits<8> value; }
@@ -2021,7 +2054,9 @@ private slots:
             entry NalUnitHeader;
         )"));
 
-        QVERIFY(hasDiagnostic(result, DslDiagnosticCode::InvalidPayloadDispatch));
+        QVERIFY2(result.succeeded(), result.diagnostics.empty()
+                                         ? ""
+                                         : qPrintable(result.diagnostics.front().message));
     }
 
     void recoversFromMalformedPayloadDispatchArms() {

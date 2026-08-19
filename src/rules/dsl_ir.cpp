@@ -402,6 +402,25 @@ std::optional<quint32> DslTypedProgram::scanIndex(const QString& name) const {
     return std::nullopt;
 }
 
+std::optional<quint32> DslTypedProgram::payloadDispatchHeaderStructureIndex() const {
+    if (!payloadDispatch) {
+        return std::nullopt;
+    }
+    switch (payloadDispatch->targetKind) {
+    case DslPayloadTargetKind::Structure:
+        return payloadDispatch->targetIndex < structs.size()
+                   ? std::optional(payloadDispatch->targetIndex)
+                   : std::nullopt;
+    case DslPayloadTargetKind::Sequence:
+        if (payloadDispatch->targetIndex >= scans.size()) {
+            return std::nullopt;
+        }
+        const quint32 structureIndex = scans.at(payloadDispatch->targetIndex).elementStructIndex;
+        return structureIndex < structs.size() ? std::optional(structureIndex) : std::nullopt;
+    }
+    return std::nullopt;
+}
+
 const DslTypedPayloadCase* DslTypedPayloadDispatch::find(quint64 value) const noexcept {
     for (const DslTypedPayloadCase& payloadCase : cases) {
         if (payloadCase.value == value) {
@@ -3979,21 +3998,53 @@ DslCompileResult DslCompiler::compileForTarget(const DslProgram& program,
         DslTypedPayloadDispatch typedDispatch;
         typedDispatch.metadata = metadataForAnnotations(dispatch.annotations);
         typedDispatch.viewKind = dispatch.viewKind;
+        typedDispatch.targetKind = dispatch.targetKind;
+        typedDispatch.controllerFieldName = dispatch.controllerFieldName;
         bool valid = true;
-        if (dispatch.viewKind != QStringLiteral("rbsp")) {
+        if (!detail::isDslIdentifier(dispatch.viewKind)) {
             addDiagnostic(result.diagnostics,
                           DslDiagnosticCode::InvalidPayloadDispatch,
-                          QStringLiteral("The only accepted payload view kind is rbsp"),
+                          QStringLiteral("Payload view kind is not a valid DSL identifier"),
                           dispatch.range);
             valid = false;
         }
-        const auto dispatchScanIndex = typed.scanIndex(dispatch.sequenceName);
-        if (!dispatchScanIndex) {
+        std::optional<quint32> headerStructureIndex;
+        switch (dispatch.targetKind) {
+        case DslPayloadTargetKind::Sequence: {
+            const auto dispatchScanIndex = typed.scanIndex(dispatch.targetName);
+            if (!dispatchScanIndex) {
+                addDiagnostic(
+                    result.diagnostics, DslDiagnosticCode::UnknownReference,
+                    QStringLiteral("A sequence payload dispatch must name a declared sequence"),
+                    dispatch.range);
+                valid = false;
+            } else {
+                typedDispatch.targetIndex = *dispatchScanIndex;
+                headerStructureIndex = typed.scans.at(*dispatchScanIndex).elementStructIndex;
+            }
+            break;
+        }
+        case DslPayloadTargetKind::Structure: {
+            const auto dispatchStructureIndex = typed.structureIndex(dispatch.targetName);
+            if (!dispatchStructureIndex) {
+                addDiagnostic(
+                    result.diagnostics, DslDiagnosticCode::UnknownReference,
+                    QStringLiteral("A structure payload dispatch must name a declared structure"),
+                    dispatch.range);
+                valid = false;
+            } else {
+                typedDispatch.targetIndex = *dispatchStructureIndex;
+                headerStructureIndex = *dispatchStructureIndex;
+            }
+            break;
+        }
+        default:
             addDiagnostic(result.diagnostics,
-                          DslDiagnosticCode::UnknownReference,
-                          QStringLiteral("A payload dispatch must name a declared sequence"),
+                          DslDiagnosticCode::InvalidPayloadDispatch,
+                          QStringLiteral("Payload dispatch target kind is invalid"),
                           dispatch.range);
             valid = false;
+            break;
         }
         if (dispatch.cases.empty()) {
             addDiagnostic(result.diagnostics,
@@ -4002,10 +4053,16 @@ DslCompileResult DslCompiler::compileForTarget(const DslProgram& program,
                           dispatch.range);
             valid = false;
         }
+        if (valid && (!headerStructureIndex.has_value() ||
+                      *headerStructureIndex >= typed.structs.size())) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::InvalidPayloadDispatch,
+                          QStringLiteral("Payload dispatch header structure is invalid"),
+                          dispatch.range);
+            valid = false;
+        }
         if (valid) {
-            typedDispatch.scanIndex = *dispatchScanIndex;
-            const DslTypedStruct& element =
-                typed.structs.at(typed.scans.at(*dispatchScanIndex).elementStructIndex);
+            const DslTypedStruct& element = typed.structs.at(*headerStructureIndex);
             std::optional<quint32> controllerIndex;
             for (quint32 index = 0; index < element.fields.size(); ++index) {
                 const DslTypedField& field = element.fields.at(index);
@@ -4024,7 +4081,7 @@ DslCompileResult DslCompiler::compileForTarget(const DslProgram& program,
                               DslDiagnosticCode::InvalidPayloadDispatch,
                               QStringLiteral("A payload controller must be an unsigned scalar "
                                              "bits field declared unconditionally at the top "
-                                             "level of the sequence element structure"),
+                                             "level of the target structure"),
                               dispatch.controllerRange);
                 valid = false;
             } else {
@@ -4054,6 +4111,31 @@ DslCompileResult DslCompiler::compileForTarget(const DslProgram& program,
         }
         if (valid) {
             typed.payloadDispatch = std::move(typedDispatch);
+        }
+    }
+
+    if (typed.payloadDispatch && typed.entry.kind != DslEntryKind::None) {
+        std::optional<quint32> entryHeaderStructureIndex;
+        if (typed.entry.kind == DslEntryKind::Structure &&
+            typed.entry.targetIndex < typed.structs.size()) {
+            entryHeaderStructureIndex = typed.entry.targetIndex;
+        } else if (typed.entry.kind == DslEntryKind::Sequence &&
+                   typed.entry.targetIndex < typed.scans.size()) {
+            const quint32 elementStructureIndex =
+                typed.scans.at(typed.entry.targetIndex).elementStructIndex;
+            if (elementStructureIndex < typed.structs.size()) {
+                entryHeaderStructureIndex = elementStructureIndex;
+            }
+        }
+        const auto dispatchHeaderStructureIndex =
+            typed.payloadDispatchHeaderStructureIndex();
+        if (!entryHeaderStructureIndex.has_value() ||
+            !dispatchHeaderStructureIndex.has_value() ||
+            *entryHeaderStructureIndex != *dispatchHeaderStructureIndex) {
+            addDiagnostic(
+                result.diagnostics, DslDiagnosticCode::InvalidPayloadDispatch,
+                QStringLiteral("Compiled entry target does not match the payload dispatch header"),
+                program.payloadDispatch->range);
         }
     }
 

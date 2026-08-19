@@ -751,8 +751,9 @@ std::optional<DslTypedPayloadCase> H264AnnexBAnalyzer::payloadCaseFor(
         return std::nullopt;
     }
     const DslTypedPayloadDispatch& dispatch = *program.payloadDispatch;
-    if (dispatch.scanIndex >= program.scans.size() ||
-        program.scans.at(dispatch.scanIndex).elementStructIndex != elementStructIndex_) {
+    const auto dispatchHeaderStructureIndex = program.payloadDispatchHeaderStructureIndex();
+    if (!dispatchHeaderStructureIndex.has_value() ||
+        *dispatchHeaderStructureIndex != elementStructIndex_) {
         return std::nullopt;
     }
     const DslTypedPayloadCase* payloadCase = dispatch.find(nalUnitType);

@@ -359,6 +359,11 @@ enum class DslPayloadCaseKind : quint8 {
     Empty,
 };
 
+enum class DslPayloadTargetKind : quint8 {
+    Sequence,
+    Structure,
+};
+
 struct DslPayloadCase final {
     DslPayloadCaseKind kind = DslPayloadCaseKind::Structure;
     quint64 value = 0;
@@ -369,7 +374,8 @@ struct DslPayloadCase final {
 
 struct DslPayloadDispatch final {
     QString viewKind;
-    QString sequenceName;
+    DslPayloadTargetKind targetKind = DslPayloadTargetKind::Sequence;
+    QString targetName;
     QString controllerFieldName;
     DslSourceRange controllerRange;
     std::vector<DslPayloadCase> cases;

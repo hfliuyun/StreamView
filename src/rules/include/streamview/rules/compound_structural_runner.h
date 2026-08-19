@@ -58,6 +58,7 @@ struct CompoundStructuralExecutionRequest final {
     DslContextValueResolver payloadContextValueResolver;
     bool autoDispatchPayload = false;
     std::function<DslContextValueResolver(quint32)> payloadContextResolverFactory;
+    bool inspectionBudgetExhausted = false;
 };
 
 struct CompoundStructuralExecutionResult final {

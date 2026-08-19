@@ -252,11 +252,13 @@ struct DslTypedPayloadCase final {
 };
 
 struct DslTypedPayloadDispatch final {
-    quint32 scanIndex = 0;
+    DslPayloadTargetKind targetKind = DslPayloadTargetKind::Sequence;
+    quint32 targetIndex = 0;
     quint32 controllerFieldIndex = 0;
     std::vector<DslTypedPayloadCase> cases;
     core::AnalysisNodeMetadata metadata;
     QString viewKind;
+    QString controllerFieldName;
 
     [[nodiscard]] const DslTypedPayloadCase* find(quint64 value) const noexcept;
 };
@@ -299,6 +301,7 @@ struct DslTypedProgram final {
     [[nodiscard]] std::optional<quint32> enumIndex(const QString& name) const;
     [[nodiscard]] std::optional<quint32> structureIndex(const QString& name) const;
     [[nodiscard]] std::optional<quint32> scanIndex(const QString& name) const;
+    [[nodiscard]] std::optional<quint32> payloadDispatchHeaderStructureIndex() const;
 };
 
 struct DslCompileResult final {
