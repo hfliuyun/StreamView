@@ -213,6 +213,12 @@ We evaluate four potential reuse options for multi-entrypoint packages:
      - Dependency unavailability (e.g. PPS executed without prior SPS) returns `RuleExecutionStatus::DependencyUnavailable` without publishing broken context definitions.
      - Truncated source or syntax/conformance errors roll back atomically without context pollution.
 
+3. **Single-Mapping Compound Execution Contract (P5i-4a)**:
+   - When caller supplies a single contiguous `SourceMapping` covering the entire sub-format payload (`headerMapping == payloadMapping` with `payloadLogicalStart == 0` and `autoDispatchPayload = true`), header consumption is bounded by the declared header fields rather than the full mapping length.
+   - If a payload structure case is selected, the payload input logical start is automatically established at `headerBitsConsumed`, with input bit length `mapping.logicalBitLength() - headerBitsConsumed`.
+   - If an empty case is selected, exact consumption requires `headerBitsConsumed == mapping.logicalBitLength()`.
+   - This ensures callers (such as `AnalysisSession::enterChildFormat`) execute sub-formats completely format-neutrally without prior knowledge of header sizes or manual span splitting.
+
 ---
 
 ## P5i-3b Acceptance Matrix (Planned; Not Executed in P5i-3a)
