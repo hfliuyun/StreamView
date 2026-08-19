@@ -1,8 +1,8 @@
-manifest-version = 1
+manifest-version = 2
 
 [package]
 id = "org.streamview.h264"
-version = "0.1.39"
+version = "0.1.40"
 authors = ["StreamView contributors"]
 license = "MIT"
 dependencies = []
@@ -18,3 +18,11 @@ source = "src/h264_annex_b.svfmt"
 profiles = ["baseline", "main", "high"]
 depth = "baseline-main-high-slice-header"
 detector = "h264-annex-b"
+
+[[entrypoints]]
+id = "nal"
+format = "video.h264.nal"
+source = "src/h264_annex_b.svfmt"
+target = "NalUnitHeader"
+profiles = ["baseline", "main", "high"]
+depth = "structural"
