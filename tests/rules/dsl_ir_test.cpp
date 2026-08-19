@@ -3828,6 +3828,100 @@ private slots:
         QVERIFY(!compiled.succeeded());
         QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::InvalidType));
     }
+
+    void compileForTargetWithNulloptMatchesCompile() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header { bits<8> type; }
+            struct Payload { bits<16> data; }
+            entry Header;
+        )"));
+        QVERIFY(parsed.succeeded());
+
+        const auto defaultCompiled = DslCompiler::compile(parsed.program);
+        const auto targetNulloptCompiled =
+            DslCompiler::compileForTarget(parsed.program, std::nullopt);
+        QVERIFY(defaultCompiled.succeeded());
+        QVERIFY(targetNulloptCompiled.succeeded());
+        QCOMPARE(targetNulloptCompiled.program->entry.kind, DslEntryKind::Structure);
+        QCOMPARE(targetNulloptCompiled.program->entry.targetIndex,
+                 defaultCompiled.program->entry.targetIndex);
+    }
+
+    void compileForTargetSelectsDeclaredStruct() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header { bits<8> type; }
+            struct Payload { bits<16> data; }
+            entry Header;
+        )"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled =
+            DslCompiler::compileForTarget(parsed.program, QStringLiteral("Payload"));
+        QVERIFY(compiled.succeeded());
+        QCOMPARE(compiled.program->entry.kind, DslEntryKind::Structure);
+        const auto payloadIndex =
+            compiled.program->structureIndex(QStringLiteral("Payload"));
+        QVERIFY(payloadIndex.has_value());
+        QCOMPARE(compiled.program->entry.targetIndex, *payloadIndex);
+    }
+
+    void compileForTargetSelectsDeclaredScan() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Nalu { bits<8> header; }
+            @index(progressive) sequence<Nalu> AnnexB = scan(h264_start_code);
+            entry Nalu;
+        )"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled =
+            DslCompiler::compileForTarget(parsed.program, QStringLiteral("AnnexB"));
+        QVERIFY(compiled.succeeded());
+        QCOMPARE(compiled.program->entry.kind, DslEntryKind::Sequence);
+        const auto scanIndex = compiled.program->scanIndex(QStringLiteral("AnnexB"));
+        QVERIFY(scanIndex.has_value());
+        QCOMPARE(compiled.program->entry.targetIndex, *scanIndex);
+    }
+
+    void compileForTargetRejectsUnknownTarget() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header { bits<8> type; }
+            entry Header;
+        )"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled =
+            DslCompiler::compileForTarget(parsed.program, QStringLiteral("NonExistent"));
+        QVERIFY(!compiled.succeeded());
+        QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::UnknownReference));
+    }
+
+    void compileForTargetRejectsMalformedTarget() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct Header { bits<8> type; }
+            entry Header;
+        )"));
+        QVERIFY(parsed.succeeded());
+
+        const auto compiled =
+            DslCompiler::compileForTarget(parsed.program, QStringLiteral("123-bad-identifier"));
+        QVERIFY(!compiled.succeeded());
+        QVERIFY(hasDiagnostic(compiled, DslDiagnosticCode::UnknownReference));
+    }
+
+    void compileForTargetDoesNotMutateAst() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct First { bits<8> a; }
+            struct Second { bits<8> b; }
+            entry First;
+        )"));
+        QVERIFY(parsed.succeeded());
+        QCOMPARE(parsed.program.entry.targetName, QStringLiteral("First"));
+
+        const auto compiled =
+            DslCompiler::compileForTarget(parsed.program, QStringLiteral("Second"));
+        QVERIFY(compiled.succeeded());
+        QCOMPARE(parsed.program.entry.targetName, QStringLiteral("First"));
+    }
 };
 
 QTEST_GUILESS_MAIN(DslIrTest)

@@ -409,7 +409,38 @@ const DslTypedPayloadCase* DslTypedPayloadDispatch::find(quint64 value) const no
     return nullptr;
 }
 
+namespace {
+
+[[nodiscard]] bool isValidDslIdentifier(QStringView text) noexcept {
+    if (text.isEmpty() || text.size() > 64) {
+        return false;
+    }
+    const QChar first = text.at(0);
+    if (first != QLatin1Char('_') &&
+        !(first >= QLatin1Char('a') && first <= QLatin1Char('z')) &&
+        !(first >= QLatin1Char('A') && first <= QLatin1Char('Z'))) {
+        return false;
+    }
+    for (qsizetype i = 1; i < text.size(); ++i) {
+        const QChar c = text.at(i);
+        if (c != QLatin1Char('_') &&
+            !(c >= QLatin1Char('a') && c <= QLatin1Char('z')) &&
+            !(c >= QLatin1Char('A') && c <= QLatin1Char('Z')) &&
+            !(c >= QLatin1Char('0') && c <= QLatin1Char('9'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
 DslCompileResult DslCompiler::compile(const DslProgram& program) {
+    return compileForTarget(program, std::nullopt);
+}
+
+DslCompileResult DslCompiler::compileForTarget(const DslProgram& program,
+                                              const std::optional<QString>& target) {
     DslCompileResult result;
     DslTypedProgram typed;
     constexpr std::size_t maximumIndexedSize = std::numeric_limits<quint32>::max();
@@ -3919,22 +3950,52 @@ DslCompileResult DslCompiler::compile(const DslProgram& program) {
         typed.scans.push_back(std::move(typedScan));
     }
 
-    if (!program.hasEntry) {
-        addDiagnostic(result.diagnostics,
-                      DslDiagnosticCode::MissingEntry,
-                      QStringLiteral("A DSL program requires an entry"),
-                      {});
-    } else if (const auto structureIndex = typed.structureIndex(program.entry.targetName)) {
-        typed.entry.kind = DslEntryKind::Structure;
-        typed.entry.targetIndex = *structureIndex;
-    } else if (const auto scanIndex = typed.scanIndex(program.entry.targetName)) {
-        typed.entry.kind = DslEntryKind::Sequence;
-        typed.entry.targetIndex = *scanIndex;
+    if (!target.has_value()) {
+        if (!program.hasEntry) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::MissingEntry,
+                          QStringLiteral("A DSL program requires an entry"),
+                          {});
+        } else if (const auto structureIndex = typed.structureIndex(program.entry.targetName)) {
+            typed.entry.kind = DslEntryKind::Structure;
+            typed.entry.targetIndex = *structureIndex;
+        } else if (const auto scanIndex = typed.scanIndex(program.entry.targetName)) {
+            typed.entry.kind = DslEntryKind::Sequence;
+            typed.entry.targetIndex = *scanIndex;
+        } else {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::UnknownReference,
+                          QStringLiteral("Entry target is not declared"),
+                          program.entry.range);
+        }
     } else {
-        addDiagnostic(result.diagnostics,
-                      DslDiagnosticCode::UnknownReference,
-                      QStringLiteral("Entry target is not declared"),
-                      program.entry.range);
+        const QString& targetName = *target;
+        if (!isValidDslIdentifier(targetName)) {
+            addDiagnostic(result.diagnostics,
+                          DslDiagnosticCode::UnknownReference,
+                          QStringLiteral("Target '%1' is not a valid DSL identifier").arg(targetName),
+                          {});
+        } else {
+            const auto structureIndex = typed.structureIndex(targetName);
+            const auto scanIndex = typed.scanIndex(targetName);
+            if (structureIndex.has_value() && scanIndex.has_value()) {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::DuplicateName,
+                              QStringLiteral("Target '%1' is ambiguous between struct and sequence").arg(targetName),
+                              {});
+            } else if (structureIndex.has_value()) {
+                typed.entry.kind = DslEntryKind::Structure;
+                typed.entry.targetIndex = *structureIndex;
+            } else if (scanIndex.has_value()) {
+                typed.entry.kind = DslEntryKind::Sequence;
+                typed.entry.targetIndex = *scanIndex;
+            } else {
+                addDiagnostic(result.diagnostics,
+                              DslDiagnosticCode::UnknownReference,
+                              QStringLiteral("Target '%1' is not declared").arg(targetName),
+                              {});
+            }
+        }
     }
 
     if (program.payloadDispatch) {

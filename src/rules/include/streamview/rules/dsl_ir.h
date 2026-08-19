@@ -312,6 +312,9 @@ struct DslCompileResult final {
 class DslCompiler final {
 public:
     [[nodiscard]] static DslCompileResult compile(const DslProgram& program);
+    [[nodiscard]] static DslCompileResult compileForTarget(
+        const DslProgram& program,
+        const std::optional<QString>& target);
 };
 
 } // namespace streamview::rules

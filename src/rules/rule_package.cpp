@@ -272,6 +272,28 @@ requiredStringArray(const toml::table& table,
     return result;
 }
 
+[[nodiscard]] bool isDslIdentifier(QStringView text) noexcept {
+    if (text.isEmpty() || text.size() > 64) {
+        return false;
+    }
+    const QChar first = text.at(0);
+    if (first != QLatin1Char('_') &&
+        !(first >= QLatin1Char('a') && first <= QLatin1Char('z')) &&
+        !(first >= QLatin1Char('A') && first <= QLatin1Char('Z'))) {
+        return false;
+    }
+    for (qsizetype i = 1; i < text.size(); ++i) {
+        const QChar c = text.at(i);
+        if (c != QLatin1Char('_') &&
+            !(c >= QLatin1Char('a') && c <= QLatin1Char('z')) &&
+            !(c >= QLatin1Char('A') && c <= QLatin1Char('Z')) &&
+            !(c >= QLatin1Char('0') && c <= QLatin1Char('9'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 [[nodiscard]] std::optional<RulePackageManifest>
 parseManifest(const QByteArray& bytes, QString* errorMessage) {
     if (bytes.startsWith("\xEF\xBB\xBF")) {
@@ -289,6 +311,10 @@ parseManifest(const QByteArray& bytes, QString* errorMessage) {
                      .arg(fromUtf8(error.description())));
         return std::nullopt;
     }
+    if (root.empty()) {
+        setError(errorMessage, QStringLiteral("rule.toml cannot be empty"));
+        return std::nullopt;
+    }
 
     if (!tableHasOnly(root,
                       {"manifest-version", "package", "compatibility", "entrypoints",
@@ -298,8 +324,8 @@ parseManifest(const QByteArray& bytes, QString* errorMessage) {
         return std::nullopt;
     }
     const auto manifestVersion = root["manifest-version"].value<std::int64_t>();
-    if (!manifestVersion || *manifestVersion != 1) {
-        setError(errorMessage, QStringLiteral("manifest-version must be the integer 1"));
+    if (!manifestVersion || (*manifestVersion != 1 && *manifestVersion != 2)) {
+        setError(errorMessage, QStringLiteral("manifest-version must be the integer 1 or 2"));
         return std::nullopt;
     }
 
@@ -365,7 +391,7 @@ parseManifest(const QByteArray& bytes, QString* errorMessage) {
         return std::nullopt;
     }
     if (!dependencies->isEmpty()) {
-        setError(errorMessage, QStringLiteral("package.dependencies must be empty in version 1"));
+        setError(errorMessage, QStringLiteral("package.dependencies must be empty in version 1 and 2"));
         return std::nullopt;
     }
     if (entryArray->empty() || entryArray->size() > 64U) {
@@ -383,17 +409,27 @@ parseManifest(const QByteArray& bytes, QString* errorMessage) {
 
     QSet<QString> entryIds;
     QSet<QString> sourcePaths;
+    QSet<QPair<QString, QString>> sourceTargetPairs;
     for (std::size_t index = 0; index < entryArray->size(); ++index) {
         const toml::table* table = (*entryArray)[index].as_table();
-        if (table == nullptr ||
-            !tableHasOnly(*table,
-                          {"id", "format", "source", "profiles", "depth", "detector"},
-                          u"entrypoints",
-                          errorMessage)) {
-            if (table == nullptr) {
-                setError(errorMessage, QStringLiteral("Each entrypoint must be a table"));
-            }
+        if (table == nullptr) {
+            setError(errorMessage, QStringLiteral("Each entrypoint must be a table"));
             return std::nullopt;
+        }
+        if (*manifestVersion == 1) {
+            if (!tableHasOnly(*table,
+                              {"id", "format", "source", "profiles", "depth", "detector"},
+                              u"entrypoints",
+                              errorMessage)) {
+                return std::nullopt;
+            }
+        } else {
+            if (!tableHasOnly(*table,
+                              {"id", "format", "source", "profiles", "depth", "detector", "target"},
+                              u"entrypoints",
+                              errorMessage)) {
+                return std::nullopt;
+            }
         }
         auto id = requiredString(*table, "id", u"entrypoints", errorMessage);
         auto format = requiredString(*table, "format", u"entrypoints", errorMessage);
@@ -412,6 +448,23 @@ parseManifest(const QByteArray& bytes, QString* errorMessage) {
             }
             detector = std::move(*detectorValue);
         }
+        std::optional<QString> target;
+        if (table->contains("target")) {
+            if (*manifestVersion == 1) {
+                setError(errorMessage, QStringLiteral("Entrypoint target is not permitted in version 1"));
+                return std::nullopt;
+            }
+            auto targetValue =
+                requiredString(*table, "target", u"entrypoints", errorMessage);
+            if (!targetValue) {
+                return std::nullopt;
+            }
+            if (!isDslIdentifier(*targetValue)) {
+                setError(errorMessage, QStringLiteral("Entrypoint target is not a valid DSL identifier"));
+                return std::nullopt;
+            }
+            target = std::move(*targetValue);
+        }
         if (!isEntryToken(*id) || !isDottedIdentifier(*format) ||
             !source->startsWith(QStringLiteral("src/")) ||
             !source->endsWith(QStringLiteral(".svfmt")) ||
@@ -421,11 +474,24 @@ parseManifest(const QByteArray& bytes, QString* errorMessage) {
                 return !isEntryToken(profile);
             }) ||
             !isEntryToken(*depth) || (detector && !isEntryToken(*detector)) ||
-            entryIds.contains(*id) || sourcePaths.contains(*source)) {
+            entryIds.contains(*id)) {
             if (errorMessage != nullptr && errorMessage->isEmpty()) {
                 *errorMessage = QStringLiteral("Entrypoint metadata is invalid or duplicated");
             }
             return std::nullopt;
+        }
+        if (*manifestVersion == 1) {
+            if (sourcePaths.contains(*source)) {
+                setError(errorMessage, QStringLiteral("Entrypoint source paths must be unique in version 1"));
+                return std::nullopt;
+            }
+        } else {
+            const QPair<QString, QString> pair{*source, target.value_or(QString())};
+            if (sourceTargetPairs.contains(pair)) {
+                setError(errorMessage, QStringLiteral("Entrypoint source and target pair is duplicated"));
+                return std::nullopt;
+            }
+            sourceTargetPairs.insert(pair);
         }
         QSet<QString> uniqueProfiles;
         for (const QString& profile : *profiles) {
@@ -439,7 +505,7 @@ parseManifest(const QByteArray& bytes, QString* errorMessage) {
         sourcePaths.insert(*source);
         manifest.entryPoints.push_back(RulePackageEntryPoint{
             std::move(*id), std::move(*format), std::move(*source), std::move(*profiles),
-            std::move(*depth), std::move(detector)});
+            std::move(*depth), std::move(detector), std::move(target)});
     }
 
     if (const toml::node* documentationNode = root.get("documentation")) {

@@ -201,7 +201,8 @@ AacAdtsAnalyzer::create(const core::RandomAccessSource& source,
         return std::nullopt;
     }
 
-    DslCompileResult compiled = DslCompiler::compile(parsed.program);
+    DslCompileResult compiled =
+        DslCompiler::compileForTarget(parsed.program, resolvedRule.entryPoint->target);
     if (!compiled.succeeded()) {
         if (errorMessage != nullptr) {
             if (compiled.diagnostics.empty()) {

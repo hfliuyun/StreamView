@@ -1,3 +1,5 @@
+#include <streamview/rules/dsl.h>
+#include <streamview/rules/dsl_ir.h>
 #include <streamview/rules/rule_catalog.h>
 #include <streamview/rules/rule_package.h>
 
@@ -8,6 +10,9 @@
 #include <utility>
 #include <vector>
 
+using streamview::rules::DslCompiler;
+using streamview::rules::DslEntryKind;
+using streamview::rules::DslParser;
 using streamview::rules::EngineCompatibilityRange;
 using streamview::rules::LanguageContract;
 using streamview::rules::RuleCatalogLookupStatus;
@@ -410,6 +415,241 @@ private slots:
         QVERIFY(!conflict.succeeded());
         QVERIFY(!conflict.package);
         QVERIFY(!conflict.entryPoint.has_value());
+    }
+
+    void rejectsVersion1PackageWithTarget() {
+        const QByteArray extra = QByteArrayLiteral("target = \"Packet\"\n");
+        const auto loaded = RulePackage::fromFiles(
+            packageFiles(manifest(QStringLiteral("0.1.0"),
+                                  QStringLiteral("0.1"),
+                                  QStringLiteral(">=0.1.0 <0.2.0"),
+                                  extra)));
+        QCOMPARE(loaded.status, RulePackageLoadStatus::InvalidManifest);
+        QVERIFY(!loaded.package.has_value());
+    }
+
+    void loadsVersion2PackageWithOmittedAndExplicitTargets() {
+        QByteArray v2Manifest = QByteArrayLiteral(
+            "manifest-version = 2\n"
+            "\n"
+            "[package]\n"
+            "id = \"org.example.packet\"\n"
+            "version = \"0.1.0\"\n"
+            "authors = [\"Example Author\"]\n"
+            "license = \"MIT\"\n"
+            "dependencies = []\n"
+            "\n"
+            "[compatibility]\n"
+            "language = \"0.1\"\n"
+            "engine = \">=0.1.0 <0.2.0\"\n"
+            "\n"
+            "[[entrypoints]]\n"
+            "id = \"default-ep\"\n"
+            "format = \"application.example.default\"\n"
+            "source = \"src/packet_a.svfmt\"\n"
+            "profiles = [\"baseline\"]\n"
+            "depth = \"header\"\n"
+            "\n"
+            "[[entrypoints]]\n"
+            "id = \"targeted-ep\"\n"
+            "format = \"application.example.targeted\"\n"
+            "source = \"src/packet_b.svfmt\"\n"
+            "target = \"CustomTarget\"\n"
+            "profiles = [\"baseline\"]\n"
+            "depth = \"header\"\n");
+
+        std::vector<RulePackageFile> files = {
+            {QStringLiteral("rule.toml"), v2Manifest},
+            {QStringLiteral("src/packet_a.svfmt"),
+             QByteArrayLiteral("struct PacketA { bits<8> v; }\nentry PacketA;\n")},
+            {QStringLiteral("src/packet_b.svfmt"),
+             QByteArrayLiteral("struct CustomTarget { bits<8> v; }\nentry CustomTarget;\n")},
+        };
+
+        const auto loaded = RulePackage::fromFiles(std::move(files));
+        QCOMPARE(loaded.status, RulePackageLoadStatus::Loaded);
+        QVERIFY(loaded.package.has_value());
+        QCOMPARE(loaded.package->manifest().entryPoints.size(), std::size_t(2));
+        QCOMPARE(loaded.package->manifest().entryPoints[0].target, std::nullopt);
+        QCOMPARE(loaded.package->manifest().entryPoints[1].target,
+                 std::optional<QString>(QStringLiteral("CustomTarget")));
+    }
+
+    void rejectsVersion2PackageWithMalformedTarget() {
+        QByteArray v2Manifest = QByteArrayLiteral(
+            "manifest-version = 2\n"
+            "\n"
+            "[package]\n"
+            "id = \"org.example.packet\"\n"
+            "version = \"0.1.0\"\n"
+            "authors = [\"Example Author\"]\n"
+            "license = \"MIT\"\n"
+            "dependencies = []\n"
+            "\n"
+            "[compatibility]\n"
+            "language = \"0.1\"\n"
+            "engine = \">=0.1.0 <0.2.0\"\n"
+            "\n"
+            "[[entrypoints]]\n"
+            "id = \"packet\"\n"
+            "format = \"application.example.packet\"\n"
+            "source = \"src/packet.svfmt\"\n"
+            "target = \"123-invalid-ident\"\n"
+            "profiles = [\"baseline\"]\n"
+            "depth = \"header\"\n");
+
+        const auto loaded = RulePackage::fromFiles(packageFiles(v2Manifest));
+        QCOMPARE(loaded.status, RulePackageLoadStatus::InvalidManifest);
+        QVERIFY(!loaded.package.has_value());
+    }
+
+    void rejectsVersion2PackageWithDuplicateSourceAndTargetPair() {
+        QByteArray v2Manifest = QByteArrayLiteral(
+            "manifest-version = 2\n"
+            "\n"
+            "[package]\n"
+            "id = \"org.example.packet\"\n"
+            "version = \"0.1.0\"\n"
+            "authors = [\"Example Author\"]\n"
+            "license = \"MIT\"\n"
+            "dependencies = []\n"
+            "\n"
+            "[compatibility]\n"
+            "language = \"0.1\"\n"
+            "engine = \">=0.1.0 <0.2.0\"\n"
+            "\n"
+            "[[entrypoints]]\n"
+            "id = \"ep1\"\n"
+            "format = \"application.example.one\"\n"
+            "source = \"src/packet.svfmt\"\n"
+            "target = \"SameTarget\"\n"
+            "profiles = [\"baseline\"]\n"
+            "depth = \"header\"\n"
+            "\n"
+            "[[entrypoints]]\n"
+            "id = \"ep2\"\n"
+            "format = \"application.example.two\"\n"
+            "source = \"src/packet.svfmt\"\n"
+            "target = \"SameTarget\"\n"
+            "profiles = [\"baseline\"]\n"
+            "depth = \"header\"\n");
+
+        const auto loaded = RulePackage::fromFiles(packageFiles(v2Manifest));
+        QCOMPARE(loaded.status, RulePackageLoadStatus::InvalidManifest);
+        QVERIFY(!loaded.package.has_value());
+    }
+
+    void supportsVersion2SharedSourceWithDistinctTargets() {
+        QByteArray v2Manifest = QByteArrayLiteral(
+            "manifest-version = 2\n"
+            "\n"
+            "[package]\n"
+            "id = \"org.example.packet\"\n"
+            "version = \"0.1.0\"\n"
+            "authors = [\"Example Author\"]\n"
+            "license = \"MIT\"\n"
+            "dependencies = []\n"
+            "\n"
+            "[compatibility]\n"
+            "language = \"0.1\"\n"
+            "engine = \">=0.1.0 <0.2.0\"\n"
+            "\n"
+            "[[entrypoints]]\n"
+            "id = \"ep-a\"\n"
+            "format = \"application.example.a\"\n"
+            "source = \"src/shared.svfmt\"\n"
+            "target = \"StructA\"\n"
+            "profiles = [\"baseline\"]\n"
+            "depth = \"header\"\n"
+            "\n"
+            "[[entrypoints]]\n"
+            "id = \"ep-b\"\n"
+            "format = \"application.example.b\"\n"
+            "source = \"src/shared.svfmt\"\n"
+            "target = \"StructB\"\n"
+            "profiles = [\"baseline\"]\n"
+            "depth = \"header\"\n");
+
+        std::vector<RulePackageFile> files = {
+            {QStringLiteral("rule.toml"), v2Manifest},
+            {QStringLiteral("src/shared.svfmt"),
+             QByteArrayLiteral("struct StructA { bits<8> a; }\nstruct StructB { bits<16> b; }\nentry StructA;\n")},
+        };
+
+        const auto loaded = RulePackage::fromFiles(std::move(files));
+        QCOMPARE(loaded.status, RulePackageLoadStatus::Loaded);
+        QVERIFY(loaded.package.has_value());
+        QCOMPARE(loaded.package->manifest().entryPoints.size(), std::size_t(2));
+        QCOMPARE(loaded.package->manifest().entryPoints[0].target,
+                 std::optional<QString>(QStringLiteral("StructA")));
+        QCOMPARE(loaded.package->manifest().entryPoints[1].target,
+                 std::optional<QString>(QStringLiteral("StructB")));
+    }
+
+    void memoryPackageBindsSharedSourceToCorrectTypedEntries() {
+        QByteArray v2Manifest = QByteArrayLiteral(
+            "manifest-version = 2\n"
+            "\n"
+            "[package]\n"
+            "id = \"org.example.packet\"\n"
+            "version = \"0.1.0\"\n"
+            "authors = [\"Example Author\"]\n"
+            "license = \"MIT\"\n"
+            "dependencies = []\n"
+            "\n"
+            "[compatibility]\n"
+            "language = \"0.1\"\n"
+            "engine = \">=0.1.0 <0.2.0\"\n"
+            "\n"
+            "[[entrypoints]]\n"
+            "id = \"ep-a\"\n"
+            "format = \"application.example.a\"\n"
+            "source = \"src/shared.svfmt\"\n"
+            "target = \"StructA\"\n"
+            "profiles = [\"baseline\"]\n"
+            "depth = \"header\"\n"
+            "\n"
+            "[[entrypoints]]\n"
+            "id = \"ep-b\"\n"
+            "format = \"application.example.b\"\n"
+            "source = \"src/shared.svfmt\"\n"
+            "target = \"StructB\"\n"
+            "profiles = [\"baseline\"]\n"
+            "depth = \"header\"\n");
+
+        std::vector<RulePackageFile> files = {
+            {QStringLiteral("rule.toml"), v2Manifest},
+            {QStringLiteral("src/shared.svfmt"),
+             QByteArrayLiteral("struct StructA { bits<8> a; }\nstruct StructB { bits<16> b; }\nentry StructA;\n")},
+        };
+
+        const auto loaded = RulePackage::fromFiles(std::move(files));
+        QCOMPARE(loaded.status, RulePackageLoadStatus::Loaded);
+        QVERIFY(loaded.package.has_value());
+
+        const auto* sourceBytes = loaded.package->fileContents(QStringLiteral("src/shared.svfmt"));
+        QVERIFY(sourceBytes != nullptr);
+
+        const auto parsed = DslParser::parse(QString::fromUtf8(*sourceBytes));
+        QVERIFY(parsed.succeeded());
+
+        // Compile for EntryPoint 0 (ep-a -> target StructA)
+        const auto compiledA = DslCompiler::compileForTarget(
+            parsed.program, loaded.package->manifest().entryPoints[0].target);
+        QVERIFY(compiledA.succeeded());
+        QCOMPARE(compiledA.program->entry.kind, DslEntryKind::Structure);
+        const auto idxA = compiledA.program->structureIndex(QStringLiteral("StructA"));
+        QVERIFY(idxA.has_value());
+        QCOMPARE(compiledA.program->entry.targetIndex, *idxA);
+
+        // Compile for EntryPoint 1 (ep-b -> target StructB)
+        const auto compiledB = DslCompiler::compileForTarget(
+            parsed.program, loaded.package->manifest().entryPoints[1].target);
+        QVERIFY(compiledB.succeeded());
+        QCOMPARE(compiledB.program->entry.kind, DslEntryKind::Structure);
+        const auto idxB = compiledB.program->structureIndex(QStringLiteral("StructB"));
+        QVERIFY(idxB.has_value());
+        QCOMPARE(compiledB.program->entry.targetIndex, *idxB);
     }
 };
 
