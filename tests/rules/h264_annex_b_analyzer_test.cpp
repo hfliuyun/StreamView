@@ -882,15 +882,23 @@ private slots:
         QCOMPARE(loaded.package->manifest().packageId,
                  QStringLiteral("org.streamview.h264"));
         QCOMPARE(loaded.package->manifest().packageVersion.text(),
-                 QStringLiteral("0.1.39"));
-        QCOMPARE(loaded.package->manifest().entryPoints.size(), std::size_t(1));
-        const auto& entryPoint = loaded.package->manifest().entryPoints.front();
-        QCOMPARE(entryPoint.profiles,
+                 QStringLiteral("0.1.40"));
+        QCOMPARE(loaded.package->manifest().entryPoints.size(), std::size_t(2));
+        const auto& entryPoint0 = loaded.package->manifest().entryPoints.at(0);
+        QCOMPARE(entryPoint0.id, QStringLiteral("annex-b"));
+        QCOMPARE(entryPoint0.format, QStringLiteral("video.h264.annex-b"));
+        QCOMPARE(entryPoint0.profiles,
                  QStringList({QStringLiteral("baseline"),
                               QStringLiteral("main"),
                               QStringLiteral("high")}));
-        QCOMPARE(entryPoint.depth,
+        QCOMPARE(entryPoint0.depth,
                  QStringLiteral("baseline-main-high-slice-header"));
+
+        const auto& entryPoint1 = loaded.package->manifest().entryPoints.at(1);
+        QCOMPARE(entryPoint1.id, QStringLiteral("nal"));
+        QCOMPARE(entryPoint1.format, QStringLiteral("video.h264.nal"));
+        QCOMPARE(entryPoint1.target, std::optional<QString>(QStringLiteral("NalUnitHeader")));
+        QCOMPARE(entryPoint1.depth, QStringLiteral("structural"));
 
         QString errorMessage;
         const QString source = h264AnnexBRuleSource(&errorMessage);
