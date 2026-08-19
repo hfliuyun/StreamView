@@ -127,7 +127,9 @@ To establish child AST coordinates mapped directly to root source bytes:
 
 ### 4. Proposed Session and UI Navigation Stack Contract
 
-`AnalysisSession` has no navigation API at the P5i-1 baseline (`src/app/analysis_session.h:64-177`). P5i-4 will add the semantic navigation stack below. `MainWindow` remains responsible for `AnalysisTreeModel`, `FieldInspector`, `RawDataView`, breadcrumbs, and presentation-state snapshots; the non-`QObject` session must not emit the signals shown in the original draft or directly manipulate widgets.
+### 4. Proposed Session and UI Navigation Stack Contract
+
+`AnalysisSession` introduces a semantic navigation stack (`src/app/analysis_session.h`). `MainWindow` remains responsible for `AnalysisTreeModel`, `FieldInspector`, `RawDataView`, breadcrumbs, and presentation-state snapshots; the non-`QObject` session must not emit UI signals or directly manipulate widgets.
 
 ```cpp
 namespace streamview::app {
@@ -139,6 +141,53 @@ struct NavigationFrame final {
     rules::RulePackageEntryPoint entryPoint;
     core::SourceMapping sourceMapping;
     std::shared_ptr<core::AnalysisTree> tree;
+    core::AnalysisNodeId childRootStructureNodeId;
+};
+
+enum class AnalysisSessionNavigationStatus : quint8 {
+    Entered,
+    NodeNotFound,
+    MissingTargetFormat,
+    InvalidTargetLocation,
+    MissingContent,
+    VersionConflict,
+    IncompatibleLanguage,
+    IncompatibleEngine,
+    InvalidRulePackage,
+    InvalidDefinition,
+    Unsupported,
+    TruncatedSource,
+    InvalidSyntax,
+    DependencyUnavailable,
+    SourceError,
+    Cancelled,
+    ResourceLimit,
+};
+
+struct AnalysisSessionNavigationResult final {
+    AnalysisSessionNavigationStatus status = AnalysisSessionNavigationStatus::InvalidDefinition;
+    std::optional<core::AnalysisNodeId> childRootStructureNodeId;
+    std::shared_ptr<core::AnalysisTree> tree;
+    QString errorMessage;
+
+    [[nodiscard]] bool succeeded() const noexcept {
+        return status == AnalysisSessionNavigationStatus::Entered && tree != nullptr;
+    }
+};
+
+enum class AnalysisSessionReturnStatus : quint8 {
+    Returned,
+    AtRoot,
+};
+
+struct AnalysisSessionReturnResult final {
+    AnalysisSessionReturnStatus status = AnalysisSessionReturnStatus::AtRoot;
+    std::optional<core::AnalysisNodeId> restoredParentTargetNodeId;
+    const core::AnalysisTree* activeTree = nullptr;
+
+    [[nodiscard]] bool returned() const noexcept {
+        return status == AnalysisSessionReturnStatus::Returned;
+    }
 };
 
 } // namespace streamview::app
@@ -146,24 +195,26 @@ struct NavigationFrame final {
 
 `navigationStack_` contains child frames only. When it is empty, the root analyzer tree is active; otherwise `navigationStack_.back().tree` is active. Each frame's `parentTargetNodeId` belongs to the previously active level, so popping a frame deterministically reveals the parent tree and the node that `MainWindow` must reselect.
 
-#### Navigation Operations
+#### Navigation Operations & Format-Neutral Execution
 
-1. **Enter Child Format (`AnalysisSession::enterChildFormat(core::AnalysisNodeId nodeId, const RulePackageCatalog& catalog)`)**:
+1. **Enter Child Format (`AnalysisSession::enterChildFormat(core::AnalysisNodeId nodeId, const rules::RulePackageCatalog& catalog, const rules::StructuralExecutionOptions& options)`)**:
    - Validates that `nodeId` in the active tree has `metadata().targetFormat`.
-   - Resolves target format via `RulePackageCatalog::resolveByFormat`.
-   - Builds `SourceMapping` and runs `StructuralEntryRunner::execute`.
-   - Resolution, preflight, compile, and execution failures are returned in a structured result without pushing a frame. A failed execution may retain an inactive partial tree for diagnostics, but it never replaces the active tree.
-   - **Safety Guarantee**: On failure, `MainWindow` keeps the current model, selection, `FieldInspector`, and raw highlight untouched and presents the returned error.
+   - Resolves target format via `RulePackageCatalog::resolveByFormat(targetFormat, runningLanguageVersion, runningEngineVersion)`.
+   - Loads and compiles the manifest entry via `DslCompiler::compileForTarget(parsed.program, entryPoint.target)`.
+   - Builds `SourceMapping` from `targetNode.location()->sourceSpans()`.
+   - Format-neutral execution routing:
+     - If `program.entry.kind == DslEntryKind::Structure` and has no structural payload dispatch (`!program.payloadDispatch.has_value() || program.payloadDispatchHeaderStructureIndex() != program.entry.targetIndex`): executes via `StructuralEntryRunner::execute(source, sourceMapping, program, options)`.
+     - If `program.entry.kind == DslEntryKind::Structure` with typed payload dispatch (`program.payloadDispatchHeaderStructureIndex() == program.entry.targetIndex`): executes via `RuleExecutionSession::runCompound` with `autoDispatchPayload = true`. The header consumes its bytes starting at logical 0, payload start is derived from header consumed bits, transform provider is resolved by registered `dispatch.viewKind`, and context definitions are published in the session.
+   - Resolution, preflight, compile, and execution failures are returned in `AnalysisSessionNavigationResult` without pushing a frame.
+   - **Safety Guarantee**: On failure, `activeTree()`, `navigationDepth()`, and parent state remain completely untouched.
    - If execution succeeds:
      - Pushes `NavigationFrame` to `navigationStack_`.
-     - Returns the child tree and its root structure node to `MainWindow`.
-     - `MainWindow` records the parent node/selection snapshot, switches `AnalysisTreeModel`, selects the child root, and updates breadcrumbs.
+     - Returns `AnalysisSessionNavigationStatus::Entered`, the child tree, and `childRootStructureNodeId`.
 
 2. **Return to Parent (`AnalysisSession::returnToParent()`)**:
-   - If `navigationStack_.empty()`, operation is a no-op.
+   - If `navigationStack_.empty()`, operation returns `AnalysisSessionReturnStatus::AtRoot` as a deterministic no-op.
    - Pops the top `NavigationFrame`.
-   - Returns the parent target node identifier and active parent tree to `MainWindow`.
-   - `MainWindow` restores the saved parent selection and derives its raw highlight from the restored node location.
+   - Returns `AnalysisSessionReturnStatus::Returned`, the parent target node identifier, and active parent tree.
 
 3. **Two-Way Coordinate Interaction**:
    - **Tree to Raw View**: Selecting any field in the child `AnalysisTree` retrieves `node->location()->sourceSpans()` and updates `RawDataView` highlight to the exact physical root file byte offsets.
@@ -196,12 +247,17 @@ To prevent monolithic PRs and enforce single-responsibility review:
 [P5i-3 (Rules/Pkgs)]: Standalone H.264 NAL Rule Shape/Entrypoint + AAC ASC Validation
       │
       ▼
-[P5i-4 (App/UI)]: AnalysisSession NavigationStack, MainWindow Breadcrumbs & Bidirectional Selection
+[P5i-4a (App/Core)]: AnalysisSession Semantic Navigation Stack & Format-Neutral Sub-Format Execution
+      │
+      ▼
+[P5i-4b (App/UI)]: MainWindow Breadcrumbs, Tree Switching & Bidirectional Coordinate Highlight
 ```
 
 - **Task P5i-1**: Markdown-only dual-language ADR-0103 specification.
-- **Task P5i-2**: Implement the reusable mapped source view and `StructuralEntryRunner`. Prove the generic path with a local structural rule and the existing `audio.aac.asc` entry. Do not change official package manifests or claim complete H.264 NAL decoding in this capability slice.
-- **Task P5i-3** (Probe Outcome & Blocked State): Docs-first probes and source audit show that DSL 0.1 has no complete, format-neutral path for a standalone H.264 NAL entry. The evidence is deliberately limited to the tested forms; it does not claim that every future syntax spelling is impossible:
+- **Task P5i-2**: Implement the reusable mapped source view and `StructuralEntryRunner`.
+- **Task P5i-3** (P5i-3a/3b/3c): Standalone H.264 NAL package entrypoint `video.h264.nal`, compound structural execution, and RBSP payload transform provider.
+- **Task P5i-4a**: Implement non-`QObject` `NavigationFrame` and semantic navigation stack in `AnalysisSession`, format-neutral sub-format execution for AAC ASC and H.264 standalone NAL with session context sharing.
+- **Task P5i-4b**: Implement `MainWindow` breadcrumb bar, tree model replacement, selection snapshots, and bidirectional coordinate synchronization.
   1. A structural `switch` arm cannot instantiate a child structure. `tests/probes/p5i3/probe_q1_structural_switch.svfmt` fails with `Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type` at `src/rules/dsl.cpp:1000-1004`.
   2. `payload<rbsp>` is bound to a declared scan sequence and requires the entry to name that sequence. `tests/probes/p5i3/probe_q2_unbound_payload.svfmt` and `probe_q2_sequence_entry_mismatch.svfmt` reproduce the two diagnostics from `src/rules/dsl.cpp:3763-3781`. The existing EBSP/RBSP mapper is instantiated only by `H264AnnexBAnalyzer` (`src/rules/h264_annex_b_analyzer.cpp:666-693`); `StructuralEntryRunner` has no transform hook.
   3. A standalone PPS execution cannot resolve its SPS import through the current runner: `StructuralEntryRunner::execute` supplies no context resolver (`src/rules/structural_entry_runner.cpp:87-103`), and the VM returns `InvalidDefinition` with `Imported context value resolver is unavailable` (`src/rules/dsl_vm.cpp:718-743`). This limitation applies to PPS and dependent slices, not to an isolated SPS with no import.

@@ -127,7 +127,9 @@ RuleCatalogLookupResult result = catalog.resolveByFormat(
 
 ### 4. 拟议的会话与 UI 导航栈合同
 
-P5i-1 基线的 `AnalysisSession` 尚无导航 API（`src/app/analysis_session.h:64-177`）。P5i-4 将增加下述语义导航栈。`MainWindow` 继续负责 `AnalysisTreeModel`、`FieldInspector`、`RawDataView`、面包屑和展示状态快照；非 `QObject` 的 session 不得发送原草案中的信号，也不得直接操作 widget。
+### 4. 拟议的会话与 UI 导航栈合同
+
+`AnalysisSession` 引入语义导航栈（`src/app/analysis_session.h`）。`MainWindow` 继续负责 `AnalysisTreeModel`、`FieldInspector`、`RawDataView`、面包屑和展示状态快照；非 `QObject` 的 session 不得发送 UI 信号，也不得直接操作 widget。
 
 ```cpp
 namespace streamview::app {
@@ -139,6 +141,53 @@ struct NavigationFrame final {
     rules::RulePackageEntryPoint entryPoint;
     core::SourceMapping sourceMapping;
     std::shared_ptr<core::AnalysisTree> tree;
+    core::AnalysisNodeId childRootStructureNodeId;
+};
+
+enum class AnalysisSessionNavigationStatus : quint8 {
+    Entered,
+    NodeNotFound,
+    MissingTargetFormat,
+    InvalidTargetLocation,
+    MissingContent,
+    VersionConflict,
+    IncompatibleLanguage,
+    IncompatibleEngine,
+    InvalidRulePackage,
+    InvalidDefinition,
+    Unsupported,
+    TruncatedSource,
+    InvalidSyntax,
+    DependencyUnavailable,
+    SourceError,
+    Cancelled,
+    ResourceLimit,
+};
+
+struct AnalysisSessionNavigationResult final {
+    AnalysisSessionNavigationStatus status = AnalysisSessionNavigationStatus::InvalidDefinition;
+    std::optional<core::AnalysisNodeId> childRootStructureNodeId;
+    std::shared_ptr<core::AnalysisTree> tree;
+    QString errorMessage;
+
+    [[nodiscard]] bool succeeded() const noexcept {
+        return status == AnalysisSessionNavigationStatus::Entered && tree != nullptr;
+    }
+};
+
+enum class AnalysisSessionReturnStatus : quint8 {
+    Returned,
+    AtRoot,
+};
+
+struct AnalysisSessionReturnResult final {
+    AnalysisSessionReturnStatus status = AnalysisSessionReturnStatus::AtRoot;
+    std::optional<core::AnalysisNodeId> restoredParentTargetNodeId;
+    const core::AnalysisTree* activeTree = nullptr;
+
+    [[nodiscard]] bool returned() const noexcept {
+        return status == AnalysisSessionReturnStatus::Returned;
+    }
 };
 
 } // namespace streamview::app
@@ -146,24 +195,26 @@ struct NavigationFrame final {
 
 `navigationStack_` 只包含子级帧。栈为空时，根分析器树处于活动状态；否则 `navigationStack_.back().tree` 为活动树。每个帧的 `parentTargetNodeId` 属于此前活动的层级，因此弹出帧后能够确定性地得到父树，以及 `MainWindow` 必须重新选中的节点。
 
-#### 导航操作
+#### 导航操作与格式中立执行
 
-1. **进入子格式（`AnalysisSession::enterChildFormat(core::AnalysisNodeId nodeId, const RulePackageCatalog& catalog)`）**：
+1. **进入子格式（`AnalysisSession::enterChildFormat(core::AnalysisNodeId nodeId, const rules::RulePackageCatalog& catalog, const rules::StructuralExecutionOptions& options)`）**：
    - 校验活动树中的 `nodeId` 具备 `metadata().targetFormat`。
-   - 通过 `RulePackageCatalog::resolveByFormat` 解析目标格式。
-   - 构建 `SourceMapping` 并执行 `StructuralEntryRunner::execute`。
-   - 解析、预检、编译或执行失败通过结构化结果返回，且不压入栈帧。失败执行可以保留未激活的部分树用于诊断，但绝不替换活动树。
-   - **安全保证**：失败时，`MainWindow` 保持当前 model、选择、`FieldInspector` 和原始视图高亮不变，并展示返回的错误。
+   - 通过 `RulePackageCatalog::resolveByFormat(targetFormat, runningLanguageVersion, runningEngineVersion)` 解析目标格式。
+   - 读取并编译 manifest 入口：`DslCompiler::compileForTarget(parsed.program, entryPoint.target)`。
+   - 从 `targetNode.location()->sourceSpans()` 构建 `SourceMapping`。
+   - 格式中立执行路由：
+     - 若 `program.entry.kind == DslEntryKind::Structure` 且无结构型 payload dispatch（`!program.payloadDispatch.has_value() || program.payloadDispatchHeaderStructureIndex() != program.entry.targetIndex`）：经由 `StructuralEntryRunner::execute(source, sourceMapping, program, options)` 执行。
+     - 若 `program.entry.kind == DslEntryKind::Structure` 且带有类型化 payload dispatch（`program.payloadDispatchHeaderStructureIndex() == program.entry.targetIndex`）：经由 `RuleExecutionSession::runCompound` 并开启 `autoDispatchPayload = true` 执行。header 从逻辑 0 起消费自身字节，payload 起点由 header 消费比特自动派生，transform provider 按注册的 `dispatch.viewKind` 解析，并在会话中发布/解析 context definitions。
+   - 解析、预检、编译或执行失败通过 `AnalysisSessionNavigationResult` 结构化返回，且不压入栈帧。
+   - **安全保证**：失败时，`activeTree()`、`navigationDepth()` 和父级状态保持完全不变。
    - 若执行成功：
      - 将 `NavigationFrame` 压入 `navigationStack_`。
-     - 向 `MainWindow` 返回子树及其根结构节点。
-     - `MainWindow` 记录父节点/选择快照、切换 `AnalysisTreeModel`、选中子树根节点并更新面包屑。
+     - 返回 `AnalysisSessionNavigationStatus::Entered`、子树及 `childRootStructureNodeId`。
 
 2. **返回父级（`AnalysisSession::returnToParent()`）**：
-   - 若 `navigationStack_.empty()`，操作为空操作（no-op）。
+   - 若 `navigationStack_.empty()`，操作返回 `AnalysisSessionReturnStatus::AtRoot` 作为确定性空操作。
    - 弹出顶层 `NavigationFrame`。
-   - 向 `MainWindow` 返回父级目标节点标识符和当前活动父树。
-   - `MainWindow` 恢复保存的父级选择，并根据恢复节点的位置重新派生原始视图高亮。
+   - 返回 `AnalysisSessionReturnStatus::Returned`、父级目标节点标识符及当前活动父树。
 
 3. **双向坐标交互**：
    - **树到原始视图**：选中子 `AnalysisTree` 中的任一字段，获取 `node->location()->sourceSpans()`，并将 `RawDataView` 高亮更新为原根文件的精确物理字节偏移。
@@ -196,12 +247,17 @@ struct NavigationFrame final {
 [P5i-3 (规则/包)]: 独立 H.264 NAL 规则形态/入口 + AAC ASC 验证
       │
       ▼
-[P5i-4 (应用/UI)]: AnalysisSession NavigationStack、MainWindow 面包屑与双向选择
+[P5i-4a (应用/核心)]: AnalysisSession 语义导航栈与格式中立子格式执行
+      │
+      ▼
+[P5i-4b (应用/UI)]: MainWindow 面包屑、树切换与双向坐标高亮
 ```
 
 - **任务 P5i-1**：纯 Markdown 双语 ADR-0103 规范。
-- **任务 P5i-2**：实现可复用映射源视图与 `StructuralEntryRunner`，使用本地结构型规则和现有 `audio.aac.asc` 入口证明通用路径。本能力切片不得修改官方包 manifest，也不得声称完整 H.264 NAL 解码。
-- **任务 P5i-3**（探测结论与阻断状态）：Docs-first 探针和源码审计表明，DSL 0.1 没有可用于独立 H.264 NAL 入口的完整、格式中立路径。证据严格限定于已测试形态，不声称未来任意语法拼写都不可能：
+- **任务 P5i-2**：实现可复用映射源视图与 `StructuralEntryRunner`。
+- **任务 P5i-3**（P5i-3a/3b/3c）：独立 H.264 NAL 规则包入口 `video.h264.nal`、复合结构执行与 RBSP payload transform provider。
+- **任务 P5i-4a**：在 `AnalysisSession` 中实现非 `QObject` `NavigationFrame` 与语义导航栈，实现 AAC ASC 与 H.264 独立 NAL 格式中立子格式执行及会话上下文共享。
+- **任务 P5i-4b**：实现 `MainWindow` 面包屑栏、树模型替换、选择快照及双向坐标同步。
   1. 结构型 `switch` 分支不能实例化子结构。`tests/probes/p5i3/probe_q1_structural_switch.svfmt` 在 `src/rules/dsl.cpp:1000-1004` 复现 `Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type`。
   2. `payload<rbsp>` 绑定已声明的 scan 序列，并要求 entry 指向该序列。`tests/probes/p5i3/probe_q2_unbound_payload.svfmt` 与 `probe_q2_sequence_entry_mismatch.svfmt` 复现 `src/rules/dsl.cpp:3763-3781` 的两条诊断。现有 EBSP/RBSP mapper 仅由 `H264AnnexBAnalyzer`（`src/rules/h264_annex_b_analyzer.cpp:666-693`）实例化；`StructuralEntryRunner` 没有转换钩子。
   3. 独立 PPS 执行无法通过当前运行器解析 SPS import：`StructuralEntryRunner::execute` 没有提供 context resolver（`src/rules/structural_entry_runner.cpp:87-103`），VM 返回 `InvalidDefinition` 及 `Imported context value resolver is unavailable`（`src/rules/dsl_vm.cpp:718-743`）。该限制适用于 PPS 和依赖它的 slice，不适用于没有 import 的孤立 SPS。
