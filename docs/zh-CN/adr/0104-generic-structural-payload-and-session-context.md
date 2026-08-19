@@ -194,7 +194,25 @@
 
 - **严格受限的执行**：结构型 payload 分派严格为单层（一个头部 + 至多一个 payload 结构体），禁止通用的递归调用栈。
 - **格式中立的编排**：通用 dispatcher 不包含格式字段名或 FourCC。现有 context kind 与注册的 transform provider 可以携带格式 policy，但必须留在通用 dispatcher 外并显式注册。
-- **受限的变换语言**：变换从声明的 provider identifier 和有限 provider 合同中选择；未知 identifier fail closed。本 ADR 不声称硬编码 `Rbsp` 枚举是格式中立的。
+---
+
+### 8. 官方 H.264 独立 NAL 规则包切片（P5i-3c）
+
+1. **规则包激活合同**：
+   - `src/rules/official/org.streamview.h264/rule.toml` 升级至 `manifest-version = 2`，包版本升级为 `0.1.40`。
+   - 既有 entrypoint `id = "annex-b"`（格式 `video.h264.annex-b`）保持不变，不设 target，默认编译源文件中的 `entry nal_units` 序列。
+   - 新增 entrypoint `id = "nal"`（格式 `video.h264.nal`），指向相同的源文件 `src/h264_annex_b.svfmt` 并指定 `target = "NalUnitHeader"`。
+   - 完全复用现有的 1200+ 行 DSL 规则，无需复制语法源文件。
+
+2. **执行语义**：
+   - 指定目标 `NalUnitHeader` 编译时，`RulePackageCatalog::resolveByFormat(QStringLiteral("video.h264.nal"))` 解析出对应 entrypoint，`DslCompiler::compileForTarget` 将 `NalUnitHeader` 绑定为结构型入口并保留其关联的 `payload<rbsp>` 分派。
+   - 独立 NAL 执行通过 `CompoundStructuralRunner` 与 `RuleExecutionSession::runCompound`（`autoDispatchPayload = true`）完成：
+     - 头部（`NalUnitHeader`）解析解码。
+     - 控制器字段 `nal_unit_type` 动态确定 RBSP payload 结构体（例如 type 7 对应 `SequenceParameterSetRbsp`，type 8 对应 `PictureParameterSetRbsp`，type 9 对应 `AccessUnitDelimiterRbsp`，type 10/11 对应 empty，未处理类型返回 `Unsupported`）。
+     - RBSP 脱壳变换由已注册的 `H264RbspPayloadTransformProvider`（`"rbsp"`）执行；转发映射精准回映物理坐标，`0x03` 防竞争字节作为独立排除区间保留，绝不篡改物理字节偏移。
+     - SPS 上下文定义（`h264-sps`）在原子事务提交后注册到 `RuleExecutionSession` 中，支持同一会话中后续 PPS 执行解析 `context_value(sps_id, h264_sps, ...)` 导入。
+     - 依赖缺失（如在无先前 SPS 情况下执行 PPS）返回 `RuleExecutionStatus::DependencyUnavailable`，且不发布任何被污染的上下文。
+     - 源截断或语法/一致性错误原子回滚，不污染上下文。
 
 ---
 
