@@ -220,6 +220,56 @@ struct AnalysisSessionReturnResult final {
    - **Tree to Raw View**: Selecting any field in the child `AnalysisTree` retrieves `node->location()->sourceSpans()` and updates `RawDataView` highlight to the exact physical root file byte offsets.
    - **Raw View to Tree**: Clicking a byte in `RawDataView` inspects the active `AnalysisTree` (child tree if navigated) and selects the most specific leaf node enclosing that byte.
 
+#### 4.3 MainWindow UI Presentation Stack, Breadcrumbs, and View Integration Contracts
+
+In Task P5i-4b, `MainWindow` integrates the semantic navigation stack provided by `AnalysisSession`:
+
+1. **Separation of Concerns & Presentation Ownership**:
+   - `AnalysisSession` (non-`QObject`) strictly owns the semantic navigation stack (`navigationStack_`), sub-format execution pipelines, and shared session context. It does not manipulate Qt widgets or maintain presentation models.
+   - `MainWindow` owns the UI presentation stack, `AnalysisTreeModel` lifecycle, `FieldInspector` presentation, `RawDataView` selection state, breadcrumb bar, and `navigationBackButton`.
+
+2. **Compact Navigation Toolbar in Analysis Tree Dock**:
+   - A compact navigation header is placed directly above `AnalysisTreeView`:
+     - `QToolButton` with `objectName == "navigationBackButton"`, standard back icon, tooltip (`"Return to parent"`), and accessible name (`"Return to parent format"`). It is disabled at root (`navigationDepth() == 0`) and enabled in child sub-formats.
+     - Breadcrumb `QLabel` (`objectName == "navigationBreadcrumbLabel"`) showing the active navigation hierarchy (e.g. root file format or chained sub-formats `video.h264.nal`, `audio.aac.asc`) without verbose or explanatory help text.
+   - The toolbar is compact and does not squeeze or overlap the tree view header or dock panels across 900x600 and 1280x800 resolutions.
+
+3. **Sub-format Entry Triggers & Flow**:
+   - Nodes with `@target_format` can be entered via:
+     - Double-clicking the item in `AnalysisTreeView`;
+     - Pressing Enter or Return when the node is selected and focused.
+   - Standard nodes without `targetFormat` ignore these gestures and do not trigger navigation.
+   - **Successful Entry (`Entered`)**:
+     - `MainWindow` receives `AnalysisSessionNavigationResult` with `status == Entered` and `childRootStructureNodeId`.
+     - `AnalysisTreeModel` switches its active tree to `session.activeTree()`.
+     - Selection is automatically set to `childRootStructureNodeId`.
+     - `FieldInspector` displays the child root structure node.
+     - `RawDataView` highlights the complete `sourceSpans()` of the child root node.
+     - Breadcrumbs and `navigationBackButton` update to reflect the new depth.
+   - **Failure Handling**:
+     - If `enterChildFormat` returns any error status (`MissingContent`, `VersionConflict`, `DependencyUnavailable`, `InvalidTargetLocation`, etc.):
+     - `AnalysisTreeModel`, current selection, `FieldInspector`, `RawDataView` highlight, and breadcrumbs remain 100% unchanged.
+     - The status bar displays the structured error message from `result.errorMessage`.
+
+4. **Return to Parent Flow**:
+   - Triggered by clicking `navigationBackButton` (or activating the return action):
+   - Calls `session.returnToParent()`.
+   - `AtRoot` returns immediately as a deterministic no-op.
+   - `Returned`:
+     - `AnalysisTreeModel` is switched to the restored parent `session.activeTree()`.
+     - Selection is accurately restored to `restoredParentTargetNodeId`.
+     - `FieldInspector` and `RawDataView` highlight are restored to the parent target node's complete `sourceSpans()`.
+     - Breadcrumbs and `navigationBackButton` update (disabled if returned to root).
+
+5. **Bidirectional Coordinate Mapping & Disjoint Spans**:
+   - `selectAnalysisNode` and `selectSourceBit` exclusively operate on `session.activeTree()`.
+   - **Tree -> Raw View**: When any node in the active tree is selected, `RawDataView` highlights all physical source spans returned by `node->location()->sourceSpans()`. Disjoint spans are never collapsed or approximated into a single continuous range.
+   - **Raw View -> Tree**: When a source bit is clicked in `RawDataView`, the lookup resolves only within `session.activeTree()` for the most specific `Materialized` leaf node enclosing that physical bit. If no node in the active tree encloses that bit, tree selection and `FieldInspector` are cleared, while the clicked raw bit remains selected in `RawDataView`.
+
+6. **Persistence and Session Reset**:
+   - The UI presentation stack and navigation breadcrumbs are ephemeral in-process states and do not modify `SessionDocument` schema.
+   - Opening a new file resets the UI presentation stack, clears sub-format navigation frames, and returns the view to the root tree.
+
 ---
 
 ### 5. Persistence Boundary
