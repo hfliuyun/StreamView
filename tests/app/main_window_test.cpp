@@ -499,6 +499,279 @@ private slots:
         QCOMPARE(treeView->model()->rowCount(), 0);
         QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("partial")));
     }
+
+    void navigatesIntoAacAscViaDoubleClickAndReturnsViaBackButton() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        auto* rawView = window.findChild<RawDataView*>(QStringLiteral("rawDataView"));
+        auto* backButton = window.findChild<QToolButton*>(QStringLiteral("navigationBackButton"));
+        auto* breadcrumbLabel = window.findChild<QLabel*>(QStringLiteral("navigationBreadcrumbLabel"));
+        auto* inspector = window.findChild<QWidget*>(QStringLiteral("fieldInspector"));
+
+        QVERIFY(treeView != nullptr);
+        QVERIFY(rawView != nullptr);
+        QVERIFY(backButton != nullptr);
+        QVERIFY(breadcrumbLabel != nullptr);
+        QVERIFY(inspector != nullptr);
+
+        // Initially at root
+        QVERIFY(!backButton->isEnabled());
+        QCOMPARE(backButton->toolTip(), QStringLiteral("Return to parent"));
+        QCOMPARE(backButton->accessibleName(), QStringLiteral("Return to parent format"));
+
+        QModelIndex ascIndex;
+        QTRY_VERIFY((ascIndex = findIndexByName(*treeView->model(), QStringLiteral("asc_bytes1"))).isValid());
+
+        // Double click on asc_bytes1
+        Q_EMIT treeView->doubleClicked(ascIndex);
+
+        // Sub-format entered
+        QVERIFY(backButton->isEnabled());
+        QVERIFY(breadcrumbLabel->text().contains(QStringLiteral("audio.aac.asc")));
+
+        // Analysis tree model switched to ASC tree
+        const QModelIndex aotIndex = findIndexByName(*treeView->model(), QStringLiteral("audio_object_type"));
+        QVERIFY(aotIndex.isValid());
+        treeView->setCurrentIndex(aotIndex);
+
+        // Field inspector updated
+        auto* inspectorValue = inspector->findChild<QLabel*>(QStringLiteral("fieldInspectorValue"));
+        QVERIFY(inspectorValue != nullptr);
+        QCOMPARE(inspectorValue->text(), QStringLiteral("2"));
+
+        // Raw highlight covers audio_object_type (5 bits: 0xF8) at byte 146
+        const auto selectedBits = rawView->model()->data(
+            rawView->model()->index(146 / 16, RawDataModel::FirstByte + (146 % 16)),
+            RawDataModel::SelectedBitsRole).toUInt();
+        QCOMPARE(selectedBits, 0xF8U);
+
+        // Click back button to return to root
+        backButton->click();
+
+        // Restored to root MP4
+        QVERIFY(!backButton->isEnabled());
+        const QModelIndex restoredAscIndex = treeView->currentIndex();
+        QVERIFY(restoredAscIndex.isValid());
+        QCOMPARE(treeView->model()->data(restoredAscIndex).toString(), QStringLiteral("asc_bytes1"));
+    }
+
+    void navigatesIntoH264SpsAndPpsWithContextSharingViaKeyboard() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_avc1_avcC.mp4");
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        auto* backButton = window.findChild<QToolButton*>(QStringLiteral("navigationBackButton"));
+        auto* breadcrumbLabel = window.findChild<QLabel*>(QStringLiteral("navigationBreadcrumbLabel"));
+        QVERIFY(treeView != nullptr);
+        QVERIFY(backButton != nullptr);
+        QVERIFY(breadcrumbLabel != nullptr);
+
+        // 1. Find and enter SPS NAL via Enter key
+        QModelIndex spsIndex;
+        QTRY_VERIFY((spsIndex = findIndexByName(*treeView->model(), QStringLiteral("sequenceParameterSetNALUnit[0]"))).isValid());
+        treeView->setCurrentIndex(spsIndex);
+        QTest::keyClick(treeView, Qt::Key_Return);
+
+        // Child tree has SequenceParameterSetRbsp
+        QVERIFY(backButton->isEnabled());
+        QVERIFY(breadcrumbLabel->text().contains(QStringLiteral("video.h264.nal")));
+        const QModelIndex spsRbspIndex = findIndexByName(*treeView->model(), QStringLiteral("SequenceParameterSetRbsp"));
+        QVERIFY(spsRbspIndex.isValid());
+
+        // 2. Return to MP4 root
+        backButton->click();
+        QVERIFY(!backButton->isEnabled());
+        QCOMPARE(treeView->model()->data(treeView->currentIndex()).toString(), QStringLiteral("sequenceParameterSetNALUnit[0]"));
+
+        // 3. Find and enter PPS NAL via Enter key (imports SPS context)
+        const QModelIndex ppsIndex = findIndexByName(*treeView->model(), QStringLiteral("pictureParameterSetNALUnit[0]"));
+        QVERIFY(ppsIndex.isValid());
+        treeView->setCurrentIndex(ppsIndex);
+        QTest::keyClick(treeView, Qt::Key_Enter);
+
+        // Child tree has PictureParameterSetRbsp
+        QVERIFY(backButton->isEnabled());
+        const QModelIndex ppsRbspIndex = findIndexByName(*treeView->model(), QStringLiteral("PictureParameterSetRbsp"));
+        QVERIFY(ppsRbspIndex.isValid());
+
+        // 4. Return to MP4 root
+        backButton->click();
+        QVERIFY(!backButton->isEnabled());
+        QCOMPARE(treeView->model()->data(treeView->currentIndex()).toString(), QStringLiteral("pictureParameterSetNALUnit[0]"));
+    }
+
+    void navigationFailureLeavesStateUnchanged() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        auto* backButton = window.findChild<QToolButton*>(QStringLiteral("navigationBackButton"));
+        auto* breadcrumbLabel = window.findChild<QLabel*>(QStringLiteral("navigationBreadcrumbLabel"));
+        QVERIFY(treeView != nullptr);
+        QVERIFY(backButton != nullptr);
+        QVERIFY(breadcrumbLabel != nullptr);
+
+        // Find a node without target format (e.g. size)
+        QModelIndex sizeIndex;
+        QTRY_VERIFY((sizeIndex = findIndexByName(*treeView->model(), QStringLiteral("size"))).isValid());
+        treeView->setCurrentIndex(sizeIndex);
+
+        // Double click on non-target node
+        Q_EMIT treeView->doubleClicked(sizeIndex);
+
+        // State remains at root
+        QVERIFY(!backButton->isEnabled());
+        QCOMPARE(treeView->currentIndex(), sizeIndex);
+    }
+
+    void rootReturnIsDeterministicNoOp() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+
+        auto* backButton = window.findChild<QToolButton*>(QStringLiteral("navigationBackButton"));
+        QVERIFY(backButton != nullptr);
+        QVERIFY(!backButton->isEnabled());
+
+        // Calling back button at root is no-op
+        backButton->click();
+        QVERIFY(!backButton->isEnabled());
+    }
+
+    void supportsRepeatedEnterAndReturnCyclesWithoutStaleIndices() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        auto* backButton = window.findChild<QToolButton*>(QStringLiteral("navigationBackButton"));
+        QVERIFY(treeView != nullptr);
+        QVERIFY(backButton != nullptr);
+
+        for (int cycle = 0; cycle < 3; ++cycle) {
+            QModelIndex ascIndex;
+            QTRY_VERIFY((ascIndex = findIndexByName(*treeView->model(), QStringLiteral("asc_bytes1"))).isValid());
+            Q_EMIT treeView->doubleClicked(ascIndex);
+            QVERIFY(backButton->isEnabled());
+
+            const QModelIndex aotIndex = findIndexByName(*treeView->model(), QStringLiteral("audio_object_type"));
+            QVERIFY(aotIndex.isValid());
+
+            backButton->click();
+            QVERIFY(!backButton->isEnabled());
+        }
+    }
+
+    void bidirectionalCoordinateSelectionPreservesDisjointSpansInActiveTree() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        auto* rawView = window.findChild<RawDataView*>(QStringLiteral("rawDataView"));
+        auto* backButton = window.findChild<QToolButton*>(QStringLiteral("navigationBackButton"));
+        QVERIFY(treeView != nullptr);
+        QVERIFY(rawView != nullptr);
+        QVERIFY(backButton != nullptr);
+
+        // Enter ASC
+        QModelIndex ascIndex;
+        QTRY_VERIFY((ascIndex = findIndexByName(*treeView->model(), QStringLiteral("asc_bytes1"))).isValid());
+        Q_EMIT treeView->doubleClicked(ascIndex);
+        QVERIFY(backButton->isEnabled());
+
+        // 1. Click bit in raw view at bit offset 1173 (inside ASC sampling_frequency_index)
+        Q_EMIT rawView->sourceBitSelected(1173);
+
+        const QModelIndex currentIndex = treeView->currentIndex();
+        QVERIFY(currentIndex.isValid());
+        QCOMPARE(treeView->model()->data(currentIndex).toString(), QStringLiteral("sampling_frequency_index"));
+
+        // 2. Click bit in raw view outside child tree (e.g. bit 0 of MP4)
+        Q_EMIT rawView->sourceBitSelected(0);
+        // Tree selection is cleared because bit 0 is not in the active child tree
+        QVERIFY(!treeView->currentIndex().isValid());
+        // Raw view still has selection
+        QCOMPARE(rawView->model()->data(rawView->model()->index(0, RawDataModel::FirstByte),
+                                       RawDataModel::SelectedBitsRole).toUInt(), 0x80U);
+    }
+
+    void openingNewFileResetsNavigationState() {
+        const QString firstPath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        const QString secondPath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_avc1_avcC.mp4");
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(firstPath, &errorMessage), qPrintable(errorMessage));
+
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        auto* backButton = window.findChild<QToolButton*>(QStringLiteral("navigationBackButton"));
+        auto* breadcrumbLabel = window.findChild<QLabel*>(QStringLiteral("navigationBreadcrumbLabel"));
+        QVERIFY(treeView != nullptr);
+        QVERIFY(backButton != nullptr);
+        QVERIFY(breadcrumbLabel != nullptr);
+
+        // Enter ASC
+        QModelIndex ascIndex;
+        QTRY_VERIFY((ascIndex = findIndexByName(*treeView->model(), QStringLiteral("asc_bytes1"))).isValid());
+        Q_EMIT treeView->doubleClicked(ascIndex);
+        QVERIFY(backButton->isEnabled());
+
+        // Open second file
+        QVERIFY2(window.openMediaSource(secondPath, &errorMessage), qPrintable(errorMessage));
+
+        // Navigation state reset
+        QVERIFY(!backButton->isEnabled());
+        QCOMPARE(window.currentSourceIdentity(), secondPath);
+    }
+
+    void layoutAndVisualFitAtDifferentResolutions() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+
+        auto* backButton = window.findChild<QToolButton*>(QStringLiteral("navigationBackButton"));
+        auto* breadcrumbLabel = window.findChild<QLabel*>(QStringLiteral("navigationBreadcrumbLabel"));
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        auto* inspector = window.findChild<QWidget*>(QStringLiteral("fieldInspector"));
+        auto* rawView = window.findChild<RawDataView*>(QStringLiteral("rawDataView"));
+
+        QVERIFY(backButton != nullptr);
+        QVERIFY(breadcrumbLabel != nullptr);
+        QVERIFY(treeView != nullptr);
+        QVERIFY(inspector != nullptr);
+        QVERIFY(rawView != nullptr);
+
+        // Test 900x600
+        window.resize(900, 600);
+        window.show();
+        QTest::qWait(50);
+        QVERIFY(backButton->isVisible());
+        QVERIFY(breadcrumbLabel->isVisible());
+        QVERIFY(treeView->isVisible());
+        QVERIFY(inspector->isVisible());
+        QVERIFY(rawView->isVisible());
+
+        // Test 1280x800
+        window.resize(1280, 800);
+        QTest::qWait(50);
+        QVERIFY(backButton->isVisible());
+        QVERIFY(breadcrumbLabel->isVisible());
+        QVERIFY(treeView->isVisible());
+        QVERIFY(inspector->isVisible());
+        QVERIFY(rawView->isVisible());
+    }
 };
 
 QTEST_MAIN(MainWindowTest)

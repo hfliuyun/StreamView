@@ -9,6 +9,8 @@
 #include <cstdint>
 class QTreeView;
 class QModelIndex;
+class QToolButton;
+class QLabel;
 
 namespace streamview::app {
 
@@ -28,8 +30,13 @@ public:
                                        QString* errorMessage = nullptr);
     [[nodiscard]] QString currentSourceIdentity() const;
 
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 private slots:
     void openFile();
+    void returnToParentFormat();
+    void onTreeDoubleClicked(const QModelIndex& index);
 
 private:
     void setupMenus();
@@ -42,13 +49,19 @@ private:
     void pollAnalysisCache(quint64 generation);
     void publishAnalysisStatus(AnalysisBatchStatus status,
                                const QString& errorMessage);
+    void enterChildFormatOnCurrentNode();
+    void updateNavigationUI();
+
     QTreeView* analysisTreeView_ = nullptr;
     AnalysisTreeModel* analysisModel_ = nullptr;
+    QToolButton* navigationBackButton_ = nullptr;
+    QLabel* navigationBreadcrumbLabel_ = nullptr;
     FieldInspector* fieldInspector_ = nullptr;
     RawDataView* rawDataView_ = nullptr;
     SourceSelection sourceSelection_;
 
     std::unique_ptr<AnalysisSession> session_;
+    rules::RulePackageCatalog catalog_;
     AnalysisSessionCacheOptions cacheOptions_;
     quint64 analysisGeneration_ = 0;
     bool rawLoaded_ = true;

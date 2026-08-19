@@ -4,17 +4,26 @@
 #include "field_inspector.h"
 #include "raw_data_view.h"
 
+#include <streamview/rules/aac_adts_analyzer.h>
+#include <streamview/rules/h264_annex_b_analyzer.h>
+#include <streamview/rules/mp4_isobmff_analyzer.h>
+
 #include <QAction>
+#include <QBoxLayout>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QHeaderView>
 #include <QItemSelectionModel>
+#include <QKeyEvent>
 #include <QKeySequence>
+#include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QSignalBlocker>
 #include <QStatusBar>
+#include <QStyle>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeView>
 
 #include <utility>
@@ -34,6 +43,19 @@ MainWindow::MainWindow(AnalysisSessionCacheOptions cacheOptions, QWidget* parent
     : QMainWindow(parent), cacheOptions_(std::move(cacheOptions)) {
     setWindowTitle(tr("StreamView"));
     resize(1280, 800);
+
+    auto aac = rules::loadAacAdtsRulePackage();
+    if (aac.succeeded() && aac.package) {
+        static_cast<void>(catalog_.registerPackage(std::move(*aac.package)));
+    }
+    auto h264 = rules::loadH264AnnexBRulePackage();
+    if (h264.succeeded() && h264.package) {
+        static_cast<void>(catalog_.registerPackage(std::move(*h264.package)));
+    }
+    auto mp4 = rules::loadMp4IsobmffRulePackage();
+    if (mp4.succeeded() && mp4.package) {
+        static_cast<void>(catalog_.registerPackage(std::move(*mp4.package)));
+    }
 
     rawDataView_ = new RawDataView(this);
     setCentralWidget(rawDataView_);
@@ -58,7 +80,36 @@ void MainWindow::setupDocks() {
     auto* analysisDock = new QDockWidget(tr("Analysis Tree"), this);
     analysisDock->setObjectName(QStringLiteral("analysisTreeDock"));
 
-    analysisTreeView_ = new QTreeView(analysisDock);
+    auto* treeContainer = new QWidget(analysisDock);
+    auto* treeLayout = new QVBoxLayout(treeContainer);
+    treeLayout->setContentsMargins(0, 0, 0, 0);
+    treeLayout->setSpacing(2);
+
+    auto* navBar = new QWidget(treeContainer);
+    navBar->setObjectName(QStringLiteral("analysisTreeNavBar"));
+    auto* navLayout = new QHBoxLayout(navBar);
+    navLayout->setContentsMargins(4, 2, 4, 2);
+    navLayout->setSpacing(6);
+
+    navigationBackButton_ = new QToolButton(navBar);
+    navigationBackButton_->setObjectName(QStringLiteral("navigationBackButton"));
+    navigationBackButton_->setIcon(style()->standardIcon(QStyle::SP_ArrowBack));
+    navigationBackButton_->setToolTip(tr("Return to parent"));
+    navigationBackButton_->setAccessibleName(tr("Return to parent format"));
+    navigationBackButton_->setEnabled(false);
+    navigationBackButton_->setAutoRaise(true);
+    connect(navigationBackButton_, &QToolButton::clicked,
+            this, &MainWindow::returnToParentFormat);
+    navLayout->addWidget(navigationBackButton_);
+
+    navigationBreadcrumbLabel_ = new QLabel(navBar);
+    navigationBreadcrumbLabel_->setObjectName(QStringLiteral("navigationBreadcrumbLabel"));
+    navigationBreadcrumbLabel_->setText(QString());
+    navLayout->addWidget(navigationBreadcrumbLabel_, 1);
+
+    treeLayout->addWidget(navBar);
+
+    analysisTreeView_ = new QTreeView(treeContainer);
     analysisTreeView_->setObjectName(QStringLiteral("analysisTreeView"));
     analysisModel_ = new AnalysisTreeModel(this);
     analysisTreeView_->setModel(analysisModel_);
@@ -67,11 +118,17 @@ void MainWindow::setupDocks() {
     analysisTreeView_->setSelectionMode(QAbstractItemView::SingleSelection);
     analysisTreeView_->setUniformRowHeights(true);
     analysisTreeView_->header()->setStretchLastSection(true);
+    analysisTreeView_->installEventFilter(this);
+
     connect(analysisTreeView_->selectionModel(), &QItemSelectionModel::currentChanged,
             this, [this](const QModelIndex& current, const QModelIndex&) {
                 selectAnalysisNode(current);
             });
-    analysisDock->setWidget(analysisTreeView_);
+    connect(analysisTreeView_, &QTreeView::doubleClicked,
+            this, &MainWindow::onTreeDoubleClicked);
+
+    treeLayout->addWidget(analysisTreeView_, 1);
+    analysisDock->setWidget(treeContainer);
     addDockWidget(Qt::LeftDockWidgetArea, analysisDock);
 
     // --- Field Inspector dock (right) ---
@@ -137,6 +194,8 @@ bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
     for (int i = 0; i < AnalysisTreeModel::ColumnCount; ++i) {
         analysisTreeView_->resizeColumnToContents(i);
     }
+
+    updateNavigationUI();
 
     if (errorMessage != nullptr) {
         errorMessage->clear();
@@ -246,6 +305,117 @@ QString MainWindow::currentSourceIdentity() const {
     return session_ ? session_->identity() : QString();
 }
 
+bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == analysisTreeView_ && event->type() == QEvent::KeyPress) {
+        auto* keyEvent = static_cast<QKeyEvent*>(event);
+        if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter) {
+            enterChildFormatOnCurrentNode();
+            return true;
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::onTreeDoubleClicked(const QModelIndex& index) {
+    if (index.isValid()) {
+        analysisTreeView_->setCurrentIndex(index);
+    }
+    enterChildFormatOnCurrentNode();
+}
+
+void MainWindow::enterChildFormatOnCurrentNode() {
+    if (!session_) {
+        return;
+    }
+    const QModelIndex currentIndex = analysisTreeView_->currentIndex();
+    if (!currentIndex.isValid()) {
+        return;
+    }
+    const auto nodeId = analysisModel_->nodeIdAt(currentIndex);
+    if (!nodeId) {
+        return;
+    }
+    const auto node = session_->activeTree().node(*nodeId);
+    if (!node || !node->metadata().targetFormat.has_value() ||
+        node->metadata().targetFormat->trimmed().isEmpty()) {
+        return;
+    }
+
+    const auto navResult = session_->enterChildFormat(*nodeId, catalog_);
+    if (!navResult.succeeded()) {
+        statusBar()->showMessage(tr("Cannot enter sub-format: %1").arg(navResult.errorMessage));
+        return;
+    }
+
+    analysisModel_->resetFromTree(session_->activeTree());
+    analysisModel_->updateFromTree(session_->activeTree());
+
+    if (navResult.childRootStructureNodeId.has_value()) {
+        const QModelIndex childRootIndex =
+            analysisModel_->indexForNodeId(*navResult.childRootStructureNodeId);
+        if (childRootIndex.isValid()) {
+            analysisTreeView_->setCurrentIndex(childRootIndex);
+            selectAnalysisNode(childRootIndex);
+        }
+    } else {
+        clearSourceSelection();
+        fieldInspector_->clear();
+    }
+
+    analysisTreeView_->expandToDepth(1);
+    updateNavigationUI();
+}
+
+void MainWindow::returnToParentFormat() {
+    if (!session_ || !session_->canReturnToParent()) {
+        return;
+    }
+
+    const auto retResult = session_->returnToParent();
+    if (retResult.status == AnalysisSessionReturnStatus::Returned) {
+        analysisModel_->resetFromTree(session_->activeTree());
+        analysisModel_->updateFromTree(session_->activeTree());
+
+        if (retResult.restoredParentTargetNodeId.has_value()) {
+            const QModelIndex parentIndex =
+                analysisModel_->indexForNodeId(*retResult.restoredParentTargetNodeId);
+            if (parentIndex.isValid()) {
+                for (QModelIndex ancestor = parentIndex.parent(); ancestor.isValid();
+                     ancestor = ancestor.parent()) {
+                    analysisTreeView_->expand(ancestor);
+                }
+                analysisTreeView_->setCurrentIndex(parentIndex);
+                selectAnalysisNode(parentIndex);
+            }
+        } else {
+            clearSourceSelection();
+            fieldInspector_->clear();
+        }
+
+        updateNavigationUI();
+    }
+}
+
+void MainWindow::updateNavigationUI() {
+    if (!session_) {
+        navigationBackButton_->setEnabled(false);
+        navigationBreadcrumbLabel_->setText(QString());
+        return;
+    }
+
+    navigationBackButton_->setEnabled(session_->canReturnToParent());
+
+    const QString rootFormat = session_->ruleIdentity().entryPointId().isEmpty()
+                                   ? session_->identity()
+                                   : session_->ruleIdentity().entryPointId();
+    if (session_->navigationDepth() == 0) {
+        navigationBreadcrumbLabel_->setText(rootFormat);
+    } else if (const auto* frame = session_->currentNavigationFrame()) {
+        navigationBreadcrumbLabel_->setText(
+            QStringLiteral("%1 > %2").arg(rootFormat, frame->targetFormat));
+    }
+}
+
 void MainWindow::selectAnalysisNode(const QModelIndex& current) {
     if (!session_) {
         fieldInspector_->clear();
@@ -253,7 +423,7 @@ void MainWindow::selectAnalysisNode(const QModelIndex& current) {
         return;
     }
     const auto nodeId = analysisModel_->nodeIdAt(current);
-    const auto node = nodeId ? session_->tree().node(*nodeId) : std::nullopt;
+    const auto node = nodeId ? session_->activeTree().node(*nodeId) : std::nullopt;
     if (!node) {
         fieldInspector_->clear();
         clearSourceSelection();
@@ -286,7 +456,7 @@ void MainWindow::selectSourceBit(quint64 absoluteBitOffset) {
     selection.sourceSpans = {*selectedSpan};
     setSourceSelection(std::move(selection));
 
-    const auto nodeId = session_->tree().mostSpecificMaterializedNodeAt(
+    const auto nodeId = session_->activeTree().mostSpecificMaterializedNodeAt(
         core::SourceBitAddress(absoluteBitOffset));
     const QModelIndex nodeIndex =
         nodeId ? analysisModel_->indexForNodeId(*nodeId) : QModelIndex{};
@@ -307,7 +477,7 @@ void MainWindow::selectSourceBit(quint64 absoluteBitOffset) {
             nodeIndex, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
         analysisTreeView_->scrollTo(nodeIndex, QAbstractItemView::PositionAtCenter);
     }
-    const auto node = session_->tree().node(*nodeId);
+    const auto node = session_->activeTree().node(*nodeId);
     if (node) {
         fieldInspector_->setNode(*node);
     }
