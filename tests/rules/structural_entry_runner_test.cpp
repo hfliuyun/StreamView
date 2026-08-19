@@ -1410,21 +1410,29 @@ void StructuralEntryRunnerTest::executesOfficialH264StandaloneNalWithEmulationPr
     QCOMPARE(sarWidth->value().toULongLong(), quint64{0});
     QCOMPARE(sarHeight->value().toULongLong(), quint64{1});
 
-    // Excluded span verification: ensure 0x03 emulation prevention byte does not forge physical coordinates
+    // The hand-built EBSP contains one inserted 0x03 at physical byte 11. The mapper's
+    // output offset is relative to the transformed payload, excluding the NAL header.
     const auto& excluded = res.execution.excludedSpans.front();
     QCOMPARE(excluded.sourceSpan.bitLength(), quint64{8});
-    const quint64 excludedOffset = excluded.sourceSpan.start().absoluteBitOffset();
-    QVERIFY(excludedOffset >= 8 && excludedOffset < totalBits);
+    QCOMPARE(excluded.sourceSpan.start().absoluteBitOffset(), quint64{88});
+    QCOMPARE(excluded.outputBitOffset, quint64{80});
 
-    // Logical lengths are exactly 16 bits each
+    // sar_width ends immediately before the exclusion. sar_height spans its boundary,
+    // so it must retain two physical source spans without including the 0x03 byte.
+    QCOMPARE(sarWidth->location()->logicalRange().start().bitOffset(), quint64{61});
     QCOMPARE(sarWidth->location()->logicalRange().bitLength(), quint64{16});
-    QCOMPARE(sarHeight->location()->logicalRange().bitLength(), quint64{16});
+    QCOMPARE(sarWidth->location()->sourceSpans().size(), std::size_t{1});
+    QCOMPARE(sarWidth->location()->sourceSpans().front().start().absoluteBitOffset(),
+             quint64{69});
+    QCOMPARE(sarWidth->location()->sourceSpans().front().bitLength(), quint64{16});
 
-    // The fields properly map across the source span containing the excluded 0x03 byte
-    const quint64 sarWidthStart = sarWidth->location()->sourceSpans().front().start().absoluteBitOffset();
-    const quint64 sarHeightEnd = sarHeight->location()->sourceSpans().back().endExclusive().absoluteBitOffset();
-    QVERIFY(sarWidthStart < excludedOffset);
-    QVERIFY(sarHeightEnd > excludedOffset);
+    QCOMPARE(sarHeight->location()->logicalRange().start().bitOffset(), quint64{77});
+    QCOMPARE(sarHeight->location()->logicalRange().bitLength(), quint64{16});
+    QCOMPARE(sarHeight->location()->sourceSpans().size(), std::size_t{2});
+    QCOMPARE(sarHeight->location()->sourceSpans().at(0).start().absoluteBitOffset(), quint64{85});
+    QCOMPARE(sarHeight->location()->sourceSpans().at(0).bitLength(), quint64{3});
+    QCOMPARE(sarHeight->location()->sourceSpans().at(1).start().absoluteBitOffset(), quint64{96});
+    QCOMPARE(sarHeight->location()->sourceSpans().at(1).bitLength(), quint64{13});
 }
 
 QTEST_MAIN(StructuralEntryRunnerTest)
