@@ -83,7 +83,8 @@
    - `TargetName` 必须与 `program.structs` 中的已声明结构体（或 `program.scans` 中的扫描）匹配。
    - `controllerFieldName` 必须是 `TargetName` 中的无符号 bits 字段。
    - 所有 case 目标必须是已声明的有效结构体或 `empty`。
-   - 重复的 case 视为 `DuplicateName` 予以拒绝；缺少目标、非标量 controller、名称二义性和未知 view provider 均为类型化定义失败。
+   - 重复的 case 视为 `DuplicateName` 予以拒绝；缺少目标、非标量 controller 与目标名称二义性均为类型化定义失败。
+   - `viewKind` 是不透明的 DSL 标识符。解析与编译阶段只保留该值，不查询或硬编码 provider 集合；运行时 registry 负责解析，未注册 provider 必须在 payload 解码前 fail closed 并返回 `InvalidDefinition`。
 
 ---
 
@@ -99,14 +100,15 @@
      - *显式 payload 模式*：调用方显式传入 `payloadStructureIndex`、`payloadMapping` 和 `transformProviderId`（保持向后兼容）。
      - *自动 typed-dispatch 模式*：调用方设置 `autoDispatchPayload = true` 并提供 `payloadMapping`。执行器从 `program.payloadDispatch` 和已解码头部 controller 字段值动态解析 payload 结构体与变换 provider。
      - 同时指定显式 `payloadStructureIndex` 与 `autoDispatchPayload = true` 时 fail closed，返回 `InvalidDefinition`。
-     - 在 `program.payloadDispatch` 缺失、`dispatch.scanIndex` 对应元素结构体与 `headerStructureIndex` 不匹配、或缺少 `payloadMapping` 时请求自动分派均 fail closed，返回 `InvalidDefinition`。
+     - 在 `program.payloadDispatch` 缺失、由 `dispatch.targetKind` 与 `dispatch.targetIndex` 解析出的结构体与 `headerStructureIndex` 不匹配、或缺少 `payloadMapping` 时请求自动分派均 fail closed，返回 `InvalidDefinition`。
+     - Sequence 目标解析为其元素结构体；Structure 目标直接解析为自身，并可作为所选结构型 entry 执行，也可作为源文件默认 sequence entry 的元素结构体执行，从而支持 manifest 目标选择而无需复制共享规则源。
 
 2. **Header 阶段**：
    - 头部字段解码到 header child，其 `FieldLocation` 直接映射到输入 `SourceMapping`。
    - header bit length 必须取自 VM 实际消费量。若末尾未字节对齐，必须在任何字节型变换前拒绝。
 
 3. **分派与变换阶段**：
-   - 在自动分派模式下，执行器从已解码的头部字段值中读取 `dispatch.controllerFieldIndex` 处的无符号标量 controller 值。若 controller 字段缺失、未填充或非标量，执行以 `InvalidDefinition` fail closed。
+   - 在自动分派模式下，执行器从已解码的头部字段值中读取 `dispatch.controllerFieldIndex` 处的无符号标量 controller 值。执行器在信任公开或反序列化的 Typed IR 前，必须重新校验该索引仍指向解析后 header 结构体中已声明、无条件的无符号/枚举标量 controller。若字段缺失、未填充、畸形或指向其他字段，执行器将 header 标记为 `Invalid`、产生 `InvalidSyntax` 诊断、恰好回滚一次，并以 `InvalidDefinition` fail closed。
    - Case 决策分支：
      - **结构体分支（Structure case）**：映射到已声明的 payload 结构体索引。执行器使用 Typed IR 中保存的 `dispatch.viewKind` 标识符查询 `PayloadTransformRegistry`，切分剩余逻辑范围，变换载荷输入映射，并解码选中的 payload 结构体。执行结果暴露 `selectedPayloadStructureIndex` 与 `selectedPayloadCaseValue`。
      - **空分支（Empty case）**：映射为无结构体（`empty`）。不解码任何 payload 结构体；执行器直接提交仅包含 header 的事务（`selectedPayloadStructureIndex = std::nullopt`，记录 `selectedPayloadCaseValue`）。
@@ -138,7 +140,10 @@
    - Payload 解码期间遇到 `EndOfSource` / 截断触发 `DslExecutionStatus::TruncatedSource`。
    - 注入故障的 `SourceReadStatus::Error` 触发 `DslExecutionStatus::SourceError`。
    - 取消令牌检查在头部执行前、变换映射前以及 VM 指令循环中进行。
-   - 资源限制拆分为共享复合 instruction/node budget 与 provider inspection budget；两者都要累计、检查溢出。取消和 source error 对当前复合操作均为终态。结构型取消是否可从已提交 prefix 恢复必须有独立合同，不能未经说明继承 Annex-B “已提交 NAL 永不重试”的规则。
+   - 资源限制拆分为共享复合 instruction/node budget 与 provider inspection budget；两者都要累计、检查溢出。取消和 source error 对当前复合操作均为终态。
+   - 只有实际选中结构体分支后才扣减 provider inspection budget。`empty` 或未匹配分支不执行任何 transform inspection，因此即使 session inspection budget 已耗尽也仍可执行。
+   - Transform/context resolver factory 抛出的异常按非法运行时定义处理：runner 捕获异常、将 header 标记为 `Invalid`、恰好回滚一次，并返回 `InvalidDefinition`，不得让异常越过其 API。
+   - 结构型取消是否可从已提交 prefix 恢复必须有独立合同，不能未经说明继承 Annex-B “已提交 NAL 永不重试”的规则。
 
 ---
 
@@ -153,6 +158,7 @@
    - 生产者定义必须暂存，直到消费、导入、依赖 generation 与注册全部成功；payload 失败不得把生产者泄漏进目录。
    - 消费者按 source position 与精确 dependency generation 查找，而不能只依赖调用顺序。缺少或过期的生产者返回 `DependencyUnavailable`；resolver 缺失则是已观察到的独立 `InvalidDefinition`（`src/rules/dsl_vm.cpp:718-743`）。
    - context reset 必须有显式 session clear/replace API。当前固定的 `contextScopeId` 没有 reset 操作，因此 P5i-3b 必须增加该 API，或明确 replacement 是唯一 reset 机制。
+   - 自动分派中的 payload context 包络校验与 resolver 构造，只能在 controller 实际选中结构体分支后、对应 payload VM 启动前进行。未选中分支的 context 要求不得拒绝 `empty` 分支或实际选中的无 context 分支。
 
 ---
 
