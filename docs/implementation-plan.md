@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-4b-R — MainWindow 活动子树发布隔离、完整面包屑与 UI 回归整改
-Next Action: 下发 Task P5j-0（Phase 5 container sample navigation 口径与实际能力差距审计）；未经审计结论不得实现 P5j 后续切片或关闭 Phase 5
-Last Verification: Task P5i-4b-R — Fix SHA `ea61e397c49f8b5bc682037f7bd4f328613cbcd3`; Hosted CI Run `32267561422` (Ubuntu job `96115684523`, Windows job `96115684701`, macOS job `96115685017` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; MainWindowTest `23/23` passed; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
+Last Completed Step: Task P5j-0 — Phase 5 容器样本导航口径与能力差距审计
+Next Action: 主 Agent 复审 P5j-0；未经复审不得开始 P5j-1
+Last Verification: Task P5j-0 — Spec SHA `e5147960ea58a2d109f3e49be88fcb0416ee3c24` (dual-language ADR-0105); Markdown-only skipped hosted CI per ADR-0019; `ctest -R markdown_hygiene` and `git diff --check` passed
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -227,7 +227,14 @@ Blockers: None
   - **Task P5i-2**（能力切片）：可复用映射源视图与格式中立的结构型入口执行器 `StructuralEntryRunner`；以本地结构规则和现有 AAC ASC 入口验证，不修改官方包；
   - **Task P5i-3**（规则切片）：Docs-first 探测独立 H.264 单 NAL 规则形态；可表达时增加 `video.h264.nal` 结构型入口并按真实输出变更升级 `rule.toml`，否则申请独立语言能力切片；验证现有 `org.streamview.aac` `audio.aac.asc` 结构型入口；
   - **Task P5i-4**（会话/UI切片）：`AnalysisSession` 导航栈、双向坐标映射与 `MainWindow` 面包屑/选择集成；
-- **Task P5j**（验收与审计切片）：逐 bit 验收审计、超大 `mdat` 惰性验证与阶段 5 里程碑关闭。
+- **Task P5j**（样本导航、时间线索引与收官切片）：
+  - **Task P5j-0**（规范与差距审计）：双语 ADR-0105 容器样本导航、时间线索引与访问单元执行合同（Markdown-only）；
+  - **Task P5j-1**（规则切片）：官方 MP4 规则包 `org.streamview.mp4` v0.1.4（`stss` 关键帧表与 `ctts` 呈现时间偏移表 DSL 规则）；
+  - **Task P5j-2**（能力/核心切片）：`Mp4SampleTableIndex` 复合时间线与样本索引服务（组合 `stts`、`stsc`、`stsz`/`stz2`、`stco`/`co64`、`stss`、`ctts` 为有界 `SampleDescriptor` 序列）；
+  - **Task P5j-3**（运行时切片）：AVC 长度前缀多 NAL 样本分帧与 AAC 访问单元执行器（`lengthSizeMinusOne + 1` 前缀、多 NAL 聚合、RBSP 转换与 SPS/PPS 上下文继承）；
+  - **Task P5j-4**（会话切片）：`AnalysisSession` 样本导航 API（`enterSample`、`samplesForTrack` 与 `mdat` 坐标投影）；
+  - **Task P5j-5**（UI切片）：`MainWindow` 轨道/样本导航面板、时间线表格、同步关键帧徽标与样本到编解码语法导航集成；
+  - **Task P5j-6**（验证与关闭切片）：100 GB 虚拟稀疏大文件矩阵验证、`ffprobe`/`mediainfo` 参考工具交叉比对、ADR-0103/0105 Accepted 确认与阶段 5 里程碑关闭。
 
 ### 阶段 5 检查清单
 - [x] 支持普通、64 位、size=0 和未知 box；`mdat` 默认 lazy。
@@ -2778,4 +2785,25 @@ Blockers: None
   3. 导航展示修正：MainWindow 维护与成功 enter/return 同步的 presentation breadcrumb format 链，打开新源时清空；Enter/Return 仅在实际目标格式导航被处理时消费；成功进入后若 child root 无法映射则立即语义回退，返回后父目标索引无效则显式清空 selection、inspector 与 raw highlight，避免跨 model reset 的陈旧展示。
   4. 回归验证补强：新增 `pendingRootAnalysisDoesNotReplaceActiveChildTree`，在根 MP4 增量发布期间进入 ASC 并确认后续批次不替换活动子树；H.264 UI 测试直接断言 `num_units_in_tick` 与 `time_scale` 跨两个 `0x03` 防竞争排除字节的物理高亮空洞；布局测试验证导航栏、树、raw view 与两侧 dock 的实际窗口几何不越界、不相交，并验证面包屑文字可容纳；MainWindowTest 为 `23/23`。
   5. 验证结果：本地 dev、ci、sanitize 三套完整 CTest 均 `43/43` passed，sanitize 零报告；四个官方规则均 `Rule OK`；`git diff --check` 与 `markdown_hygiene` 通过；Hosted CI Run `32267561422`：Ubuntu-24.04 / Qt 6.11.1 job `96115684523`、Windows-2022 / Qt 6.10.1 job `96115684701`、macOS-15 / Qt 6.11.1 job `96115685017` 全部 `completed | success`。
-  6. 边界与后续：未修改 AnalysisSession、SessionDocument schema、DSL/runtime、analyzer 或官方规则包。P5i-4b-R 只闭合 `avcC` SPS/PPS 与 `esds` ASC 配置载荷的 UI 导航；不得据此勾选“从 MP4 sample 进入 H.264/AAC”或关闭 Phase 5。Next Action 切换为 Task P5j-0，先审计产品所称 container sample navigation 与实际 `mdat` sample 路由、sample-table 组合、`stss`/`ctts` 和 ffprobe 验收缺口。
+- 2026-08-19：完成 Task P5j-0 —— Phase 5 容器样本导航口径与能力差距审计（双语 ADR-0105，提交 `e5147960ea58a2d109f3e49be88fcb0416ee3c24`）：
+  1. 架构与能力差距审计：
+     - 精确区分 Task P5i 实现的 `moov` 内静态配置头导航（`avcC` SPS/PPS、`esds` ASC）与 PRD §§22, 37, 47 要求的 `mdat` 媒体样本导航；
+     - 明确 MP4 样本是由多张样本表组合而成的逻辑访问单元，其物理位置在 `mdat` 中，需通过复合索引服务解析；
+     - 识别缺失 `stss`（关键帧判定）与 `ctts`（呈现时间偏移计算 $\text{PTS} = \text{DTS} + \text{composition\_offset}$）；
+     - 确立 `stss` 缺省语义：依据 ISO/IEC 14496-12 §8.6.2.1，若 `stss` 缺失则该轨道所有样本均为同步关键帧（`isSyncSample = true`），适用于音频与全 I 帧流；
+     - 确立 `ctts` 必选性：准确呈现含 B 帧视频的 PTS 必须解析 `ctts`；
+     - 规范 AVC 样本分帧合同：`mdat` 中的 AVC 样本为 `lengthSizeMinusOne + 1` 长度前缀的多 NAL 集合，需按长度前缀拆分并继承会话 SPS/PPS 上下文；
+     - 规范 AAC 样本展示层级：v0.1 不展开 Huffman 频谱，以访问单元封装形态展示并直接高亮映射到 `mdat`；
+     - 规范大文件渐进索引、虚拟化 UI（每页 256/1000 样本）、有界内存（远低于 100,000 节点）、取消支持与样本级错误隔离；
+     - 澄清文档一致性：v0.1 `SessionDocument` 持久化根会话属性，导航栈为进程内临时交互状态，子树持久化留待阶段 7；
+     - 决议 ADR-0103 在阶段 5 收官时转为 Accepted。
+  2. 切片规划（P5j-1 至 P5j-6）：
+     - Task P5j-1（规则/MP4）：`org.streamview.mp4` v0.1.4 引入 `stss` 与 `ctts` DSL 规则；
+     - Task P5j-2（规则/核心）：`Mp4SampleTableIndex` 复合样本索引与时间线服务；
+     - Task P5j-3（规则/运行时）：AVC 长度前缀多 NAL 与 AAC 访问单元样本执行器；
+     - Task P5j-4（应用/核心）：`AnalysisSession` 样本导航 API（`enterSample`）与坐标映射；
+     - Task P5j-5（应用/UI）：`MainWindow` 轨道/样本导航面板、时间线表格与面包屑集成；
+     - Task P5j-6（验证/关闭）：阶段 5 大文件矩阵、参考工具比对、ADR-0103/0105 Accepted 确认与阶段 5 收官。
+  3. 严格边界恪守：
+     - 本任务为纯 Markdown 架构审计，未修改任何 C++ 生产代码、测试、规则、rule.toml、fixture 或 CMakeLists；未触碰未跟踪 `scratch/`。
+  终审结论：Task P5j-0 交付完成。Next Action 锁定为“主 Agent 复审 P5j-0；未经复审不得开始 P5j-1”。
