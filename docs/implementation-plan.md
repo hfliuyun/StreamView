@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-3b-6 — 格式中立 Typed Payload Dispatch 自动选择与原子 Compound 执行
-Next Action: 等待主 Agent 复审 Task P5i-3b-6；未经主 Agent 复审不得修改官方 H.264 `.svfmt`/`rule.toml`、不得增加 `video.h264.nal`、不得开始 Task P5i-3c 或 P5i-4 UI
-Last Verification: Task P5i-3b-6 — Docs SHA `77db91a3c75eb1f87965be2f6280436402434688`; Impl SHA `c55f23811d34ba2b0f5cdbba7c309dd449b64d23`; Hosted CI Run `32230524350` (Windows job `95999135180`, Ubuntu job `95999135412`, macOS job `95999135458` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; CompoundStructuralRunnerTest `48/48`; RuleExecutionSessionTest `71/71`; DslIrTest `104/104`; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
+Last Completed Step: Task P5i-3b-6-R — Typed Payload Dispatch 结构目标、会话预算与错误路径审查整改
+Next Action: 主 Agent 复审 Task P5i-3b-6-R；未经复审不得开始 Task P5i-3c，且不得修改官方 H.264 `.svfmt`/`rule.toml`、增加 `video.h264.nal` 或开始 P5i-4 UI
+Last Verification: Task P5i-3b-6-R — Docs SHA `77db91aecf45f6b24be11a7a9350c3bc44d0136d`; repair Impl SHA `64d6864180677d36dbf302fda90b79cf6747e4c2`; Hosted CI Run `32247925853` (Windows job `96052409600`, Ubuntu job `96052409940`, macOS job `96052409855` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; direct Qt totals DslTest `93`, DslIrTest `105`, CompoundStructuralRunnerTest `54`, RuleExecutionSessionTest `76`; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2592,7 +2592,7 @@ Blockers: None
   5. 最终验证：`DslIrTest 103/103`、`RulePackageTest 23/23`、`Mp4IsobmffAnalyzerTest 42/42`；dev、ci、sanitize 三套完整 CTest 均 `43/43`，sanitize 零报告；四个官方规则均 `Rule OK`；`markdown_hygiene` 与 `git diff --check` 通过。Hosted CI Run `32223143530`：Windows-2022 / Qt 6.10.1 job `95977416245`、Ubuntu-24.04 / Qt 6.11.1 job `95977416406`、macOS-15 / Qt 6.11.1 job `95977416421` 全部 success。
   6. 后续门禁核对发现 typed payload execution 尚未闭环：manifest v2 可将 `video.h264.nal` 绑定到现有 `NalUnitHeader`，但 `CompoundRuleExecutionRequest` 仍要求 caller 在 header 执行前传入 `payloadStructureIndex`，无法按已解析 controller field 自动消费 `DslTypedPayloadDispatch`。因此下一步不是官方规则发布，而是 Task P5i-3b-6 capability-only：格式中立地在同一事务、同一累计预算与同一 session context 中完成 header -> typed case selection -> transform -> payload；empty/unhandled case、缺失 controller、取消、预算、失败回滚均须有确定性语义。官方 H.264 包、版本与 P5i-4 UI 继续阻断。
   终审结论：原 Task P5i-3b-5 报告不通过，P5i-3b-5-R 修正后通过。Next Action 切换为 Task P5i-3b-6；其复审通过后才可进入 Task P5i-3c 官方 H.264 Standalone NAL Package Slice。
-- 2026-08-19：完成 Task P5i-3b-6 —— 格式中立 Typed Payload Dispatch 自动选择与原子 Compound 执行（开工基线 `d1e1852dda71fe19e8955284a9e75f0f521b08de`，规范提交 `77db91a3c75eb1f87965be2f6280436402434688`，实现提交 `c55f23811d34ba2b0f5cdbba7c309dd449b64d23`）：
+- 2026-08-19：完成 Task P5i-3b-6 —— 格式中立 Typed Payload Dispatch 自动选择与原子 Compound 执行（开工基线 `d1e1852dda71fe19e8955284a9e75f0f521b08de`，规范提交 `77db91aecf45f6b24be11a7a9350c3bc44d0136d`，实现提交 `c55f23811d34ba2b0f5cdbba7c309dd449b64d23`）：
   1. Docs-first 规范先行：
      - 更新双语 `docs/adr/0104-generic-structural-payload-and-session-context.md` 与 `docs/zh-CN/adr/0104-generic-structural-payload-and-session-context.md`。
      - 明确自动 dispatch 模式（`autoDispatchPayload = true`）与显式 `payloadStructureIndex` 互斥，同时请求时 fail closed 返回 `InvalidDefinition`。
@@ -2609,10 +2609,10 @@ Blockers: None
      - `RuleExecutionSession`（`src/rules/include/streamview/rules/rule_execution_session.h` 与 `src/rules/rule_execution_session.cpp`）：
        - 在 `CompoundRuleExecutionRequest` 末尾追加 `bool autoDispatchPayload = false;`。
        - `runCompound()` 接收 auto-dispatch 请求，注入 `payloadContextResolverFactory`；`onPrepareCommit` 中按 `execRes.selectedPayloadStructureIndex` 动态校验并暂存实际选中 payload 结构的 context import 与 context definition；失败时丢弃暂存并原子回滚。
-  3. 真实 Red 门禁核验：
-     - 在未修改生产代码的基线上挂载 auto-dispatch 测试，捕获编译期成员缺失错误（`autoDispatchPayload`、`selectedPayloadStructureIndex`、`selectedPayloadCaseValue` 缺失）。实现后全部 Green。
-  4. 测试覆盖：
-     - `tests/rules/compound_structural_runner_test.cpp`（46 个具名场景，Qt `48/48`）：
+  3. 真实 Red 门禁核验（由后续 P5i-3b-6-R 审查更正）：
+     - 原实现的 `viewKind` 被错误限制为 `rbsp`，而非运行时注册表可解析的通用标识符；主 Agent 在生产修复前运行新增用例，`DslTest` 为 92 passed / 1 failed、`DslIrTest` 为 103 passed / 1 failed，失败原文为 `The only accepted payload view kind is rbsp`。
+  4. 测试覆盖（由后续 P5i-3b-6-R 审查扩充并以直接执行结果校正）：
+     - `tests/rules/compound_structural_runner_test.cpp`（Qt 直接执行 `54` passed）：
        - `autoDispatchesStructureCaseAndMaterializesHeaderAndPayload`
        - `autoDispatchesDifferentPayloadStructuresBasedOnControllerValue`
        - `autoDispatchesEmptyCaseMaterializingHeaderOnly`
@@ -2622,13 +2622,13 @@ Blockers: None
        - `autoDispatchFailsClosedWhenTransformProviderIsUnknown`
        - `autoDispatchFailsClosedWhenBothExplicitPayloadAndAutoDispatchAreRequested`
        - `autoDispatchRollsBackAtomicallyOnPayloadFailure`
-     - `tests/rules/rule_execution_session_test.cpp`（69 个具名场景，Qt `71/71`）：
+     - `tests/rules/rule_execution_session_test.cpp`（Qt 直接执行 `76` passed）：
        - `compoundAutoDispatchProducerConsumerContextChain`（SPS producer -> PPS consumer 自动分派与上下文链解析）
        - `compoundAutoDispatchPayloadFailureDoesNotPublishHeaderDefinition`（payload 失败回滚且不发布 header definition）
        - `compoundAutoDispatchHooksRunExactlyOnce`（事务 prepare/commit hooks exactly-once 保证）
        - `compoundAutoDispatchAccumulatesSessionLimits`（跨多次 auto-dispatch 调用的 session 预算累计）
-     - `tests/rules/dsl_ir_test.cpp`（102 个具名场景，Qt `104/104`）：
-       - 验证 `DslTypedPayloadDispatch::viewKind` 正确保留 `"rbsp"` 标识符。
+     - `tests/rules/dsl_ir_test.cpp`（Qt 直接执行 `105` passed）：
+       - 验证 `DslTypedPayloadDispatch::viewKind` 正确保留 opaque provider identifier，并同时覆盖结构体与 sequence payload target。
   5. 全量跨平台与矩阵验证：
      - 本地 dev / ci / sanitize 三套完整构建与 CTest 均全量 `43/43` 通过，sanitize 零警告/零报告；
      - 四个官方规则文件（`h264_annex_b.svfmt`、`aac_adts.svfmt`、`aac_asc.svfmt`、`mp4_isobmff.svfmt`）`svtool rule check` 全部 `Rule OK`；
@@ -2644,3 +2644,11 @@ Blockers: None
      - 未在通用 runner/session 中引入任何格式专属逻辑或硬编码分支；
      - 未开始 P5i-4 UI / navigation 工作。
   终审结论：Task P5i-3b-6 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-3b-6；未经复审不得修改官方 H.264 规则、不得升级规则包版本、不得开始 Task P5i-3c 或 P5i-4 UI。
+- 2026-08-19：完成 Task P5i-3b-6-R —— 主 Agent 深审并直接修正 Typed Payload Dispatch 合同（原交付实现 `c55f23811d34ba2b0f5cdbba7c309dd449b64d23`，审查规范提交 `d0ce9ca927b318da81ab1c804720f797d7ac2a3e`、`9a3130d727f7f5616876daa96f6adda0600a135b`，生产与测试修复提交 `64d6864180677d36dbf302fda90b79cf6747e4c2`）：
+  1. 原交付不能直接通过：DSL 只接受 `rbsp` 作为 `viewKind`，违反 ADR-0104 的 registry-based 格式中立合同；payload case 只可引用 scanner sequence，未实现 ADR 所需的直接结构体 target；`compileForTarget()` 未验证 manifest 选定 entry 是否等于 dispatch header，运行时可在错误入口上执行。
+  2. DSL/IR 修正：显式建模 `DslPayloadTargetKind::{Sequence, Structure}`，解析并保留 target 名；`DslTypedPayloadDispatch` 持有 target kind、target index 与 controller field name；`viewKind` 改为 opaque 合法 identifier，由 provider registry 在运行时解析；`compileForTarget()` 对选定 entry 与 dispatch header 强制一致性校验。
+  3. 执行与会话修正：runner 重验可能被外部修改的 controller 元数据，所有无效 controller 和 resolver factory 异常都产生终态、诊断并 exactly-once rollback；session 只对实际选中的 payload case 延迟校验 context，避免未选择 case 影响 empty/unmatched 路径；inspection budget exhaustion 以独立状态传递，保留既有 `maximumInspectedBytes == 0` 的 unlimited 语义。
+  4. 回归覆盖：新增非 `rbsp` opaque view、结构体 target、target-aware header binding、transform 的 truncated/source error/cancelled/limit、resolver exception、empty/unmatched hooks 与 context publication、selected payload 缺失 enclosing span、预算耗尽后 empty 成功而 structure 失败等用例。直接 Qt 结果为 DslTest `93`、DslIrTest `105`、CompoundStructuralRunnerTest `54`、RuleExecutionSessionTest `76` passed。
+  5. 最终验证：四个官方规则均 `Rule OK`；dev、ci、sanitize 完整 CTest 均 `43/43` passed，sanitize 零报告；`markdown_hygiene` 与 `git diff --check` 通过。Hosted CI Run `32247925853`：Windows-2022 / Qt 6.10.1 job `96052409600`、Ubuntu-24.04 / Qt 6.11.1 job `96052409940`、macOS-15 / Qt 6.11.1 job `96052409855` 全部 success。
+  6. 范围确认：未修改官方 `.svfmt` 或 `rule.toml`，未升级任何规则包、未增加 `video.h264.nal`，未引入格式专属 generic-runtime 分支，未进入 P5i-4 UI/navigation，未触及未跟踪 `scratch/`。
+  终审结论：原 Task P5i-3b-6 报告不通过；P5i-3b-6-R 修正后通过。Next Action 锁定为主 Agent 复审 P5i-3b-6-R；未经该复审不得开始 Task P5i-3c。
