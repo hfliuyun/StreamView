@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-4a — AnalysisSession 语义导航栈与格式中立子格式执行
-Next Action: 主 Agent 复审 Task P5i-4a；未经复审不得开始 Task P5i-4b（UI 面包屑与视图集成）
-Last Verification: Task P5i-4a — Docs SHA `33c286a075dcf6654e8e974e64f84c31165a25e6`, `39bb40d9d83dfbc2a2eeffebfd78c3b708cf3112`; Impl SHA `44f14e2bed987d441990b08f3c3bf27ec3539fbb`; Hosted CI Run `32256128078` (Windows job `96078120911`, Ubuntu job `96078121197`, macOS job `96078121199` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; AnalysisSessionTest `32` passed; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
+Last Completed Step: Task P5i-4a-R — AnalysisSession 导航隔离、disjoint context 与失败原子性整改
+Next Action: 下发 Task P5i-4b（UI 面包屑与视图集成）；未经该任务完成及主 Agent 复审不得开始后续切片
+Last Verification: Task P5i-4a-R — Fix SHA `1ba33906f9e4d0836e73e1a09ef90c4aabe7f58f`; Hosted CI Run `32261256503` (Ubuntu job `96094800496`, macOS job `96094800870`, Windows job `96094801009` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; four official rules `Rule OK`; `git diff --check` and `markdown_hygiene` passed
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2728,3 +2728,10 @@ Blockers: None
      - 未开始 Task P5i-4b 或 P5j；
      - 未修改、删除或提交未跟踪 `scratch/`。
   终审结论：Task P5i-4a 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-4a；未经复审不得开始 Task P5i-4b（UI 面包屑与视图集成）。
+- 2026-08-19：完成 Task P5i-4a-R —— 主 Agent 深审并直接整改 AnalysisSession 子格式导航隔离与 disjoint context 合同（原实现 `44f14e2bed987d441990b08f3c3bf27ec3539fbb`，修复提交 `1ba33906f9e4d0836e73e1a09ef90c4aabe7f58f`）：
+  1. 原交付不能直接通过：复合子会话仅按 package id 缓存，多个 entrypoint 或版本可能复用错误 typed program；AnalysisSession 直接 include/注册 H.264 RBSP provider，违反格式中立路由；多段 source mapping 被拼成虚假连续 enclosing span；ContextDirectory 用包络区间判重，错误占用 disjoint gap；失败原子性测试未覆盖 compound 失败后的隐藏 tree/context/session 可复用状态。
+  2. 导航隔离修正：复合会话缓存键改为完整 `RuleEntryPointIdentity::toString()`，包含包身份、版本、内容 hash 与 entrypoint id；新增规则层 `bundledPayloadTransformRegistry()`，由 rules 层拥有 bundled capability，AnalysisSession 仅消费格式中立 registry。
+  3. 坐标与上下文修正：`RuleExecutionRequest` 与 `CompoundRuleExecutionRequest` 追加完整 `enclosingSourceSpans`，保留旧单 span 字段作为兼容回退；上下文定义保存真实 span 集合，映射 containment、依赖排序和 publication 均使用完整集合；ContextDirectory 改为真实 span 两两重叠检查，并按最后一段完成位置维护解析顺序，允许 gap 内合法定义。
+  4. 失败回归补强：新增不同 compound entrypoint program 隔离、disjoint enclosing spans 保真、bundled registry 所有权、Cancelled/ResourceLimit/TruncatedSource/SourceError 导航状态保持，以及 PPS 失败后 SPS producer -> PPS consumer 恢复链测试；失败后 active tree、root node count、navigation depth 与 context publication 均保持原子。
+  5. 验证结果：本地 dev、ci、sanitize 三套完整 CTest 均 `43/43` passed，sanitize 零报告；四个官方规则均 `Rule OK`；`git diff --check` 与 `markdown_hygiene` 通过；Hosted CI Run `32261256503`：Ubuntu-24.04 / Qt 6.11.1 job `96094800496`、macOS-15 / Qt 6.11.1 job `96094800870`、Windows-2022 / Qt 6.10.1 job `96094801009` 全部 `completed | success`。
+  6. 边界保持：未修改官方规则包、`.svfmt`、`rule.toml`、SessionDocument schema 或 MainWindow/UI；未触及未跟踪 `scratch/`。终审结论：Task P5i-4a-R 通过。Next Action 切换为下发 Task P5i-4b，仅实现 UI 面包屑与视图集成。
