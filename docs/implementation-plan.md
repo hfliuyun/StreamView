@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5i-3c — Official H.264 Standalone NAL Package Slice
-Next Action: 主 Agent 复审 Task P5i-3c；未经复审不得开始 Task P5i-4（会话与 UI 导航切片）
-Last Verification: Task P5i-3c — Docs SHA `b3b5553b6cb51dcfbcaec8ae19b88ce83bbdd375`; Impl SHA `df9801d6e693867adaa67058963435b5fed0ff79`; Hosted CI Run `32250400413` (Windows job `96059863302`, Ubuntu job `96059863492`, macOS job `96059863594` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; direct Qt totals StructuralEntryRunnerTest `26`, H264AnnexBAnalyzerTest `174`; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
+Last Completed Step: Task P5i-3c-R — Official H.264 Standalone NAL 坐标证据审查整改
+Next Action: 主 Agent 复审 Task P5i-3c-R；未经复审不得开始 Task P5i-4（会话与 UI 导航切片）
+Last Verification: Task P5i-3c-R — Docs SHA `b3b5553370dda50772c69e4734a6e4416ca8e8f0`; Impl SHA `df9801d6e693867adaa67058963435b5fed0ff79`; repair Test SHA `7ac2fb639f28f1247117dbe58cf1e39c50591566`; Hosted CI Run `32253125757` (Windows job `96068527972`, Ubuntu job `96068528274`, macOS job `96068528228` all success); local dev/ci/sanitize CTest `43/43` passed with zero sanitizer reports; StructuralEntryRunnerTest `26` and H264AnnexBAnalyzerTest `174` passed; official rules `4/4` Rule OK; `git diff --check` and `markdown_hygiene` passed
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2687,3 +2687,10 @@ Blockers: None
      - 未实现 AnalysisSession、导航栈、MainWindow 或 P5i-4 UI；
      - 未修改、删除或提交未跟踪 `scratch/`。
   终审结论：Task P5i-3c 交付完成。Next Action 锁定为等待主 Agent 复审 Task P5i-3c；未经复审不得开始 Task P5i-4（会话与 UI 导航切片）。
+- 2026-08-19：完成 Task P5i-3c-R —— 主 Agent 深审并直接补强 H.264 RBSP 坐标证据（原实现 `df9801d6e693867adaa67058963435b5fed0ff79`，测试修复提交 `7ac2fb639f28f1247117dbe58cf1e39c50591566`）：
+  1. 原交付的功能实现、manifest v2 target 绑定与 SPS/PPS session 测试均正确；但 `executesOfficialH264StandaloneNalWithEmulationPreventionAndExactCoordinates` 只断言字段“跨过”排除字节，未断言排除字节的精确物理/输出 offset，也未断言跨边界字段的完整 source-span 形状。
+  2. 测试整改：明确 fixture 中唯一插入 `0x03` 位于物理 bit `88`、RBSP 输出 bit offset `80`；`sar_width` 精确断言 logical start `61`、单一 physical span `[69, 85)`；`sar_height` 精确断言 logical start `77`、两个 physical spans `[85, 88)` 与 `[96, 109)`，证明排除字节不会伪造源坐标。
+  3. 本地验证：dev、ci、sanitize 三套完整 CTest 均 `43/43` passed，sanitize 零报告；四个官方 `.svfmt` 均 `Rule OK`；`markdown_hygiene` 与 `git diff --check` 通过。
+  4. Hosted CI Run `32253125757`：Windows-2022 / Qt 6.10.1 job `96068527972`、Ubuntu-24.04 / Qt 6.11.1 job `96068528274`、macOS-15 / Qt 6.11.1 job `96068528228` 全部 `completed | success`。
+  5. 范围确认：未修改生产代码、通用 runtime、AAC/MP4 包、H.264 `.svfmt`；未进入 AnalysisSession、导航栈或 P5i-4 UI，未触及未跟踪 `scratch/`。
+  终审结论：原 Task P5i-3c 报告在坐标证据上不完整；P5i-3c-R 修正后通过。Next Action 锁定为主 Agent 复审 Task P5i-3c-R；未经该复审不得开始 Task P5i-4。
