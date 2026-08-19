@@ -18,12 +18,20 @@ namespace streamview::rules {
 
 struct CompoundStructuralExecutionResult;
 
+struct CompoundTransactionFailure final {
+    DslExecutionStatus status = DslExecutionStatus::InvalidDefinition;
+    QString errorMessage;
+};
+
 struct CompoundTransactionHooks final {
     // Hooks run before tree nodes enter their terminal success states. Unexpected
     // exceptions fail the compound operation and trigger best-effort rollback.
     std::function<void(const CompoundStructuralExecutionResult&)> onCommitWithResult;
     std::function<void()> onCommit;
     std::function<void()> onRollback;
+    std::function<std::optional<CompoundTransactionFailure>(
+        const CompoundStructuralExecutionResult&)>
+        onPrepareCommit;
 };
 
 struct CompoundStructuralExecutionRequest final {
@@ -43,8 +51,11 @@ struct CompoundStructuralExecutionRequest final {
 
     DslExecutionOptions options;
     bool requireExactConsumption = true;
+    // Kept as the source-compatible fallback when both phases share one resolver.
     DslContextValueResolver contextValueResolver;
     CompoundTransactionHooks transactionHooks;
+    DslContextValueResolver headerContextValueResolver;
+    DslContextValueResolver payloadContextValueResolver;
 };
 
 struct CompoundStructuralExecutionResult final {
@@ -73,10 +84,9 @@ struct CompoundStructuralExecutionResult final {
 };
 
 class CompoundStructuralRunner final {
-public:
-    [[nodiscard]] static CompoundStructuralExecutionResult execute(
-        const DslTypedProgram& program,
-        const CompoundStructuralExecutionRequest& request);
+  public:
+    [[nodiscard]] static CompoundStructuralExecutionResult
+    execute(const DslTypedProgram& program, const CompoundStructuralExecutionRequest& request);
 };
 
 } // namespace streamview::rules
