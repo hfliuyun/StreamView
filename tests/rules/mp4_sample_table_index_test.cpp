@@ -83,8 +83,11 @@ struct TableFixture final {
     tables.chunkCount = sampleCount / samplesPerChunk;
     tables.timeToSample.push_back(Mp4TimeToSampleRow{sampleCount, sampleDelta});
     tables.sampleDescriptions.push_back(
-        Mp4SampleDescriptionBinding{1, streamview::core::AnalysisNodeId{7},
-                                    QStringLiteral("video.h264.nal")});
+        Mp4SampleDescriptionBinding{.sampleDescriptionIndex = 1,
+                                    .entryNode = streamview::core::AnalysisNodeId{7},
+                                    .targetFormat = QStringLiteral("video.h264.nal"),
+                                    .configurationNode = streamview::core::AnalysisNodeId{8},
+                                    .prefixLengthBytes = 4});
     return tables;
 }
 
@@ -134,12 +137,21 @@ struct MixedRunTrack final {
     tables.sampleToChunk.push_back(Mp4SampleToChunkRow{1, 2, 1});
     tables.sampleToChunk.push_back(Mp4SampleToChunkRow{3, 3, 2});
     tables.timeToSample.push_back(Mp4TimeToSampleRow{10, 1000});
+    // The video entry is length-prefixed and the audio entry is an opaque access
+    // unit, which is how real extraction reports them: presence of a prefix size
+    // is what distinguishes the two framings.
     tables.sampleDescriptions.push_back(
-        Mp4SampleDescriptionBinding{1, streamview::core::AnalysisNodeId{11},
-                                    QStringLiteral("video.h264.nal")});
+        Mp4SampleDescriptionBinding{.sampleDescriptionIndex = 1,
+                                    .entryNode = streamview::core::AnalysisNodeId{11},
+                                    .targetFormat = QStringLiteral("video.h264.nal"),
+                                    .configurationNode = streamview::core::AnalysisNodeId{13},
+                                    .prefixLengthBytes = 4});
     tables.sampleDescriptions.push_back(
-        Mp4SampleDescriptionBinding{2, streamview::core::AnalysisNodeId{12},
-                                    QStringLiteral("audio.aac.asc")});
+        Mp4SampleDescriptionBinding{.sampleDescriptionIndex = 2,
+                                    .entryNode = streamview::core::AnalysisNodeId{12},
+                                    .targetFormat = QStringLiteral("audio.aac.asc"),
+                                    .configurationNode = streamview::core::AnalysisNodeId{14},
+                                    .prefixLengthBytes = std::nullopt});
     return track;
 }
 

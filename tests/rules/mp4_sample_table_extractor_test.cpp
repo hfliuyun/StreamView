@@ -176,9 +176,23 @@ private slots:
         // The video sample entry declares the H.264 target format on its avcC
         // configuration payload.
         QCOMPARE(extracted.tables.sampleDescriptions.size(), std::size_t{1});
-        QCOMPARE(extracted.tables.sampleDescriptions.front().sampleDescriptionIndex, quint32{1});
-        QCOMPARE(extracted.tables.sampleDescriptions.front().targetFormat,
-                 QStringLiteral("video.h264.nal"));
+        const auto& videoBinding = extracted.tables.sampleDescriptions.front();
+        QCOMPARE(videoBinding.sampleDescriptionIndex, quint32{1});
+        QCOMPARE(videoBinding.targetFormat, QStringLiteral("video.h264.nal"));
+
+        // The binding carries the two facts a payload run needs about framing:
+        // which node holds the configuration, and how wide each unit's length
+        // prefix is. The fixture's avcC declares lengthSizeMinusOne == 3.
+        //
+        // The configuration node is the first SPS of the record. It sits inside a
+        // `repeat`, so its name carries the element index the rule appends.
+        QVERIFY(videoBinding.configurationNode.has_value());
+        const auto configurationNode = analyzer_->tree().node(*videoBinding.configurationNode);
+        QVERIFY(configurationNode.has_value());
+        QCOMPARE(configurationNode->name(), QStringLiteral("sequenceParameterSetNALUnit[0]"));
+        QVERIFY(configurationNode->metadata().targetFormat.has_value());
+        QCOMPARE(*configurationNode->metadata().targetFormat, videoBinding.targetFormat);
+        QCOMPARE(videoBinding.prefixLengthBytes, std::optional<quint32>{4});
 
         auto build = Mp4SampleTableIndex::build(extracted.tables, extracted.readers);
         QVERIFY2(build.succeeded(), qUtf8Printable(build.errorMessage));
@@ -241,8 +255,14 @@ private slots:
         QVERIFY(extracted.tables.compositionOffsets.empty());
         QCOMPARE(extracted.tables.timescale, quint32{44100});
         QCOMPARE(extracted.tables.sampleDescriptions.size(), std::size_t{1});
-        QCOMPARE(extracted.tables.sampleDescriptions.front().targetFormat,
-                 QStringLiteral("audio.aac.asc"));
+        const auto& audioBinding = extracted.tables.sampleDescriptions.front();
+        QCOMPARE(audioBinding.targetFormat, QStringLiteral("audio.aac.asc"));
+
+        // The opaque-framing counterpart of the AVC track: an esds declares a
+        // configuration to decode against but no length prefix, so the absent
+        // prefix size is what tells a caller each sample is one access unit.
+        QVERIFY(audioBinding.configurationNode.has_value());
+        QVERIFY(!audioBinding.prefixLengthBytes.has_value());
 
         auto build = Mp4SampleTableIndex::build(extracted.tables, extracted.readers);
         QVERIFY2(build.succeeded(), qUtf8Printable(build.errorMessage));
@@ -608,6 +628,69 @@ private slots:
         QCOMPARE(readers.isSyncSample(2), std::optional<bool>{false});
         QCOMPARE(readers.isSyncSample(4), std::optional<bool>{true});
         QCOMPARE(readers.isSyncSample(7), std::optional<bool>{false});
+    }
+
+    // lengthSizeMinusOne is 2 bits wide, so a 3-byte length prefix is
+    // expressible on the wire even though SamplePayloadFramer accepts only 1, 2,
+    // and 4. Extraction reports the decoded 3 as-is: silently rewriting it to 4
+    // would frame every unit at the wrong offset, and defaulting to absent would
+    // present a length-prefixed track as opaque. Rejecting the value is the
+    // framer's decision, made once, where the legality rule lives.
+    void reportsWireExpressibleThreeByteLengthPrefix() {
+        analyzeFixture(QStringLiteral("mp4_p5j3b_avcc_length_size_3.mp4"));
+
+        const auto extraction =
+            Mp4SampleTableExtractor::extract(*analyzer_, batch_, defaultRequest());
+        QVERIFY2(extraction.extracted(), qUtf8Printable(extraction.errorMessage));
+        QCOMPARE(extraction.tracks.size(), std::size_t{1});
+
+        const auto& binding = extraction.tracks.front().tables.sampleDescriptions.front();
+        QCOMPARE(binding.targetFormat, QStringLiteral("video.h264.nal"));
+        QCOMPARE(binding.prefixLengthBytes, std::optional<quint32>{3});
+
+        // Rejecting the value belongs to the framer, which already refuses a
+        // 3-byte prefix with UnsupportedFraming; see
+        // SamplePayloadRunnerTest::rejectsUnsupportedPrefixLength. Extraction's
+        // duty ends at reporting what the wire declared.
+    }
+
+    // An avcC whose configurationVersion is not 1 stops at the rule's
+    // `unsupported` diagnostic before lengthSizeMinusOne is ever decoded. No
+    // prefix size and no target format are declared, so the binding stays empty
+    // rather than inheriting the 4 bytes that a conformant record would have.
+    void declaresNothingWhenAvccVersionIsUnsupported() {
+        analyzeFixture(QStringLiteral("mp4_p5j3b_avcc_unsupported_version.mp4"));
+
+        const auto extraction =
+            Mp4SampleTableExtractor::extract(*analyzer_, batch_, defaultRequest());
+        QVERIFY2(extraction.extracted(), qUtf8Printable(extraction.errorMessage));
+        QCOMPARE(extraction.tracks.size(), std::size_t{1});
+
+        const auto& bindings = extraction.tracks.front().tables.sampleDescriptions;
+        QCOMPARE(bindings.size(), std::size_t{1});
+        QCOMPARE(bindings.front().sampleDescriptionIndex, quint32{1});
+        QVERIFY(bindings.front().targetFormat.isEmpty());
+        QVERIFY(!bindings.front().configurationNode.has_value());
+        QVERIFY(!bindings.front().prefixLengthBytes.has_value());
+    }
+
+    // An avc1 entry carrying no avcC at all: the entry exists and is bound, but
+    // nothing declares a prefix size. Most AVC files use 4-byte prefixes, which
+    // is exactly why the absence must not be filled in with that value.
+    void declaresNoPrefixWhenEntryHasNoConfiguration() {
+        analyzeFixture(QStringLiteral("mp4_p5j3b_avc1_without_avcc.mp4"));
+
+        const auto extraction =
+            Mp4SampleTableExtractor::extract(*analyzer_, batch_, defaultRequest());
+        QVERIFY2(extraction.extracted(), qUtf8Printable(extraction.errorMessage));
+        QCOMPARE(extraction.tracks.size(), std::size_t{1});
+
+        const auto& bindings = extraction.tracks.front().tables.sampleDescriptions;
+        QCOMPARE(bindings.size(), std::size_t{1});
+        QCOMPARE(bindings.front().sampleDescriptionIndex, quint32{1});
+        QVERIFY(bindings.front().targetFormat.isEmpty());
+        QVERIFY(!bindings.front().configurationNode.has_value());
+        QVERIFY(!bindings.front().prefixLengthBytes.has_value());
     }
 };
 

@@ -185,7 +185,7 @@ With the full implementation and verification of Task P5i (Tasks P5i-1, P5i-2, P
 
 ## Phase 5j Implementation Slice Plan
 
-To ensure incremental verification, isolation of concerns, and rigorous quality gates, Task P5j is decomposed into eight sequential tasks:
+To ensure incremental verification, isolation of concerns, and rigorous quality gates, Task P5j is decomposed into nine sequential tasks:
 
 ```
 [Task P5j-0 (Docs)]: Gap Audit & Architectural Decisions (ADR-0105)
@@ -201,6 +201,9 @@ To ensure incremental verification, isolation of concerns, and rigorous quality 
       │
       ▼
 [Task P5j-3b (Rules/MP4)]: Analysis Tree → Mp4TrackSampleTables Extraction & Reader Binding
+      │
+      ▼
+[Task P5j-3c (Rules)]: Sample Configuration Summary Formatter
       │
       ▼
 [Task P5j-4 (App/Core)]: AnalysisSession Sample Navigation API & Coordinate Projection
@@ -236,16 +239,22 @@ To ensure incremental verification, isolation of concerns, and rigorous quality 
    - Rationale for a separate slice: locating these tables requires box-type or rule-struct discrimination, which is prohibited in `src/core/` and in generic session/UI dispatch, so the bridge must live in the rules layer; and shipping a new capability together with its first consumer is prohibited, so it cannot be folded into P5j-4. It is therefore its own slice with its own commit and its own tests.
    - Files: rules layer (`src/rules/`, exact component boundary decided at implementation time — standalone component or an `Mp4IsobmffAnalyzer` extension), plus its own test file under `tests/rules/`.
    - Constraint: no ISOBMFF box name, box type constant, or MP4 rule struct name may leak into `src/core/` or `src/app/` as part of this slice.
+   - Framing ownership (added during P5j-4 preparation, delivered as a P5j-3b extension): §4 states that `L = lengthSizeMinusOne + 1` comes from `avcC`, but no slice was assigned the job of reading it. `SamplePayloadRunRequest` therefore takes `framing`, `prefixLengthBytes`, and `configurationNode` from its caller, and the only remaining candidate caller was the session — where reading `avcC` would put box semantics in `src/app/`. This extractor is the assigned owner: while collecting each `stsd` binding it also records the configuration node that declares `@target_format` and decodes the prefix width into `Mp4SampleDescriptionBinding::prefixLengthBytes`. Framing follows from presence rather than from a codec-name table: a declared prefix width means length-prefixed samples, its absence means one opaque access unit per sample, so no `targetFormat` string comparison decides framing anywhere. The field is 2 bits wide, so `L = 3` is expressible on the wire while `SamplePayloadFramer` accepts only 1, 2, and 4; the binding reports the decoded value as-is and leaves the legality ruling to the framer, which already answers `UnsupportedFraming`.
 
-6. **Task P5j-4 (AnalysisSession Sample Navigation API)**:
+6. **Task P5j-3c (Sample Configuration Summary)**:
+   - Deliverable: the rules-layer formatter that turns a configuration payload into the human-readable `configurationSummary` that §5's access-unit envelope references (for AAC: sampling frequency, channel configuration, audio object type, decoded from the `AudioSpecificConfig` the `esds` carries).
+   - Rationale for a separate slice: unlike the framing facts above, this summary is not a field of the sample entry. It exists only once the `audio.aac.asc` sub-format has been executed, so producing it is new capability rather than a wider read of tables P5j-3b already walks. Shipping a new capability together with its first consumer is prohibited, so it cannot ride along in P5j-3b or P5j-4.
+   - Files: rules layer plus its own tests. If it turns out to require a new DSL annotation, that is a language-capability change and must be escalated before implementation rather than decided inside the slice.
+
+7. **Task P5j-4 (AnalysisSession Sample Navigation API)**:
    - Deliverable: `AnalysisSession::enterSample(trackId, sampleIndex)`, `samplesForTrack`, sample coordinate projection to `mdat`, sample-frame navigation state, and explicit error mapping/rollback semantics.
    - Files: `src/app/analysis_session.h`, `src/app/analysis_session.cpp`, `tests/app/analysis_session_test.cpp`.
 
-7. **Task P5j-5 (MainWindow Track / Sample Navigation & Timeline UI)**:
+8. **Task P5j-5 (MainWindow Track / Sample Navigation & Timeline UI)**:
    - Deliverable: Track/Sample dock view, virtualized sample table, sync sample badges, double-click / keyboard sample navigation, breadcrumb path `video.mp4 > Track 1 (avc1) > Sample #42 [Sync] > NalUnitHeader`, and bidirectional coordinate highlighting. The UI consumes `SampleDescriptor` plus a rules-layer sample-description binding; core does not carry codec strings.
    - Files: `src/app/main_window.h`, `src/app/main_window.cpp`, `tests/app/main_window_test.cpp`.
 
-8. **Task P5j-6 (Phase 5 Milestone Verification & Closure)**:
+9. **Task P5j-6 (Phase 5 Milestone Verification & Closure)**:
    - Deliverable: Large-file 100 GB virtual sparse verification, reference tool cross-validation, automated offset/timestamp/keyframe fixtures, ADR-0103 and ADR-0105 lifecycle state transition to `Accepted`, and Phase 5 completion signoff in `docs/implementation-plan.md`.
    - Reference tool availability (measured in this environment): `ffprobe` and `ffmpeg` are present; `mediainfo` and `MP4Box` are **not installed**. Cross-validation is therefore specified on `ffprobe` alone, following the ADR-0097 precedent (`ffprobe -v trace` for box structure, `ffprobe -show_packets` for sample offset / timestamp / keyframe ground truth). P5j-6 must not claim a `mediainfo` comparison it cannot run; if a second independent tool is required, its installation is part of that slice's scope and must be reported.
 

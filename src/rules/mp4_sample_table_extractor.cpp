@@ -352,20 +352,44 @@ template <typename RowSink>
     };
 }
 
-/// First target format declared anywhere under a sample description entry.
+/// What one sample description entry declares about its samples' payloads.
+struct SampleEntryDeclaration final {
+    QString targetFormat;
+    std::optional<core::AnalysisNodeId> configurationNode;
+    std::optional<quint32> prefixLengthBytes;
+};
+
+/// Payload declarations found under a sample description entry.
 ///
-/// The declaration sits on a configuration payload nested inside the entry
+/// The declarations sit on a configuration payload nested inside the entry
 /// (`avcC` SPS/PPS bytes, an `esds` AudioSpecificConfig), so the depth is a rule
-/// detail rather than a fixed shape. The search is a bounded pre-order walk and
-/// returns an empty string when the entry declares none.
-[[nodiscard]] QString findTargetFormat(const core::AnalysisTree& tree,
-                                       core::AnalysisNodeId rootId,
-                                       quint64 maximumNodesVisited) {
+/// detail rather than a fixed shape. The search is a bounded pre-order walk that
+/// collects the first target format, the node declaring it, and the length
+/// prefix size of whichever configuration declares one.
+///
+/// The walk does not stop at the target format, because the prefix size is a
+/// sibling field whose position within the configuration is no more fixed than
+/// the configuration's own depth; it stops once both are known. Reading the
+/// prefix size by field name matches how the rest of this file reads named rule
+/// fields, and `lengthSizeMinusOne` is declared by exactly one structure in the
+/// rule package, so a name match under a single entry is unambiguous.
+///
+/// An entry that declares nothing yields a default-constructed result, and so
+/// does exhausting the visit budget: a truncated walk reports no declarations at
+/// all rather than the subset it reached. Returning a partial result would make
+/// a prefix size the walk never got to indistinguishable from one the entry
+/// genuinely omits, which is the difference between length-prefixed and opaque
+/// framing. Declaring nothing keeps a resource limit from silently deciding how
+/// samples are framed.
+[[nodiscard]] SampleEntryDeclaration findSampleEntryDeclaration(const core::AnalysisTree& tree,
+                                                                core::AnalysisNodeId rootId,
+                                                                quint64 maximumNodesVisited) {
+    SampleEntryDeclaration declaration;
     std::vector<core::AnalysisNodeId> pending{rootId};
     quint64 visited = 0;
     while (!pending.empty()) {
         if (visited >= maximumNodesVisited) {
-            return QString();
+            return {};
         }
         ++visited;
 
@@ -376,15 +400,28 @@ template <typename RowSink>
             continue;
         }
         const auto& targetFormat = node->metadata().targetFormat;
-        if (targetFormat.has_value() && !targetFormat->isEmpty()) {
-            return *targetFormat;
+        if (declaration.targetFormat.isEmpty() && targetFormat.has_value()
+            && !targetFormat->isEmpty()) {
+            declaration.targetFormat = *targetFormat;
+            declaration.configurationNode = nodeId;
+        }
+        if (!declaration.prefixLengthBytes.has_value()
+            && node->name() == QStringLiteral("lengthSizeMinusOne")) {
+            bool ok = false;
+            const auto decoded = node->value().toUInt(&ok);
+            if (ok && decoded < std::numeric_limits<quint32>::max()) {
+                declaration.prefixLengthBytes = decoded + 1U;
+            }
+        }
+        if (!declaration.targetFormat.isEmpty() && declaration.prefixLengthBytes.has_value()) {
+            return declaration;
         }
         const auto& children = node->children();
         for (auto it = children.crbegin(); it != children.crend(); ++it) {
             pending.push_back(*it);
         }
     }
-    return QString();
+    return declaration;
 }
 
 /// Child box structures of a container box, or an empty list when the box is not
@@ -434,11 +471,14 @@ enum class TrackOutcome : quint8 {
             return false;
         }
         ++index;
+        auto declaration =
+            findSampleEntryDeclaration(tree, entryStructId, request.maximumSampleEntryNodesVisited);
         Mp4SampleDescriptionBinding binding;
         binding.sampleDescriptionIndex = index;
         binding.entryNode = entryStructId;
-        binding.targetFormat =
-            findTargetFormat(tree, entryStructId, request.maximumSampleEntryNodesVisited);
+        binding.targetFormat = std::move(declaration.targetFormat);
+        binding.configurationNode = declaration.configurationNode;
+        binding.prefixLengthBytes = declaration.prefixLengthBytes;
         out->push_back(std::move(binding));
     }
     return true;
