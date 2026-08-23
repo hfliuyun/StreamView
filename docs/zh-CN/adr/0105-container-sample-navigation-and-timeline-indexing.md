@@ -174,7 +174,7 @@ $$\underbrace{[\text{长度}]_{L\text{ 字节}}[\text{NAL 单元}]}_{\text{NAL }
 
 ## 阶段 5j 实施切片计划
 
-为确保增量验证、职责隔离与严格质量门禁，Task P5j 拆分为八个顺序切片：
+为确保增量验证、职责隔离与严格质量门禁，Task P5j 拆分为九个顺序切片：
 
 ```
 [Task P5j-0 (规范)]: 差距审计与架构决策 (ADR-0105)
@@ -190,6 +190,9 @@ $$\underbrace{[\text{长度}]_{L\text{ 字节}}[\text{NAL 单元}]}_{\text{NAL }
       │
       ▼
 [Task P5j-3b (规则/MP4)]: 分析树 → Mp4TrackSampleTables 提取与读取器绑定
+      │
+      ▼
+[Task P5j-3c (规则)]: 样本配置摘要格式化
       │
       ▼
 [Task P5j-4 (应用/核心)]: AnalysisSession 样本导航 API 与坐标映射
@@ -225,16 +228,22 @@ $$\underbrace{[\text{长度}]_{L\text{ 字节}}[\text{NAL 单元}]}_{\text{NAL }
    - 独立成片的理由：定位这些表必须依赖 box 类型或规则结构名判别，而这在 `src/core/` 与通用 session/UI dispatch 中被禁止，因此桥接层必须位于规则层；同时禁止把新能力与它的第一个消费者塞进同一提交，因此它不能并入 P5j-4。故独立成片，独立提交，独立测试。
    - 涉及文件：规则层（`src/rules/`，具体组件边界在实现时决定——独立组件或 `Mp4IsobmffAnalyzer` 扩展），以及 `tests/rules/` 下自己的测试文件。
    - 约束：本切片不得让任何 ISOBMFF box 名称、box 类型常量或 MP4 规则结构名泄漏进 `src/core/` 或 `src/app/`。
+   - 分帧归属（P5j-4 准备阶段补记，作为 P5j-3b 扩展交付）：§4 规定 `L = lengthSizeMinusOne + 1` 来自 `avcC`，但没有任何切片被指派去读它。于是 `SamplePayloadRunRequest` 的 `framing`、`prefixLengthBytes` 与 `configurationNode` 都取自调用方，而唯一剩下的候选调用方是会话——在那里读 `avcC` 等于把 box 语义放进 `src/app/`。本提取器即为受指派的归属方：在收集每个 `stsd` 绑定的同一次有界遍历中，同时记录声明 `@target_format` 的配置节点，并把前缀宽度解码进 `Mp4SampleDescriptionBinding::prefixLengthBytes`。分帧由「是否存在」而非编解码名表决定：声明了前缀宽度即为长度前缀样本，缺失即为每样本一个不透明访问单元，因此任何位置都不靠 `targetFormat` 字符串比较来决定分帧。该字段宽 2 bit，故 `L = 3` 在线格式上可表达，而 `SamplePayloadFramer` 只接受 1、2、4；绑定按解码值原样上报，合法性裁决留给已经会返回 `UnsupportedFraming` 的分帧器。
 
-6. **Task P5j-4（AnalysisSession 样本导航 API）**：
+6. **Task P5j-3c（样本配置摘要）**：
+   - 交付物：规则层格式化器，把配置载荷转成 §5 访问单元信封引用的人类可读 `configurationSummary`（AAC 为采样频率、声道配置与 audio object type，从 `esds` 携带的 `AudioSpecificConfig` 解码）。
+   - 独立成片的理由：与上述分帧事实不同，该摘要不是 sample entry 的字段。它只在 `audio.aac.asc` 子格式被执行后才存在，因此产出它属于新增能力，而非对 P5j-3b 已遍历表格的更宽读取。禁止把新能力与它的第一个消费者塞进同一提交，故不能并入 P5j-3b 或 P5j-4。
+   - 涉及文件：规则层及其自己的测试。若实现上需要新增 DSL 注解，那属于语言能力变更，必须在实现前升级评审，不得在切片内部自行决定。
+
+7. **Task P5j-4（AnalysisSession 样本导航 API）**：
    - 交付物：`AnalysisSession::enterSample(trackId, sampleIndex)`、`samplesForTrack`、样本坐标到 `mdat` 的投影、样本帧导航状态与明确的错误映射/回滚语义。
    - 涉及文件：`src/app/analysis_session.h`、`src/app/analysis_session.cpp`、`tests/app/analysis_session_test.cpp`。
 
-7. **Task P5j-5（MainWindow 轨道/样本导航与时间线 UI）**：
+8. **Task P5j-5（MainWindow 轨道/样本导航与时间线 UI）**：
    - 交付物：轨道/样本面板、虚拟化样本表格、同步关键帧徽标、双击/键盘样本导航、面包屑路径 `video.mp4 > Track 1 (avc1) > Sample #42 [Sync] > NalUnitHeader` 与双向坐标联动。
    - 涉及文件：`src/app/main_window.h`、`src/app/main_window.cpp`、`tests/app/main_window_test.cpp`。
 
-8. **Task P5j-6（阶段 5 里程碑验证与收官）**：
+9. **Task P5j-6（阶段 5 里程碑验证与收官）**：
    - 交付物：100 GB 虚拟稀疏大文件验证、参考工具比对、offset/timestamp/keyframe 自动化 ground-truth fixture、ADR-0103 与 ADR-0105 正式转为 `Accepted`，在 `docs/implementation-plan.md` 中签署阶段 5 完工。
    - 参考工具可用性（本环境实测）：`ffprobe` 与 `ffmpeg` 存在；`mediainfo` 与 `MP4Box` **未安装**。因此交叉验证只规定基于 `ffprobe`，沿用 ADR-0097 既有先例（`ffprobe -v trace` 取 box 结构，`ffprobe -show_packets` 取 sample offset / 时间戳 / 关键帧 ground truth）。P5j-6 不得声称执行了无法运行的 `mediainfo` 比对；若确需第二个独立工具，其安装属于该切片范围并必须在报告中说明。
 

@@ -128,9 +128,24 @@ def make_mp4a_entry(children: bytes, channel_count: int = 2, sample_rate: int = 
     return make_box("mp4a", hdr + children)
 
 
-def make_avcC_box(sps_list: list, pps_list: list) -> bytes:
+def make_avcC_box(sps_list: list,
+                  pps_list: list,
+                  length_size_minus_one: int = 3,
+                  configuration_version: int = 1) -> bytes:
+    """An AVCDecoderConfigurationRecord.
+
+    `length_size_minus_one` occupies the low 2 bits of the byte whose high 6 bits
+    are reserved 111111b, so every value 0..3 is expressible on the wire and
+    yields a length prefix of 1..4 bytes. `configuration_version` is normally 1;
+    any other value makes the rule stop at that field with an `unsupported`
+    diagnostic, leaving the record's remaining fields undecoded.
+    """
+    if not 0 <= length_size_minus_one <= 3:
+        raise ValueError("length_size_minus_one must fit 2 bits")
+
     num_sps = len(sps_list) & 0x1F
     b5 = 0xE0 | num_sps
+    length_byte = 0xFC | length_size_minus_one
 
     sps_payload = b""
     for sps in sps_list:
@@ -145,7 +160,8 @@ def make_avcC_box(sps_list: list, pps_list: list) -> bytes:
     level = sps_list[0][3]
 
     payload = (
-        struct.pack(">BBBBBB", 1, profile, compat, level, 0xFF, b5)
+        struct.pack(">BBBBBB",
+                    configuration_version, profile, compat, level, length_byte, b5)
         + sps_payload
         + pps_payload
     )
@@ -201,6 +217,38 @@ def video_stsd() -> bytes:
 
 def audio_stsd() -> bytes:
     return make_stsd([make_mp4a_entry(make_esds_box(AAC_ASC))])
+
+
+def video_stsd_length_size_3() -> bytes:
+    """avcC declaring lengthSizeMinusOne == 2, i.e. a 3-byte length prefix.
+
+    The field is 2 bits wide, so 3-byte prefixes are expressible on the wire even
+    though SamplePayloadFramer accepts only 1, 2, and 4. Extraction must report
+    the decoded 3 rather than substitute a legal value.
+    """
+    return make_stsd(
+        [make_avc1_entry(make_avcC_box([AVC_SPS], [AVC_PPS], length_size_minus_one=2))]
+    )
+
+
+def video_stsd_unsupported_avcc_version() -> bytes:
+    """avcC declaring configurationVersion 2.
+
+    The rule stops at `unsupported(...)` before reaching lengthSizeMinusOne, so no
+    prefix size is declared and no target format is reached.
+    """
+    return make_stsd(
+        [make_avc1_entry(make_avcC_box([AVC_SPS], [AVC_PPS], configuration_version=2))]
+    )
+
+
+def video_stsd_without_avcc() -> bytes:
+    """An avc1 entry carrying no avcC at all.
+
+    Nothing declares a prefix size, so extraction must leave it absent instead of
+    falling back to the 4-byte default that most AVC files happen to use.
+    """
+    return make_stsd([make_avc1_entry(b"")])
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +583,57 @@ def generate_co64_multichunk() -> Path:
     )
 
 
+def sample_entry_variant(name: str, stsd: bytes, first_byte: int) -> Path:
+    """A minimal complete track whose only variable is its sample entry.
+
+    The tables below are the smallest set `Mp4SampleTableIndex::build()` accepts,
+    so a test asserting on the sample description binding is not also depending on
+    table shape. Extraction must still succeed: what these fixtures vary is what
+    the entry *declares*, not whether the track is usable.
+    """
+    sizes = [40, 50, 60]
+
+    def build_traks(base: int) -> bytes:
+        stbl = make_stbl(
+            stsd,
+            stts_box([(len(sizes), 1000)]),
+            stsc_box([(1, len(sizes), 1)]),
+            stsz_box(0, sizes),
+            stco_box(chunk_offsets(base, sizes, len(sizes))),
+            stss=stss_box([1]),
+        )
+        return make_trak(1, 30000, 3000, "vide", stbl)
+
+    return write_fixture(name, assemble(build_traks, sample_bytes(sizes, first_byte)))
+
+
+def generate_length_size_3() -> Path:
+    """An avcC declaring a 3-byte length prefix: expressible but unframeable."""
+    return sample_entry_variant(
+        "mp4_p5j3b_avcc_length_size_3.mp4",
+        video_stsd_length_size_3(),
+        0x31,
+    )
+
+
+def generate_unsupported_avcc_version() -> Path:
+    """An avcC whose configurationVersion the rule refuses to decode."""
+    return sample_entry_variant(
+        "mp4_p5j3b_avcc_unsupported_version.mp4",
+        video_stsd_unsupported_avcc_version(),
+        0x41,
+    )
+
+
+def generate_avc1_without_avcc() -> Path:
+    """An avc1 entry with no configuration record at all."""
+    return sample_entry_variant(
+        "mp4_p5j3b_avc1_without_avcc.mp4",
+        video_stsd_without_avcc(),
+        0x51,
+    )
+
+
 def main() -> None:
     generate_complete_track()
     generate_stss_absent_no_ctts()
@@ -542,6 +641,9 @@ def main() -> None:
     generate_uniform_sample_size()
     generate_stz2_tracks()
     generate_co64_multichunk()
+    generate_length_size_3()
+    generate_unsupported_avcc_version()
+    generate_avc1_without_avcc()
 
 
 if __name__ == "__main__":

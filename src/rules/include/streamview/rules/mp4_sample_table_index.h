@@ -83,6 +83,26 @@ struct Mp4SampleDescriptionBinding final {
     /// Target format the rule declared for this entry, e.g. `video.h264.nal`.
     /// Empty when the entry declares none.
     QString targetFormat;
+    /// Node that declared `targetFormat`: the configuration payload this entry's
+    /// samples decode against, such as the `avcC` SPS bytes or an `esds`
+    /// AudioSpecificConfig. Absent when the entry declares no target format.
+    ///
+    /// ADR-0105 section 5 requires an opaque access unit to reference its
+    /// configuration rather than guess at one, so this is the value a caller
+    /// passes as `SamplePayloadRunRequest::configurationNode`.
+    std::optional<core::AnalysisNodeId> configurationNode;
+    /// Bytes occupied by each unit's length prefix, decoded from whichever
+    /// configuration declares one (`avcC.lengthSizeMinusOne + 1`).
+    ///
+    /// Presence decides framing, not the target format: present means the
+    /// samples of this entry are length-prefixed, absent means each sample is
+    /// one opaque access unit. Framing is therefore derived from a wire fact
+    /// rather than from a table of codec names.
+    ///
+    /// The value is recorded as decoded, so it is 1..4. `SamplePayloadFramer`
+    /// accepts only 1, 2, and 4 and rejects 3 with `UnsupportedFraming`; this
+    /// binding does not substitute a legal value for an illegal one.
+    std::optional<quint32> prefixLengthBytes;
 };
 
 /// On-demand accessors for the tables that carry one entry per sample or chunk.
