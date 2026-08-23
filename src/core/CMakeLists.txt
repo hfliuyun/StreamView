@@ -14,6 +14,7 @@ add_library(streamview_core STATIC
     include/streamview/core/context_directory.h
     include/streamview/core/coordinates.h
     include/streamview/core/paged_cache.h
+    include/streamview/core/sample_descriptor.h
     include/streamview/core/source.h
     include/streamview/core/source_fingerprint.h
     include/streamview/core/source_pager.h
