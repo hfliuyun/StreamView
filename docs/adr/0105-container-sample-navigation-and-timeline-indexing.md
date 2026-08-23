@@ -51,7 +51,7 @@ In StreamView Phase 5, an **MP4 Sample** is defined as:
 > A discrete logical access unit whose physical location and byte extent within the root media source (`mdat`) are derived by evaluating the track's sample tables (`stsc`, `stsz`/`stz2`, `stco`/`co64`), whose decoding and presentation timestamps are derived from `stts` and `ctts`, whose random access capability is derived from `stss`, and whose format semantics are governed by the associated `stsd` sample entry.
 
 - **Prerequisite vs. Final Capability**: Navigating stationary codec configuration payloads (`avcC` / `esds`) in Task P5i was a prerequisite capability slice. Container sample navigation in Task P5j is the definitive completion of Phase 5 container analysis.
-- **Physical Extent**: Every sample resolves to an exact `core::SourceSpan` in the root file. Zero heap data copying is permitted.
+- **Physical Extent**: Every sample resolves to an exact set of `core::SourceSpan` values in the root file (normally exactly one). No heap copy of sample data is permitted.
 
 ---
 
@@ -63,20 +63,42 @@ To decouple sample table indexing from UI presentation and codec execution, the 
 namespace streamview::core {
 
 struct SampleDescriptor final {
-    uint32_t trackId = 0;
-    uint64_t sampleIndex = 0;              // 0-based sample ordinal within track
-    uint32_t sampleDescriptionIndex = 1;   // 1-based index into stsd entries
-    SourceSpan sourceSpan;                 // Absolute byte span in root media source
-    uint64_t dts = 0;                      // Decoding Time Stamp in timescale units
-    uint64_t pts = 0;                      // Presentation Time Stamp in timescale units
-    uint64_t duration = 0;                 // Sample duration in timescale units
-    uint32_t timescale = 1;                // Track timescale from mdhd
-    bool isSyncSample = true;              // Keyframe / random access point
-    QString targetFormat;                  // e.g. "video.h264.sample", "audio.aac.sample"
+    quint32 trackId = 0;
+    quint64 sampleIndex = 0;                 // 0-based sample ordinal within track
+    quint32 sampleDescriptionIndex = 1;      // 1-based index into stsd entries
+    std::vector<SourceSpan> sourceSpans;     // Absolute span(s) in root media source
+    qint64 dts = 0;                          // Decoding Time Stamp in timescale units
+    qint64 pts = 0;                          // Presentation Time Stamp in timescale units
+    quint64 duration = 0;                    // Sample duration in timescale units
+    quint32 timescale = 1;                   // Track timescale from mdhd
+    bool isSyncSample = true;                // Keyframe / random access point
 };
 
 } // namespace streamview::core
 ```
+
+Three declaration constraints are normative, not stylistic:
+
+1. **`SourceSpan` has no default constructor.** It is factory-constructed through
+   `SourceSpan::create(SourceBitAddress, quint64)` and its constructor is private
+   (`src/core/include/streamview/core/coordinates.h:38-55`), so a bare `SourceSpan sourceSpan;`
+   member does not compile. The declared member is therefore
+   `std::vector<SourceSpan> sourceSpans`, matching the existing core precedent in
+   `ContextDefinitionSpec` and `ContextDefinition`
+   (`src/core/include/streamview/core/context_directory.h:46` and `:54`). A normal sample resolves
+   to exactly one span; the vector form also keeps the project rule that disjoint spans are never
+   collapsed into a continuous envelope.
+2. **Integer spelling follows the core convention.** Core headers use the Qt fixed-width aliases
+   (`quint64` / `quint32` / `qint64`), not `uint64_t` / `int64_t`.
+3. **`SourceSpan` is bit-addressed, not byte-addressed.** `SourceBitAddress` carries an absolute
+   bit offset and `bitLength()` is a bit count, so the indexer must convert sample byte offsets and
+   sizes to bit coordinates when constructing spans.
+
+`SampleDescriptor` deliberately contains no codec name or `targetFormat` string. The selected
+`stsd` entry is resolved outside `src/core/` by a rules/application-layer binding that carries an
+opaque rule entry identity and its declared metadata. This preserves the format-neutral core
+boundary from ADR-0096 while still allowing the UI and sample runner to select the correct codec
+entry.
 
 ---
 
@@ -84,16 +106,20 @@ struct SampleDescriptor final {
 
 #### 3.1 Sync Sample Box (`stss`)
 - **DSL Schema**: `stss` (`0x73747373`) decodes FullBox header and `@window(SyncSampleEntry, entry_count)` where each entry contains `bits<32> sample_number;` (1-based).
-- **Omission Semantics**: Per ISO/IEC 14496-12 §8.6.2.1, **if `stss` is absent in a track, every sample in that track is a sync sample (`isSyncSample = true`)**. This rule is strictly applied to AAC audio tracks and all-intra video streams.
+- **Omission Semantics**: Per ISO/IEC 14496-12 §8.6.2.1, **if `stss` is absent in a track, every sample in that track is a sync sample (`isSyncSample = true`)**. This is a track-wide default and is not restricted to AAC or all-intra video; the indexer must apply it to every track type.
 - **Present Semantics**: When `stss` is present, only samples whose 1-based index appears in the `stss` table are marked `isSyncSample = true`; all other samples are marked `isSyncSample = false`.
 
 #### 3.2 Composition Time to Sample Box (`ctts`)
-- **DSL Schema**: `ctts` (`0x63747473`) decodes FullBox header and `@window(CompositionOffsetEntry, entry_count)`.
-  - `version == 0`: entries contain `bits<32> sample_count;` and `bits<32> sample_offset;` (unsigned).
-  - `version == 1`: entries contain `bits<32> sample_count;` and `bits<32> sample_offset;` (signed 32-bit two's complement for negative composition delays).
+- **DSL Schema**: `ctts` (`0x63747473`) decodes FullBox header and `@window(CompositionOffsetEntry, entry_count)`. Both versions declare the same two raw fields, `bits<32> sample_count;` and `bits<32> sample_offset;`, because the DSL has **no signed fixed-width field type**. Measured on `build/dev/tools/svtool/svtool rule check`:
+  - `i32 sample_offset;` → `error: Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type`;
+  - `bits<32> x @range(-100, 100);` → `error: @range bounds cannot be negative on unsigned fields`;
+  - `computed<i64> v = ...;` → `error: Scalar types must be bool or u64`;
+  - `se` exists but is signed **exp-Golomb**, not a 32-bit fixed-width field, so it cannot decode a `ctts` entry.
+- **Sign Reinterpretation Boundary**: `version == 1` offsets are two's-complement signed 32-bit values per ISO/IEC 14496-12, but the rule decodes them as unsigned 32-bit and **the DSL cannot reinterpret the sign**. The reinterpretation (`offset >= 2^31 ? offset - 2^32 : offset`) is performed by `Mp4SampleTableIndex` in C++, keyed on the `version` field decoded by the rule. This is timeline arithmetic on an already-decoded scalar, not format-specific syntax, so it does not violate the "format semantics stay in the DSL" constraint. The presentation tree still shows the raw unsigned field value for `version == 1`; the signed interpretation appears only in the derived `pts`. P5j-1 must not claim the rule decodes a signed field, and P5j-2 must carry a test proving a negative `version == 1` offset yields a `pts` below its `dts`.
 - **PTS Calculation**:
-  - When `ctts` is present: $\text{PTS} = \text{DTS} + \text{sample\_offset}$.
+  - When `ctts` is present: $\text{PTS} = \text{DTS} + \text{signed}(\text{sample\_offset})$.
   - When `ctts` is absent: $\text{PTS} = \text{DTS}$.
+- **Signed Timeline Arithmetic**: `dts` and `pts` use a signed 64-bit timeline representation, and the addition is checked. An underflow or overflow produces a source-located `InvalidSyntax`/`ResourceLimit` diagnostic for the affected sample page; it must never wrap. A negative resulting `pts` is legal and must not be clamped to zero.
 - **Truth in Timeline Claims**: Accurate verification of presentation timestamps on streams with B-frames strictly requires evaluating `ctts`.
 
 ---
@@ -110,6 +136,10 @@ where $L = \text{lengthSizeMinusOne} + 1 \in \{1, 2, 4\}$ (extracted from the tr
 1. **Length-Prefixed Framing**: The sample runner parses the length prefix $L$, validates that the indicated NAL byte length fits within the sample boundary, and creates child `SourceMapping` spans for each contained NAL unit.
 2. **Multi-NAL Aggregation**: A single video sample may contain multiple NAL units (e.g. AUD, SEI, primary slice, redundant slice). The sample execution produces a structured sub-tree containing all NAL units in sequence.
 3. **Session Context Sharing**: Each contained NAL unit is executed as `NalUnitHeader` + payload, inheriting the session's active SPS/PPS parameter set context established during `avcC` inspection or preceding keyframe processing.
+4. **Mapped Transform Contract**: RBSP execution reuses the ADR-0104 payload-transform contract:
+   excluded emulation-prevention bytes remain separate records, forwarded child spans map directly
+   to the root sample source, and malformed transform input is isolated to that NAL with a
+   source-located diagnostic.
 
 ---
 
@@ -122,23 +152,27 @@ Per the PRD ("AAC Huffman spectral payload decoding ... are deferred"):
 2. Navigating into an AAC sample produces an **Access Unit Envelope** sub-tree exposing:
    - Sample metadata (sample index, DTS/PTS, duration, physical byte length);
    - Raw access unit byte span mapped directly to `mdat`;
-   - Formatted reference to the track's active `AudioSpecificConfig` (sampling frequency, channels, audio object type).
+   - Formatted reference to the `AudioSpecificConfig` bound to the same `trackId` and
+     `sampleDescriptionIndex` (sampling frequency, channels, audio object type). If that
+     configuration entry is missing or incompatible, navigation returns `DependencyUnavailable`
+     rather than guessing an ASC.
 3. Exact physical coordinate highlighting in `RawDataView` is preserved for the entire access unit byte span.
 
 ---
 
 ### 6. Paging, Resource Bounds, Cancellation, and Error Isolation
 
-1. **Progressive Indexing**: For 100+ GB files containing hundreds of thousands of samples, `Mp4SampleTableIndex` is constructed on demand and cached progressively in SQLite WAL using `WindowDecoder` and `CancellationToken`.
-2. **Virtualized UI Presentation**: The track sample list in `MainWindow` is virtualized and paginated (e.g. 256 or 1000 samples per page), keeping materialized tree nodes bounded well below `defaultMaximumMaterializedNodes() = 100,000`.
+1. **Progressive Indexing**: For 100+ GB files containing hundreds of thousands of samples, `Mp4SampleTableIndex` is constructed on demand and cached progressively through the existing paged-cache contract. Its cache namespace and `streamId` must distinguish track and index kind; independent tracks must never collide. SQLite WAL is the persistence mechanism for opaque cache pages, not a sample-table semantic layer.
+2. **Virtualized UI Presentation**: The track sample list in `MainWindow` is virtualized and paginated (e.g. 256 or 1000 samples per UI page), keeping materialized tree nodes bounded well below `defaultMaximumMaterializedNodes() = 100,000`. A UI sample page is not the same thing as the existing physical 64 KiB cache page; descriptor batches may span several cache pages.
 3. **On-Demand Execution**: Samples are executed only when explicitly navigated by the user, applying bounded execution limits per navigation action.
 4. **Error Isolation**: A corrupt or truncated sample in `mdat` emits a `TruncatedSource` or `InvalidSyntax` diagnostic localized to that sample frame without invalidating the parent container, other samples, or session state.
+5. **Budget Isolation**: Independent page requests have independent index/page budgets and cancellation scopes. The VM `RunnerExecutionBudget` must not be consumed permanently by earlier page requests; a separate session/UI materialization budget governs the number of retained sample rows and nodes.
 
 ---
 
 ### 7. Documentation Consistency on Navigation State & SessionDocument Schema
 
-- **PRD Alignment**: In StreamView v0.1, `SessionDocument` strictly persists root-level session state (source identity, rule package versions, bookmarks, user annotations).
+- **PRD Alignment**: In StreamView v0.1, `SessionDocument` strictly persists root-level session state (source identity, rule package versions, bookmarks, user annotations, and root-view presentation state). The PRD phrase “navigation state” is explicitly limited to this root-level state; the active child/sample navigation stack is not persisted in v0.1.
 - **Navigation Stack Boundary**: The navigation stack (sub-format frames, sample frames) is an ephemeral in-process interaction state in v0.1. Full serialization of child navigation hierarchies is deferred to Phase 7 session extensions.
 
 ---
@@ -151,7 +185,7 @@ With the full implementation and verification of Task P5i (Tasks P5i-1, P5i-2, P
 
 ## Phase 5j Implementation Slice Plan
 
-To ensure incremental verification, isolation of concerns, and rigorous quality gates, Task P5j is decomposed into six sequential tasks:
+To ensure incremental verification, isolation of concerns, and rigorous quality gates, Task P5j is decomposed into seven sequential tasks:
 
 ```
 [Task P5j-0 (Docs)]: Gap Audit & Architectural Decisions (ADR-0105)
@@ -182,27 +216,28 @@ To ensure incremental verification, isolation of concerns, and rigorous quality 
    - Scope: Audits capability gaps, defines normative contracts, establishes P5j-1..P5j-6 slice plan.
 
 2. **Task P5j-1 (DSL & Official MP4 Rule Package v0.1.4)**:
-   - Deliverable: Add `stss` (`SyncSampleBox`) and `ctts` (`CompositionOffsetBox`) schemas to `mp4_isobmff.svfmt`; bump `org.streamview.mp4` to `0.1.4`.
+   - Deliverable: Add `stss` (`SyncSampleBox`), `ctts` (`CompositionOffsetBox`), and the missing `stz2` compact sample-size schema to `mp4_isobmff.svfmt`; bump `org.streamview.mp4` to `0.1.4`.
    - Files: `src/rules/official/org.streamview.mp4/src/mp4_isobmff.svfmt`, `rule.toml`, tests in `mp4_isobmff_analyzer_test.cpp`.
 
 3. **Task P5j-2 (Composite Sample Indexer & Timeline Service)**:
-   - Deliverable: Format-neutral `Mp4SampleTableIndex` combining `stts`, `stsc`, `stsz`/`stz2`, `stco`/`co64`, `stss`, and `ctts` into `SampleDescriptor` sequences with bounded memory and cancellation support.
+   - Deliverable: `Mp4SampleTableIndex` combining `stts`, `stsc`, `stsz`/`stz2`, `stco`/`co64`, `stss`, and `ctts` into `SampleDescriptor` sequences with bounded memory, checked signed timeline arithmetic, track-specific cache keys, and cancellation support. This class is deliberately **MP4-specific and lives in `src/rules/`**, not `src/core/`: it consumes ISOBMFF box semantics, so calling it format-neutral would be a contradiction. Only its output type (`core::SampleDescriptor`) is format-neutral. No ISOBMFF box name may appear in `src/core/`.
    - Files: `src/rules/mp4_sample_table_index.h`, `src/rules/mp4_sample_table_index.cpp`, `tests/rules/mp4_sample_table_index_test.cpp`.
 
 4. **Task P5j-3 (AVC Length-Prefixed Multi-NAL & AAC Sample Runner)**:
-   - Deliverable: Format-neutral sample payload splitter and runner handling `lengthSizeMinusOne + 1` NAL prefixes, multi-NAL aggregation, RBSP transform, and session context resolution.
+   - Deliverable: Format-neutral sample payload splitter and runner handling `lengthSizeMinusOne + 1` NAL prefixes, multi-NAL aggregation, the ADR-0104 mapped RBSP transform/excluded-span contract, malformed-transform diagnostics, and session context resolution.
    - Files: `src/rules/sample_payload_runner.h`, `src/rules/sample_payload_runner.cpp`, `tests/rules/sample_payload_runner_test.cpp`.
 
 5. **Task P5j-4 (AnalysisSession Sample Navigation API)**:
-   - Deliverable: `AnalysisSession::enterSample(trackId, sampleIndex)`, `samplesForTrack`, and sample coordinate projection to `mdat`.
+   - Deliverable: `AnalysisSession::enterSample(trackId, sampleIndex)`, `samplesForTrack`, sample coordinate projection to `mdat`, sample-frame navigation state, and explicit error mapping/rollback semantics.
    - Files: `src/app/analysis_session.h`, `src/app/analysis_session.cpp`, `tests/app/analysis_session_test.cpp`.
 
 6. **Task P5j-5 (MainWindow Track / Sample Navigation & Timeline UI)**:
-   - Deliverable: Track/Sample dock view, virtualized sample table, sync sample badges, double-click / keyboard sample navigation, breadcrumb path `video.mp4 > Track 1 (avc1) > Sample #42 [Sync] > NalUnitHeader`, and bidirectional coordinate highlighting.
+   - Deliverable: Track/Sample dock view, virtualized sample table, sync sample badges, double-click / keyboard sample navigation, breadcrumb path `video.mp4 > Track 1 (avc1) > Sample #42 [Sync] > NalUnitHeader`, and bidirectional coordinate highlighting. The UI consumes `SampleDescriptor` plus a rules-layer sample-description binding; core does not carry codec strings.
    - Files: `src/app/main_window.h`, `src/app/main_window.cpp`, `tests/app/main_window_test.cpp`.
 
 7. **Task P5j-6 (Phase 5 Milestone Verification & Closure)**:
-   - Deliverable: Large-file 100 GB virtual sparse verification, reference tool cross-validation (`ffprobe`/`mediainfo`), ADR-0103 and ADR-0105 lifecycle state transition to `Accepted`, Phase 5 completion signoff in `docs/implementation-plan.md`.
+   - Deliverable: Large-file 100 GB virtual sparse verification, reference tool cross-validation, automated offset/timestamp/keyframe fixtures, ADR-0103 and ADR-0105 lifecycle state transition to `Accepted`, and Phase 5 completion signoff in `docs/implementation-plan.md`.
+   - Reference tool availability (measured in this environment): `ffprobe` and `ffmpeg` are present; `mediainfo` and `MP4Box` are **not installed**. Cross-validation is therefore specified on `ffprobe` alone, following the ADR-0097 precedent (`ffprobe -v trace` for box structure, `ffprobe -show_packets` for sample offset / timestamp / keyframe ground truth). P5j-6 must not claim a `mediainfo` comparison it cannot run; if a second independent tool is required, its installation is part of that slice's scope and must be reported.
 
 ---
 

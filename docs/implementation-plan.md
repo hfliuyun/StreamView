@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5j-0 — Phase 5 容器样本导航口径与能力差距审计
-Next Action: 主 Agent 复审 P5j-0；未经复审不得开始 P5j-1
-Last Verification: Task P5j-0 — Spec SHA `e5147960ea58a2d109f3e49be88fcb0416ee3c24` (dual-language ADR-0105); Markdown-only skipped hosted CI per ADR-0019; `ctest -R markdown_hygiene` and `git diff --check` passed
+Last Completed Step: Task P5j-0-R — 主 Agent 深审并直接整改 ADR-0105 容器样本导航合同
+Next Action: Task P5j-1 至 P5j-5 批次执行（纪律条款 5：其间不设固定门禁，触发升级条件时转独立评审）；P5j-6 为下一固定门禁
+Last Verification: Task P5j-0-R — 双语 ADR-0105 五项缺陷就地整改（不可编译声明、DSL 不可表达的有符号 `ctts`、物理区间措辞、格式中立标签、不存在的参考工具）；Markdown-only skipped hosted CI per ADR-0019; `ctest -R markdown_hygiene` and `git diff --check` passed
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -234,7 +234,7 @@ Blockers: None
   - **Task P5j-3**（运行时切片）：AVC 长度前缀多 NAL 样本分帧与 AAC 访问单元执行器（`lengthSizeMinusOne + 1` 前缀、多 NAL 聚合、RBSP 转换与 SPS/PPS 上下文继承）；
   - **Task P5j-4**（会话切片）：`AnalysisSession` 样本导航 API（`enterSample`、`samplesForTrack` 与 `mdat` 坐标投影）；
   - **Task P5j-5**（UI切片）：`MainWindow` 轨道/样本导航面板、时间线表格、同步关键帧徽标与样本到编解码语法导航集成；
-  - **Task P5j-6**（验证与关闭切片）：100 GB 虚拟稀疏大文件矩阵验证、`ffprobe`/`mediainfo` 参考工具交叉比对、ADR-0103/0105 Accepted 确认与阶段 5 里程碑关闭。
+  - **Task P5j-6**（验证与关闭切片）：100 GB 虚拟稀疏大文件矩阵验证、`ffprobe` 参考工具交叉比对（本环境实测无 `mediainfo`/`MP4Box`，按 ADR-0105 §P5j-6 只规定 `ffprobe`）、ADR-0103/0105 Accepted 确认与阶段 5 里程碑关闭。
 
 ### 阶段 5 检查清单
 - [x] 支持普通、64 位、size=0 和未知 box；`mdat` 默认 lazy。
@@ -2807,3 +2807,12 @@ Blockers: None
   3. 严格边界恪守：
      - 本任务为纯 Markdown 架构审计，未修改任何 C++ 生产代码、测试、规则、rule.toml、fixture 或 CMakeLists；未触碰未跟踪 `scratch/`。
   终审结论：Task P5j-0 交付完成。Next Action 锁定为“主 Agent 复审 P5j-0；未经复审不得开始 P5j-1”。
+- 2026-08-23：完成 Task P5j-0-R —— 主 Agent 深审并直接整改 ADR-0105 容器样本导航合同（原始交付 `e5147960ea58a2d109f3e49be88fcb0416ee3c24`，整改随本记录同一 commit 提交）：
+  1. 原交付不能直接通过：ADR 给出的 `SampleDescriptor` 声明无法编译，`ctts` 合同要求 DSL 表达当前语言不存在的有符号定宽字段，物理区间措辞与结构成员自相矛盾，`Mp4SampleTableIndex` 被标为「格式中立」，且承诺了本机不存在的参考工具比对。五项缺陷已在双语 ADR 中就地修正，未回退给实现方。
+  2. D1 结构声明不可编译（§2）：原声明使用 `uint32_t` 与值成员 `SourceSpan sourceSpan`。实测 `SourceSpan` 构造函数私有、仅能经 `SourceSpan::create(SourceBitAddress, quint64)` 工厂构造（`src/core/include/streamview/core/coordinates.h:38-55`），最小编译单元复现 `error: no matching constructor for initialization of 'SourceSpan'`；核心头文件统计为 74 × `quint64`、9 × `quint32`、0 × `uint64_t`。改为 `std::vector<SourceSpan> sourceSpans` 并统一 Qt 整数别名，与 `context_directory.h:46`/`:54` 既有先例一致，同时保留「不连续 span 不得被折叠为连续包络」的语义；补写三条规范性声明约束，含 `SourceSpan` 为 bit 寻址、索引器必须把字节偏移与长度换算为 bit 坐标。
+  3. D2 `ctts` 有符号偏移不可由 DSL 表达（§3.2）：四次 `svtool rule check` 实测确认 DSL 无有符号定宽字段——`i32` 报 `error: Expected bits<N[, endian]>, ue, se, or ff_coded<N> field type`；无符号字段上 `@range(-100, 100)` 报 `error: @range bounds cannot be negative on unsigned fields`；`computed<i64>` 报 `error: Scalar types must be bool or u64`；`se` 是有符号指数哥伦布而非 32 位定宽。新增「符号重解释边界」段落：规则按无符号解码，`Mp4SampleTableIndex` 依据规则已解码的 `version` 在 C++ 侧执行 `offset >= 2^31 ? offset - 2^32 : offset`；这是对已解码标量的时间线算术而非格式语法，不违反「格式语义只能进 DSL/规则」。展示树仍显示原始无符号值，符号解释只体现在派生 `pts`；PTS 公式改为 `DTS + signed(sample_offset)`，负 `pts` 合法且不得钳零。同时写入两条约束：P5j-1 不得声称规则解码了有符号字段，P5j-2 必须携带「`version == 1` 负偏移导致 `pts < dts`」的测试。
+  4. D3/D4 措辞矛盾：§1 物理区间的单数表述改为与 `std::vector<SourceSpan>` 成员一致；P5j-2 切片中 `Mp4SampleTableIndex` 由「格式中立」改为「MP4 专属、产出格式中立 `SampleDescriptor`」，消除组件本身跨格式可复用的错误暗示。
+  5. D5 参考工具承诺超出实测可用性：本机实测 `ffprobe` 与 `ffmpeg` 存在、`mediainfo` 与 `MP4Box` 未安装。ADR P5j-6 切片收窄为仅基于 `ffprobe` 交叉验证（沿用 ADR-0097 先例：`-v trace` 取 box 结构，`-show_packets` 取 sample offset/时间戳/关键帧），并声明 P5j-6 不得声称执行了无法运行的比对；本文件 `:237` 的同源承诺一并修正。
+  6. 复核确认无需改动的部分：`targetFormat` 已从核心移除并改为规则/应用层绑定；`stss` 缺省语义已扩至所有轨道类型；`stz2` 已纳入 P5j-1；SQLite WAL 已正确描述为不透明缓存页持久化而非样本表语义层，且 UI 样本页与 64 KiB 缓存页明确解耦；预算隔离项已补齐；切片计数已由六改为七。
+  7. 验证：整改为纯 Markdown，按 ADR-0019 不触发 Hosted CI；`ctest -R markdown_hygiene` 通过，`git diff --check` 干净；评审现场存在既有未跟踪 `scratch/`，本轮未读取、修改、删除或提交该目录。
+  终审结论：Task P5j-0-R 通过，P5j-0 门禁放行。Next Action 切换为 Task P5j-1 至 P5j-5 批次执行（按纪律条款 5，其间不设固定门禁，触发升级条件时必须转独立评审）；P5j-6 为下一固定门禁。
