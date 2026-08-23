@@ -63,7 +63,7 @@ RSS, and latency performance gates still require measured release validation.
 
 ## Sessions And Export
 
-- Saved sessions are separate from the read-only media source and retain source identity, exact rule versions, bookmarks, annotations, and navigation state.
+- Saved sessions are separate from the read-only media source and retain source identity, exact rule versions, bookmarks, annotations, and root-view navigation state. In v0.1, the active child-format/sample navigation stack is an ephemeral in-process state and is not serialized; the stack-persistence extension is deferred to Phase 7.
 - A source fingerprint detects media changes before saved locations are reused.
 - Rebuildable large caches remain outside the compact saved session.
 - Hierarchical JSON export is desirable but does not block the first milestone.
