@@ -174,7 +174,7 @@ $$\underbrace{[\text{长度}]_{L\text{ 字节}}[\text{NAL 单元}]}_{\text{NAL }
 
 ## 阶段 5j 实施切片计划
 
-为确保增量验证、职责隔离与严格质量门禁，Task P5j 拆分为七个顺序切片：
+为确保增量验证、职责隔离与严格质量门禁，Task P5j 拆分为八个顺序切片：
 
 ```
 [Task P5j-0 (规范)]: 差距审计与架构决策 (ADR-0105)
@@ -187,6 +187,9 @@ $$\underbrace{[\text{长度}]_{L\text{ 字节}}[\text{NAL 单元}]}_{\text{NAL }
       │
       ▼
 [Task P5j-3 (规则/运行时)]: AVC 长度前缀多 NAL 与 AAC 访问单元执行器
+      │
+      ▼
+[Task P5j-3b (规则/MP4)]: 分析树 → Mp4TrackSampleTables 提取与读取器绑定
       │
       ▼
 [Task P5j-4 (应用/核心)]: AnalysisSession 样本导航 API 与坐标映射
@@ -211,20 +214,27 @@ $$\underbrace{[\text{长度}]_{L\text{ 字节}}[\text{NAL 单元}]}_{\text{NAL }
 3. **Task P5j-2（复合样本索引与时间线服务）**：
    - 交付物：`Mp4SampleTableIndex`，组合 `stts`、`stsc`、`stsz`/`stz2`、`stco`/`co64`、`stss` 和 `ctts` 为有界内存的 `SampleDescriptor` 序列，支持受检有符号时间线算术、按轨道缓存键与取消。该类**刻意是 MP4 专属的，位于 `src/rules/`** 而非 `src/core/`：它消费 ISOBMFF box 语义，称其「格式中立」自相矛盾。只有它的输出类型（`core::SampleDescriptor`）是格式中立的。`src/core/` 中不得出现任何 ISOBMFF box 名称。
    - 涉及文件：`src/rules/mp4_sample_table_index.h`、`src/rules/mp4_sample_table_index.cpp`、`tests/rules/mp4_sample_table_index_test.cpp`。
+   - 接缝说明（P5j-4 准备阶段补记）：本 ADR 并未冻结样本表数值*从分析树何处提取*。P5j-2 以「调用方绑定读取器接缝」（`Mp4SampleTableReaders`，三个 `std::function`）解决了该歧义，从而避免把逐样本表展开进内存。该选择对有界内存合同是正确的，但它顺延了提取责任而没有指派归属，导致没有任何切片负责从真实分析树产出 `Mp4TrackSampleTables` 与已绑定读取器。下面的 Task P5j-3b 补上这个缺口。
 
 4. **Task P5j-3（AVC 长度前缀多 NAL 与 AAC 样本运行器）**：
    - 交付物：格式中立的样本载荷分帧与执行器，处理 `lengthSizeMinusOne + 1` NAL 前缀、多 NAL 聚合、ADR-0104 映射 RBSP transform/排除字节合同、畸形转换诊断与会话上下文解析。
    - 涉及文件：`src/rules/sample_payload_runner.h`、`src/rules/sample_payload_runner.cpp`、`tests/rules/sample_payload_runner_test.cpp`。
 
-5. **Task P5j-4（AnalysisSession 样本导航 API）**：
+5. **Task P5j-3b（分析树 → 样本表提取与读取器绑定）**：
+   - 交付物：MP4 专属桥接层，遍历已分析的 ISOBMFF 树，按轨道产出填充好的 `Mp4TrackSampleTables`，以及三个回调均绑定到既有窗口解码器接缝的 `Mp4SampleTableReaders`，使 `stsz`/`stco`/`co64`/`stss` 条目按页惰性读取而非全量物化。包含 `stz2` field_size 处理、`stsz.sample_size` 非零的统一尺寸路径（该路径必须完全不调用 `sampleSize` 读取器）、`ctts` version 0/1 选择、按 §3.1 的 `stss` 缺失语义，以及携带 `targetFormat` 的 `stsd` sample description 绑定。
+   - 独立成片的理由：定位这些表必须依赖 box 类型或规则结构名判别，而这在 `src/core/` 与通用 session/UI dispatch 中被禁止，因此桥接层必须位于规则层；同时禁止把新能力与它的第一个消费者塞进同一提交，因此它不能并入 P5j-4。故独立成片，独立提交，独立测试。
+   - 涉及文件：规则层（`src/rules/`，具体组件边界在实现时决定——独立组件或 `Mp4IsobmffAnalyzer` 扩展），以及 `tests/rules/` 下自己的测试文件。
+   - 约束：本切片不得让任何 ISOBMFF box 名称、box 类型常量或 MP4 规则结构名泄漏进 `src/core/` 或 `src/app/`。
+
+6. **Task P5j-4（AnalysisSession 样本导航 API）**：
    - 交付物：`AnalysisSession::enterSample(trackId, sampleIndex)`、`samplesForTrack`、样本坐标到 `mdat` 的投影、样本帧导航状态与明确的错误映射/回滚语义。
    - 涉及文件：`src/app/analysis_session.h`、`src/app/analysis_session.cpp`、`tests/app/analysis_session_test.cpp`。
 
-6. **Task P5j-5（MainWindow 轨道/样本导航与时间线 UI）**：
+7. **Task P5j-5（MainWindow 轨道/样本导航与时间线 UI）**：
    - 交付物：轨道/样本面板、虚拟化样本表格、同步关键帧徽标、双击/键盘样本导航、面包屑路径 `video.mp4 > Track 1 (avc1) > Sample #42 [Sync] > NalUnitHeader` 与双向坐标联动。
    - 涉及文件：`src/app/main_window.h`、`src/app/main_window.cpp`、`tests/app/main_window_test.cpp`。
 
-7. **Task P5j-6（阶段 5 里程碑验证与收官）**：
+8. **Task P5j-6（阶段 5 里程碑验证与收官）**：
    - 交付物：100 GB 虚拟稀疏大文件验证、参考工具比对、offset/timestamp/keyframe 自动化 ground-truth fixture、ADR-0103 与 ADR-0105 正式转为 `Accepted`，在 `docs/implementation-plan.md` 中签署阶段 5 完工。
    - 参考工具可用性（本环境实测）：`ffprobe` 与 `ffmpeg` 存在；`mediainfo` 与 `MP4Box` **未安装**。因此交叉验证只规定基于 `ffprobe`，沿用 ADR-0097 既有先例（`ffprobe -v trace` 取 box 结构，`ffprobe -show_packets` 取 sample offset / 时间戳 / 关键帧 ground truth）。P5j-6 不得声称执行了无法运行的 `mediainfo` 比对；若确需第二个独立工具，其安装属于该切片范围并必须在报告中说明。
 
