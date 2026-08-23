@@ -178,6 +178,10 @@ streamview_add_rules_test(
     streamview_mp4_sample_table_index_tests
     rules/mp4_sample_table_index_test.cpp
 )
+streamview_add_rules_test(
+    streamview_sample_payload_runner_tests
+    rules/sample_payload_runner_test.cpp
+)
 
 qt_add_executable(streamview_svtool_tests tools/svtool_test.cpp)
 target_link_libraries(streamview_svtool_tests PRIVATE Qt6::Test)

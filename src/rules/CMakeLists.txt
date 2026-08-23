@@ -22,6 +22,7 @@ add_library(streamview_rules STATIC
     window_decoder.cpp
     structural_entry_runner.cpp
     compound_structural_runner.cpp
+    sample_payload_runner.cpp
     payload_transform.cpp
     bundled_payload_transforms.cpp
     h264_rbsp_payload_transform_provider.cpp
@@ -53,6 +54,7 @@ add_library(streamview_rules STATIC
     include/streamview/rules/mp4_sample_table_index.h
     include/streamview/rules/structural_entry_runner.h
     include/streamview/rules/compound_structural_runner.h
+    include/streamview/rules/sample_payload_runner.h
     include/streamview/rules/payload_transform.h
     include/streamview/rules/window_decoder.h
     include/streamview/rules/rule_catalog.h
