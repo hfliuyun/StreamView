@@ -185,7 +185,7 @@ With the full implementation and verification of Task P5i (Tasks P5i-1, P5i-2, P
 
 ## Phase 5j Implementation Slice Plan
 
-To ensure incremental verification, isolation of concerns, and rigorous quality gates, Task P5j is decomposed into seven sequential tasks:
+To ensure incremental verification, isolation of concerns, and rigorous quality gates, Task P5j is decomposed into eight sequential tasks:
 
 ```
 [Task P5j-0 (Docs)]: Gap Audit & Architectural Decisions (ADR-0105)
@@ -198,6 +198,9 @@ To ensure incremental verification, isolation of concerns, and rigorous quality 
       │
       ▼
 [Task P5j-3 (Rules/Runtime)]: AVC Length-Prefixed Multi-NAL & AAC Access Unit Execution
+      │
+      ▼
+[Task P5j-3b (Rules/MP4)]: Analysis Tree → Mp4TrackSampleTables Extraction & Reader Binding
       │
       ▼
 [Task P5j-4 (App/Core)]: AnalysisSession Sample Navigation API & Coordinate Projection
@@ -222,20 +225,27 @@ To ensure incremental verification, isolation of concerns, and rigorous quality 
 3. **Task P5j-2 (Composite Sample Indexer & Timeline Service)**:
    - Deliverable: `Mp4SampleTableIndex` combining `stts`, `stsc`, `stsz`/`stz2`, `stco`/`co64`, `stss`, and `ctts` into `SampleDescriptor` sequences with bounded memory, checked signed timeline arithmetic, track-specific cache keys, and cancellation support. This class is deliberately **MP4-specific and lives in `src/rules/`**, not `src/core/`: it consumes ISOBMFF box semantics, so calling it format-neutral would be a contradiction. Only its output type (`core::SampleDescriptor`) is format-neutral. No ISOBMFF box name may appear in `src/core/`.
    - Files: `src/rules/mp4_sample_table_index.h`, `src/rules/mp4_sample_table_index.cpp`, `tests/rules/mp4_sample_table_index_test.cpp`.
+   - Seam note (added during P5j-4 preparation): this ADR did not freeze *where* the sample-table values are extracted from the analysis tree. P5j-2 resolved that ambiguity by giving `Mp4SampleTableIndex` a caller-bound reader seam (`Mp4SampleTableReaders`, three `std::function`s) so per-sample tables are never expanded into memory. That choice is correct for the bounded-memory contract, but it deferred the extraction responsibility instead of assigning it, leaving no slice that produces `Mp4TrackSampleTables` plus bound readers from a real analyzed tree. Task P5j-3b below closes that gap.
 
 4. **Task P5j-3 (AVC Length-Prefixed Multi-NAL & AAC Sample Runner)**:
    - Deliverable: Format-neutral sample payload splitter and runner handling `lengthSizeMinusOne + 1` NAL prefixes, multi-NAL aggregation, the ADR-0104 mapped RBSP transform/excluded-span contract, malformed-transform diagnostics, and session context resolution.
    - Files: `src/rules/sample_payload_runner.h`, `src/rules/sample_payload_runner.cpp`, `tests/rules/sample_payload_runner_test.cpp`.
 
-5. **Task P5j-4 (AnalysisSession Sample Navigation API)**:
+5. **Task P5j-3b (Analysis Tree → Sample Table Extraction & Reader Binding)**:
+   - Deliverable: the MP4-specific bridge that walks an analyzed ISOBMFF tree and produces, per track, a populated `Mp4TrackSampleTables` together with `Mp4SampleTableReaders` whose three callbacks are bound to the existing window-decoder seam, so `stsz`/`stco`/`co64`/`stss` entries are read lazily per page rather than materialized. Includes `stz2` field-size handling, the non-zero `stsz.sample_size` uniform path (which must not call the `sampleSize` reader at all), `ctts` version 0/1 selection, absent-`stss` semantics per §3.1, and `stsd` sample-description bindings carrying `targetFormat`.
+   - Rationale for a separate slice: locating these tables requires box-type or rule-struct discrimination, which is prohibited in `src/core/` and in generic session/UI dispatch, so the bridge must live in the rules layer; and shipping a new capability together with its first consumer is prohibited, so it cannot be folded into P5j-4. It is therefore its own slice with its own commit and its own tests.
+   - Files: rules layer (`src/rules/`, exact component boundary decided at implementation time — standalone component or an `Mp4IsobmffAnalyzer` extension), plus its own test file under `tests/rules/`.
+   - Constraint: no ISOBMFF box name, box type constant, or MP4 rule struct name may leak into `src/core/` or `src/app/` as part of this slice.
+
+6. **Task P5j-4 (AnalysisSession Sample Navigation API)**:
    - Deliverable: `AnalysisSession::enterSample(trackId, sampleIndex)`, `samplesForTrack`, sample coordinate projection to `mdat`, sample-frame navigation state, and explicit error mapping/rollback semantics.
    - Files: `src/app/analysis_session.h`, `src/app/analysis_session.cpp`, `tests/app/analysis_session_test.cpp`.
 
-6. **Task P5j-5 (MainWindow Track / Sample Navigation & Timeline UI)**:
+7. **Task P5j-5 (MainWindow Track / Sample Navigation & Timeline UI)**:
    - Deliverable: Track/Sample dock view, virtualized sample table, sync sample badges, double-click / keyboard sample navigation, breadcrumb path `video.mp4 > Track 1 (avc1) > Sample #42 [Sync] > NalUnitHeader`, and bidirectional coordinate highlighting. The UI consumes `SampleDescriptor` plus a rules-layer sample-description binding; core does not carry codec strings.
    - Files: `src/app/main_window.h`, `src/app/main_window.cpp`, `tests/app/main_window_test.cpp`.
 
-7. **Task P5j-6 (Phase 5 Milestone Verification & Closure)**:
+8. **Task P5j-6 (Phase 5 Milestone Verification & Closure)**:
    - Deliverable: Large-file 100 GB virtual sparse verification, reference tool cross-validation, automated offset/timestamp/keyframe fixtures, ADR-0103 and ADR-0105 lifecycle state transition to `Accepted`, and Phase 5 completion signoff in `docs/implementation-plan.md`.
    - Reference tool availability (measured in this environment): `ffprobe` and `ffmpeg` are present; `mediainfo` and `MP4Box` are **not installed**. Cross-validation is therefore specified on `ffprobe` alone, following the ADR-0097 precedent (`ffprobe -v trace` for box structure, `ffprobe -show_packets` for sample offset / timestamp / keyframe ground truth). P5j-6 must not claim a `mediainfo` comparison it cannot run; if a second independent tool is required, its installation is part of that slice's scope and must be reported.
 
