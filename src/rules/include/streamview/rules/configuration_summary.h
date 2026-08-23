@@ -98,4 +98,11 @@ private:
     std::unordered_map<QString, std::shared_ptr<const ConfigurationSummaryProvider>> providers_;
 };
 
+/// Registry containing the configuration summary providers bundled with
+/// StreamView.
+///
+/// Callers resolve summaries through this registry rather than naming a
+/// provider class, so no codec name is needed outside the rules layer.
+[[nodiscard]] const ConfigurationSummaryRegistry& bundledConfigurationSummaryRegistry();
+
 } // namespace streamview::rules
