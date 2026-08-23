@@ -128,6 +128,124 @@ struct ChunkLargeOffsetBox {
     }
 }
 
+@spec("ISO/IEC 14496-12:2015", "8.6.2.2")
+@description("Sync Sample entry.")
+struct SyncSampleEntry {
+    bits<32> sample_number
+        @description("1-based number of a sample that is a random access point.");
+}
+
+@spec("ISO/IEC 14496-12:2015", "8.6.2.2")
+@description("Sync Sample box payload.")
+struct SyncSampleBox {
+    bits<8> version
+        @description("Version (0).");
+    bits<24> flags
+        @description("Flags.");
+    bits<32> entry_count
+        @description("Number of sync sample entries.");
+    if (version == 0) {
+        computed<u64> table_bytes = entry_count * 4;
+        @lazy(table_bytes) bytes entries @window(SyncSampleEntry, entry_count);
+    } else {
+        unsupported("Unsupported stss FullBox version") at version;
+    }
+}
+
+@spec("ISO/IEC 14496-12:2015", "8.6.1.3")
+@description("Composition Time to Sample entry.")
+struct CompositionOffsetEntry {
+    bits<32> sample_count
+        @description("Number of consecutive samples sharing this offset.");
+    bits<32> sample_offset
+        @description("Raw composition offset in timescale units; version 1 reinterprets it as a signed value.");
+}
+
+@spec("ISO/IEC 14496-12:2015", "8.6.1.3")
+@description("Composition Time to Sample box payload.")
+struct CompositionOffsetBox {
+    bits<8> version
+        @description("Version (0: unsigned offsets, 1: signed offsets).");
+    bits<24> flags
+        @description("Flags.");
+    bits<32> entry_count
+        @description("Number of composition offset entries.");
+    // Version 0 and version 1 share an identical wire layout; only the sign
+    // interpretation of sample_offset differs, and that reinterpretation is
+    // performed downstream by the sample table indexer (ADR-0105 section 3.2).
+    if (version == 0) {
+        computed<u64> v0_table_bytes = entry_count * 8;
+        @lazy(v0_table_bytes) bytes v0_entries @window(CompositionOffsetEntry, entry_count);
+    } else {
+        if (version == 1) {
+            computed<u64> v1_table_bytes = entry_count * 8;
+            @lazy(v1_table_bytes) bytes v1_entries @window(CompositionOffsetEntry, entry_count);
+        } else {
+            unsupported("Unsupported ctts FullBox version") at version;
+        }
+    }
+}
+
+@spec("ISO/IEC 14496-12:2015", "8.7.3.3")
+@description("Compact Sample Size entry pair packing two 4-bit sizes per byte.")
+struct CompactSampleSizePairEntry {
+    bits<4> entry_size_first
+        @description("Size in bytes of the even-indexed sample of this pair.");
+    bits<4> entry_size_second
+        @description("Size in bytes of the odd-indexed sample of this pair, or trailing padding.");
+}
+
+@spec("ISO/IEC 14496-12:2015", "8.7.3.3")
+@description("Compact Sample Size 8-bit entry.")
+struct CompactSampleSize8Entry {
+    bits<8> entry_size
+        @description("Size of individual sample in bytes.");
+}
+
+@spec("ISO/IEC 14496-12:2015", "8.7.3.3")
+@description("Compact Sample Size 16-bit entry.")
+struct CompactSampleSize16Entry {
+    bits<16> entry_size
+        @description("Size of individual sample in bytes.");
+}
+
+@spec("ISO/IEC 14496-12:2015", "8.7.3.3")
+@description("Compact Sample Size box payload.")
+struct CompactSampleSizeBox {
+    bits<8> version
+        @description("Version (0).");
+    bits<24> flags
+        @description("Flags.");
+    bits<24> reserved
+        @description("Reserved (0).");
+    bits<8> field_size
+        @description("Bit width of each entry (4, 8, or 16).");
+    bits<32> sample_count
+        @description("Number of samples.");
+    computed<u64> packed_pair_count = (sample_count + 1) / 2;
+    if (version == 0) {
+        if (field_size == 4) {
+            @lazy(packed_pair_count) bytes packed_entries
+                @window(CompactSampleSizePairEntry, packed_pair_count);
+        } else {
+            if (field_size == 8) {
+                computed<u64> table_bytes = sample_count;
+                @lazy(table_bytes) bytes entries @window(CompactSampleSize8Entry, sample_count);
+            } else {
+                if (field_size == 16) {
+                    computed<u64> wide_table_bytes = sample_count * 2;
+                    @lazy(wide_table_bytes) bytes wide_entries
+                        @window(CompactSampleSize16Entry, sample_count);
+                } else {
+                    unsupported("Unsupported stz2 field_size") at field_size;
+                }
+            }
+        }
+    } else {
+        unsupported("Unsupported stz2 FullBox version") at version;
+    }
+}
+
 @spec("ISO/IEC 14496-12:2015", "4.2")
 @description("ISO Base Media File Format box.")
 struct Box {
@@ -871,24 +989,72 @@ struct Box {
                                                                                                 unsupported("Unsupported esds FullBox version") at esds_version;
                                                                                             }
                                                                                         } else {
-                                                                                            if (type == 0x6D6F6F66) {
-                                                                                                unsupported("fragmented MP4 (moof/traf) is outside the v0.1 subset") at type;
-                                                                                            } else {
+                                                                                            if (type == 0x73747373) {
                                                                                                 if (size == 1) {
-                                                                                                    bits<64> largesize
-                                                                                                        @description("64-bit box size in bytes.");
-                                                                                                    computed<u64> large_payload_bytes = largesize - 16;
-                                                                                                    @lazy(large_payload_bytes) bytes large_payload
-                                                                                                        @description("Box payload data.");
+                                                                                                    bits<64> stss_largesize;
+                                                                                                    computed<u64> stss_large_payload_bytes = stss_largesize - 16;
+                                                                                                    @lazy(stss_large_payload_bytes) bytes stss_large_payload @container(SyncSampleBox);
                                                                                                 } else {
                                                                                                     if (size == 0) {
-                                                                                                        computed<u64> eof_payload_bytes = available_bytes();
-                                                                                                        @lazy(eof_payload_bytes) bytes eof_payload
-                                                                                                            @description("Box payload data extending to EOF.");
+                                                                                                        computed<u64> stss_eof_payload_bytes = available_bytes();
+                                                                                                        @lazy(stss_eof_payload_bytes) bytes stss_eof_payload @container(SyncSampleBox);
                                                                                                     } else {
-                                                                                                        computed<u64> payload_bytes = size - 8;
-                                                                                                        @lazy(payload_bytes) bytes payload
-                                                                                                            @description("Box payload data.");
+                                                                                                        computed<u64> stss_payload_bytes = size - 8;
+                                                                                                        @lazy(stss_payload_bytes) bytes stss_payload @container(SyncSampleBox);
+                                                                                                    }
+                                                                                                }
+                                                                                            } else {
+                                                                                                if (type == 0x63747473) {
+                                                                                                    if (size == 1) {
+                                                                                                        bits<64> ctts_largesize;
+                                                                                                        computed<u64> ctts_large_payload_bytes = ctts_largesize - 16;
+                                                                                                        @lazy(ctts_large_payload_bytes) bytes ctts_large_payload @container(CompositionOffsetBox);
+                                                                                                    } else {
+                                                                                                        if (size == 0) {
+                                                                                                            computed<u64> ctts_eof_payload_bytes = available_bytes();
+                                                                                                            @lazy(ctts_eof_payload_bytes) bytes ctts_eof_payload @container(CompositionOffsetBox);
+                                                                                                        } else {
+                                                                                                            computed<u64> ctts_payload_bytes = size - 8;
+                                                                                                            @lazy(ctts_payload_bytes) bytes ctts_payload @container(CompositionOffsetBox);
+                                                                                                        }
+                                                                                                    }
+                                                                                                } else {
+                                                                                                    if (type == 0x73747A32) {
+                                                                                                        if (size == 1) {
+                                                                                                            bits<64> stz2_largesize;
+                                                                                                            computed<u64> stz2_large_payload_bytes = stz2_largesize - 16;
+                                                                                                            @lazy(stz2_large_payload_bytes) bytes stz2_large_payload @container(CompactSampleSizeBox);
+                                                                                                        } else {
+                                                                                                            if (size == 0) {
+                                                                                                                computed<u64> stz2_eof_payload_bytes = available_bytes();
+                                                                                                                @lazy(stz2_eof_payload_bytes) bytes stz2_eof_payload @container(CompactSampleSizeBox);
+                                                                                                            } else {
+                                                                                                                computed<u64> stz2_payload_bytes = size - 8;
+                                                                                                                @lazy(stz2_payload_bytes) bytes stz2_payload @container(CompactSampleSizeBox);
+                                                                                                            }
+                                                                                                        }
+                                                                                                    } else {
+                                                                                                        if (type == 0x6D6F6F66) {
+                                                                                                            unsupported("fragmented MP4 (moof/traf) is outside the v0.1 subset") at type;
+                                                                                                        } else {
+                                                                                                            if (size == 1) {
+                                                                                                                bits<64> largesize
+                                                                                                                    @description("64-bit box size in bytes.");
+                                                                                                                computed<u64> large_payload_bytes = largesize - 16;
+                                                                                                                @lazy(large_payload_bytes) bytes large_payload
+                                                                                                                    @description("Box payload data.");
+                                                                                                            } else {
+                                                                                                                if (size == 0) {
+                                                                                                                    computed<u64> eof_payload_bytes = available_bytes();
+                                                                                                                    @lazy(eof_payload_bytes) bytes eof_payload
+                                                                                                                        @description("Box payload data extending to EOF.");
+                                                                                                                } else {
+                                                                                                                    computed<u64> payload_bytes = size - 8;
+                                                                                                                    @lazy(payload_bytes) bytes payload
+                                                                                                                        @description("Box payload data.");
+                                                                                                                }
+                                                                                                            }
+                                                                                                        }
                                                                                                     }
                                                                                                 }
                                                                                             }
