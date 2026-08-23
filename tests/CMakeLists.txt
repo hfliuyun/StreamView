@@ -195,6 +195,15 @@ streamview_add_rules_test(
     streamview_configuration_summary_tests
     rules/configuration_summary_test.cpp
 )
+streamview_add_rules_test(
+    streamview_aac_asc_configuration_summary_provider_tests
+    rules/aac_asc_configuration_summary_provider_test.cpp
+)
+target_compile_definitions(
+    streamview_aac_asc_configuration_summary_provider_tests
+    PRIVATE
+        STREAMVIEW_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
 
 qt_add_executable(streamview_svtool_tests tools/svtool_test.cpp)
 target_link_libraries(streamview_svtool_tests PRIVATE Qt6::Test)
