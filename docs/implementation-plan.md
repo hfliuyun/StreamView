@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5j-0-R — 主 Agent 深审并直接整改 ADR-0105 容器样本导航合同
-Next Action: Task P5j-1 至 P5j-5 批次执行（纪律条款 5：其间不设固定门禁，触发升级条件时转独立评审）；P5j-6 为下一固定门禁
-Last Verification: Task P5j-0-R — 双语 ADR-0105 五项缺陷就地整改（不可编译声明、DSL 不可表达的有符号 `ctts`、物理区间措辞、格式中立标签、不存在的参考工具）；Markdown-only skipped hosted CI per ADR-0019; `ctest -R markdown_hygiene` and `git diff --check` passed
+Last Completed Step: Task P5j-1 — 官方 MP4 规则包 v0.1.4 补齐 `stss`、`ctts` 与 `stz2` 样本表 wire syntax
+Next Action: Task P5j-2（`Mp4SampleTableIndex` 复合时间线与样本索引服务）；P5j-6 为下一固定门禁
+Last Verification: Task P5j-1 — 本机 Debug/Release/ASan-UBSan 三预设各 43/43 CTest 通过；`Mp4IsobmffAnalyzerTest` 52 passed（新增 10 项测试，其中 9 项对旧规则实测 Red）；四个官方规则 `svtool rule check` 全部 `Rule OK`；ffmpeg 生成的真实 B 帧 MP4 经 `ffprobe` 交叉核对 `stss`/`ctts` 解码值完全一致
 Blockers: None
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2816,3 +2816,24 @@ Blockers: None
   6. 复核确认无需改动的部分：`targetFormat` 已从核心移除并改为规则/应用层绑定；`stss` 缺省语义已扩至所有轨道类型；`stz2` 已纳入 P5j-1；SQLite WAL 已正确描述为不透明缓存页持久化而非样本表语义层，且 UI 样本页与 64 KiB 缓存页明确解耦；预算隔离项已补齐；切片计数已由六改为七。
   7. 验证：整改为纯 Markdown，按 ADR-0019 不触发 Hosted CI；`ctest -R markdown_hygiene` 通过，`git diff --check` 干净；评审现场存在既有未跟踪 `scratch/`，本轮未读取、修改、删除或提交该目录。
   终审结论：Task P5j-0-R 通过，P5j-0 门禁放行。Next Action 切换为 Task P5j-1 至 P5j-5 批次执行（按纪律条款 5，其间不设固定门禁，触发升级条件时必须转独立评审）；P5j-6 为下一固定门禁。
+- 2026-08-23：完成 Task P5j-1 —— 官方 MP4 规则包 `org.streamview.mp4` v0.1.4 补齐 `stss`、`ctts` 与 `stz2` 样本表 wire syntax：
+  1. 先探测语言边界，再写生产规则：9 次 `svtool rule check` 实测确立三条硬约束，均由错误原文而非推测确认：
+     - `@window` 表项结构必须字节对齐——`bits<4> entry_size` 单字段报 `error: Window entry struct must be a non-empty, byte-aligned fixed-width struct of static bits fields`；
+     - `@window` 的 count 字段必须无条件——`computed<u64>` 置于 `if` 内报 `error: Window count field 'packed_pair_count' must be unconditional`；
+     - `if` 条件不支持 `||`——`if (version == 0 || version == 1)` 报 `mp4_isobmff.svfmt:173:37: error: Conditions require a field or context_value equality`；读 `src/rules/dsl.cpp:1141-1199` 确认条件文法只接受布尔简写、`field == 无符号字面量` 与 `context_value(...)/header_value(...) == 无符号字面量` 三型，改写为嵌套 `if/else`，与既有 `stsz` 风格一致。
+  2. 规则实现（`src/rules/official/org.streamview.mp4/src/mp4_isobmff.svfmt`，920 → 1086 行，+180/−14）：
+     - 新增 `SyncSampleEntry`/`SyncSampleBox`（`stss`，ISO/IEC 14496-12 §8.6.2.2）；
+     - 新增 `CompositionOffsetEntry`/`CompositionOffsetBox`（`ctts`，§8.6.1.3），version 0 与 version 1 走 `v0_*`/`v1_*` 两条同布局分支；
+     - 新增 `CompactSampleSizePairEntry`/`CompactSampleSize8Entry`/`CompactSampleSize16Entry`/`CompactSampleSizeBox`（`stz2`，§8.7.3.3），`field_size == 4` 按规范的双 nibble 打包表达为字节对齐 pair 表项，`packed_pair_count = (sample_count + 1) / 2` 上提至 `if` 之外；
+     - FourCC 派发在链尾 `moof` 分支前追加 `0x73747373`/`0x63747473`/`0x73747A32`，每支保留 `size == 1` largesize、`size == 0` EOF 与常规三态 framing。选择链尾而非 `co64` 之后是因为后者需重排 377 行缩进而前者只触及约 47 行，且 FourCC 相等判断无顺序语义。
+     - `stz2` 表项按 `@window` 分页，未引入无界 eager repeat。
+  3. 符号边界恪守 ADR-0105 §3.2：规则按无符号 `bits<32>` 解码 `sample_offset`，不声称解码了有符号字段；实测 real-file 中 −1000 的 wire 形态为 `0xFFFFFC18`，测试断言的正是该原始无符号值，符号重解释留给 P5j-2 的 `Mp4SampleTableIndex`。
+  4. `rule.toml` 由 `0.1.3` 升至 `0.1.4`（解码输出确有变化），同步修正 `tests/rules/mp4_isobmff_analyzer_test.cpp` 中 `loadsBundledMp4PackageSuccessfully` 的版本断言。
+  5. Fixture（`tests/fixtures/generate_mp4_p5j_fixtures.py`，新建）生成 10 个可复现 fixture：稀疏 `stss` + `ctts` v0、`ctts` v1 负偏移、无 `stss`、`stz2` 三种 `field_size`、三种不支持 version、非法 `field_size == 12`、largesize/EOF framing、真实 B-frame 全表轨道（6 样本 4 chunk，含 `co64` 跨 4 GiB 偏移）、count/box size 不一致、超大表声明。
+  6. 测试（同一文件追加 10 项，按纪律条款 6 置于测试类末尾）：`analyzesSyncSampleAndCompositionOffsetV0`、`decodesCompositionOffsetVersion1WithRawUnsignedOffsets`、`analyzesTrackWithoutSyncSampleBox`、`analyzesCompactSampleSizeFieldSizes`、`handlesUnsupportedNewSampleTableVersions`、`handlesUnsupportedCompactSampleSizeFieldSize`、`analyzesLargeSizeAndEofNewSampleTableBoxes`、`analyzesRealisticBFrameTrackWithAllSampleTables`、`handlesSampleTableCountAndBoxSizeMismatch`、`rejectsOversizedSampleTableDeclaration`；均断言完整有序字段名向量、逐字段值、`metadata().window` 的 `entryCount`/`entrySizeBits`、window `logicalRange` 起点与长度，并经 `windowDecoder(...)->decodeWindow(...)` 断言解码后的表项值与 source spans。
+  7. 负向路径均为实测而非假定：`entry_count` 超出 box 容量与 `entry_count == 0xFFFFFFFF`（声明约 16 GiB 表）都在 `src/rules/dsl_vm.cpp:3404` 的 `bitCount > reader.remainingBits()` 检查处判定为 `TruncatedSource` → `MaterializationState::Invalid`，不生成 window 节点、不分配缓冲；不支持 version 与非法 `field_size` 分别产出 `SyncSampleBox.version`、`CompositionOffsetBox.version`、`CompactSampleSizeBox.version`、`CompactSampleSizeBox.field_size` 的 `UnsupportedSyntax` 诊断。
+  8. Red/Green 双向验证：将 svfmt 临时回退至 920 行旧版后，10 项新测试中 9 项 Red；唯一不 Red 的 `analyzesTrackWithoutSyncSampleBox` 断言的是「`stss` 缺失时不产生节点」，在新旧规则下同真，属守护性测试而非 Red/Green 用例。恢复新规则后 10/10 Green。
+  9. 真实文件交叉验证（ADR-0097 先例，`ffprobe` 为 ground truth）：用 `ffmpeg` 生成含 B 帧的真实 MP4，`ffprobe -v trace` 给出 `stss` size 32、`ctts` size 120，本规则解码得 `stss` `entry_count = 4`、`ctts` `entry_count = 13`，与 `(32−16)/4` 和 `(120−16)/8` 一致；`stss` 表项 `(1, 6, 11, 16)` 与 `-show_packets` 的关键帧标记逐一对应；13 条 `ctts` 表项展开为 20 个 per-sample 偏移 `2048, 4096, 1024, 1024, 2048, …`，与 ffprobe 每包 `|pts − dts|` 序列在全部 20 个样本上完全一致。临时文件已清理。
+  10. 验证矩阵（全部本机实跑）：Debug 43/43、Release 43/43、ASan/UBSan 43/43 全通过；`Mp4IsobmffAnalyzerTest` 52/52；四个官方规则 `svtool rule check` 均 `Rule OK`。
+  11. 边界恪守：diff 仅含 `mp4_isobmff.svfmt`、`rule.toml`、`mp4_isobmff_analyzer_test.cpp` 三个已跟踪文件与 `tests/fixtures/` 下 1 个生成脚本 + 10 个 fixture；未修改分析核心，FourCC 与 sample-table 语义未进入 C++；未读取、修改、删除或提交既有未跟踪 `scratch/`。按纪律条款 7 以 `grep -n` 全量复核，确认无任何文档以行号引用本轮位移的两个文件。
+  自检结论：`Review Gate: Conditional - self-check passed`。逐条核对纪律条款 4.2.2 的 7 项升级条件，均未命中：diff 未越界、未改 ADR 决策/公共 API/持久化 schema/跨任务合同、未引入线程或取消语义、未新增未受信输入面或 source mapping 算法、未触碰 CI 权限与依赖、关键负向路径均可自动验证且三预设结果一致、未发现规划或 ADR-0105 前置前提有误。Next Action 为 Task P5j-2（`Mp4SampleTableIndex` 复合时间线与样本索引服务）。
