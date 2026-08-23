@@ -182,10 +182,9 @@ void verifyLazySourceBytes(const streamview::core::AnalysisNode& node,
                        sourceBytes.begin() + static_cast<std::ptrdiff_t>(byteOffset)));
 }
 
-[[nodiscard]] std::optional<streamview::core::AnalysisNodeId> findSampleTableWindow(
+[[nodiscard]] std::optional<streamview::core::AnalysisNodeId> findStblPayload(
     const streamview::core::AnalysisTree& tree,
-    const streamview::rules::Mp4IsobmffAnalysisBatch& batch,
-    quint64 boxType) {
+    const streamview::rules::Mp4IsobmffAnalysisBatch& batch) {
     if (batch.boxNodes.size() < 2) return std::nullopt;
     auto moov = tree.node(batch.boxNodes[1]);
     if (!moov || moov->children().empty()) return std::nullopt;
@@ -207,7 +206,66 @@ void verifyLazySourceBytes(const streamview::core::AnalysisNode& node,
     if (!minfPayload || minfPayload->children().empty()) return std::nullopt;
     auto stblStruct = tree.node(minfPayload->children().front());
     if (!stblStruct || stblStruct->children().empty()) return std::nullopt;
-    auto stblPayload = tree.node(stblStruct->children().back());
+    return stblStruct->children().back();
+}
+
+// Payload struct of the `ordinal`-th (0-based) stbl child box whose type is `boxType`.
+// Sample table boxes may repeat within one stbl, so the ordinal distinguishes them.
+[[nodiscard]] std::optional<streamview::core::AnalysisNodeId> findSampleTableBoxStruct(
+    const streamview::core::AnalysisTree& tree,
+    const streamview::rules::Mp4IsobmffAnalysisBatch& batch,
+    quint64 boxType,
+    std::size_t ordinal = 0) {
+    const auto stblPayloadId = findStblPayload(tree, batch);
+    if (!stblPayloadId) return std::nullopt;
+    auto stblPayload = tree.node(*stblPayloadId);
+    if (!stblPayload) return std::nullopt;
+
+    std::size_t matched = 0;
+    for (const auto boxId : stblPayload->children()) {
+        auto boxStruct = tree.node(boxId);
+        if (!boxStruct || boxStruct->children().size() < 2) continue;
+        auto typeNode = tree.node(boxStruct->children()[1]);
+        if (!typeNode || typeNode->value().toULongLong() != boxType) continue;
+        if (matched++ != ordinal) continue;
+        auto payload = tree.node(boxStruct->children().back());
+        if (!payload || payload->children().empty()) return std::nullopt;
+        return payload->children().front();
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::vector<QString> fieldNamesOf(const streamview::core::AnalysisTree& tree,
+                                                const streamview::core::AnalysisNode& node) {
+    std::vector<QString> names;
+    names.reserve(node.children().size());
+    for (const auto childId : node.children()) {
+        const auto child = tree.node(childId);
+        names.push_back(child.has_value() ? child->name() : QString());
+    }
+    return names;
+}
+
+// First child of `structId` carrying window metadata, i.e. the paged entry table.
+[[nodiscard]] std::optional<streamview::core::AnalysisNodeId> findWindowChild(
+    const streamview::core::AnalysisTree& tree,
+    streamview::core::AnalysisNodeId structId) {
+    const auto structNode = tree.node(structId);
+    if (!structNode) return std::nullopt;
+    for (const auto childId : structNode->children()) {
+        const auto child = tree.node(childId);
+        if (child && child->metadata().window.has_value()) return childId;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::optional<streamview::core::AnalysisNodeId> findSampleTableWindow(
+    const streamview::core::AnalysisTree& tree,
+    const streamview::rules::Mp4IsobmffAnalysisBatch& batch,
+    quint64 boxType) {
+    const auto stblPayloadId = findStblPayload(tree, batch);
+    if (!stblPayloadId) return std::nullopt;
+    auto stblPayload = tree.node(*stblPayloadId);
     if (!stblPayload) return std::nullopt;
 
     for (const auto boxId : stblPayload->children()) {
@@ -316,6 +374,16 @@ private slots:
     void handlesTruncatedAvcConfigurationBox();
     void analyzesSizeZeroCodecConfigurationBoxes();
     void rejectsInvalidDescriptorTagsAndFifthLengthBytes();
+    void analyzesSyncSampleAndCompositionOffsetV0();
+    void decodesCompositionOffsetVersion1WithRawUnsignedOffsets();
+    void analyzesTrackWithoutSyncSampleBox();
+    void analyzesCompactSampleSizeFieldSizes();
+    void handlesUnsupportedNewSampleTableVersions();
+    void handlesUnsupportedCompactSampleSizeFieldSize();
+    void analyzesLargeSizeAndEofNewSampleTableBoxes();
+    void analyzesRealisticBFrameTrackWithAllSampleTables();
+    void handlesSampleTableCountAndBoxSizeMismatch();
+    void rejectsOversizedSampleTableDeclaration();
 };
 
 void Mp4IsobmffAnalyzerTest::failsCleanlyWhenNoRulePackageInstalled() {
@@ -944,7 +1012,7 @@ void Mp4IsobmffAnalyzerTest::loadsBundledMp4PackageSuccessfully() {
     QVERIFY(loaded.succeeded());
     QVERIFY(loaded.package.has_value());
     QCOMPARE(loaded.package->identity().packageId(), QStringLiteral("org.streamview.mp4"));
-    QCOMPARE(loaded.package->identity().packageVersion(), QStringLiteral("0.1.3"));
+    QCOMPARE(loaded.package->identity().packageVersion(), QStringLiteral("0.1.4"));
     const auto* mp4Source = loaded.package->fileContents(QStringLiteral("src/mp4_isobmff.svfmt"));
     QVERIFY(mp4Source != nullptr);
     QVERIFY(!mp4Source->isEmpty());
@@ -3040,6 +3108,680 @@ void Mp4IsobmffAnalyzerTest::rejectsInvalidDescriptorTagsAndFifthLengthBytes() {
         }
     }
     QVERIFY(foundTagDiagnostic);
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesSyncSampleAndCompositionOffsetV0() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5j_stss_ctts_v0.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+    QCOMPARE(batch.boxNodes.size(), std::size_t{3});
+
+    const auto& tree = analyzer->tree();
+    const auto stblPayloadId = findStblPayload(tree, batch);
+    QVERIFY(stblPayloadId.has_value());
+    QCOMPARE(tree.node(*stblPayloadId)->children().size(), std::size_t{3});
+
+    // stss: sparse sync sample table, samples 1 and 4 of 6 are random access points.
+    const auto stssStructId = findSampleTableBoxStruct(tree, batch, 0x73747373);
+    QVERIFY(stssStructId.has_value());
+    const auto stssStruct = tree.node(*stssStructId);
+    QVERIFY(stssStruct.has_value());
+    const std::vector<QString> expectedStssFieldNames = {
+        QStringLiteral("version"),
+        QStringLiteral("flags"),
+        QStringLiteral("entry_count"),
+        QStringLiteral("table_bytes"),
+        QStringLiteral("entries"),
+    };
+    QCOMPARE(fieldNamesOf(tree, *stssStruct), expectedStssFieldNames);
+    QCOMPARE(tree.node(stssStruct->children()[0])->value().toULongLong(), quint64{0});
+    QCOMPARE(tree.node(stssStruct->children()[1])->value().toULongLong(), quint64{0});
+    QCOMPARE(tree.node(stssStruct->children()[2])->value().toULongLong(), quint64{2});
+    QCOMPARE(tree.node(stssStruct->children()[3])->value().toULongLong(), quint64{8});
+
+    const auto stssWindowId = findWindowChild(tree, *stssStructId);
+    QVERIFY(stssWindowId.has_value());
+    const auto stssWindow = tree.node(*stssWindowId);
+    QVERIFY(stssWindow->metadata().window.has_value());
+    QCOMPARE(stssWindow->metadata().window->entryCount, quint64{2});
+    QCOMPARE(stssWindow->metadata().window->entrySizeBits, quint32{32});
+    QVERIFY(stssWindow->location().has_value());
+    QCOMPARE(stssWindow->location()->logicalRange().start().bitOffset(), quint64{64});
+    QCOMPARE(stssWindow->location()->logicalRange().bitLength(), quint64{64});
+
+    auto stssDecoder = analyzer->windowDecoder(*stssWindowId);
+    QVERIFY(stssDecoder.has_value());
+    const auto stssResult = stssDecoder->decodeWindow({0, 2});
+    QCOMPARE(stssResult.status, streamview::rules::DslExecutionStatus::Materialized);
+    QCOMPARE(stssResult.decodedEntryCount, quint64{2});
+    const quint64 expectedSyncSamples[2] = {1, 4};
+    for (std::size_t index = 0; index < 2; ++index) {
+        const auto entry = tree.node(stssResult.entryNodes[index]);
+        QVERIFY(entry.has_value());
+        QCOMPARE(entry->children().size(), std::size_t{1});
+        const auto sampleNumber = tree.node(entry->children().front());
+        QCOMPARE(sampleNumber->name(), QStringLiteral("sample_number"));
+        QCOMPARE(sampleNumber->value().toULongLong(), expectedSyncSamples[index]);
+    }
+
+    // ctts version 0: unsigned composition offsets.
+    const auto cttsStructId = findSampleTableBoxStruct(tree, batch, 0x63747473);
+    QVERIFY(cttsStructId.has_value());
+    const auto cttsStruct = tree.node(*cttsStructId);
+    QVERIFY(cttsStruct.has_value());
+    const std::vector<QString> expectedCttsFieldNames = {
+        QStringLiteral("version"),
+        QStringLiteral("flags"),
+        QStringLiteral("entry_count"),
+        QStringLiteral("v0_table_bytes"),
+        QStringLiteral("v0_entries"),
+    };
+    QCOMPARE(fieldNamesOf(tree, *cttsStruct), expectedCttsFieldNames);
+    QCOMPARE(tree.node(cttsStruct->children()[0])->value().toULongLong(), quint64{0});
+    QCOMPARE(tree.node(cttsStruct->children()[2])->value().toULongLong(), quint64{2});
+    QCOMPARE(tree.node(cttsStruct->children()[3])->value().toULongLong(), quint64{16});
+
+    const auto cttsWindowId = findWindowChild(tree, *cttsStructId);
+    QVERIFY(cttsWindowId.has_value());
+    const auto cttsWindow = tree.node(*cttsWindowId);
+    QCOMPARE(cttsWindow->metadata().window->entryCount, quint64{2});
+    QCOMPARE(cttsWindow->metadata().window->entrySizeBits, quint32{64});
+
+    auto cttsDecoder = analyzer->windowDecoder(*cttsWindowId);
+    QVERIFY(cttsDecoder.has_value());
+    const auto cttsResult = cttsDecoder->decodeWindow({0, 2});
+    QCOMPARE(cttsResult.status, streamview::rules::DslExecutionStatus::Materialized);
+    QCOMPARE(cttsResult.decodedEntryCount, quint64{2});
+    const quint64 expectedOffsets[2][2] = {{3, 2000}, {3, 1000}};
+    for (std::size_t index = 0; index < 2; ++index) {
+        const auto entry = tree.node(cttsResult.entryNodes[index]);
+        QVERIFY(entry.has_value());
+        QCOMPARE(entry->children().size(), std::size_t{2});
+        const auto sampleCount = tree.node(entry->children()[0]);
+        const auto sampleOffset = tree.node(entry->children()[1]);
+        QCOMPARE(sampleCount->name(), QStringLiteral("sample_count"));
+        QCOMPARE(sampleOffset->name(), QStringLiteral("sample_offset"));
+        QCOMPARE(sampleCount->value().toULongLong(), expectedOffsets[index][0]);
+        QCOMPARE(sampleOffset->value().toULongLong(), expectedOffsets[index][1]);
+    }
+
+    QCOMPARE(tree.node(tree.rootId())->diagnostics().size(), std::size_t{0});
+}
+
+void Mp4IsobmffAnalyzerTest::decodesCompositionOffsetVersion1WithRawUnsignedOffsets() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5j_ctts_v1_negative.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    const auto cttsStructId = findSampleTableBoxStruct(tree, batch, 0x63747473);
+    QVERIFY(cttsStructId.has_value());
+    const auto cttsStruct = tree.node(*cttsStructId);
+    QVERIFY(cttsStruct.has_value());
+
+    // Version 1 selects the v1_* branch; the wire layout is identical to version 0.
+    const std::vector<QString> expectedFieldNames = {
+        QStringLiteral("version"),
+        QStringLiteral("flags"),
+        QStringLiteral("entry_count"),
+        QStringLiteral("v1_table_bytes"),
+        QStringLiteral("v1_entries"),
+    };
+    QCOMPARE(fieldNamesOf(tree, *cttsStruct), expectedFieldNames);
+    QCOMPARE(tree.node(cttsStruct->children()[0])->value().toULongLong(), quint64{1});
+    QCOMPARE(tree.node(cttsStruct->children()[2])->value().toULongLong(), quint64{3});
+    QCOMPARE(tree.node(cttsStruct->children()[3])->value().toULongLong(), quint64{24});
+
+    const auto windowId = findWindowChild(tree, *cttsStructId);
+    QVERIFY(windowId.has_value());
+    const auto window = tree.node(*windowId);
+    QCOMPARE(window->metadata().window->entryCount, quint64{3});
+    QCOMPARE(window->metadata().window->entrySizeBits, quint32{64});
+
+    auto decoder = analyzer->windowDecoder(*windowId);
+    QVERIFY(decoder.has_value());
+    const auto result = decoder->decodeWindow({0, 3});
+    QCOMPARE(result.status, streamview::rules::DslExecutionStatus::Materialized);
+    QCOMPARE(result.decodedEntryCount, quint64{3});
+
+    // ADR-0105 section 3.2: the DSL has no signed fixed-width field type, so the rule
+    // decodes sample_offset as a raw unsigned 32-bit word. A muxer writing -1000 emits
+    // 0xFFFFFC18, and that is exactly what the rule must report here; the signed
+    // reinterpretation belongs to the downstream sample table indexer, not to this rule.
+    const quint64 expectedRawEntries[3][2] = {
+        {1, 0xFFFFFC18ULL},
+        {1, 0},
+        {2, 3000},
+    };
+    for (std::size_t index = 0; index < 3; ++index) {
+        const auto entry = tree.node(result.entryNodes[index]);
+        QVERIFY(entry.has_value());
+        QCOMPARE(entry->children().size(), std::size_t{2});
+        QCOMPARE(tree.node(entry->children()[0])->value().toULongLong(), expectedRawEntries[index][0]);
+        QCOMPARE(tree.node(entry->children()[1])->value().toULongLong(), expectedRawEntries[index][1]);
+    }
+
+    QCOMPARE(tree.node(tree.rootId())->diagnostics().size(), std::size_t{0});
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesTrackWithoutSyncSampleBox() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5j_stss_absent.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    const auto stblPayloadId = findStblPayload(tree, batch);
+    QVERIFY(stblPayloadId.has_value());
+    QCOMPARE(tree.node(*stblPayloadId)->children().size(), std::size_t{2});
+
+    // An absent stss means every sample is a sync sample (ISO/IEC 14496-12 8.6.2.1).
+    // That default is a semantic rule, not wire syntax, so it belongs to the downstream
+    // indexer: this rule must simply produce no stss node and no diagnostic.
+    QVERIFY(!findSampleTableBoxStruct(tree, batch, 0x73747373).has_value());
+    QVERIFY(findSampleTableBoxStruct(tree, batch, 0x73747473).has_value());
+    QVERIFY(findSampleTableBoxStruct(tree, batch, 0x7374737A).has_value());
+    QCOMPARE(tree.node(tree.rootId())->diagnostics().size(), std::size_t{0});
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesCompactSampleSizeFieldSizes() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5j_stz2_field_sizes.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    const auto stblPayloadId = findStblPayload(tree, batch);
+    QVERIFY(stblPayloadId.has_value());
+    QCOMPARE(tree.node(*stblPayloadId)->children().size(), std::size_t{3});
+
+    // field_size 4: ISO/IEC 14496-12 8.7.3.3 packs two nibbles per byte, so the window
+    // entry is a byte-aligned pair and an odd sample_count pads the trailing low nibble.
+    const auto packedStructId = findSampleTableBoxStruct(tree, batch, 0x73747A32, 0);
+    QVERIFY(packedStructId.has_value());
+    const auto packedStruct = tree.node(*packedStructId);
+    const std::vector<QString> expectedPackedFieldNames = {
+        QStringLiteral("version"),
+        QStringLiteral("flags"),
+        QStringLiteral("reserved"),
+        QStringLiteral("field_size"),
+        QStringLiteral("sample_count"),
+        QStringLiteral("packed_pair_count"),
+        QStringLiteral("packed_entries"),
+    };
+    QCOMPARE(fieldNamesOf(tree, *packedStruct), expectedPackedFieldNames);
+    QCOMPARE(tree.node(packedStruct->children()[2])->value().toULongLong(), quint64{0});
+    QCOMPARE(tree.node(packedStruct->children()[3])->value().toULongLong(), quint64{4});
+    QCOMPARE(tree.node(packedStruct->children()[4])->value().toULongLong(), quint64{5});
+    QCOMPARE(tree.node(packedStruct->children()[5])->value().toULongLong(), quint64{3});
+
+    const auto packedWindowId = findWindowChild(tree, *packedStructId);
+    QVERIFY(packedWindowId.has_value());
+    const auto packedWindow = tree.node(*packedWindowId);
+    QCOMPARE(packedWindow->metadata().window->entryCount, quint64{3});
+    QCOMPARE(packedWindow->metadata().window->entrySizeBits, quint32{8});
+    QVERIFY(packedWindow->location().has_value());
+    QCOMPARE(packedWindow->location()->logicalRange().start().bitOffset(), quint64{96});
+
+    auto packedDecoder = analyzer->windowDecoder(*packedWindowId);
+    QVERIFY(packedDecoder.has_value());
+    const auto packedResult = packedDecoder->decodeWindow({0, 3});
+    QCOMPARE(packedResult.status, streamview::rules::DslExecutionStatus::Materialized);
+    QCOMPARE(packedResult.decodedEntryCount, quint64{3});
+    // Sizes [1,2,3,4,5] pack to 0x12 0x34 0x50; the final low nibble is padding.
+    const quint64 expectedPairs[3][2] = {{1, 2}, {3, 4}, {5, 0}};
+    for (std::size_t index = 0; index < 3; ++index) {
+        const auto entry = tree.node(packedResult.entryNodes[index]);
+        QVERIFY(entry.has_value());
+        QCOMPARE(entry->children().size(), std::size_t{2});
+        const auto first = tree.node(entry->children()[0]);
+        const auto second = tree.node(entry->children()[1]);
+        QCOMPARE(first->name(), QStringLiteral("entry_size_first"));
+        QCOMPARE(second->name(), QStringLiteral("entry_size_second"));
+        QCOMPARE(first->value().toULongLong(), expectedPairs[index][0]);
+        QCOMPARE(second->value().toULongLong(), expectedPairs[index][1]);
+    }
+
+    // field_size 8: one byte per sample.
+    const auto byteStructId = findSampleTableBoxStruct(tree, batch, 0x73747A32, 1);
+    QVERIFY(byteStructId.has_value());
+    const auto byteStruct = tree.node(*byteStructId);
+    const std::vector<QString> expectedByteFieldNames = {
+        QStringLiteral("version"),
+        QStringLiteral("flags"),
+        QStringLiteral("reserved"),
+        QStringLiteral("field_size"),
+        QStringLiteral("sample_count"),
+        QStringLiteral("packed_pair_count"),
+        QStringLiteral("table_bytes"),
+        QStringLiteral("entries"),
+    };
+    QCOMPARE(fieldNamesOf(tree, *byteStruct), expectedByteFieldNames);
+    QCOMPARE(tree.node(byteStruct->children()[3])->value().toULongLong(), quint64{8});
+    QCOMPARE(tree.node(byteStruct->children()[4])->value().toULongLong(), quint64{3});
+    QCOMPARE(tree.node(byteStruct->children()[6])->value().toULongLong(), quint64{3});
+
+    const auto byteWindowId = findWindowChild(tree, *byteStructId);
+    QVERIFY(byteWindowId.has_value());
+    QCOMPARE(tree.node(*byteWindowId)->metadata().window->entryCount, quint64{3});
+    QCOMPARE(tree.node(*byteWindowId)->metadata().window->entrySizeBits, quint32{8});
+
+    auto byteDecoder = analyzer->windowDecoder(*byteWindowId);
+    QVERIFY(byteDecoder.has_value());
+    const auto byteResult = byteDecoder->decodeWindow({0, 3});
+    QCOMPARE(byteResult.status, streamview::rules::DslExecutionStatus::Materialized);
+    const quint64 expectedByteSizes[3] = {200, 100, 50};
+    for (std::size_t index = 0; index < 3; ++index) {
+        const auto entry = tree.node(byteResult.entryNodes[index]);
+        QVERIFY(entry.has_value());
+        const auto size = tree.node(entry->children().front());
+        QCOMPARE(size->name(), QStringLiteral("entry_size"));
+        QCOMPARE(size->value().toULongLong(), expectedByteSizes[index]);
+    }
+
+    // field_size 16: two bytes per sample.
+    const auto wideStructId = findSampleTableBoxStruct(tree, batch, 0x73747A32, 2);
+    QVERIFY(wideStructId.has_value());
+    const auto wideStruct = tree.node(*wideStructId);
+    const std::vector<QString> expectedWideFieldNames = {
+        QStringLiteral("version"),
+        QStringLiteral("flags"),
+        QStringLiteral("reserved"),
+        QStringLiteral("field_size"),
+        QStringLiteral("sample_count"),
+        QStringLiteral("packed_pair_count"),
+        QStringLiteral("wide_table_bytes"),
+        QStringLiteral("wide_entries"),
+    };
+    QCOMPARE(fieldNamesOf(tree, *wideStruct), expectedWideFieldNames);
+    QCOMPARE(tree.node(wideStruct->children()[3])->value().toULongLong(), quint64{16});
+    QCOMPARE(tree.node(wideStruct->children()[4])->value().toULongLong(), quint64{2});
+    QCOMPARE(tree.node(wideStruct->children()[6])->value().toULongLong(), quint64{4});
+
+    const auto wideWindowId = findWindowChild(tree, *wideStructId);
+    QVERIFY(wideWindowId.has_value());
+    QCOMPARE(tree.node(*wideWindowId)->metadata().window->entryCount, quint64{2});
+    QCOMPARE(tree.node(*wideWindowId)->metadata().window->entrySizeBits, quint32{16});
+
+    auto wideDecoder = analyzer->windowDecoder(*wideWindowId);
+    QVERIFY(wideDecoder.has_value());
+    const auto wideResult = wideDecoder->decodeWindow({0, 2});
+    QCOMPARE(wideResult.status, streamview::rules::DslExecutionStatus::Materialized);
+    const quint64 expectedWideSizes[2] = {4096, 8192};
+    for (std::size_t index = 0; index < 2; ++index) {
+        const auto entry = tree.node(wideResult.entryNodes[index]);
+        QVERIFY(entry.has_value());
+        QCOMPARE(tree.node(entry->children().front())->value().toULongLong(),
+                 expectedWideSizes[index]);
+    }
+
+    QCOMPARE(tree.node(tree.rootId())->diagnostics().size(), std::size_t{0});
+}
+
+void Mp4IsobmffAnalyzerTest::handlesUnsupportedNewSampleTableVersions() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5j_unsupported_versions.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    struct Expected final {
+        quint64 boxType;
+        QString fieldPath;
+    };
+    const std::vector<Expected> expected = {
+        {0x73747373, QStringLiteral("SyncSampleBox.version")},
+        {0x63747473, QStringLiteral("CompositionOffsetBox.version")},
+        {0x73747A32, QStringLiteral("CompactSampleSizeBox.version")},
+    };
+
+    for (const auto& expectation : expected) {
+        const auto structId = findSampleTableBoxStruct(tree, batch, expectation.boxType);
+        QVERIFY(structId.has_value());
+        const auto payloadStruct = tree.node(*structId);
+        QVERIFY(payloadStruct.has_value());
+        QCOMPARE(payloadStruct->state(), streamview::core::MaterializationState::Unsupported);
+        QVERIFY(!findWindowChild(tree, *structId).has_value());
+        bool foundUnsupported = false;
+        for (const auto& diagnostic : payloadStruct->diagnostics()) {
+            if (diagnostic.code == streamview::core::DiagnosticCode::UnsupportedSyntax &&
+                diagnostic.fieldPath == expectation.fieldPath) {
+                foundUnsupported = true;
+                break;
+            }
+        }
+        QVERIFY2(foundUnsupported,
+                 qPrintable(QStringLiteral("Missing UnsupportedSyntax diagnostic for %1")
+                                .arg(expectation.fieldPath)));
+    }
+}
+
+void Mp4IsobmffAnalyzerTest::handlesUnsupportedCompactSampleSizeFieldSize() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5j_stz2_bad_field_size.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    const auto structId = findSampleTableBoxStruct(tree, batch, 0x73747A32);
+    QVERIFY(structId.has_value());
+    const auto payloadStruct = tree.node(*structId);
+    QVERIFY(payloadStruct.has_value());
+
+    // A supported version with an illegal entry width must fault on field_size, not on
+    // version, and must not synthesize a window from an unknown entry stride.
+    QCOMPARE(tree.node(payloadStruct->children()[0])->value().toULongLong(), quint64{0});
+    QCOMPARE(tree.node(payloadStruct->children()[3])->value().toULongLong(), quint64{12});
+    QCOMPARE(payloadStruct->state(), streamview::core::MaterializationState::Unsupported);
+    QVERIFY(!findWindowChild(tree, *structId).has_value());
+
+    bool foundUnsupported = false;
+    for (const auto& diagnostic : payloadStruct->diagnostics()) {
+        if (diagnostic.code == streamview::core::DiagnosticCode::UnsupportedSyntax &&
+            diagnostic.fieldPath == QStringLiteral("CompactSampleSizeBox.field_size")) {
+            foundUnsupported = true;
+            break;
+        }
+    }
+    QVERIFY(foundUnsupported);
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesLargeSizeAndEofNewSampleTableBoxes() {
+    const auto bytes = readFixtureBytes(
+        QStringLiteral("mp4_p5j_largesize_and_eof_new_tables.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+    QCOMPARE(batch.boxNodes.size(), std::size_t{3});
+
+    const auto& tree = analyzer->tree();
+
+    // stss and ctts use 64-bit largesize framing; stz2 uses size == 0 and so must be the
+    // final box in the stbl payload.
+    struct Expected final {
+        quint64 boxType;
+        QString payloadFieldName;
+        quint64 payloadBytes;
+        quint64 entryCount;
+        quint32 entrySizeBits;
+        quint64 firstValue;
+    };
+    const std::vector<Expected> expected = {
+        {0x73747373, QStringLiteral("stss_large_payload"), 16, 2, 32, 2},
+        {0x63747473, QStringLiteral("ctts_large_payload"), 16, 1, 64, 9},
+        {0x73747A32, QStringLiteral("stz2_eof_payload"), 14, 2, 8, 77},
+    };
+
+    for (const auto& expectation : expected) {
+        const auto structId = findSampleTableBoxStruct(tree, batch, expectation.boxType);
+        QVERIFY(structId.has_value());
+
+        // The container payload node carrying this struct keeps the framed byte count.
+        const auto payload = tree.node(tree.node(*structId)->parentId().value());
+        QVERIFY(payload.has_value());
+        QCOMPARE(payload->name(), expectation.payloadFieldName);
+        QCOMPARE(payload->location()->logicalRange().bitLength(),
+                 expectation.payloadBytes * 8U);
+
+        const auto windowId = findWindowChild(tree, *structId);
+        QVERIFY(windowId.has_value());
+        const auto window = tree.node(*windowId);
+        QCOMPARE(window->metadata().window->entryCount, expectation.entryCount);
+        QCOMPARE(window->metadata().window->entrySizeBits, expectation.entrySizeBits);
+
+        auto decoder = analyzer->windowDecoder(*windowId);
+        QVERIFY(decoder.has_value());
+        const auto result = decoder->decodeWindow({0, 1});
+        QCOMPARE(result.status, streamview::rules::DslExecutionStatus::Materialized);
+        QCOMPARE(result.decodedEntryCount, quint64{1});
+        const auto entry = tree.node(result.entryNodes.front());
+        QVERIFY(entry.has_value());
+        QCOMPARE(tree.node(entry->children().front())->value().toULongLong(),
+                 expectation.firstValue);
+    }
+
+    QCOMPARE(tree.node(tree.rootId())->diagnostics().size(), std::size_t{0});
+}
+
+void Mp4IsobmffAnalyzerTest::analyzesRealisticBFrameTrackWithAllSampleTables() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5j_realistic_bframe_track.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    const auto stblPayloadId = findStblPayload(tree, batch);
+    QVERIFY(stblPayloadId.has_value());
+    // All six sample table boxes coexist: the three new dispatch branches must not
+    // shadow the five P5g boxes, and co64 must still be reached past them.
+    QCOMPARE(tree.node(*stblPayloadId)->children().size(), std::size_t{6});
+
+    struct Expected final {
+        quint64 boxType;
+        quint64 entryCount;
+        quint32 entrySizeBits;
+        quint64 firstValue;
+    };
+    const std::vector<Expected> expected = {
+        {0x73747473, 1, 64, 6},                 // stts: 6 samples, delta 1000
+        {0x73747373, 2, 32, 1},                 // stss: sync samples 1 and 4
+        {0x63747473, 4, 64, 1},                 // ctts: IBBP reordering
+        {0x73747363, 2, 96, 1},                 // stsc: 4 chunks in 2 runs
+        {0x7374737A, 6, 32, 100},               // stsz: per-sample sizes
+        {0x636F3634, 4, 64, 0x100000000ULL},    // co64: offsets past 4 GiB
+    };
+
+    for (const auto& expectation : expected) {
+        const auto structId = findSampleTableBoxStruct(tree, batch, expectation.boxType);
+        QVERIFY(structId.has_value());
+        const auto windowId = findWindowChild(tree, *structId);
+        QVERIFY(windowId.has_value());
+        const auto window = tree.node(*windowId);
+        QVERIFY(window->metadata().window.has_value());
+        QCOMPARE(window->metadata().window->entryCount, expectation.entryCount);
+        QCOMPARE(window->metadata().window->entrySizeBits, expectation.entrySizeBits);
+        QCOMPARE(window->location()->logicalRange().bitLength(),
+                 static_cast<quint64>(expectation.entrySizeBits) * expectation.entryCount);
+
+        auto decoder = analyzer->windowDecoder(*windowId);
+        QVERIFY(decoder.has_value());
+        const auto result = decoder->decodeWindow({0, 1});
+        QCOMPARE(result.status, streamview::rules::DslExecutionStatus::Materialized);
+        const auto entry = tree.node(result.entryNodes.front());
+        QVERIFY(entry.has_value());
+        QCOMPARE(tree.node(entry->children().front())->value().toULongLong(),
+                 expectation.firstValue);
+    }
+
+    // The composition offsets are what make this track a reordering one: decode the
+    // whole ctts table and assert the full (sample_count, sample_offset) sequence.
+    const auto cttsStructId = findSampleTableBoxStruct(tree, batch, 0x63747473);
+    QVERIFY(cttsStructId.has_value());
+    const auto cttsWindowId = findWindowChild(tree, *cttsStructId);
+    QVERIFY(cttsWindowId.has_value());
+    auto cttsDecoder = analyzer->windowDecoder(*cttsWindowId);
+    QVERIFY(cttsDecoder.has_value());
+    const auto cttsResult = cttsDecoder->decodeWindow({0, 4});
+    QCOMPARE(cttsResult.status, streamview::rules::DslExecutionStatus::Materialized);
+    QCOMPARE(cttsResult.decodedEntryCount, quint64{4});
+    const quint64 expectedCtts[4][2] = {{1, 2000}, {2, 0}, {1, 1000}, {2, 0}};
+    quint64 totalCttsSamples = 0;
+    for (std::size_t index = 0; index < 4; ++index) {
+        const auto entry = tree.node(cttsResult.entryNodes[index]);
+        QVERIFY(entry.has_value());
+        QCOMPARE(tree.node(entry->children()[0])->value().toULongLong(), expectedCtts[index][0]);
+        QCOMPARE(tree.node(entry->children()[1])->value().toULongLong(), expectedCtts[index][1]);
+        totalCttsSamples += expectedCtts[index][0];
+    }
+    // ctts must account for exactly the 6 samples that stts and stsz declare.
+    QCOMPARE(totalCttsSamples, quint64{6});
+
+    // Sparse sync samples: 2 of 6 are random access points.
+    const auto stssStructId = findSampleTableBoxStruct(tree, batch, 0x73747373);
+    QVERIFY(stssStructId.has_value());
+    const auto stssWindowId = findWindowChild(tree, *stssStructId);
+    QVERIFY(stssWindowId.has_value());
+    auto stssDecoder = analyzer->windowDecoder(*stssWindowId);
+    QVERIFY(stssDecoder.has_value());
+    const auto stssResult = stssDecoder->decodeWindow({0, 2});
+    QCOMPARE(stssResult.status, streamview::rules::DslExecutionStatus::Materialized);
+    const quint64 expectedSync[2] = {1, 4};
+    for (std::size_t index = 0; index < 2; ++index) {
+        const auto entry = tree.node(stssResult.entryNodes[index]);
+        QVERIFY(entry.has_value());
+        QCOMPARE(tree.node(entry->children().front())->value().toULongLong(),
+                 expectedSync[index]);
+    }
+
+    QCOMPARE(tree.node(tree.rootId())->diagnostics().size(), std::size_t{0});
+}
+
+void Mp4IsobmffAnalyzerTest::handlesSampleTableCountAndBoxSizeMismatch() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5j_count_size_mismatch.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+
+    // entry_count declares a table larger than the box carries. The lazy region is
+    // bounded by the container payload, so the overrun faults deterministically here
+    // instead of reading the neighbouring box as table entries.
+    struct Expected final {
+        quint64 boxType;
+        quint64 declaredEntryCount;
+        quint64 declaredTableBytes;
+        QString fieldPath;
+    };
+    const std::vector<Expected> expected = {
+        {0x73747373, 100, 400, QStringLiteral("SyncSampleBox.entries")},
+        {0x63747473, 50, 400, QStringLiteral("CompositionOffsetBox.v0_entries")},
+    };
+
+    for (const auto& expectation : expected) {
+        const auto structId = findSampleTableBoxStruct(tree, batch, expectation.boxType);
+        QVERIFY(structId.has_value());
+        const auto payloadStruct = tree.node(*structId);
+        QVERIFY(payloadStruct.has_value());
+        QCOMPARE(tree.node(payloadStruct->children()[2])->value().toULongLong(),
+                 expectation.declaredEntryCount);
+        QCOMPARE(tree.node(payloadStruct->children()[3])->value().toULongLong(),
+                 expectation.declaredTableBytes);
+
+        // No window node is synthesized from a count the box cannot back.
+        QCOMPARE(payloadStruct->children().size(), std::size_t{4});
+        QVERIFY(!findWindowChild(tree, *structId).has_value());
+        QCOMPARE(payloadStruct->state(), streamview::core::MaterializationState::Invalid);
+
+        bool foundTruncated = false;
+        for (const auto& diagnostic : payloadStruct->diagnostics()) {
+            if (diagnostic.code == streamview::core::DiagnosticCode::TruncatedSource &&
+                diagnostic.fieldPath == expectation.fieldPath) {
+                foundTruncated = true;
+                break;
+            }
+        }
+        QVERIFY2(foundTruncated,
+                 qPrintable(QStringLiteral("Missing TruncatedSource diagnostic for %1")
+                                .arg(expectation.fieldPath)));
+    }
+
+    // The mismatch is contained: the box after the faulted stbl still analyzes.
+    QCOMPARE(batch.boxNodes.size(), std::size_t{3});
+    const auto mdat = tree.node(batch.boxNodes[2]);
+    QVERIFY(mdat.has_value());
+    const auto mdatStruct = tree.node(mdat->children().front());
+    QVERIFY(mdatStruct.has_value());
+    QCOMPARE(tree.node(mdatStruct->children()[1])->value().toULongLong(), quint64{0x6D646174});
+}
+
+void Mp4IsobmffAnalyzerTest::rejectsOversizedSampleTableDeclaration() {
+    const auto bytes = readFixtureBytes(QStringLiteral("mp4_p5j_oversized_table.mp4"));
+    MemorySource source(bytes);
+    QString errorMessage;
+
+    auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(source, &errorMessage);
+    QVERIFY2(analyzer.has_value(), qPrintable(errorMessage));
+
+    const auto batch = analyzer->analyzeBatch();
+    QCOMPARE(batch.status, streamview::rules::Mp4IsobmffAnalysisStatus::Complete);
+
+    const auto& tree = analyzer->tree();
+    const auto structId = findSampleTableBoxStruct(tree, batch, 0x73747373);
+    QVERIFY(structId.has_value());
+    const auto payloadStruct = tree.node(*structId);
+    QVERIFY(payloadStruct.has_value());
+
+    // entry_count 0xFFFFFFFF declares a ~16 GiB table inside a 24-byte box. The
+    // declared size is checked against the available source range before any node or
+    // buffer is created, so the arithmetic must not overflow and nothing is allocated.
+    QCOMPARE(tree.node(payloadStruct->children()[2])->value().toULongLong(),
+             quint64{0xFFFFFFFF});
+    QCOMPARE(tree.node(payloadStruct->children()[3])->value().toULongLong(),
+             quint64{0xFFFFFFFF} * 4U);
+    QCOMPARE(payloadStruct->children().size(), std::size_t{4});
+    QVERIFY(!findWindowChild(tree, *structId).has_value());
+    QCOMPARE(payloadStruct->state(), streamview::core::MaterializationState::Invalid);
+
+    bool foundTruncated = false;
+    for (const auto& diagnostic : payloadStruct->diagnostics()) {
+        if (diagnostic.code == streamview::core::DiagnosticCode::TruncatedSource &&
+            diagnostic.fieldPath == QStringLiteral("SyncSampleBox.entries")) {
+            foundTruncated = true;
+            break;
+        }
+    }
+    QVERIFY(foundTruncated);
+
+    // The oversized declaration must not have grown the tree beyond the real boxes.
+    QCOMPARE(batch.boxNodes.size(), std::size_t{3});
 }
 
 QTEST_MAIN(Mp4IsobmffAnalyzerTest)
