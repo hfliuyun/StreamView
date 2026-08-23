@@ -179,6 +179,15 @@ streamview_add_rules_test(
     rules/mp4_sample_table_index_test.cpp
 )
 streamview_add_rules_test(
+    streamview_mp4_sample_table_extractor_tests
+    rules/mp4_sample_table_extractor_test.cpp
+)
+target_compile_definitions(
+    streamview_mp4_sample_table_extractor_tests
+    PRIVATE
+        STREAMVIEW_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+streamview_add_rules_test(
     streamview_sample_payload_runner_tests
     rules/sample_payload_runner_test.cpp
 )
