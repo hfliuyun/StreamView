@@ -27,6 +27,7 @@
 #include <limits>
 #include <memory>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 using streamview::app::AnalysisBatchResult;
@@ -39,6 +40,8 @@ using streamview::app::AnalysisSessionNavigationStatus;
 using streamview::app::AnalysisSessionRestoreStatus;
 using streamview::app::AnalysisSessionReturnResult;
 using streamview::app::AnalysisSessionReturnStatus;
+using streamview::app::AnalysisSessionSamplePageRequest;
+using streamview::app::AnalysisSessionSampleStatus;
 using streamview::app::NavigationFrame;
 using streamview::app::RawDisplayMode;
 using streamview::app::SessionAnnotation;
@@ -52,6 +55,16 @@ using streamview::core::RandomAccessSource;
 using streamview::core::SourceReadResult;
 using streamview::core::SourceReadStatus;
 using streamview::rules::RulePackageCatalog;
+
+/// `trackIndices_` holds table readers that borrow `analyzer_`
+/// (`mp4_sample_table_extractor.h:52-56`), so relocating a session would leave
+/// every reader decoding through a moved-from analyzer. Deleting the move and
+/// copy operations is what makes that unrepresentable, and these assertions fail
+/// at compile time if any of them is ever reintroduced.
+static_assert(!std::is_move_constructible_v<AnalysisSession>);
+static_assert(!std::is_move_assignable_v<AnalysisSession>);
+static_assert(!std::is_copy_constructible_v<AnalysisSession>);
+static_assert(!std::is_copy_assignable_v<AnalysisSession>);
 
 namespace {
 
@@ -278,6 +291,60 @@ private:
     return catalog;
 }
 
+/// Opens an MP4 fixture with the container rule pinned instead of detected.
+///
+/// Format detection cannot be relied on for AVC-in-MP4: a `VisualSampleEntry`
+/// ends `... 00 00 | 00 01 | 0a` (reserved, frame_count, compressorname length),
+/// and box sizes of the form `00 00 01 xx` add more, so a real file reaches two
+/// valid-looking NAL headers and therefore H.264 `Strong`. `createPrepared`
+/// resolves that tie in H.264's favour, leaving the session without a container
+/// analyzer. Pinning is what a caller that already knows the container does, and
+/// it keeps these tests measuring sample navigation rather than detection.
+[[nodiscard]] std::unique_ptr<AnalysisSession> openPinnedMp4Fixture(
+    const QString& fixturePath, const streamview::rules::RulePackageCatalog& catalog) {
+    auto loaded = streamview::rules::loadMp4IsobmffRulePackage();
+    if (!loaded.succeeded() || !loaded.package.has_value()) {
+        return nullptr;
+    }
+    auto pinned = streamview::rules::RuleEntryPointIdentity::create(
+        loaded.package->identity(), QStringLiteral("main"));
+    if (!pinned.has_value()) {
+        return nullptr;
+    }
+
+    QString errorMessage;
+    auto source = streamview::core::FileSource::open(fixturePath, &errorMessage);
+    if (source == nullptr) {
+        return nullptr;
+    }
+    auto fingerprint = source->fingerprint();
+    if (!fingerprint.succeeded()) {
+        return nullptr;
+    }
+    source.reset();
+
+    auto document = SessionDocument::create(fixturePath, fixturePath,
+                                            std::move(*fingerprint.fingerprint),
+                                            std::move(*pinned));
+    if (!document.has_value()) {
+        return nullptr;
+    }
+    QTemporaryDir directory;
+    if (!directory.isValid()) {
+        return nullptr;
+    }
+    const QString sessionPath = directory.filePath(QStringLiteral("pinned.svsession"));
+    if (!document->save(sessionPath, &errorMessage)) {
+        return nullptr;
+    }
+
+    auto restored = AnalysisSession::restoreSession(sessionPath, catalog);
+    if (restored.status != AnalysisSessionRestoreStatus::Restored) {
+        return nullptr;
+    }
+    return std::move(restored.session);
+}
+
 [[nodiscard]] streamview::rules::RulePackageLoadResult
 makeTwoCompoundEntrypointPackage() {
     const QByteArray manifest = QByteArrayLiteral(
@@ -390,6 +457,23 @@ void collectNodesByTargetFormat(
     std::vector<AnalysisNodeId> results;
     collectNodesByTargetFormat(tree, currentId, targetFormat, results);
     return results;
+}
+
+[[nodiscard]] std::optional<streamview::core::AnalysisNode> findChildNamed(
+    const streamview::core::AnalysisTree& tree,
+    AnalysisNodeId parentId,
+    const QString& name) {
+    const auto parent = tree.node(parentId);
+    if (!parent) {
+        return std::nullopt;
+    }
+    for (const auto childId : parent->children()) {
+        const auto child = tree.node(childId);
+        if (child && child->name() == name) {
+            return child;
+        }
+    }
+    return std::nullopt;
 }
 
 } // namespace
@@ -1589,6 +1673,361 @@ private slots:
             QCOMPARE(sourceError.status, AnalysisSessionNavigationStatus::SourceError);
             assertUnchanged(*session, rootTree, rootNodeCount);
         }
+    }
+
+    void reportsIndexedTracksWithTheirDeclaredTargetFormats() {
+        const QString fixturePath =
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_two_tracks.mp4");
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto session = openPinnedMp4Fixture(fixturePath, catalog);
+        QVERIFY(session != nullptr);
+        QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+
+        const auto tracks = session->tracks();
+        QVERIFY2(tracks.available(), qPrintable(tracks.errorMessage));
+        QCOMPARE(tracks.tracks.size(), std::size_t{2});
+
+        QCOMPARE(tracks.tracks[0].trackId, quint32{1});
+        QCOMPARE(tracks.tracks[0].timescale, quint32{30000});
+        QCOMPARE(tracks.tracks[0].sampleCount, quint64{2});
+        QCOMPARE(tracks.tracks[0].targetFormat, QStringLiteral("video.h264.nal"));
+
+        QCOMPARE(tracks.tracks[1].trackId, quint32{2});
+        QCOMPARE(tracks.tracks[1].timescale, quint32{44100});
+        QCOMPARE(tracks.tracks[1].sampleCount, quint64{2});
+        QCOMPARE(tracks.tracks[1].targetFormat, QStringLiteral("audio.aac.asc"));
+    }
+
+    void pagesSamplesForOneTrackAndRejectsUnknownTracks() {
+        const QString fixturePath =
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_avc_multi_nal.mp4");
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto session = openPinnedMp4Fixture(fixturePath, catalog);
+        QVERIFY(session != nullptr);
+        QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+
+        AnalysisSessionSamplePageRequest request;
+        request.trackId = 1;
+        request.pageIndex = 0;
+        request.pageSize = 2;
+        const auto firstPage = session->samplesForTrack(request);
+        QVERIFY2(firstPage.available(), qPrintable(firstPage.errorMessage));
+        QCOMPARE(firstPage.descriptors.size(), std::size_t{2});
+        QCOMPARE(firstPage.firstSampleIndex, quint64{0});
+        QCOMPARE(firstPage.sampleCount, quint64{3});
+        QCOMPARE(firstPage.descriptors[0].sampleIndex, quint64{0});
+        QCOMPARE(firstPage.descriptors[0].timescale, quint32{30000});
+        QVERIFY(firstPage.descriptors[0].isSyncSample);
+        QVERIFY(!firstPage.descriptors[1].isSyncSample);
+
+        // The second page starts inside the second chunk, so the page boundary
+        // does not coincide with a chunk boundary.
+        request.pageIndex = 1;
+        const auto secondPage = session->samplesForTrack(request);
+        QVERIFY2(secondPage.available(), qPrintable(secondPage.errorMessage));
+        QCOMPARE(secondPage.descriptors.size(), std::size_t{1});
+        QCOMPARE(secondPage.firstSampleIndex, quint64{2});
+        QCOMPARE(secondPage.descriptors[0].sampleIndex, quint64{2});
+
+        request.trackId = 99;
+        request.pageIndex = 0;
+        const auto missing = session->samplesForTrack(request);
+        QCOMPARE(missing.status, AnalysisSessionSampleStatus::TrackNotFound);
+        QVERIFY(missing.descriptors.empty());
+    }
+
+    void entersAvcSampleAsMultipleNalUnitsAndReturnsToTheSampleRow() {
+        const QString fixturePath =
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_avc_multi_nal.mp4");
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto session = openPinnedMp4Fixture(fixturePath, catalog);
+        QVERIFY(session != nullptr);
+        QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+
+        const auto entered = session->enterSample(1, 0, catalog);
+        QVERIFY2(entered.entered(), qPrintable(entered.errorMessage));
+        QCOMPARE(entered.status, AnalysisSessionSampleStatus::Available);
+        QCOMPARE(session->navigationDepth(), std::size_t{1});
+        QVERIFY(session->canReturnToParent());
+
+        QCOMPARE(entered.unitNodeIds.size(), std::size_t{3});
+        QCOMPARE(entered.sample.sampleIndex, quint64{0});
+        QCOMPARE(entered.sample.trackId, quint32{1});
+
+        QVERIFY(entered.sampleNodeId.has_value());
+        const auto& sampleTree = session->activeTree();
+        const auto sampleNode = sampleTree.node(*entered.sampleNodeId);
+        QVERIFY(sampleNode.has_value());
+        QCOMPARE(sampleNode->state(), MaterializationState::Materialized);
+
+        const auto firstUnit = sampleTree.node(entered.unitNodeIds.front());
+        QVERIFY(firstUnit.has_value());
+        const auto header = findChildNamed(sampleTree, firstUnit->id(),
+                                          QStringLiteral("NalUnitHeader"));
+        QVERIFY(header.has_value());
+        const auto sps = findChildNamed(sampleTree, header->id(),
+                                        QStringLiteral("SequenceParameterSetRbsp"));
+        QVERIFY(sps.has_value());
+
+        const auto secondUnit = sampleTree.node(entered.unitNodeIds[1]);
+        QVERIFY(secondUnit.has_value());
+        const auto secondHeader = findChildNamed(sampleTree, secondUnit->id(),
+                                                 QStringLiteral("NalUnitHeader"));
+        QVERIFY(secondHeader.has_value());
+        QVERIFY(findChildNamed(sampleTree, secondHeader->id(),
+                               QStringLiteral("PictureParameterSetRbsp"))
+                    .has_value());
+
+        const auto currentSample = session->currentSampleFrame();
+        QVERIFY(currentSample != nullptr);
+        QCOMPARE(currentSample->trackId, quint32{1});
+        QCOMPARE(currentSample->sampleIndex, quint64{0});
+
+        const auto returned = session->returnToParent();
+        QCOMPARE(returned.status, AnalysisSessionReturnStatus::Returned);
+        QCOMPARE(session->navigationDepth(), std::size_t{0});
+        QCOMPARE(&session->activeTree(), &session->tree());
+        QVERIFY(returned.restoredSample.has_value());
+        QCOMPARE(returned.restoredSample->trackId, quint32{1});
+        QCOMPARE(returned.restoredSample->sampleIndex, quint64{0});
+        QCOMPARE(returned.restoredSample->targetFormat, QStringLiteral("video.h264.nal"));
+        QCOMPARE(returned.restoredSample->sample.sourceSpans.size(), std::size_t{1});
+        QCOMPARE(session->currentSampleFrame(), nullptr);
+    }
+
+    void entersAacSampleAsOpaqueAccessUnitReferencingItsConfiguration() {
+        const QString fixturePath =
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_aac_opaque.mp4");
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto session = openPinnedMp4Fixture(fixturePath, catalog);
+        QVERIFY(session != nullptr);
+        QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+
+        const auto entered = session->enterSample(1, 1, catalog);
+        QVERIFY2(entered.entered(), qPrintable(entered.errorMessage));
+        QCOMPARE(entered.unitNodeIds.size(), std::size_t{1});
+        QCOMPARE(entered.sample.sampleIndex, quint64{1});
+        QVERIFY(entered.sample.isSyncSample);
+
+        const auto& sampleTree = session->activeTree();
+        QVERIFY(entered.sampleNodeId.has_value());
+        const auto accessUnit = sampleTree.node(entered.unitNodeIds.front());
+        QVERIFY(accessUnit.has_value());
+        QCOMPARE(accessUnit->kind(), streamview::core::AnalysisNodeKind::CompressedPayload);
+
+        QVERIFY(findChildNamed(sampleTree, *entered.sampleNodeId,
+                               QStringLiteral("configuration_node"))
+                    .has_value());
+        const auto summary = findChildNamed(sampleTree, *entered.sampleNodeId,
+                                            QStringLiteral("configuration_summary"));
+        QVERIFY(summary.has_value());
+        QVERIFY(summary->value().toString().contains(QStringLiteral("44100")));
+
+        const auto returned = session->returnToParent();
+        QCOMPARE(returned.status, AnalysisSessionReturnStatus::Returned);
+        QVERIFY(returned.restoredSample.has_value());
+        QCOMPARE(returned.restoredSample->targetFormat, QStringLiteral("audio.aac.asc"));
+    }
+
+    void enterSampleFailsClosedOnUnknownTrackAndSampleAndUnsupportedSource() {
+        const auto catalog = makeCatalogWithOfficialPackages();
+        {
+            const QString fixturePath =
+                QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_avc_multi_nal.mp4");
+            auto session = openPinnedMp4Fixture(fixturePath, catalog);
+            QVERIFY(session != nullptr);
+            QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+
+            const auto unknownTrack = session->enterSample(42, 0, catalog);
+            QCOMPARE(unknownTrack.status, AnalysisSessionSampleStatus::TrackNotFound);
+            QCOMPARE(session->navigationDepth(), std::size_t{0});
+
+            const auto unknownSample = session->enterSample(1, 999, catalog);
+            QCOMPARE(unknownSample.status, AnalysisSessionSampleStatus::SampleNotFound);
+            QCOMPARE(session->navigationDepth(), std::size_t{0});
+        }
+
+        {
+            auto session = AnalysisSession::create(
+                std::make_unique<MemorySource>(validAnnexB(), QStringLiteral("fixture.264")));
+            QVERIFY(session != nullptr);
+            QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+
+            const auto tracks = session->tracks();
+            QCOMPARE(tracks.status, AnalysisSessionSampleStatus::UnsupportedSource);
+            QVERIFY(tracks.tracks.empty());
+        }
+
+        {
+            const QString fixturePath =
+                QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_avc_multi_nal.mp4");
+            auto session = openPinnedMp4Fixture(fixturePath, catalog);
+            QVERIFY(session != nullptr);
+            const auto notAnalyzed = session->tracks();
+            QCOMPARE(notAnalyzed.status, AnalysisSessionSampleStatus::NotAnalyzed);
+        }
+    }
+
+    void truncatedSampleUnitFailsWithoutDisturbingTheParentTreeOrPaging() {
+        const QString fixturePath = QStringLiteral(
+            STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_avc_truncated_unit.mp4");
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto session = openPinnedMp4Fixture(fixturePath, catalog);
+        QVERIFY(session != nullptr);
+        QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+
+        const auto* rootTree = &session->tree();
+
+        AnalysisSessionSamplePageRequest request;
+        request.trackId = 1;
+        request.pageSize = 2;
+        const auto pageBefore = session->samplesForTrack(request);
+        QVERIFY(pageBefore.available());
+
+        // Baselined after paging: building the sample index materializes the
+        // lazy sample-table regions, so an earlier baseline would measure that
+        // growth instead of what the failed enterSample leaves behind.
+        const auto rootNodeCount = rootTree->nodeCount();
+
+        // Sample 0 is intact, so entering it first creates the sample session
+        // whose tree the runner writes into. That tree, not the container tree,
+        // is what a failed sample has to leave untouched: samples of one track
+        // share this tree by entrypoint identity, so a half-written failure
+        // would corrupt every later sample.
+        const auto firstEntry = session->enterSample(1, 0, catalog);
+        QVERIFY2(firstEntry.entered(), qPrintable(firstEntry.errorMessage));
+        const auto* sampleTree = &session->activeTree();
+        QVERIFY(sampleTree != rootTree);
+        const auto sampleTreeNodeCount = sampleTree->nodeCount();
+        QCOMPARE(session->returnToParent().status, AnalysisSessionReturnStatus::Returned);
+
+        const auto failed = session->enterSample(1, 1, catalog);
+        QVERIFY(!failed.entered());
+        QCOMPARE(failed.status, AnalysisSessionSampleStatus::InvalidSampleRange);
+        QCOMPARE(session->navigationDepth(), std::size_t{0});
+        QVERIFY(!session->canReturnToParent());
+        QCOMPARE(&session->activeTree(), rootTree);
+        QCOMPARE(session->tree().nodeCount(), rootNodeCount);
+        QCOMPARE(sampleTree->nodeCount(), sampleTreeNodeCount);
+        QCOMPARE(session->currentSampleFrame(), nullptr);
+
+        const auto pageAfter = session->samplesForTrack(request);
+        QVERIFY(pageAfter.available());
+        QCOMPARE(pageAfter.descriptors.size(), pageBefore.descriptors.size());
+        QCOMPARE(pageAfter.sampleCount, pageBefore.sampleCount);
+
+        const auto stillWorks = session->enterSample(1, 0, catalog);
+        QVERIFY2(stillWorks.entered(), qPrintable(stillWorks.errorMessage));
+        QCOMPARE(session->navigationDepth(), std::size_t{1});
+        QCOMPARE(&session->activeTree(), sampleTree);
+    }
+
+    void trackIndexIsNotCachedFromAPartiallyAnalyzedContainer() {
+        const QString fixturePath =
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_two_tracks.mp4");
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto session = openPinnedMp4Fixture(fixturePath, catalog);
+        QVERIFY(session != nullptr);
+
+        // One box per batch, so the movie is still incomplete when tracks() is
+        // first asked. The extractor skips a `trak` that has no `stbl` yet
+        // instead of failing, and the built index latches with no invalidation
+        // path, so answering here would cache a short track list permanently.
+        std::size_t batches = 0;
+        AnalysisBatchResult batch;
+        do {
+            batch = session->analyzeBatch(1);
+            ++batches;
+            if (batch.status == AnalysisBatchStatus::InProgress) {
+                const auto early = session->tracks();
+                QCOMPARE(early.status, AnalysisSessionSampleStatus::NotAnalyzed);
+                QVERIFY(early.tracks.empty());
+            }
+            QVERIFY(batches < 512);
+        } while (batch.status == AnalysisBatchStatus::InProgress);
+
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
+        QVERIFY2(batches > 1, "the fixture must need several batches for this to prove anything");
+
+        const auto tracks = session->tracks();
+        QVERIFY2(tracks.available(), qPrintable(tracks.errorMessage));
+        QCOMPARE(tracks.tracks.size(), std::size_t{2});
+        QCOMPARE(tracks.tracks[0].trackId, quint32{1});
+        QCOMPARE(tracks.tracks[1].trackId, quint32{2});
+    }
+
+    void tracksRefusesToAnswerFromATerminallyFailedContainer() {
+        const QString fixturePath = QStringLiteral(
+            STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_terminal_resource_limit.mp4");
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto session = openPinnedMp4Fixture(fixturePath, catalog);
+        QVERIFY(session != nullptr);
+
+        std::size_t batches = 0;
+        AnalysisBatchResult batch;
+        do {
+            batch = session->analyzeBatch();
+            ++batches;
+            QVERIFY(batches < 512);
+        } while (batch.status == AnalysisBatchStatus::InProgress);
+
+        QCOMPARE(batch.status, AnalysisBatchStatus::ResourceLimit);
+        QVERIFY2(session->finished(),
+                 "a terminal failure still reports the analysis as finished, which is exactly "
+                 "why finished() cannot gate sample indexing");
+
+        const auto& containerTree = session->tree();
+        const auto root = containerTree.node(containerTree.rootId());
+        QVERIFY(root.has_value());
+        QCOMPARE(root->state(), streamview::core::MaterializationState::Invalid);
+        QVERIFY2(root->children().size() >= 2,
+                 "the abandoned tree must still hold the movie box, so indexing it would "
+                 "produce a plausible-looking track list");
+
+        const auto tracks = session->tracks();
+        QCOMPARE(tracks.status, AnalysisSessionSampleStatus::ResourceLimit);
+        QVERIFY(tracks.tracks.empty());
+        QVERIFY(!tracks.errorMessage.isEmpty());
+
+        const auto repeated = session->tracks();
+        QCOMPARE(repeated.status, AnalysisSessionSampleStatus::ResourceLimit);
+        QVERIFY(repeated.tracks.empty());
+
+        AnalysisSessionSamplePageRequest request;
+        request.trackId = 1;
+        request.pageSize = 2;
+        const auto page = session->samplesForTrack(request);
+        QCOMPARE(page.status, AnalysisSessionSampleStatus::ResourceLimit);
+
+        const auto entered = session->enterSample(1, 0, catalog);
+        QCOMPARE(entered.status, AnalysisSessionSampleStatus::ResourceLimit);
+        QCOMPARE(session->navigationDepth(), std::size_t{0});
+    }
+
+    void sampleNavigationStackIsNotPersistedIntoTheSessionDocument() {
+        const QString fixturePath =
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_avc_multi_nal.mp4");
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto session = openPinnedMp4Fixture(fixturePath, catalog);
+        QVERIFY(session != nullptr);
+        QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+
+        QVERIFY(session->enterSample(1, 0, catalog).entered());
+        QCOMPARE(session->navigationDepth(), std::size_t{1});
+
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString sessionPath = directory.filePath(QStringLiteral("sample.svsession"));
+        SessionUserState state;
+        QString errorMessage;
+        QVERIFY2(session->saveSession(sessionPath, state, &errorMessage),
+                 qPrintable(errorMessage));
+
+        const auto restored = AnalysisSession::restoreSession(sessionPath, catalog);
+        QCOMPARE(restored.status, AnalysisSessionRestoreStatus::Restored);
+        QVERIFY(restored.session != nullptr);
+        QCOMPARE(restored.session->navigationDepth(), std::size_t{0});
+        QCOMPARE(restored.session->currentSampleFrame(), nullptr);
     }
 };
 

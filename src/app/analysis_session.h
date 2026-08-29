@@ -19,6 +19,10 @@
 #include <streamview/rules/rule_execution_session.h>
 #include <streamview/rules/rule_package.h>
 #include <streamview/rules/structural_entry_runner.h>
+#include <streamview/rules/configuration_summary.h>
+#include <streamview/rules/mp4_sample_table_extractor.h>
+#include <streamview/rules/mp4_sample_table_index.h>
+#include <streamview/rules/sample_payload_runner.h>
 
 #include <QString>
 #include <QtGlobal>
@@ -68,6 +72,18 @@ struct AnalysisBatchResult final {
     }
 };
 
+/// One entered sample, pushed onto the same navigation stack as a child format.
+///
+/// A sample frame records the track and sample it came from so returning lands
+/// on the exact row the UI navigated away from, which is what lets a return
+/// restore the sample page and its selection without persisting anything.
+struct SampleNavigationFrame final {
+    quint32 trackId = 0;
+    quint64 sampleIndex = 0;
+    core::SampleDescriptor sample;
+    QString targetFormat;
+};
+
 struct NavigationFrame final {
     core::AnalysisNodeId parentTargetNodeId;
     QString targetFormat;
@@ -76,6 +92,10 @@ struct NavigationFrame final {
     core::SourceMapping sourceMapping;
     std::shared_ptr<core::AnalysisTree> tree;
     core::AnalysisNodeId childRootStructureNodeId;
+    /// Set when this frame was entered through `enterSample`, absent when it
+    /// was entered through `enterChildFormat`. Both kinds share one stack so a
+    /// single `returnToParent` unwinds either.
+    std::optional<SampleNavigationFrame> sample;
 };
 
 enum class AnalysisSessionNavigationStatus : quint8 {
@@ -98,6 +118,99 @@ enum class AnalysisSessionNavigationStatus : quint8 {
     ResourceLimit,
 };
 
+enum class AnalysisSessionSampleStatus : quint8 {
+    /// Descriptors were produced, or a sample sub-tree was entered.
+    Available,
+    /// The active analyzer is not a container that carries sample tables.
+    UnsupportedSource,
+    /// Analysis has not produced a container tree to index yet.
+    NotAnalyzed,
+    /// No track carries the sample tables this index needs.
+    NoTracks,
+    /// The requested track id is not one of the indexed tracks.
+    TrackNotFound,
+    /// The requested sample is outside the track's sample count.
+    SampleNotFound,
+    /// The tables disagree with each other, or with their declared counts.
+    InconsistentTables,
+    /// A table variant or framing this slice does not decode.
+    UnsupportedTables,
+    /// The sample entry declares no target format, so no rule claims it.
+    MissingTargetFormat,
+    /// The sample entry declares a target format no installed package claims.
+    UnsupportedFormat,
+    /// A configuration the sample decodes against is missing or unreadable.
+    DependencyUnavailable,
+    /// A table read or a sample read failed.
+    SourceError,
+    /// The sample resolves outside the media source, or a coordinate overflowed.
+    InvalidSampleRange,
+    Cancelled,
+    ResourceLimit,
+    /// The rule package resolved for the sample's target format is unusable.
+    InvalidRulePackage,
+    /// The resolved rule compiled, but not into an executable sample entry.
+    InvalidDefinition,
+};
+
+/// One indexed track, as the session exposes it.
+///
+/// `targetFormat` is copied from the rules-layer `stsd` binding rather than
+/// derived here, so the session never inspects a sample entry itself.
+struct AnalysisSessionTrack final {
+    quint32 trackId = 0;
+    quint32 timescale = 1;
+    quint64 sampleCount = 0;
+    QString targetFormat;
+};
+
+struct AnalysisSessionTracksResult final {
+    AnalysisSessionSampleStatus status = AnalysisSessionSampleStatus::UnsupportedSource;
+    std::vector<AnalysisSessionTrack> tracks;
+    QString errorMessage;
+
+    [[nodiscard]] bool available() const noexcept {
+        return status == AnalysisSessionSampleStatus::Available;
+    }
+};
+
+struct AnalysisSessionSamplePageRequest final {
+    quint32 trackId = 0;
+    quint64 pageIndex = 0;
+    quint64 pageSize = 256;
+    std::optional<core::CancellationToken> cancellation;
+};
+
+struct AnalysisSessionSamplePageResult final {
+    AnalysisSessionSampleStatus status = AnalysisSessionSampleStatus::UnsupportedSource;
+    std::vector<core::SampleDescriptor> descriptors;
+    quint64 firstSampleIndex = 0;
+    quint64 sampleCount = 0;
+    QString errorMessage;
+
+    [[nodiscard]] bool available() const noexcept {
+        return status == AnalysisSessionSampleStatus::Available;
+    }
+};
+
+struct AnalysisSessionEnterSampleResult final {
+    AnalysisSessionSampleStatus status = AnalysisSessionSampleStatus::UnsupportedSource;
+    /// Root of the entered sample's sub-tree.
+    std::optional<core::AnalysisNodeId> sampleNodeId;
+    std::shared_ptr<core::AnalysisTree> tree;
+    /// Descriptor the sample was entered from, so a caller need not re-page to
+    /// learn the sample's coordinates and timeline.
+    core::SampleDescriptor sample;
+    /// Nodes of the executed units, in framing order. Empty for a sample that
+    /// carries a single opaque access unit.
+    std::vector<core::AnalysisNodeId> unitNodeIds;
+    QString errorMessage;
+
+    [[nodiscard]] bool entered() const noexcept {
+        return status == AnalysisSessionSampleStatus::Available && tree != nullptr;
+    }
+};
+
 struct AnalysisSessionNavigationResult final {
     AnalysisSessionNavigationStatus status = AnalysisSessionNavigationStatus::InvalidDefinition;
     std::optional<core::AnalysisNodeId> childRootStructureNodeId;
@@ -118,6 +231,11 @@ struct AnalysisSessionReturnResult final {
     AnalysisSessionReturnStatus status = AnalysisSessionReturnStatus::AtRoot;
     std::optional<core::AnalysisNodeId> restoredParentTargetNodeId;
     const core::AnalysisTree* activeTree = nullptr;
+    /// The sample the unwound frame had entered, when it was a sample frame.
+    /// Carries the track, sample ordinal, and descriptor the caller needs to
+    /// put the sample row and its highlight back exactly as they were, which is
+    /// what keeps the restored state out of the persisted session document.
+    std::optional<SampleNavigationFrame> restoredSample;
 
     [[nodiscard]] bool returned() const noexcept {
         return status == AnalysisSessionReturnStatus::Returned;
@@ -203,6 +321,30 @@ public:
         const rules::RulePackageCatalog& catalog,
         const rules::StructuralExecutionOptions& options = {});
     [[nodiscard]] AnalysisSessionReturnResult returnToParent();
+
+    /// Tracks the container declares sample tables for.
+    ///
+    /// Extraction happens once per session and is cached: the bound table
+    /// readers borrow `analyzer_`, so they are stored in this session, which
+    /// neither moves nor reassigns its analyzer.
+    [[nodiscard]] AnalysisSessionTracksResult tracks();
+
+    /// Descriptors for one page of a track's samples.
+    [[nodiscard]] AnalysisSessionSamplePageResult
+    samplesForTrack(const AnalysisSessionSamplePageRequest& request);
+
+    /// Executes one sample against the rule package its `stsd` entry declares
+    /// and pushes a sample frame, so `returnToParent` lands back on the sample's
+    /// own row.
+    ///
+    /// A failure leaves the parent tree, the navigation stack, and the cached
+    /// index exactly as they were.
+    [[nodiscard]] AnalysisSessionEnterSampleResult
+    enterSample(quint32 trackId,
+                quint64 sampleIndex,
+                const rules::RulePackageCatalog& catalog,
+                const rules::StructuralExecutionOptions& options = {});
+
     [[nodiscard]] const core::AnalysisTree& activeTree() const noexcept {
         return navigationStack_.empty() ? tree() : *navigationStack_.back().tree;
     }
@@ -210,6 +352,15 @@ public:
     [[nodiscard]] bool canReturnToParent() const noexcept { return !navigationStack_.empty(); }
     [[nodiscard]] const NavigationFrame* currentNavigationFrame() const noexcept {
         return navigationStack_.empty() ? nullptr : &navigationStack_.back();
+    }
+    /// The entered sample of the current frame, or nullptr when the current
+    /// frame is a child format rather than a sample.
+    [[nodiscard]] const SampleNavigationFrame* currentSampleFrame() const noexcept {
+        if (navigationStack_.empty()) {
+            return nullptr;
+        }
+        const auto& sample = navigationStack_.back().sample;
+        return sample.has_value() ? &*sample : nullptr;
     }
 
 private:
@@ -241,6 +392,14 @@ private:
         std::unique_ptr<rules::RuleExecutionSession> ruleSession;
     };
 
+    /// Builds the per-track indices once, on first use.
+    ///
+    /// Returns the status to report when indexing could not be completed;
+    /// `Available` means `trackIndices_` is populated and usable.
+    [[nodiscard]] AnalysisSessionSampleStatus ensureSampleIndices(QString* errorMessage);
+
+    [[nodiscard]] rules::Mp4SampleTableIndex* findTrackIndex(quint32 trackId) noexcept;
+
     std::unique_ptr<core::RandomAccessSource> source_;
     QString sourcePath_;
     core::SourcePage initialPage_;
@@ -256,8 +415,23 @@ private:
     quint64 nextProgressiveCachePageIndex_ = 0;
     bool materializedCacheSubmitted_ = false;
     bool analysisStarted_ = false;
+    /// Status of the most recent batch. The analyzer reports a terminal failure
+    /// once and then replays it, but its own terminal status is private, so the
+    /// session keeps the mapped value to tell an abandoned analysis apart from a
+    /// completed one.
+    AnalysisBatchStatus lastBatchStatus_ = AnalysisBatchStatus::InProgress;
     std::vector<NavigationFrame> navigationStack_;
     std::unordered_map<QString, SubFormatSession> subFormatSessions_;
+    // Declared after `analyzer_` on purpose: each index holds table readers that
+    // borrow the analyzer (`mp4_sample_table_extractor.h:52-56`), and members are
+    // destroyed in reverse declaration order, so the readers are torn down while
+    // the analyzer they read through is still alive.
+    std::vector<rules::Mp4SampleTableIndex> trackIndices_;
+    bool sampleIndicesBuilt_ = false;
+    /// Rule sessions for sample execution, keyed by the resolved entrypoint
+    /// identity so parameter sets published by one sample stay visible to the
+    /// next sample of the same track.
+    std::unordered_map<QString, SubFormatSession> sampleSessions_;
 };
 
 enum class AnalysisSessionRestoreStatus : quint8 {

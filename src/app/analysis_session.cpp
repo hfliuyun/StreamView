@@ -564,6 +564,7 @@ AnalysisBatchResult AnalysisSession::analyzeBatch(
         }
     }
 
+    lastBatchStatus_ = result.status;
     return result;
 }
 
@@ -632,13 +633,586 @@ void AnalysisSession::publishCachePages(const rules::H264AnnexBAnalysisBatch& ba
     acceptCacheWrite(cacheOwner_->writeMaterializedResult(std::move(exported.pages)));
 }
 
+namespace {
+
+[[nodiscard]] AnalysisSessionSampleStatus sampleStatus(
+    rules::Mp4SampleTableExtractionStatus status) noexcept {
+    switch (status) {
+    case rules::Mp4SampleTableExtractionStatus::NoTracks:
+        return AnalysisSessionSampleStatus::NoTracks;
+    case rules::Mp4SampleTableExtractionStatus::IncompleteTrack:
+        return AnalysisSessionSampleStatus::InconsistentTables;
+    case rules::Mp4SampleTableExtractionStatus::UnsupportedTables:
+        return AnalysisSessionSampleStatus::UnsupportedTables;
+    case rules::Mp4SampleTableExtractionStatus::SourceError:
+        return AnalysisSessionSampleStatus::SourceError;
+    case rules::Mp4SampleTableExtractionStatus::ResourceLimit:
+        return AnalysisSessionSampleStatus::ResourceLimit;
+    case rules::Mp4SampleTableExtractionStatus::Cancelled:
+        return AnalysisSessionSampleStatus::Cancelled;
+    case rules::Mp4SampleTableExtractionStatus::Extracted:
+        break;
+    }
+    return AnalysisSessionSampleStatus::InconsistentTables;
+}
+
+[[nodiscard]] AnalysisSessionSampleStatus sampleStatus(
+    rules::Mp4SampleTableIndexStatus status) noexcept {
+    switch (status) {
+    case rules::Mp4SampleTableIndexStatus::InconsistentTables:
+    case rules::Mp4SampleTableIndexStatus::ArithmeticOverflow:
+        return AnalysisSessionSampleStatus::InconsistentTables;
+    case rules::Mp4SampleTableIndexStatus::UnsupportedTables:
+        return AnalysisSessionSampleStatus::UnsupportedTables;
+    case rules::Mp4SampleTableIndexStatus::OutOfSourceRange:
+    case rules::Mp4SampleTableIndexStatus::InvalidRequest:
+        return AnalysisSessionSampleStatus::InvalidSampleRange;
+    case rules::Mp4SampleTableIndexStatus::ResourceLimit:
+        return AnalysisSessionSampleStatus::ResourceLimit;
+    case rules::Mp4SampleTableIndexStatus::SourceError:
+        return AnalysisSessionSampleStatus::SourceError;
+    case rules::Mp4SampleTableIndexStatus::Cancelled:
+        return AnalysisSessionSampleStatus::Cancelled;
+    case rules::Mp4SampleTableIndexStatus::Built:
+        break;
+    }
+    return AnalysisSessionSampleStatus::InconsistentTables;
+}
+
+[[nodiscard]] AnalysisSessionSampleStatus sampleStatus(
+    rules::RuleCatalogLookupStatus status) noexcept {
+    switch (status) {
+    case rules::RuleCatalogLookupStatus::MissingContent:
+    case rules::RuleCatalogLookupStatus::VersionConflict:
+    case rules::RuleCatalogLookupStatus::IncompatibleLanguage:
+    case rules::RuleCatalogLookupStatus::IncompatibleEngine:
+        return AnalysisSessionSampleStatus::UnsupportedFormat;
+    case rules::RuleCatalogLookupStatus::UnknownEntryPoint:
+    case rules::RuleCatalogLookupStatus::Found:
+        break;
+    }
+    return AnalysisSessionSampleStatus::InvalidRulePackage;
+}
+
+[[nodiscard]] AnalysisSessionSampleStatus sampleStatus(
+    rules::SamplePayloadRunStatus status) noexcept {
+    switch (status) {
+    case rules::SamplePayloadRunStatus::UnsupportedFraming:
+        return AnalysisSessionSampleStatus::UnsupportedTables;
+    case rules::SamplePayloadRunStatus::DependencyUnavailable:
+        return AnalysisSessionSampleStatus::DependencyUnavailable;
+    case rules::SamplePayloadRunStatus::TruncatedSample:
+    case rules::SamplePayloadRunStatus::InvalidUnitLength:
+    case rules::SamplePayloadRunStatus::InvalidRequest:
+        return AnalysisSessionSampleStatus::InvalidSampleRange;
+    case rules::SamplePayloadRunStatus::SourceError:
+        return AnalysisSessionSampleStatus::SourceError;
+    case rules::SamplePayloadRunStatus::Cancelled:
+        return AnalysisSessionSampleStatus::Cancelled;
+    case rules::SamplePayloadRunStatus::ResourceLimit:
+        return AnalysisSessionSampleStatus::ResourceLimit;
+    case rules::SamplePayloadRunStatus::Executed:
+        break;
+    }
+    return AnalysisSessionSampleStatus::InvalidSampleRange;
+}
+
+/// Maps the container's own terminal batch status onto a sample status, so a
+/// caller learns why the tree is unusable instead of being told analysis has
+/// merely not finished.
+[[nodiscard]] AnalysisSessionSampleStatus containerFailureStatus(
+    AnalysisBatchStatus batchStatus) noexcept {
+    switch (batchStatus) {
+    case AnalysisBatchStatus::SourceError:
+        return AnalysisSessionSampleStatus::SourceError;
+    case AnalysisBatchStatus::Cancelled:
+        return AnalysisSessionSampleStatus::Cancelled;
+    case AnalysisBatchStatus::ResourceLimit:
+        return AnalysisSessionSampleStatus::ResourceLimit;
+    case AnalysisBatchStatus::InvalidRule:
+    case AnalysisBatchStatus::InvalidBatchSize:
+        return AnalysisSessionSampleStatus::InvalidRulePackage;
+    case AnalysisBatchStatus::InProgress:
+    case AnalysisBatchStatus::Complete:
+        break;
+    }
+    return AnalysisSessionSampleStatus::NotAnalyzed;
+}
+
+[[nodiscard]] QString containerFailureMessage(core::MaterializationState rootState) {
+    if (rootState == core::MaterializationState::Cancelled) {
+        return QStringLiteral("Container analysis was cancelled, so its track list is incomplete");
+    }
+    if (rootState == core::MaterializationState::Invalid) {
+        return QStringLiteral(
+            "Container analysis ended before the movie was complete, so its track list "
+            "cannot be trusted");
+    }
+    return QStringLiteral("Analysis has not finished producing the container tree yet");
+}
+
+struct CompiledSampleEntry final {
+    std::optional<rules::DslTypedProgram> program;
+    AnalysisSessionSampleStatus status = AnalysisSessionSampleStatus::InvalidDefinition;
+    QString errorMessage;
+};
+
+[[nodiscard]] CompiledSampleEntry compileSampleEntry(
+    const rules::RulePackage& package, const rules::RulePackageEntryPoint& entryPoint) {
+    CompiledSampleEntry compiled;
+    const QByteArray* sourceBytes = package.fileContents(entryPoint.sourcePath);
+    if (sourceBytes == nullptr) {
+        compiled.status = AnalysisSessionSampleStatus::InvalidRulePackage;
+        compiled.errorMessage =
+            QStringLiteral("Rule file not found in package: %1").arg(entryPoint.sourcePath);
+        return compiled;
+    }
+    const auto parsed = rules::DslParser::parse(QString::fromUtf8(*sourceBytes));
+    if (!parsed.succeeded()) {
+        compiled.errorMessage =
+            QStringLiteral("Failed to parse rule file: %1").arg(entryPoint.sourcePath);
+        return compiled;
+    }
+    auto compileResult = rules::DslCompiler::compileForTarget(parsed.program, entryPoint.target);
+    if (!compileResult.succeeded() || !compileResult.program.has_value()) {
+        compiled.errorMessage = QStringLiteral("Failed to compile rule file for target '%1'")
+                                    .arg(entryPoint.target.value_or(QString()));
+        return compiled;
+    }
+    if (compileResult.program->entry.kind != rules::DslEntryKind::Structure) {
+        compiled.errorMessage = QStringLiteral("Compiled entry is not a structure entry");
+        return compiled;
+    }
+    compiled.program = std::move(*compileResult.program);
+    compiled.status = AnalysisSessionSampleStatus::Available;
+    return compiled;
+}
+
+} // namespace
+
+AnalysisSessionSampleStatus AnalysisSession::ensureSampleIndices(QString* errorMessage) {
+    const auto fail = [errorMessage](AnalysisSessionSampleStatus status, QString message) {
+        if (errorMessage != nullptr) {
+            *errorMessage = std::move(message);
+        }
+        return status;
+    };
+
+    if (sampleIndicesBuilt_) {
+        return trackIndices_.empty()
+                   ? fail(AnalysisSessionSampleStatus::NoTracks,
+                          QStringLiteral("The container declares no indexable track"))
+                   : AnalysisSessionSampleStatus::Available;
+    }
+
+    if (!std::holds_alternative<rules::Mp4IsobmffAnalyzer>(analyzer_)) {
+        return fail(AnalysisSessionSampleStatus::UnsupportedSource,
+                    QStringLiteral("The active source is not a container carrying sample tables"));
+    }
+    if (!analysisStarted_) {
+        return fail(AnalysisSessionSampleStatus::NotAnalyzed,
+                    QStringLiteral("Analysis has not produced a container tree yet"));
+    }
+
+    const auto& mp4 = std::get<rules::Mp4IsobmffAnalyzer>(analyzer_);
+    const auto& containerTree = mp4.tree();
+    const auto root = containerTree.node(containerTree.rootId());
+    if (!root) {
+        return fail(AnalysisSessionSampleStatus::NotAnalyzed,
+                    QStringLiteral("The container tree has no root"));
+    }
+
+    // The invariant is "index only a complete tree", and the root's state is what
+    // expresses it: the analyzer materializes the root only on its Complete path,
+    // while every terminal failure marks the root Invalid or Cancelled instead.
+    // `finished()` cannot stand in for this, because it is equally true of an
+    // abandoned analysis. Indexing a partial tree would be permanent: the
+    // extractor skips a `trak` that is missing its `stbl` rather than failing, so
+    // a truncated movie yields a short track list, and `sampleIndicesBuilt_`
+    // latches with no invalidation path.
+    if (root->state() != core::MaterializationState::Materialized) {
+        return fail(containerFailureStatus(lastBatchStatus_),
+                    containerFailureMessage(root->state()));
+    }
+
+    // The extractor consumes only `boxNodes`, and the analyzer publishes every
+    // top-level box as a child of the tree root. Rebuilding the batch from those
+    // children therefore reproduces the extractor's whole input without the
+    // session having to retain analyzer batch state across calls.
+    rules::Mp4IsobmffAnalysisBatch batch;
+    batch.status = rules::Mp4IsobmffAnalysisStatus::Complete;
+    batch.boxNodes = root->children();
+
+    rules::Mp4SampleTableExtractionRequest extractionRequest;
+    extractionRequest.sourceSizeBytes = source_->sizeBytes();
+
+    auto extraction = rules::Mp4SampleTableExtractor::extract(mp4, batch, extractionRequest);
+    if (!extraction.extracted()) {
+        return fail(sampleStatus(extraction.status), std::move(extraction.errorMessage));
+    }
+
+    // Built into a local first, so a track that fails validation leaves the
+    // session's cache untouched rather than half-populated.
+    std::vector<rules::Mp4SampleTableIndex> indices;
+    indices.reserve(extraction.tracks.size());
+    for (auto& track : extraction.tracks) {
+        auto built = rules::Mp4SampleTableIndex::build(std::move(track.tables),
+                                                       std::move(track.readers));
+        if (!built.succeeded()) {
+            return fail(sampleStatus(built.status), std::move(built.errorMessage));
+        }
+        indices.push_back(std::move(*built.index));
+    }
+
+    trackIndices_ = std::move(indices);
+    sampleIndicesBuilt_ = true;
+    return AnalysisSessionSampleStatus::Available;
+}
+
+rules::Mp4SampleTableIndex* AnalysisSession::findTrackIndex(quint32 trackId) noexcept {
+    for (auto& index : trackIndices_) {
+        if (index.tables().trackId == trackId) {
+            return &index;
+        }
+    }
+    return nullptr;
+}
+
+AnalysisSessionTracksResult AnalysisSession::tracks() {
+    AnalysisSessionTracksResult result;
+    const auto status = ensureSampleIndices(&result.errorMessage);
+    if (status != AnalysisSessionSampleStatus::Available) {
+        result.status = status;
+        return result;
+    }
+
+    result.tracks.reserve(trackIndices_.size());
+    for (const auto& index : trackIndices_) {
+        const auto& tables = index.tables();
+        AnalysisSessionTrack track;
+        track.trackId = tables.trackId;
+        track.timescale = tables.timescale;
+        track.sampleCount = index.sampleCount();
+        // Taken from the first sample description the rules layer bound, never
+        // derived here: which entry declares a format is the extractor's finding.
+        if (!tables.sampleDescriptions.empty()) {
+            track.targetFormat = tables.sampleDescriptions.front().targetFormat;
+        }
+        result.tracks.push_back(std::move(track));
+    }
+    result.status = AnalysisSessionSampleStatus::Available;
+    result.errorMessage.clear();
+    return result;
+}
+
+AnalysisSessionSamplePageResult
+AnalysisSession::samplesForTrack(const AnalysisSessionSamplePageRequest& request) {
+    AnalysisSessionSamplePageResult result;
+    const auto status = ensureSampleIndices(&result.errorMessage);
+    if (status != AnalysisSessionSampleStatus::Available) {
+        result.status = status;
+        return result;
+    }
+
+    auto* index = findTrackIndex(request.trackId);
+    if (index == nullptr) {
+        result.status = AnalysisSessionSampleStatus::TrackNotFound;
+        result.errorMessage =
+            QStringLiteral("Track %1 is not one of the indexed tracks").arg(request.trackId);
+        return result;
+    }
+
+    rules::Mp4SamplePageRequest pageRequest;
+    pageRequest.pageIndex = request.pageIndex;
+    pageRequest.pageSize = request.pageSize;
+    pageRequest.cancellation = request.cancellation;
+
+    auto page = index->descriptorPage(pageRequest);
+    if (!page.built()) {
+        result.status = sampleStatus(page.status);
+        result.errorMessage = std::move(page.errorMessage);
+        return result;
+    }
+
+    result.status = AnalysisSessionSampleStatus::Available;
+    result.descriptors = std::move(page.descriptors);
+    result.firstSampleIndex = page.firstSampleIndex;
+    result.sampleCount = index->sampleCount();
+    result.errorMessage.clear();
+    return result;
+}
+
+AnalysisSessionEnterSampleResult AnalysisSession::enterSample(
+    quint32 trackId,
+    quint64 sampleIndex,
+    const rules::RulePackageCatalog& catalog,
+    const rules::StructuralExecutionOptions& options) {
+    AnalysisSessionEnterSampleResult result;
+
+    const auto indexStatus = ensureSampleIndices(&result.errorMessage);
+    if (indexStatus != AnalysisSessionSampleStatus::Available) {
+        result.status = indexStatus;
+        return result;
+    }
+
+    auto* index = findTrackIndex(trackId);
+    if (index == nullptr) {
+        result.status = AnalysisSessionSampleStatus::TrackNotFound;
+        result.errorMessage =
+            QStringLiteral("Track %1 is not one of the indexed tracks").arg(trackId);
+        return result;
+    }
+    if (sampleIndex >= index->sampleCount()) {
+        result.status = AnalysisSessionSampleStatus::SampleNotFound;
+        result.errorMessage = QStringLiteral("Sample %1 is beyond the track's %2 samples")
+                                  .arg(sampleIndex)
+                                  .arg(index->sampleCount());
+        return result;
+    }
+
+    rules::Mp4SamplePageRequest pageRequest;
+    pageRequest.pageIndex = sampleIndex;
+    pageRequest.pageSize = 1;
+    pageRequest.cancellation = options.cancellation;
+
+    auto page = index->descriptorPage(pageRequest);
+    if (!page.built() || page.descriptors.size() != 1) {
+        result.status = page.built() ? AnalysisSessionSampleStatus::InconsistentTables
+                                    : sampleStatus(page.status);
+        result.errorMessage = page.errorMessage.isEmpty()
+                                  ? QStringLiteral("Sample %1 produced no descriptor")
+                                        .arg(sampleIndex)
+                                  : std::move(page.errorMessage);
+        return result;
+    }
+    const core::SampleDescriptor sample = std::move(page.descriptors.front());
+
+    const auto sampleMapping =
+        core::SourceMapping::create(core::LogicalViewId(1), sample.sourceSpans);
+    if (!sampleMapping) {
+        result.status = AnalysisSessionSampleStatus::InvalidSampleRange;
+        result.errorMessage =
+            QStringLiteral("Sample %1 does not project onto a usable source range")
+                .arg(sampleIndex);
+        return result;
+    }
+
+    const auto* binding = index->sampleDescription(sample.sampleDescriptionIndex);
+    if (binding == nullptr) {
+        result.status = AnalysisSessionSampleStatus::InconsistentTables;
+        result.errorMessage = QStringLiteral("Sample description %1 is not declared by the track")
+                                  .arg(sample.sampleDescriptionIndex);
+        return result;
+    }
+    if (binding->targetFormat.trimmed().isEmpty()) {
+        result.status = AnalysisSessionSampleStatus::MissingTargetFormat;
+        result.errorMessage =
+            QStringLiteral("The sample entry declares no target format, so no rule claims it");
+        return result;
+    }
+    const QString targetFormat = binding->targetFormat;
+
+    const auto lookup =
+        catalog.resolveByFormat(targetFormat, rules::languageVersion(), core::version());
+    if (!lookup.succeeded()) {
+        result.status = sampleStatus(lookup.status);
+        result.errorMessage = lookup.errorMessage;
+        return result;
+    }
+    const auto package = lookup.package;
+    if (!package || !lookup.entryPoint.has_value()) {
+        result.status = AnalysisSessionSampleStatus::InvalidRulePackage;
+        result.errorMessage = QStringLiteral("Resolved package or entrypoint is invalid");
+        return result;
+    }
+    const auto entryPoint = *lookup.entryPoint;
+
+    auto compiled = compileSampleEntry(*package, entryPoint);
+    if (!compiled.program.has_value()) {
+        result.status = compiled.status == AnalysisSessionSampleStatus::Available
+                            ? AnalysisSessionSampleStatus::InvalidDefinition
+                            : compiled.status;
+        result.errorMessage = std::move(compiled.errorMessage);
+        return result;
+    }
+    const rules::DslTypedProgram& program = *compiled.program;
+
+    const auto entryIdentity =
+        rules::RuleEntryPointIdentity::create(package->identity(), entryPoint.id);
+    if (!entryIdentity) {
+        result.status = AnalysisSessionSampleStatus::InvalidRulePackage;
+        result.errorMessage = QStringLiteral("Resolved entrypoint identity is invalid");
+        return result;
+    }
+    const QString sessionKey = entryIdentity->toString();
+
+    // Presence of a length prefix decides framing, so no codec name is consulted
+    // here (ADR-0105 section 4 and the P5j-3b binding contract).
+    const bool lengthPrefixed = binding->prefixLengthBytes.has_value();
+
+    // Opaque samples reference a configuration instead of decoding units, and an
+    // absent configuration is reported rather than guessed at.
+    std::optional<core::AnalysisNodeId> configurationNode;
+    QString configurationSummary;
+    if (!lengthPrefixed) {
+        if (!binding->configurationNode.has_value()) {
+            result.status = AnalysisSessionSampleStatus::DependencyUnavailable;
+            result.errorMessage = QStringLiteral(
+                "The sample entry binds no configuration for its opaque access units");
+            return result;
+        }
+        configurationNode = binding->configurationNode;
+
+        const auto& containerTree = tree();
+        const auto configNode = containerTree.node(*configurationNode);
+        if (!configNode || !configNode->location().has_value() ||
+            configNode->location()->sourceSpans().empty()) {
+            result.status = AnalysisSessionSampleStatus::DependencyUnavailable;
+            result.errorMessage =
+                QStringLiteral("The bound configuration has no readable source location");
+            return result;
+        }
+        const auto configMapping = core::SourceMapping::create(
+            core::LogicalViewId(1), configNode->location()->sourceSpans());
+        if (!configMapping) {
+            result.status = AnalysisSessionSampleStatus::DependencyUnavailable;
+            result.errorMessage =
+                QStringLiteral("Failed to map the bound configuration's source span");
+            return result;
+        }
+
+        const auto configExecution =
+            rules::StructuralEntryRunner::execute(*source_, *configMapping, program, options);
+        if (!configExecution.succeeded()) {
+            result.status = AnalysisSessionSampleStatus::DependencyUnavailable;
+            result.errorMessage = configExecution.execution.errorMessage.isEmpty()
+                                      ? QStringLiteral("The bound configuration could not be decoded")
+                                      : configExecution.execution.errorMessage;
+            return result;
+        }
+
+        // The summary is resolved through the target-format keyed registry, so
+        // the session hands over the format string and never names a provider.
+        rules::ConfigurationSummaryRequest summaryRequest;
+        summaryRequest.configurationTree = configExecution.tree.get();
+        summaryRequest.configurationNode =
+            configExecution.execution.structureNode.value_or(configExecution.tree->rootId());
+        summaryRequest.targetFormat = targetFormat;
+        const auto summary = rules::bundledConfigurationSummaryRegistry().format(summaryRequest);
+        if (summary.status == rules::ConfigurationSummaryStatus::DependencyUnavailable) {
+            result.status = AnalysisSessionSampleStatus::DependencyUnavailable;
+            result.errorMessage = summary.errorMessage.isEmpty()
+                                      ? QStringLiteral("The bound configuration is incomplete")
+                                      : summary.errorMessage;
+            return result;
+        }
+        // An unclaimed format still yields a navigable envelope: the summary is
+        // presentation detail, while the access unit's boundaries are not.
+        configurationSummary = summary.formatted() ? summary.summary : QString();
+    } else if (program.payloadDispatchHeaderStructureIndex() != program.entry.targetIndex) {
+        // A length-prefixed unit is executed as header plus dispatched payload, so
+        // an entry without that shape cannot decode this track's units.
+        result.status = AnalysisSessionSampleStatus::InvalidDefinition;
+        result.errorMessage =
+            QStringLiteral("Rule entry for '%1' does not dispatch a unit payload")
+                .arg(targetFormat);
+        return result;
+    }
+
+    // Sessions are cached per entrypoint identity so parameter sets published by
+    // one sample stay visible to the next sample of the same track.
+    auto sessionIterator = sampleSessions_.find(sessionKey);
+    if (sessionIterator == sampleSessions_.end()) {
+        auto treeOpt = core::AnalysisTree::create(sessionKey);
+        if (!treeOpt) {
+            result.status = AnalysisSessionSampleStatus::InvalidDefinition;
+            result.errorMessage = QStringLiteral("Failed to create the sample analysis tree");
+            return result;
+        }
+        SubFormatSession created;
+        created.tree = std::make_shared<core::AnalysisTree>(std::move(*treeOpt));
+        if (lengthPrefixed) {
+            created.ruleSession = std::make_unique<rules::RuleExecutionSession>(program, 1);
+        }
+        sessionIterator = sampleSessions_.emplace(sessionKey, std::move(created)).first;
+    }
+    auto& sampleSession = sessionIterator->second;
+
+    // Snapshot before executing: a failed sample must leave the sample tree, the
+    // navigation stack, and the cached index exactly as they were.
+    auto treeSnapshot = sampleSession.tree->snapshot();
+
+    rules::SamplePayloadRunRequest runRequest;
+    runRequest.source = source_.get();
+    runRequest.sample = &sample;
+    runRequest.framing = lengthPrefixed ? rules::SamplePayloadFraming::LengthPrefixed
+                                        : rules::SamplePayloadFraming::OpaqueAccessUnit;
+    if (lengthPrefixed) {
+        runRequest.prefixLengthBytes = *binding->prefixLengthBytes;
+        runRequest.executionSession = sampleSession.ruleSession.get();
+        runRequest.unitStructureIndex = program.entry.targetIndex;
+        runRequest.transformRegistry = &rules::bundledPayloadTransformRegistry();
+    }
+    runRequest.tree = sampleSession.tree.get();
+    runRequest.parentId = sampleSession.tree->rootId();
+    runRequest.configurationNode = configurationNode;
+    runRequest.configurationSummary = configurationSummary;
+    runRequest.sampleNodeName = QStringLiteral("Sample %1").arg(sampleIndex);
+    runRequest.options.limits = options.limits;
+    runRequest.options.cancellation = options.cancellation;
+
+    auto run = rules::SamplePayloadRunner::run(runRequest);
+    if (!run.executed() || !run.sampleNode.has_value()) {
+        (void)sampleSession.tree->restore(std::move(treeSnapshot));
+        result.status = sampleStatus(run.status);
+        result.errorMessage = std::move(run.errorMessage);
+        return result;
+    }
+
+    std::vector<core::AnalysisNodeId> unitNodeIds;
+    unitNodeIds.reserve(run.units.size());
+    for (const auto& unit : run.units) {
+        if (unit.unitNode.has_value()) {
+            unitNodeIds.push_back(*unit.unitNode);
+        }
+    }
+
+    NavigationFrame frame{
+        .parentTargetNodeId = *run.sampleNode,
+        .targetFormat = targetFormat,
+        .package = package,
+        .entryPoint = entryPoint,
+        .sourceMapping = *sampleMapping,
+        .tree = sampleSession.tree,
+        .childRootStructureNodeId = *run.sampleNode,
+        .sample = SampleNavigationFrame{.trackId = trackId,
+                                        .sampleIndex = sampleIndex,
+                                        .sample = sample,
+                                        .targetFormat = targetFormat},
+    };
+    navigationStack_.push_back(std::move(frame));
+
+    result.status = AnalysisSessionSampleStatus::Available;
+    result.sampleNodeId = run.sampleNode;
+    result.tree = sampleSession.tree;
+    result.sample = sample;
+    result.unitNodeIds = std::move(unitNodeIds);
+    result.errorMessage.clear();
+    return result;
+}
+
 AnalysisSessionReturnResult AnalysisSession::returnToParent() {
     if (navigationStack_.empty()) {
-        return {AnalysisSessionReturnStatus::AtRoot, std::nullopt, &activeTree()};
+        return {AnalysisSessionReturnStatus::AtRoot, std::nullopt, &activeTree(), std::nullopt};
     }
     const auto parentTargetNodeId = navigationStack_.back().parentTargetNodeId;
+    // Moved out before the pop so a sample frame's descriptor survives the
+    // unwind: it is what lets the caller restore the sample row and highlight
+    // without re-paging the track.
+    auto restoredSample = std::move(navigationStack_.back().sample);
     navigationStack_.pop_back();
-    return {AnalysisSessionReturnStatus::Returned, parentTargetNodeId, &activeTree()};
+    return {AnalysisSessionReturnStatus::Returned, parentTargetNodeId, &activeTree(),
+            std::move(restoredSample)};
 }
 
 AnalysisSessionNavigationResult AnalysisSession::enterChildFormat(
