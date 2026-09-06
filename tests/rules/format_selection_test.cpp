@@ -439,6 +439,47 @@ private slots:
                  DetectedFormatReason::AmbiguousContainerVersusElementaryStream);
         QVERIFY(selection.ambiguous());
     }
+
+    void largeFaststartMovieWithAvcPayloadResolvesToContainer() {
+        // Real-scale synthetic test for Task P5j-4e:
+        // Layout: ftyp (32) + moov (2000) + 500 MB mdat.
+        // Inside mdat body (within 64 KiB probe window, starting at byte 2040),
+        // we place two valid H.264 NAL units so detectH264AnnexBCandidate reaches Strong.
+        // detectMp4Candidate reaches Strong because the mdat header is verified within the window.
+        // mp4CoverageEnd is 2040 (mdat header end, body excluded).
+        // Since H.264 start codes are at byte >= 2040, h264Contained is FALSE.
+        // But because h264Anchored is FALSE (ftyp at offset 0), h264Independent is FALSE.
+        // selectFormatFromDetection selects Mp4Isobmff with Mp4SubsumesPatternEvidence.
+        const quint64 declaredSourceSize = 500U * 1024U * 1024U;
+        std::vector<std::byte> bytes;
+        appendBox(bytes, 32U, "ftyp", std::byte{0x00}, 24U);
+        appendBox(bytes, 2000U, "moov", std::byte{0x00}, 1992U);
+        QCOMPARE(bytes.size(), 2032U);
+
+        // mdat header claiming 500 MB - 2032
+        const quint32 mdatSize = static_cast<quint32>(declaredSourceSize - 2032U);
+        appendBigEndianU32(bytes, mdatSize);
+        appendFourCharCode(bytes, "mdat");
+        QCOMPARE(bytes.size(), 2040U);
+
+        // AVC NAL units in mdat body
+        appendNalUnit(bytes, 0x67U, std::byte{0x42}, 20);
+        appendNalUnit(bytes, 0x68U, std::byte{0xCE}, 8);
+
+        const auto mp4 = detectMp4Candidate({bytes.data(), bytes.size()}, declaredSourceSize);
+        const auto h264 = detectH264AnnexBCandidate({bytes.data(), bytes.size()}, declaredSourceSize);
+
+        QVERIFY(mp4.candidate.has_value());
+        QCOMPARE(mp4.candidate->confidence, streamview::rules::Mp4DetectionConfidence::Strong);
+        QCOMPARE(mp4.candidate->evidence.size(), std::size_t(3));
+        QVERIFY(h264.candidate.has_value());
+        QCOMPARE(h264.candidate->confidence, streamview::rules::H264AnnexBDetectionConfidence::Strong);
+
+        const auto selection = selectFor(bytes, declaredSourceSize);
+        QCOMPARE(selection.format, DetectedFormat::Mp4Isobmff);
+        QCOMPARE(selection.reason, DetectedFormatReason::Mp4SubsumesPatternEvidence);
+        QVERIFY(!selection.ambiguous());
+    }
 };
 
 QTEST_MAIN(FormatSelectionTest)

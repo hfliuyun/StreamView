@@ -87,6 +87,7 @@ detectMp4Candidate(std::span<const std::byte> sourcePrefix,
 
         quint64 boxSize = 0;
         quint64 declaredSize = 0;
+        quint64 headerBytes = 8U;
 
         if (size == 1U) {
             if (remainingInInspection < 16U) {
@@ -98,15 +99,41 @@ detectMp4Candidate(std::span<const std::byte> sourcePrefix,
             }
             boxSize = largesize;
             declaredSize = largesize;
+            headerBytes = 16U;
         } else if (size >= 8U) {
             boxSize = size;
             declaredSize = size;
+            headerBytes = 8U;
         } else {
             break;
         }
 
         if (boxSize > remainingInInspection) {
-            // Box extends beyond inspection window or is truncated in source
+            // Box body extends beyond the inspection window.
+            // If the box is not truncated in the source file, its header is verifiable
+            // within the window. Record the header as evidence (with span covering ONLY
+            // the verified header, NOT the uninspected body), then stop scanning because
+            // the next box starts beyond the inspection window.
+            const quint64 remainingInSource = sourceSizeBytes - offset;
+            if (boxSize > remainingInSource) {
+                // Truncated in source
+                break;
+            }
+            if (!checkBitCoordinateOverflow(offset, boxSize)) {
+                break;
+            }
+
+            const auto span = core::SourceSpan::create(
+                core::SourceBitAddress(offset * 8U), headerBytes * 8U);
+            if (!span.has_value()) {
+                break;
+            }
+
+            Mp4DetectionEvidence ev;
+            ev.boxSpan = span;
+            ev.boxOffset = offset;
+            ev.declaredBoxSize = declaredSize;
+            evidence.push_back(ev);
             break;
         }
 
