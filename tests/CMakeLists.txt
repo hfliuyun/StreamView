@@ -187,6 +187,13 @@ if(TARGET streamview_app)
     )
     streamview_add_app_test(streamview_diagnostics_summary_dock_tests app/diagnostics_summary_dock_test.cpp)
     streamview_add_app_test(streamview_theme_localization_tests app/theme_localization_test.cpp)
+    streamview_add_app_test(streamview_session_persistence_regression_tests app/session_persistence_regression_test.cpp)
+    target_link_libraries(streamview_session_persistence_regression_tests PRIVATE Qt6::Sql)
+    target_compile_definitions(
+        streamview_session_persistence_regression_tests
+        PRIVATE
+            STREAMVIEW_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    )
 endif()
 streamview_add_rules_test(
     streamview_h264_annex_b_analyzer_tests
