@@ -10,6 +10,7 @@
 #include <streamview/rules/analysis_cache_owner.h>
 #include <streamview/rules/dsl.h>
 #include <streamview/rules/dsl_ir.h>
+#include <streamview/rules/format_selection.h>
 #include <streamview/rules/h264_annex_b_analyzer.h>
 #include <streamview/rules/h264_annex_b_detector.h>
 #include <streamview/rules/mp4_box_detector.h>

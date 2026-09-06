@@ -109,6 +109,15 @@ streamview_add_rules_test(
     rules/mp4_box_detector_test.cpp
 )
 streamview_add_rules_test(
+    streamview_format_selection_tests
+    rules/format_selection_test.cpp
+)
+target_compile_definitions(
+    streamview_format_selection_tests
+    PRIVATE
+        STREAMVIEW_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+streamview_add_rules_test(
     streamview_window_decoder_tests
     rules/window_decoder_test.cpp
 )

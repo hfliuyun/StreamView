@@ -261,22 +261,10 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
         mp4FormatDetection =
             rules::detectMp4Candidate(initialPage.bytes, source->sizeBytes());
 
-        const auto mp4Conf = mp4FormatDetection.candidate
-                                 ? std::optional(mp4FormatDetection.candidate->confidence)
-                                 : std::nullopt;
-        const auto aacConf = aacFormatDetection.candidate
-                                 ? std::optional(aacFormatDetection.candidate->confidence)
-                                 : std::nullopt;
-        const auto h264Conf = formatDetection.candidate
-                                  ? std::optional(formatDetection.candidate->confidence)
-                                  : std::nullopt;
-
-        const bool chooseMp4 = (mp4Conf == rules::Mp4DetectionConfidence::Strong &&
-                                h264Conf != rules::H264AnnexBDetectionConfidence::Strong &&
-                                aacConf != rules::AacAdtsDetectionConfidence::Strong);
-        const bool chooseAac = (!chooseMp4 &&
-                                aacConf == rules::AacAdtsDetectionConfidence::Strong &&
-                                h264Conf != rules::H264AnnexBDetectionConfidence::Strong);
+        const auto selection = rules::selectFormatFromDetection(
+            mp4FormatDetection, aacFormatDetection, formatDetection);
+        const bool chooseMp4 = selection.format == rules::DetectedFormat::Mp4Isobmff;
+        const bool chooseAac = selection.format == rules::DetectedFormat::AacAdts;
 
         if (chooseMp4) {
             auto mp4Analyzer = rules::Mp4IsobmffAnalyzer::create(*source, &analyzerError);
