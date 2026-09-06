@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 6
-Last Completed Step: Task P6d-2（UI切片：FormatOverrideDialog 界面、歧义横幅「解决歧义...」按钮集成与 UI 测试，彻底闭环 P2-17/P2-19/P2-20，P2-25）—— 实现 FormatOverrideDialog 呈现 MP4/H264/AAC 候选列表、歧义提示横幅与 [Candidate]/[Current] 标识；在 MainWindow 状态栏永久歧义横幅中集成 resolveAmbiguityButton；在主菜单集成 Analysis > Override Format... 动作；实现 MainWindow::overrideFormat 驱动内核重分析、模型重构、歧义横幅消除与脏状态标记；tests/app/main_window_test.cpp 追加 6 个 UI 自动化测试用例增至 44 槽全绿
-Next Action: 启动 Task P6e（UI与规则管理切片：RuleManagerDialog 界面、规则包列表与版本展示、.svrule 导入安装与测试）
-Last Verification: Hosted Run 34035047867（Ubuntu 24.04 / Qt 6.11.1 job 101491463019, Windows 2022 / Qt 6.10.1 job 101491462980, macOS 15 / Qt 6.11.1 job 101491463124）全绿；本地 dev/ci/sanitize 49/49 全部通过；MainWindowTest 44/44 槽通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
+Last Completed Step: Task P6e（UI与规则管理切片：`RuleManagerDialog` 界面、规则包列表与版本展示、`.svrule` 导入安装与测试）—— 实现 `RulePackageCatalog::allPackages` 确定性排序查询与 `RulePackageStore::discoverInstalled` 本地 content-addressed 扫描；实现 `RuleManagerDialog` 规则包管理对话框（呈现 ID、版本、[Bundled]/[Installed] 来源、12位 content hash 与完整 SHA-256 Tooltip、入口点与格式描述）；支持「Install Package (.svrule)...」导入安装、内置官方规则防覆盖保护、幂等安装与版本冲突防护；在 MainWindow 主菜单集成 Tools > Manage Rules... 动作（actionManageRules）；编写独立测试套件 `RuleManagerDialogTest`（6/6 用例通过）与 MainWindowTest 集成测试（45/45 槽全绿）；三套本地矩阵全量 50/50 通过，Hosted CI 三平台全绿
+Next Action: 启动 Task P6f（UI切片：分析进度条展示、异步取消按钮与响应、DiagnosticsSummaryDock 全局诊断面板与双向跳转）
+Last Verification: Hosted Run 34042416633（Ubuntu 24.04 / Qt 6.11.1 job 101511446403, Windows 2022 / Qt 6.10.1 job 101511446361, macOS 15 / Qt 6.11.1 job 101511446256）全绿；本地 dev/ci/sanitize 50/50 全部通过；MainWindowTest 45/45 槽通过；RuleManagerDialogTest 6/6 用例通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
 Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -258,7 +258,7 @@ Blockers: 无
 - [x] **Task P6c**（UI切片）：`MainWindow` 保存/另存为/打开会话动作、`setWindowModified` 脏状态维护与书签/注释挂钩、`closeEvent` / `maybeSave` 弹窗协议（Save / Discard / Cancel，区分文件对话框取消与底层 I/O 报错）与 UI 测试；
 - [x] **Task P6d-1**（能力切片）：`AnalysisSession::overrideFormat` 核心 API 与 `AnalysisSession::openFileWithExplicitRule` 静态工厂与单元测试（彻底闭环 P2-20，P2-25）；
 - [x] **Task P6d-2**（UI切片）：`FormatOverrideDialog` 界面、歧义横幅「解决歧义...」按钮集成与 UI 测试（闭环 P2-17/P2-19/P2-20，P2-25）；
-- **Task P6e**（UI与规则管理切片）：`RuleManagerDialog` 界面、规则包列表与版本展示、`.svrule` 导入安装与测试；
+- [x] **Task P6e**（UI与规则管理切片）：`RuleManagerDialog` 界面、规则包列表与版本展示、`.svrule` 导入安装与测试；
 - **Task P6f**（UI切片）：分析进度条展示、异步取消按钮与响应、`DiagnosticsSummaryDock` 全局诊断面板与双向跳转；
 - **Task P6g**（UI切片）：明暗主题切换支持、基于 `QTranslator` 的中英双语动态切换与 UI 测试；
 - **Task P6h**（验证切片）：全生命周期端到端回放、手动覆盖持久化恢复、修改保护交互分支、100 GB 虚拟稀疏源会话恢复验证，以及固化 Version 1 `.svsession` fixture 永久向后兼容守护测试（P2-23）；
@@ -3271,3 +3271,43 @@ Blockers: 无
        * Windows 2022 / Qt 6.10.1：Job `101491462980`（`success`）；
        * Ubuntu 24.04 / Qt 6.11.1：Job `101491463019`（`success`）；
        * macOS 15 / Qt 6.11.1：Job `101491463124`（`success`）。
+
+- 2026-09-06：完成 Task P6e（UI与规则管理切片：`RuleManagerDialog` 界面、规则包列表与版本展示、`.svrule` 导入安装与测试）。
+  1. 架构与规范对齐：
+     - 严格遵循双语 ADR-0109 §5 规则版本管理架构设计与 ADR-0015/ADR-0016 安全沙箱规范；
+     - 规则模型与目录扩展：
+       * `RulePackageCatalog::allPackages()`：按 packageId 与 packageVersion 升序确定性遍历当前已注册的所有规则包；
+       * `RulePackageStore::discoverInstalled(storeRoot)`：安全扫描 content-addressed 存储目录（`sha256/*/*`），通过 `importDirectory` 严格以只读形式加载所有已安装规则包。
+  2. 规则包管理对话框实现（`src/app/rule_manager_dialog.h` / `src/app/rule_manager_dialog.cpp`）：
+     - 规则包表格呈现（`rulePackageTable`，6列）：展示 `ID`、`Version`、`Origin`（内置官方包高亮 `[Bundled]`，用户安装包高亮 `[Installed]`）、`Content Hash`（显示前 12 位十六进制截断加省略号，ToolTip 挂载完整 64 位 SHA-256）、`Entry Points`（逗号分隔的入口点 ID 列表）以及 `Description`（格式目标描述）；
+     - 规则安装工作流（`installPackageButton`，文案 `tr("Install Package (.svrule)...")`）：
+       * 支持 `fileDialogHandler_` 与 `messageDialogHandler_` 依赖注入以实现 100% 无头自动化测试；
+       * 通过 `RulePackageStore::importArchive` 实施 Zip 炸弹、路径穿越、规范化格式及 SHA-256 完整性校验；
+       * 内置包覆盖保护：若待安装包 ID 属于内置官方规则集合（`bundledPackageIds_`：AAC/H264/MP4），拦截安装并弹窗警告拒绝；
+       * 本地持久化与目录注册：调用 `RulePackageStore::install` 将包解压固化至 content-addressed 存储库，并在 `RulePackageCatalog` 完成注册，自动刷新表格视图；
+       * 幂等处理与版本冲突：对已安装包支持安全幂等安装，对 ID/Version 相同但内容哈希相异的冲突包显式报错提示。
+  3. 主窗口工具菜单集成（`src/app/main_window.h` / `src/app/main_window.cpp`）：
+     - 启动初始化：在构造函数中基于 `AppDataLocation/rules` 解析规范化 `ruleStorePath_`，自动扫描并注册已安装规则包，配置官方内置包保护列表；
+     - 主菜单扩展：新增 `Tools` 菜单与 `Tools > Manage Rules...` 动作（`actionManageRules_`）；
+     - 槽函数 `MainWindow::openRuleManager()`：支持 `ruleManagerDialogHandler_` 测试委派，默认实例化 `RuleManagerDialog` 模态运行。
+  4. 自动化测试扩充：
+     - 新建独立测试文件 `tests/app/rule_manager_dialog_test.cpp`，注册目标 `streamview_rule_manager_dialog_tests`（6/6 用例全绿）：
+       * `dialogPopulatesBundledPackagesOnOpen`：验证对话框正确填充并着色内置 AAC、H.264、MP4 官方包信息与 ToolTip；
+       * `installPackageSuccessfullyImportsAndRegistersSvrule`：构造合法 `.svrule` 归档并导入安装，验证磁盘存储、目录注册及表格展示；
+       * `installPackageRejectsInvalidArchiveWithErrorMessage`：验证损坏归档被安全拒绝并弹出明确错误；
+       * `installPackageRejectsOverwritingBundledPackage`：验证伪造内置包 ID 的安装请求被严格拦截并保护官方包不变；
+       * `installPackageIdempotentlyHandlesAlreadyInstalledPackage`：验证同一包重复安装时安全幂等且不产生重复表格行；
+       * `installPackageHandlesRegistrationConflict`：验证同名同版本但不同哈希的冲突包被正确拦截并报错；
+     - `tests/app/main_window_test.cpp` 追加 `manageRulesMenuActionOpensRuleManagerDialog` 测试用例（`MainWindowTest` 增至 45 槽全绿）。
+  5. 验证与全平台 Hosted CI 闭环：
+     - 规则静态校验：`svtool rule check` 对 4 个官方规则包源码全部 `Rule OK`；
+     - 本地三套全量构建与测试矩阵：
+       * `cmake --preset dev && cmake --build --preset dev && ctest --preset dev`（50/50 PASS，耗时 58.45s）；
+       * `cmake --preset ci && cmake --build --preset ci && ctest --preset ci`（50/50 PASS，耗时 31.29s）；
+       * `cmake --preset sanitize && cmake --build --preset sanitize && ctest --preset sanitize`（50/50 PASS，零 ASan/UBSan 告警，耗时 215.40s）；
+       * `ctest -R markdown_hygiene --preset dev`（100% PASS）；`git diff --check`（无空白缺陷）；
+     - 实现提交：`26ff713`（`feat(app): implement rule manager dialog and package installation in main window`）；
+     - Hosted CI 验证：Run `34042416633` 三平台全部 success：
+       * Windows 2022 / Qt 6.10.1：Job `101511446361`（`success`）；
+       * Ubuntu 24.04 / Qt 6.11.1：Job `101511446403`（`success`）；
+       * macOS 15 / Qt 6.11.1：Job `101511446256`（`success`）。
