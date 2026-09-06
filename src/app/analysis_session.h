@@ -281,6 +281,9 @@ public:
     [[nodiscard]] const rules::Mp4DetectionResult& mp4FormatDetection() const noexcept {
         return mp4FormatDetection_;
     }
+    [[nodiscard]] const rules::FormatSelection& formatSelection() const noexcept {
+        return formatSelection_;
+    }
 
     [[nodiscard]] AnalysisBatchResult analyzeBatch(
         std::size_t maximumRecords = 256,
@@ -371,6 +374,7 @@ private:
                     rules::H264AnnexBDetectionResult formatDetection,
                     rules::AacAdtsDetectionResult aacFormatDetection,
                     rules::Mp4DetectionResult mp4FormatDetection,
+                    rules::FormatSelection formatSelection,
                     std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer> analyzer,
                     SessionUserState userState,
                     std::unique_ptr<rules::AnalysisCacheOwner> cacheOwner,
@@ -407,6 +411,7 @@ private:
     rules::H264AnnexBDetectionResult formatDetection_;
     rules::AacAdtsDetectionResult aacFormatDetection_;
     rules::Mp4DetectionResult mp4FormatDetection_;
+    rules::FormatSelection formatSelection_;
     std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer> analyzer_;
     SessionUserState userState_;
     std::unique_ptr<rules::AnalysisCacheOwner> cacheOwner_;

@@ -3,6 +3,7 @@
 #include "analysis_tree_model.h"
 #include "field_inspector.h"
 #include "raw_data_view.h"
+#include "timeline_table_model.h"
 
 #include <streamview/rules/aac_adts_analyzer.h>
 #include <streamview/rules/h264_annex_b_analyzer.h>
@@ -10,6 +11,7 @@
 
 #include <QAction>
 #include <QBoxLayout>
+#include <QComboBox>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QHeaderView>
@@ -22,10 +24,12 @@
 #include <QSignalBlocker>
 #include <QStatusBar>
 #include <QStyle>
+#include <QTableView>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeView>
 
+#include <algorithm>
 #include <utility>
 
 namespace streamview::app {
@@ -34,6 +38,7 @@ namespace {
 
 constexpr std::size_t kAnalysisBatchRecords = 1;
 constexpr quint64 kAnalysisWorkBudget = 64U * 1024U;
+constexpr quint64 kSamplePageSize = 256;
 
 } // namespace
 
@@ -64,6 +69,13 @@ MainWindow::MainWindow(AnalysisSessionCacheOptions cacheOptions, QWidget* parent
     setupMenus();
     connect(rawDataView_, &RawDataView::sourceBitSelected,
             this, &MainWindow::selectSourceBit);
+
+    formatAmbiguityLabel_ = new QLabel(this);
+    formatAmbiguityLabel_->setObjectName(QStringLiteral("formatAmbiguityLabel"));
+    formatAmbiguityLabel_->setStyleSheet(
+        QStringLiteral("color: #d9534f; font-weight: bold; margin-right: 8px;"));
+    formatAmbiguityLabel_->hide();
+    statusBar()->addPermanentWidget(formatAmbiguityLabel_);
 
     statusBar()->showMessage(tr("Ready"));
 }
@@ -138,6 +150,86 @@ void MainWindow::setupDocks() {
     fieldInspector_->setObjectName(QStringLiteral("fieldInspector"));
     inspectorDock->setWidget(fieldInspector_);
     addDockWidget(Qt::RightDockWidgetArea, inspectorDock);
+
+    // --- Timeline & Samples dock (bottom) ---
+    timelineDock_ = new QDockWidget(tr("Timeline & Samples"), this);
+    timelineDock_->setObjectName(QStringLiteral("timelineDock"));
+
+    auto* timelineContainer = new QWidget(timelineDock_);
+    auto* timelineLayout = new QVBoxLayout(timelineContainer);
+    timelineLayout->setContentsMargins(4, 4, 4, 4);
+    timelineLayout->setSpacing(4);
+
+    auto* controlsBar = new QWidget(timelineContainer);
+    controlsBar->setObjectName(QStringLiteral("timelineControlsBar"));
+    auto* controlsLayout = new QHBoxLayout(controlsBar);
+    controlsLayout->setContentsMargins(0, 0, 0, 0);
+    controlsLayout->setSpacing(6);
+
+    auto* trackLabel = new QLabel(tr("Track:"), controlsBar);
+    controlsLayout->addWidget(trackLabel);
+
+    timelineTrackComboBox_ = new QComboBox(controlsBar);
+    timelineTrackComboBox_->setObjectName(QStringLiteral("timelineTrackComboBox"));
+    timelineTrackComboBox_->setMinimumWidth(200);
+    connect(timelineTrackComboBox_, &QComboBox::currentIndexChanged,
+            this, &MainWindow::onTrackSelectionChanged);
+    controlsLayout->addWidget(timelineTrackComboBox_);
+
+    timelinePrevPageButton_ = new QToolButton(controlsBar);
+    timelinePrevPageButton_->setObjectName(QStringLiteral("timelinePrevPageButton"));
+    timelinePrevPageButton_->setIcon(style()->standardIcon(QStyle::SP_ArrowBack));
+    timelinePrevPageButton_->setToolTip(tr("Previous sample page"));
+    timelinePrevPageButton_->setAutoRaise(true);
+    timelinePrevPageButton_->setEnabled(false);
+    connect(timelinePrevPageButton_, &QToolButton::clicked,
+            this, &MainWindow::onPrevPageClicked);
+    controlsLayout->addWidget(timelinePrevPageButton_);
+
+    timelinePageLabel_ = new QLabel(controlsBar);
+    timelinePageLabel_->setObjectName(QStringLiteral("timelinePageLabel"));
+    timelinePageLabel_->setText(tr("No samples"));
+    controlsLayout->addWidget(timelinePageLabel_);
+
+    timelineNextPageButton_ = new QToolButton(controlsBar);
+    timelineNextPageButton_->setObjectName(QStringLiteral("timelineNextPageButton"));
+    timelineNextPageButton_->setIcon(style()->standardIcon(QStyle::SP_ArrowForward));
+    timelineNextPageButton_->setToolTip(tr("Next sample page"));
+    timelineNextPageButton_->setAutoRaise(true);
+    timelineNextPageButton_->setEnabled(false);
+    connect(timelineNextPageButton_, &QToolButton::clicked,
+            this, &MainWindow::onNextPageClicked);
+    controlsLayout->addWidget(timelineNextPageButton_);
+
+    timelineStatusLabel_ = new QLabel(controlsBar);
+    timelineStatusLabel_->setObjectName(QStringLiteral("timelineStatusLabel"));
+    timelineStatusLabel_->setStyleSheet(
+        QStringLiteral("color: #d9534f; font-weight: bold; margin-left: 8px;"));
+    timelineStatusLabel_->hide();
+    controlsLayout->addWidget(timelineStatusLabel_, 1);
+
+    timelineLayout->addWidget(controlsBar);
+
+    timelineTableView_ = new QTableView(timelineContainer);
+    timelineTableView_->setObjectName(QStringLiteral("timelineTableView"));
+    timelineModel_ = new TimelineTableModel(this);
+    timelineTableView_->setModel(timelineModel_);
+    timelineTableView_->setAlternatingRowColors(true);
+    timelineTableView_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    timelineTableView_->setSelectionMode(QAbstractItemView::SingleSelection);
+    timelineTableView_->horizontalHeader()->setStretchLastSection(true);
+    timelineTableView_->installEventFilter(this);
+
+    connect(timelineTableView_->selectionModel(), &QItemSelectionModel::currentChanged,
+            this, [this](const QModelIndex& current, const QModelIndex&) {
+                onSampleSelectionChanged(current);
+            });
+    connect(timelineTableView_, &QTableView::doubleClicked,
+            this, &MainWindow::onSampleDoubleClicked);
+
+    timelineLayout->addWidget(timelineTableView_, 1);
+    timelineDock_->setWidget(timelineContainer);
+    addDockWidget(Qt::BottomDockWidgetArea, timelineDock_);
 }
 
 void MainWindow::openFile() {
@@ -175,6 +267,8 @@ bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
     fieldInspector_->clear();
     rawDataView_->clear();
     analysisModel_->clear();
+    timelineModel_->clear();
+    timelineTrackComboBox_->clear();
     session_.reset();
     navigationBreadcrumbFormats_.clear();
     candidate->enableCache(cacheOptions_);
@@ -187,6 +281,9 @@ bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
 
     // Publish the first batch before returning so the new session is immediately useful.
     advanceAnalysis(generation);
+
+    updateAmbiguityUI();
+    loadTracks();
 
     // Auto-expand the first two levels for visibility.
     analysisTreeView_->expandToDepth(1);
@@ -246,6 +343,9 @@ void MainWindow::advanceAnalysis(quint64 generation) {
         batch.status == AnalysisBatchStatus::ResourceLimit ||
         batch.status == AnalysisBatchStatus::InvalidRule) {
         publishAnalysisStatus(batch.status, batch.errorMessage);
+        if (rootTreeIsActive) {
+            loadTracks();
+        }
         return;
     }
 
@@ -262,6 +362,9 @@ void MainWindow::advanceAnalysis(quint64 generation) {
     }
 
     publishAnalysisStatus(batch.status, batch.errorMessage);
+    if (rootTreeIsActive) {
+        loadTracks();
+    }
 }
 
 void MainWindow::pollAnalysisCache(quint64 generation) {
@@ -314,6 +417,12 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
         auto* keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter) {
             return enterChildFormatOnCurrentNode();
+        }
+    }
+    if (watched == timelineTableView_ && event->type() == QEvent::KeyPress) {
+        auto* keyEvent = static_cast<QKeyEvent*>(event);
+        if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter) {
+            return enterSampleOnCurrentRow();
         }
     }
     return QMainWindow::eventFilter(watched, event);
@@ -402,7 +511,34 @@ void MainWindow::returnToParentFormat() {
         analysisModel_->resetFromTree(session_->activeTree());
         analysisModel_->updateFromTree(session_->activeTree());
 
-        if (retResult.restoredParentTargetNodeId.has_value()) {
+        if (retResult.restoredSample.has_value()) {
+            const auto& restored = *retResult.restoredSample;
+            for (int i = 0; i < timelineTrackComboBox_->count(); ++i) {
+                if (timelineTrackComboBox_->itemData(i).toUInt() == restored.trackId) {
+                    const QSignalBlocker blocker(timelineTrackComboBox_);
+                    timelineTrackComboBox_->setCurrentIndex(i);
+                    break;
+                }
+            }
+            currentTrackId_ = restored.trackId;
+            const quint64 targetPage = restored.sampleIndex / kSamplePageSize;
+            loadSamplePage(currentTrackId_, targetPage);
+
+            const int row = static_cast<int>(restored.sampleIndex % kSamplePageSize);
+            const QModelIndex sampleIndex = timelineModel_->index(row, 0);
+            if (sampleIndex.isValid()) {
+                const QSignalBlocker blocker(timelineTableView_->selectionModel());
+                timelineTableView_->selectRow(row);
+                timelineTableView_->scrollTo(sampleIndex, QAbstractItemView::PositionAtCenter);
+            }
+            if (!restored.sample.sourceSpans.empty()) {
+                SourceSelection selection;
+                selection.sourceIdentity = session_->identity();
+                selection.sourceSpans = restored.sample.sourceSpans;
+                setSourceSelection(std::move(selection));
+            }
+            fieldInspector_->clear();
+        } else if (retResult.restoredParentTargetNodeId.has_value()) {
             const QModelIndex parentIndex =
                 analysisModel_->indexForNodeId(*retResult.restoredParentTargetNodeId);
             if (parentIndex.isValid()) {
@@ -439,8 +575,269 @@ void MainWindow::updateNavigationUI() {
                                    ? session_->identity()
                                    : session_->ruleIdentity().entryPointId();
     QStringList breadcrumbParts{rootFormat};
+
+    const auto* sampleFrame = session_->currentSampleFrame();
+    if (sampleFrame != nullptr) {
+        const QString trackDesc = sampleFrame->targetFormat.isEmpty()
+                                      ? tr("Track %1").arg(sampleFrame->trackId)
+                                      : tr("Track %1 (%2)").arg(sampleFrame->trackId).arg(sampleFrame->targetFormat);
+        const QString sampleDesc = tr("Sample #%1%2")
+                                       .arg(sampleFrame->sampleIndex)
+                                       .arg(sampleFrame->sample.isSyncSample ? QStringLiteral(" [Sync]") : QString());
+        breadcrumbParts.append(trackDesc);
+        breadcrumbParts.append(sampleDesc);
+    }
+
     breadcrumbParts.append(navigationBreadcrumbFormats_);
     navigationBreadcrumbLabel_->setText(breadcrumbParts.join(QStringLiteral(" > ")));
+}
+
+void MainWindow::onTrackSelectionChanged(int comboIndex) {
+    if (comboIndex < 0 || !session_) {
+        timelineModel_->clear();
+        currentTrackId_ = 0;
+        currentTotalSamples_ = 0;
+        currentPageIndex_ = 0;
+        updateTimelinePageControls();
+        return;
+    }
+
+    const quint32 trackId = timelineTrackComboBox_->itemData(comboIndex).toUInt();
+    currentTrackId_ = trackId;
+
+    const auto tracksResult = session_->tracks();
+    if (tracksResult.available()) {
+        for (const auto& track : tracksResult.tracks) {
+            if (track.trackId == trackId) {
+                currentTotalSamples_ = track.sampleCount;
+                currentTimescale_ = track.timescale;
+                break;
+            }
+        }
+    }
+
+    loadSamplePage(trackId, 0);
+}
+
+void MainWindow::onSampleSelectionChanged(const QModelIndex& current) {
+    if (!session_ || !current.isValid()) {
+        return;
+    }
+    const auto* sample = timelineModel_->sampleAt(current.row());
+    if (sample == nullptr || sample->sourceSpans.empty()) {
+        return;
+    }
+
+    SourceSelection selection;
+    selection.sourceIdentity = session_->identity();
+    selection.sourceSpans = sample->sourceSpans;
+    setSourceSelection(std::move(selection));
+}
+
+void MainWindow::onSampleDoubleClicked(const QModelIndex& index) {
+    if (index.isValid()) {
+        timelineTableView_->setCurrentIndex(index);
+    }
+    static_cast<void>(enterSampleOnCurrentRow());
+}
+
+void MainWindow::onPrevPageClicked() {
+    if (currentPageIndex_ > 0) {
+        loadSamplePage(currentTrackId_, currentPageIndex_ - 1);
+    }
+}
+
+void MainWindow::onNextPageClicked() {
+    const quint64 totalPages = (currentTotalSamples_ == 0)
+                                   ? 1
+                                   : ((currentTotalSamples_ + kSamplePageSize - 1) / kSamplePageSize);
+    if (currentPageIndex_ + 1 < totalPages) {
+        loadSamplePage(currentTrackId_, currentPageIndex_ + 1);
+    }
+}
+
+bool MainWindow::enterSampleOnCurrentRow() {
+    if (!session_) {
+        return false;
+    }
+    const QModelIndex currentIndex = timelineTableView_->currentIndex();
+    if (!currentIndex.isValid()) {
+        return false;
+    }
+    const auto* sample = timelineModel_->sampleAt(currentIndex.row());
+    if (sample == nullptr) {
+        return false;
+    }
+
+    const quint32 trackId = currentTrackId_;
+    const quint64 sampleIndex = sample->sampleIndex;
+    const auto navResult = session_->enterSample(trackId, sampleIndex, catalog_);
+    if (!navResult.entered()) {
+        statusBar()->showMessage(tr("Cannot enter sample: %1").arg(navResult.errorMessage));
+        return true;
+    }
+
+    analysisModel_->resetFromTree(session_->activeTree());
+    analysisModel_->updateFromTree(session_->activeTree());
+
+    const QModelIndex childRootIndex = navResult.sampleNodeId.has_value()
+                                            ? analysisModel_->indexForNodeId(
+                                                  *navResult.sampleNodeId)
+                                            : QModelIndex{};
+    if (!childRootIndex.isValid()) {
+        const auto rollback = session_->returnToParent();
+        if (rollback.returned()) {
+            analysisModel_->resetFromTree(session_->activeTree());
+            analysisModel_->updateFromTree(session_->activeTree());
+        }
+        updateNavigationUI();
+        statusBar()->showMessage(tr("Cannot enter sample: child root is unavailable"));
+        return true;
+    }
+
+    analysisTreeView_->setCurrentIndex(childRootIndex);
+    selectAnalysisNode(childRootIndex);
+    analysisTreeView_->expandToDepth(1);
+    updateNavigationUI();
+    return true;
+}
+
+void MainWindow::loadTracks() {
+    timelineTrackComboBox_->clear();
+    timelineModel_->clear();
+    timelineStatusLabel_->clear();
+    timelineStatusLabel_->hide();
+    currentTrackId_ = 0;
+    currentPageIndex_ = 0;
+    currentTotalSamples_ = 0;
+    currentTimescale_ = 1;
+    updateTimelinePageControls();
+
+    if (!session_) {
+        return;
+    }
+
+    bool isTruncated = false;
+    for (quint64 i = 1; i <= session_->tree().nodeCount(); ++i) {
+        const auto n = session_->tree().node(core::AnalysisNodeId(i));
+        if (n) {
+            for (const auto& diag : n->diagnostics()) {
+                if (diag.code == core::DiagnosticCode::TruncatedSource) {
+                    isTruncated = true;
+                    break;
+                }
+            }
+            if (isTruncated) {
+                break;
+            }
+        }
+    }
+
+    const auto tracksResult = session_->tracks();
+
+    if (tracksResult.status == AnalysisSessionSampleStatus::UnsupportedSource) {
+        timelineStatusLabel_->setText(tr("Container tracks unavailable for elementary stream"));
+        timelineStatusLabel_->show();
+        updateTimelinePageControls();
+        return;
+    }
+
+    if (isTruncated) {
+        timelineStatusLabel_->setText(tr("File is truncated; track list may be incomplete"));
+        timelineStatusLabel_->show();
+    }
+
+    if (!tracksResult.available() || tracksResult.tracks.empty()) {
+        if (!isTruncated) {
+            timelineStatusLabel_->setText(
+                tracksResult.errorMessage.isEmpty()
+                    ? tr("No tracks found")
+                    : tr("No tracks: %1").arg(tracksResult.errorMessage));
+            timelineStatusLabel_->show();
+        }
+        updateTimelinePageControls();
+        return;
+    }
+
+    for (const auto& track : tracksResult.tracks) {
+        const QString formatText =
+            track.targetFormat.isEmpty() ? tr("unknown") : track.targetFormat;
+        const QString itemText = tr("Track %1 (%2, %3 samples)")
+                                     .arg(track.trackId)
+                                     .arg(formatText)
+                                     .arg(track.sampleCount);
+        timelineTrackComboBox_->addItem(itemText, track.trackId);
+    }
+
+    if (timelineTrackComboBox_->count() > 0) {
+        timelineTrackComboBox_->setCurrentIndex(0);
+        onTrackSelectionChanged(0);
+    }
+}
+
+void MainWindow::loadSamplePage(quint32 trackId, quint64 pageIndex) {
+    if (!session_ || trackId == 0) {
+        timelineModel_->clear();
+        updateTimelinePageControls();
+        return;
+    }
+
+    AnalysisSessionSamplePageRequest request;
+    request.trackId = trackId;
+    request.pageIndex = pageIndex * kSamplePageSize;
+    request.pageSize = kSamplePageSize;
+
+    const auto pageResult = session_->samplesForTrack(request);
+    if (!pageResult.available()) {
+        timelineModel_->clear();
+        updateTimelinePageControls();
+        return;
+    }
+
+    currentPageIndex_ = pageIndex;
+    timelineModel_->setSamples(pageResult.descriptors, currentTimescale_);
+    updateTimelinePageControls();
+
+    for (int i = 0; i < TimelineTableModel::ColumnCount; ++i) {
+        timelineTableView_->resizeColumnToContents(i);
+    }
+}
+
+void MainWindow::updateTimelinePageControls() {
+    const quint64 totalPages = (currentTotalSamples_ == 0)
+                                   ? 1
+                                   : ((currentTotalSamples_ + kSamplePageSize - 1) / kSamplePageSize);
+    timelinePrevPageButton_->setEnabled(currentPageIndex_ > 0);
+    timelineNextPageButton_->setEnabled(currentPageIndex_ + 1 < totalPages);
+
+    if (currentTotalSamples_ == 0) {
+        timelinePageLabel_->setText(tr("No samples"));
+    } else {
+        const quint64 first = currentPageIndex_ * kSamplePageSize;
+        const quint64 last = std::min(first + kSamplePageSize, currentTotalSamples_) - 1;
+        timelinePageLabel_->setText(tr("Page %1 of %2 (samples %3-%4 of %5)")
+                                        .arg(currentPageIndex_ + 1)
+                                        .arg(totalPages)
+                                        .arg(first)
+                                        .arg(last)
+                                        .arg(currentTotalSamples_));
+    }
+}
+
+void MainWindow::updateAmbiguityUI() {
+    if (!session_) {
+        formatAmbiguityLabel_->clear();
+        formatAmbiguityLabel_->hide();
+        return;
+    }
+    if (session_->formatSelection().ambiguous()) {
+        formatAmbiguityLabel_->setText(
+            tr("Warning: Ambiguous format (container vs elementary stream detected)"));
+        formatAmbiguityLabel_->show();
+    } else {
+        formatAmbiguityLabel_->clear();
+        formatAmbiguityLabel_->hide();
+    }
 }
 
 void MainWindow::selectAnalysisNode(const QModelIndex& current) {

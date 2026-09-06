@@ -14,6 +14,8 @@ add_library(streamview_app STATIC
     session_document.cpp
     session_document.h
     source_selection.h
+    timeline_table_model.cpp
+    timeline_table_model.h
 )
 
 add_library(StreamView::App ALIAS streamview_app)
