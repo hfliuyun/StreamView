@@ -255,6 +255,10 @@ public:
     [[nodiscard]] static std::unique_ptr<AnalysisSession>
     create(std::unique_ptr<core::RandomAccessSource> source,
            QString* errorMessage = nullptr);
+    [[nodiscard]] static std::unique_ptr<AnalysisSession>
+    create(std::unique_ptr<core::RandomAccessSource> source,
+           QString sourcePath,
+           QString* errorMessage = nullptr);
     [[nodiscard]] static AnalysisSessionRestoreResult
     restoreSession(const QString& sessionPath, const rules::RulePackageCatalog& catalog);
     [[nodiscard]] static AnalysisSessionRestoreResult
@@ -315,10 +319,13 @@ public:
     [[nodiscard]] bool cacheWritesPending() const noexcept {
         return !pendingCacheWrites_.empty();
     }
+    [[nodiscard]] const std::optional<core::SourceFingerprint>& initialFingerprint() const noexcept {
+        return initialFingerprint_;
+    }
     void enableCache(AnalysisSessionCacheOptions cacheOptions);
-    [[nodiscard]] bool saveSession(const QString& sessionPath,
-                                   const SessionUserState& userState,
-                                   QString* errorMessage = nullptr) const;
+    [[nodiscard]] SessionSaveResult saveSession(
+        const QString& sessionPath,
+        const SessionUserState& userState) const;
 
     [[nodiscard]] AnalysisSessionNavigationResult enterChildFormat(
         core::AnalysisNodeId nodeId,
@@ -379,7 +386,8 @@ private:
                     SessionUserState userState,
                     std::unique_ptr<rules::AnalysisCacheOwner> cacheOwner,
                     AnalysisSessionCacheStatus cacheStatus,
-                    QString cacheErrorMessage);
+                    QString cacheErrorMessage,
+                    std::optional<core::SourceFingerprint> initialFingerprint = std::nullopt);
     [[nodiscard]] static std::unique_ptr<AnalysisSession>
     createPrepared(std::unique_ptr<core::RandomAccessSource> source,
                    QString sourcePath,
@@ -438,6 +446,7 @@ private:
     /// identity so parameter sets published by one sample stay visible to the
     /// next sample of the same track.
     std::unordered_map<QString, SubFormatSession> sampleSessions_;
+    std::optional<core::SourceFingerprint> initialFingerprint_;
 };
 
 enum class AnalysisSessionRestoreStatus : quint8 {

@@ -15,6 +15,8 @@ using streamview::app::SessionAnnotation;
 using streamview::app::SessionBookmark;
 using streamview::app::SessionDocument;
 using streamview::app::SessionDocumentLoadStatus;
+using streamview::app::SessionSaveResult;
+using streamview::app::SessionSaveStatus;
 using streamview::app::SessionUserState;
 using streamview::core::SourceFingerprint;
 using streamview::core::SourceFingerprintMode;
@@ -206,6 +208,18 @@ private slots:
         file.close();
         QCOMPARE(SessionDocument::load(file.fileName()).status,
                  SessionDocumentLoadStatus::TooLarge);
+    }
+
+    void validatesSessionSaveResultContract() {
+        SessionSaveResult defaultResult;
+        QCOMPARE(defaultResult.status, SessionSaveStatus::Saved);
+        QVERIFY(defaultResult.succeeded());
+        QVERIFY(defaultResult.errorMessage.isEmpty());
+
+        SessionSaveResult errorResult{SessionSaveStatus::FileIoError, QStringLiteral("Disk full")};
+        QCOMPARE(errorResult.status, SessionSaveStatus::FileIoError);
+        QVERIFY(!errorResult.succeeded());
+        QCOMPARE(errorResult.errorMessage, QStringLiteral("Disk full"));
     }
 };
 

@@ -144,7 +144,8 @@ AnalysisSession::AnalysisSession(std::unique_ptr<core::RandomAccessSource> sourc
                                  SessionUserState userState,
                                  std::unique_ptr<rules::AnalysisCacheOwner> cacheOwner,
                                  AnalysisSessionCacheStatus cacheStatus,
-                                 QString cacheErrorMessage)
+                                 QString cacheErrorMessage,
+                                 std::optional<core::SourceFingerprint> initialFingerprint)
     : source_(std::move(source)), sourcePath_(std::move(sourcePath)),
       initialPage_(std::move(initialPage)), formatDetection_(std::move(formatDetection)),
       aacFormatDetection_(std::move(aacFormatDetection)),
@@ -152,7 +153,8 @@ AnalysisSession::AnalysisSession(std::unique_ptr<core::RandomAccessSource> sourc
       formatSelection_(std::move(formatSelection)),
       analyzer_(std::move(analyzer)), userState_(std::move(userState)),
       cacheOwner_(std::move(cacheOwner)), cacheStatus_(cacheStatus),
-      cacheErrorMessage_(std::move(cacheErrorMessage)) {}
+      cacheErrorMessage_(std::move(cacheErrorMessage)),
+      initialFingerprint_(std::move(initialFingerprint)) {}
 
 std::unique_ptr<AnalysisSession> AnalysisSession::openFile(const QString& path,
                                                            QString* errorMessage) {
@@ -174,7 +176,14 @@ AnalysisSession::openFile(const QString& path,
 std::unique_ptr<AnalysisSession>
 AnalysisSession::create(std::unique_ptr<core::RandomAccessSource> source,
                         QString* errorMessage) {
-    return createPrepared(std::move(source), {}, nullptr, {}, {}, std::nullopt,
+    return create(std::move(source), {}, errorMessage);
+}
+
+std::unique_ptr<AnalysisSession>
+AnalysisSession::create(std::unique_ptr<core::RandomAccessSource> source,
+                        QString sourcePath,
+                        QString* errorMessage) {
+    return createPrepared(std::move(source), std::move(sourcePath), nullptr, {}, {}, std::nullopt,
                           errorMessage);
 }
 
@@ -315,12 +324,20 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
         }
     }
 
+    if (!verifiedFingerprint) {
+        if (const auto* fileSource = dynamic_cast<const core::FileSource*>(source.get())) {
+            auto fp = fileSource->fingerprint();
+            if (fp.succeeded()) {
+                verifiedFingerprint = std::move(fp.fingerprint);
+            }
+        }
+    }
+
     const auto& ruleIdent = std::visit(
         [](const auto& a) -> const rules::RuleEntryPointIdentity& { return a.ruleIdentity(); },
         *analyzerVariant);
     SessionCacheSetup cacheSetup =
-        setupSessionCache(*source, ruleIdent, std::move(cacheOptions),
-                          std::move(verifiedFingerprint));
+        setupSessionCache(*source, ruleIdent, std::move(cacheOptions), verifiedFingerprint);
 
     if (errorMessage != nullptr) {
         errorMessage->clear();
@@ -331,7 +348,8 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
                             std::move(mp4FormatDetection), std::move(formatSelection),
                             std::move(*analyzerVariant), std::move(userState),
                             std::move(cacheSetup.owner), cacheSetup.status,
-                            std::move(cacheSetup.errorMessage)));
+                            std::move(cacheSetup.errorMessage),
+                            std::move(verifiedFingerprint)));
 }
 
 AnalysisSessionRestoreResult
@@ -410,36 +428,52 @@ void AnalysisSession::enableCache(AnalysisSessionCacheOptions cacheOptions) {
     cacheErrorMessage_ = std::move(setup.errorMessage);
 }
 
-bool AnalysisSession::saveSession(const QString& sessionPath,
-                                  const SessionUserState& userState,
-                                  QString* errorMessage) const {
+SessionSaveResult AnalysisSession::saveSession(const QString& sessionPath,
+                                              const SessionUserState& userState) const {
+    SessionSaveResult result;
     if (sourcePath_.isEmpty()) {
-        if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral(
-                "Only a local file analysis session can be saved persistently");
-        }
-        return false;
+        result.status = SessionSaveStatus::SourcePathMissing;
+        result.errorMessage = QStringLiteral(
+            "Only a local file analysis session can be saved persistently");
+        return result;
     }
     const auto* fileSource = dynamic_cast<const core::FileSource*>(source_.get());
     if (fileSource == nullptr) {
-        if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("Session persistence requires a file-backed source");
-        }
-        return false;
+        result.status = SessionSaveStatus::SourceNotFileBacked;
+        result.errorMessage = QStringLiteral("Session persistence requires a file-backed source");
+        return result;
     }
     core::SourceFingerprintResult fingerprint = fileSource->fingerprint();
     if (!fingerprint.succeeded()) {
-        if (errorMessage != nullptr) {
-            *errorMessage = fingerprint.errorMessage.isEmpty()
-                                ? QStringLiteral("Unable to fingerprint the analysis source")
-                                : std::move(fingerprint.errorMessage);
-        }
-        return false;
+        result.status = SessionSaveStatus::SourceFingerprintFailed;
+        result.errorMessage = fingerprint.errorMessage.isEmpty()
+                                  ? QStringLiteral("Unable to fingerprint the analysis source")
+                                  : std::move(fingerprint.errorMessage);
+        return result;
     }
+    if (initialFingerprint_ && *fingerprint.fingerprint != *initialFingerprint_) {
+        result.status = SessionSaveStatus::SourceFingerprintMismatch;
+        result.errorMessage = QStringLiteral(
+            "Source file was modified on disk; cannot save session for mutated source");
+        return result;
+    }
+
+    QString docErrorMessage;
     auto document = SessionDocument::create(sourcePath_, identity(),
                                             std::move(*fingerprint.fingerprint),
-                                            ruleIdentity(), userState, errorMessage);
-    return document && document->save(sessionPath, errorMessage);
+                                            ruleIdentity(), userState, &docErrorMessage);
+    if (!document) {
+        result.status = SessionSaveStatus::DocumentValidationFailed;
+        result.errorMessage = std::move(docErrorMessage);
+        return result;
+    }
+    if (!document->save(sessionPath, &docErrorMessage)) {
+        result.status = SessionSaveStatus::FileIoError;
+        result.errorMessage = std::move(docErrorMessage);
+        return result;
+    }
+    result.status = SessionSaveStatus::Saved;
+    return result;
 }
 
 AnalysisBatchResult AnalysisSession::analyzeBatch(

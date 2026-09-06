@@ -62,7 +62,7 @@ StreamView 阶段 5 完整交付了非分片 ISO BMFF MP4/MOV 容器解析、元
    在恢复会话时，ADR-0033 明确规定：直接根据该 `rule` 身份在规则目录中精确查找并直接构造分析器，**完全绕过格式自动检测**。
    因此，手动覆盖格式后保存的会话，在恢复时必然精确恢复该覆盖格式。额外添加 `"formatOverride": true` 布尔标记或 schema 字段纯属冗余。
 2. **UI 导航栈严格保持为瞬态状态（不进行持久化）**：
-   依据 ADR-0103 §6、ADR-0105 §6 以及 [src/app/analysis_session.h](../../src/app/analysis_session.h#L238)：
+   依据 ADR-0103 §6、ADR-0105 §6 以及 [src/app/analysis_session.h](../../src/app/analysis_session.h#L239)：
    - 样本下钻帧（`SampleNavigationFrame`）与子格式帧（`NavigationFrame`）属于 GUI 交互探索的临时覆盖视图，并非持久化的底层事实。
    - 根容器格式是权威的文档锚点。
    - 将子会话执行上下文或样本导航栈写入 `.svsession`，会把可重建的运行时状态泄漏进原本设计为不可变坐标紧凑记录的文档中，破坏 ADR-0033 的核心原则。
@@ -105,7 +105,7 @@ StreamView 阶段 5 完整交付了非分片 ISO BMFF MP4/MOV 容器解析、元
         const QString& sessionPath,
         const SessionUserState& userState) const;
     ```
-    （由 [src/app/analysis_session.h:319](../../src/app/analysis_session.h#L319) 现有的 `bool saveSession(...)` 升级为返回强类型结果结构体）。
+    （由 [src/app/analysis_session.h:326](../../src/app/analysis_session.h#L326) 现有的 `bool saveSession(...)` 升级为返回强类型结果结构体）。
 - **`MainWindow` / 文档协调者（表现层）**：
   - 持有活跃的 `SessionUserState`（[src/app/session_document.h:42-49](../../src/app/session_document.h#L42-L49)），聚合以下组件状态：
     * `bookmarks`：`SessionBookmark` 列表；
@@ -180,7 +180,7 @@ struct SessionSaveResult final {
 ### 4. 格式手动覆盖架构（P1-2，闭环 P2-17、P2-19、P2-20）
 
 #### 1. 歧义交互式裁决（P2-17）
-在 `MainWindow` 中，当 `session_->formatSelection().ambiguous()`（[src/app/analysis_session.h:284](../../src/app/analysis_session.h#L284)）为真时：
+在 `MainWindow` 中，当 `session_->formatSelection().ambiguous()`（[src/app/analysis_session.h:288](../../src/app/analysis_session.h#L288)）为真时：
 - Task P5j-5 引入的歧义横幅将显示交互式 **「解决歧义...」** 按钮；
 - 点击后弹出 `FormatOverrideDialog` 对话框，预选发生竞争冲突的候选格式（例如 `MP4 (ISOBMFF)` 与 `H.264 (Annex B)`）。
 

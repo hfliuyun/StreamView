@@ -62,7 +62,7 @@ With the core container and elementary format engines in place, Phase 6 focuses 
    Upon restore, ADR-0033 specifies exact catalog lookup by this `rule` identity and constructs the analyzer directly, **bypassing format auto-detection entirely**.
    Therefore, a saved session whose format was manually overridden already restores that exact format deterministically. Adding an extra `"formatOverride": true` boolean or schema field is redundant and unnecessary.
 2. **UI Navigation Stack Remains Strictly Transient (Not Serialized)**:
-   In accordance with ADR-0103 §6, ADR-0105 §6, and [src/app/analysis_session.h](../../src/app/analysis_session.h#L238):
+   In accordance with ADR-0103 §6, ADR-0105 §6, and [src/app/analysis_session.h](../../src/app/analysis_session.h#L239):
    - Sample drill-down frames (`SampleNavigationFrame`) and child format frames (`NavigationFrame`) represent ephemeral interactive exploration overlays for the GUI, not persistent ground truth.
    - The root container format remains the authoritative document anchor.
    - Persisting child session execution contexts or sample navigation stacks into `.svsession` would leak rebuildable runtime state into what ADR-0033 intentionally defined as a compact record of immutable coordinates.
@@ -105,7 +105,7 @@ A critical architectural boundary governs session persistence:
         const QString& sessionPath,
         const SessionUserState& userState) const;
     ```
-    (Upgraded from the existing `bool saveSession(...)` in [src/app/analysis_session.h:319](../../src/app/analysis_session.h#L319) to return a typed status struct).
+    (Upgraded from the existing `bool saveSession(...)` in [src/app/analysis_session.h:326](../../src/app/analysis_session.h#L326) to return a typed status struct).
 - **`MainWindow` / Document Coordinator (Presentation Layer)**:
   - Owns the live `SessionUserState` ([src/app/session_document.h:42-49](../../src/app/session_document.h#L42-L49)), which aggregates:
     * `bookmarks`: vector of `SessionBookmark`;
@@ -180,7 +180,7 @@ In `MainWindow`, any action that would discard the current session (`openFile()`
 ### 4. Format Manual Override Architecture (P1-2, Closing P2-17, P2-19, P2-20)
 
 #### 1. Interactive Ambiguity Resolution (P2-17)
-In `MainWindow`, when `session_->formatSelection().ambiguous()` ([src/app/analysis_session.h:284](../../src/app/analysis_session.h#L284)) is true:
+In `MainWindow`, when `session_->formatSelection().ambiguous()` ([src/app/analysis_session.h:288](../../src/app/analysis_session.h#L288)) is true:
 - The ambiguity banner surfaced in Task P5j-5 displays an interactive **"Resolve Ambiguity..."** button alongside the warning.
 - Clicking this button opens the `FormatOverrideDialog` pre-populated with the conflicting candidate formats (e.g. `MP4 (ISOBMFF)` vs `H.264 (Annex B)`).
 

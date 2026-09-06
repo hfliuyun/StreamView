@@ -109,4 +109,23 @@ struct SessionDocumentLoadResult final {
     [[nodiscard]] bool succeeded() const noexcept;
 };
 
+enum class SessionSaveStatus : quint8 {
+    Saved,
+    SourcePathMissing,
+    SourceNotFileBacked,
+    SourceFingerprintFailed,
+    SourceFingerprintMismatch,
+    DocumentValidationFailed,
+    FileIoError,
+};
+
+struct SessionSaveResult final {
+    SessionSaveStatus status = SessionSaveStatus::Saved;
+    QString errorMessage;
+
+    [[nodiscard]] bool succeeded() const noexcept {
+        return status == SessionSaveStatus::Saved;
+    }
+};
+
 } // namespace streamview::app
