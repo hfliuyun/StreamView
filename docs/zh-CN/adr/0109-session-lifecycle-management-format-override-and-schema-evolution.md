@@ -242,7 +242,28 @@ public:
 
 ---
 
-### 6. 阶段 6 任务拆分与依赖编排（P6a – P6i，P2-25）
+### 6. 分析进度、异步取消与全局诊断汇总面板架构
+
+为在大文件深度扫描与码流异常分析过程中提供敏捷的桌面交互反馈，Task P6f 建立响应式进度指示、非阻塞取消与全局诊断汇总机制：
+
+1. **状态栏进度指示与交互式取消**：
+   - 在 `MainWindow` 状态栏中内嵌 `QProgressBar`（`analysisProgressBar`），在增量分析进行期间（`!session_->finished()` 且未取消）呈现当前扫描进度（`session_->scanCursor()` / `session_->sizeBytes()`）；
+   - 进度条旁集成 `QPushButton`（`cancelAnalysisButton`，文案 `Cancel`），允许用户随时手动中止分析；
+   - 触发取消将通过 `core::CancellationSource` / `session_->requestCancellation()` 置位取消标志，运行中的增量分析批次安全退出并返回 `AnalysisBatchStatus::Cancelled`；
+   - 取消后状态栏更新为 `Analysis cancelled: N nodes`，隐藏进度条与取消按钮，已物化的局部分析树及全部有效节点完整保留，不发生内存泄露或状态损毁。
+
+2. **`DiagnosticsSummaryDock` 全局诊断汇总面板**：
+   - 在主窗口底部区域集成专有停靠窗口 `DiagnosticsSummaryDock`（`diagnosticsSummaryDock`，标题 `Diagnostics`），全量聚合当前 `AnalysisTree` 中产生的所有 `ParseDiagnostic` 条目；
+   - 配备统计头标 `diagnosticsSummaryLabel`（呈现总数及错误/警告/信息分项统计）与严重性过滤下拉框 `severityFilterComboBox`；
+   - 表格（`diagnosticsTableWidget`）提供四列清晰展示：严重性（`Severity`）、诊断消息（`Message`）、所属字段/节点（`Field / Node`）与源区间（`Offset / Range`）；
+   - **双向联动导航协议**：
+     - *正向导航*：在诊断表格中选中特定诊断行时，自动在分析树（`AnalysisTreeView`）中定位、展开并高亮对应 `AnalysisNode`，联动更新 `FieldInspector`，并在原始十六进制视图（`RawDataView`）中跳转并高亮确切字节与位区间；
+     - *反向导航*：在分析树中选择携带诊断信息的节点时，诊断汇总面板自动滚动并高亮匹配的诊断条目；
+   - 视图（`View`）菜单中提供专有显示/隐藏切换动作（`actionToggleDiagnosticsDock`）。
+
+---
+
+### 7. 阶段 6 任务拆分与依赖编排（P6a – P6i，P2-25）
 
 为严格遵守项目纪律（单任务闭环 SOP、能力与消费者不混杂提交、固定独立评审门禁），阶段 6 划分为以下串行任务切片：
 
