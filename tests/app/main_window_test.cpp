@@ -1,3 +1,4 @@
+#include "diagnostics_summary_dock.h"
 #include "format_override_dialog.h"
 #include "main_window.h"
 #include "raw_data_model.h"
@@ -20,7 +21,9 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QListWidget>
+#include <QMenu>
 #include <QMessageBox>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QSqlDatabase>
 #include <QSqlError>
@@ -37,6 +40,7 @@
 #include <optional>
 
 using streamview::app::AnalysisSessionCacheOptions;
+using streamview::app::DiagnosticsSummaryDock;
 using streamview::app::FormatOverrideDialog;
 using streamview::app::MainWindow;
 using streamview::app::RawDataModel;
@@ -1886,6 +1890,115 @@ private slots:
         QVERIFY(capturedBundledIds.find(QStringLiteral("org.streamview.aac")) != capturedBundledIds.end());
         QVERIFY(capturedBundledIds.find(QStringLiteral("org.streamview.h264")) != capturedBundledIds.end());
         QVERIFY(capturedBundledIds.find(QStringLiteral("org.streamview.mp4")) != capturedBundledIds.end());
+    }
+
+    void progressBarAndCancelButtonPresence() {
+        MainWindow window;
+        auto* progressBar = window.findChild<QProgressBar*>(QStringLiteral("analysisProgressBar"));
+        QVERIFY(progressBar != nullptr);
+        QVERIFY(progressBar->isHidden());
+        QCOMPARE(progressBar->minimum(), 0);
+        QCOMPARE(progressBar->maximum(), 100);
+
+        auto* cancelButton = window.findChild<QPushButton*>(QStringLiteral("cancelAnalysisButton"));
+        QVERIFY(cancelButton != nullptr);
+        QVERIFY(cancelButton->isHidden());
+        QCOMPARE(cancelButton->text(), QStringLiteral("Cancel"));
+    }
+
+    void diagnosticsDockPresenceAndViewMenuAction() {
+        MainWindow window;
+        window.show();
+        auto* dock = window.findChild<DiagnosticsSummaryDock*>(QStringLiteral("diagnosticsSummaryDock"));
+        QVERIFY(dock != nullptr);
+        QCOMPARE(dock->windowTitle(), QStringLiteral("Diagnostics"));
+
+        auto* menuView = window.findChild<QMenu*>(QStringLiteral("menuView"));
+        QVERIFY(menuView != nullptr);
+
+        auto* toggleAction = window.findChild<QAction*>(QStringLiteral("actionToggleDiagnosticsDock"));
+        QVERIFY(toggleAction != nullptr);
+        QCOMPARE(toggleAction->text(), QStringLiteral("&Diagnostics"));
+
+        // Toggle action controls visibility
+        QVERIFY(dock->isVisible());
+        toggleAction->trigger();
+        QVERIFY(dock->isHidden());
+        toggleAction->trigger();
+        QVERIFY(dock->isVisible());
+    }
+
+    void analysisCancellation() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        // Create an Annex B stream with multiple NAL units
+        QByteArray bytes;
+        for (int i = 0; i < 20; ++i) {
+            bytes.append(QByteArray::fromHex("00000001658884"));
+        }
+        const QString path = writeFixture(directory, QStringLiteral("multi.264"), bytes);
+        QVERIFY(!path.isEmpty());
+
+        MainWindow window;
+        QString errorMessage;
+        // Request cancellation immediately
+        window.cancelAnalysis();
+        QVERIFY(window.openMediaSource(path, &errorMessage));
+
+        auto* cancelButton = window.findChild<QPushButton*>(QStringLiteral("cancelAnalysisButton"));
+        auto* progressBar = window.findChild<QProgressBar*>(QStringLiteral("analysisProgressBar"));
+        auto* statusBar = window.statusBar();
+        QVERIFY(cancelButton != nullptr);
+        QVERIFY(progressBar != nullptr);
+        QVERIFY(statusBar != nullptr);
+
+        // Cancel analysis
+        window.cancelAnalysis();
+        QCoreApplication::processEvents();
+
+        // Progress widgets should be hidden
+        QVERIFY(progressBar->isHidden());
+        QVERIFY(cancelButton->isHidden());
+
+        // Tree view retains materialized nodes
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        QVERIFY(treeView != nullptr);
+        auto* model = treeView->model();
+        QVERIFY(model != nullptr);
+        QVERIFY(model->rowCount() >= 1);
+    }
+
+    void diagnosticsSummaryDockBidirectionalSelection() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = writeFixture(
+            directory, QStringLiteral("truncated.264"), QByteArray::fromHex("000001"));
+        QVERIFY(!path.isEmpty());
+
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY(window.openMediaSource(path, &errorMessage));
+
+        auto* dock = window.findChild<DiagnosticsSummaryDock*>(QStringLiteral("diagnosticsSummaryDock"));
+        QVERIFY(dock != nullptr);
+        auto* table = dock->findChild<QTableWidget*>(QStringLiteral("diagnosticsTableWidget"));
+        QVERIFY(table != nullptr);
+
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        QVERIFY(treeView != nullptr);
+
+        QTRY_VERIFY(table->rowCount() > 0);
+
+        // Forward selection: selecting a row in the diagnostics table updates treeView
+        table->setCurrentCell(0, 0);
+        QTRY_VERIFY(treeView->currentIndex().isValid());
+
+        // Reverse selection: selecting node in treeView updates diagnostics table selection
+        const QModelIndex header =
+            findIndexByName(*treeView->model(), QStringLiteral("NalUnitHeader"));
+        QVERIFY(header.isValid());
+        treeView->setCurrentIndex(header);
+        QTRY_VERIFY(table->currentRow() >= 0);
     }
 };
 

@@ -146,6 +146,7 @@ struct ResolvedAnalyzerSetup final {
     const core::RandomAccessSource& source,
     const core::SourcePage& initialPage,
     const rules::RuleCatalogLookupResult& resolvedRule,
+    std::optional<core::CancellationToken> cancellation,
     QString* errorMessage) {
     ResolvedAnalyzerSetup setup;
     QString analyzerError;
@@ -158,7 +159,7 @@ struct ResolvedAnalyzerSetup final {
         setup.aacFormatDetection =
             rules::detectAacAdtsCandidate(initialPage.bytes, source.sizeBytes());
         auto aacAnalyzer =
-            rules::AacAdtsAnalyzer::create(source, resolvedRule, &analyzerError);
+            rules::AacAdtsAnalyzer::create(source, resolvedRule, &analyzerError, cancellation);
         if (!aacAnalyzer) {
             if (errorMessage != nullptr) {
                 *errorMessage = analyzerError;
@@ -175,7 +176,7 @@ struct ResolvedAnalyzerSetup final {
         setup.mp4FormatDetection =
             rules::detectMp4Candidate(initialPage.bytes, source.sizeBytes());
         auto mp4Analyzer =
-            rules::Mp4IsobmffAnalyzer::create(source, resolvedRule, &analyzerError);
+            rules::Mp4IsobmffAnalyzer::create(source, resolvedRule, &analyzerError, cancellation);
         if (!mp4Analyzer) {
             if (errorMessage != nullptr) {
                 *errorMessage = analyzerError;
@@ -189,7 +190,7 @@ struct ResolvedAnalyzerSetup final {
         setup.formatDetection =
             rules::detectH264AnnexBCandidate(initialPage.bytes, source.sizeBytes());
         auto h264Analyzer =
-            rules::H264AnnexBAnalyzer::create(source, resolvedRule, &analyzerError);
+            rules::H264AnnexBAnalyzer::create(source, resolvedRule, &analyzerError, cancellation);
         if (!h264Analyzer) {
             if (errorMessage != nullptr) {
                 *errorMessage = analyzerError;
@@ -215,7 +216,8 @@ AnalysisSession::AnalysisSession(std::unique_ptr<core::RandomAccessSource> sourc
                                  std::unique_ptr<rules::AnalysisCacheOwner> cacheOwner,
                                  AnalysisSessionCacheStatus cacheStatus,
                                  QString cacheErrorMessage,
-                                 std::optional<core::SourceFingerprint> initialFingerprint)
+                                 std::optional<core::SourceFingerprint> initialFingerprint,
+                                 std::shared_ptr<core::CancellationSource> cancellationSource)
     : source_(std::move(source)), sourcePath_(std::move(sourcePath)),
       initialPage_(std::move(initialPage)), formatDetection_(std::move(formatDetection)),
       aacFormatDetection_(std::move(aacFormatDetection)),
@@ -224,7 +226,19 @@ AnalysisSession::AnalysisSession(std::unique_ptr<core::RandomAccessSource> sourc
       analyzer_(std::move(analyzer)), userState_(std::move(userState)),
       cacheOwner_(std::move(cacheOwner)), cacheStatus_(cacheStatus),
       cacheErrorMessage_(std::move(cacheErrorMessage)),
-      initialFingerprint_(std::move(initialFingerprint)) {}
+      initialFingerprint_(std::move(initialFingerprint)),
+      cancellationSource_(cancellationSource ? std::move(cancellationSource)
+                                             : std::make_shared<core::CancellationSource>()) {}
+
+void AnalysisSession::requestCancellation() noexcept {
+    if (cancellationSource_) {
+        static_cast<void>(cancellationSource_->requestCancellation());
+    }
+}
+
+bool AnalysisSession::isCancellationRequested() const noexcept {
+    return cancellationSource_ && cancellationSource_->isCancellationRequested();
+}
 
 std::unique_ptr<AnalysisSession> AnalysisSession::openFile(const QString& path,
                                                            QString* errorMessage) {
@@ -322,8 +336,10 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
     QString analyzerError;
 
     rules::FormatSelection formatSelection;
+    auto cancellationSource = std::make_shared<core::CancellationSource>();
     if (resolvedRule != nullptr) {
-        auto setup = setupResolvedAnalyzer(*source, initialPage, *resolvedRule, errorMessage);
+        auto setup = setupResolvedAnalyzer(
+            *source, initialPage, *resolvedRule, cancellationSource->token(), errorMessage);
         if (!setup.has_value()) {
             return nullptr;
         }
@@ -346,7 +362,8 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
         const bool chooseAac = formatSelection.format == rules::DetectedFormat::AacAdts;
 
         if (chooseMp4) {
-            auto mp4Analyzer = rules::Mp4IsobmffAnalyzer::create(*source, &analyzerError);
+            auto mp4Analyzer =
+                rules::Mp4IsobmffAnalyzer::create(*source, &analyzerError, cancellationSource->token());
             if (mp4Analyzer.has_value()) {
                 analyzerVariant.emplace(std::move(*mp4Analyzer));
             } else {
@@ -358,13 +375,15 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
                 return nullptr;
             }
         } else if (chooseAac) {
-            auto aacAnalyzer = rules::AacAdtsAnalyzer::create(*source, &analyzerError);
+            auto aacAnalyzer =
+                rules::AacAdtsAnalyzer::create(*source, &analyzerError, cancellationSource->token());
             if (aacAnalyzer.has_value()) {
                 analyzerVariant.emplace(std::move(*aacAnalyzer));
             } else {
                 // If AAC analyzer creation fails (e.g. no bundled rule package yet),
                 // fall back cleanly to the existing H.264/unknown source path.
-                auto h264Analyzer = rules::H264AnnexBAnalyzer::create(*source, &analyzerError);
+                auto h264Analyzer =
+                    rules::H264AnnexBAnalyzer::create(*source, &analyzerError, cancellationSource->token());
                 if (!h264Analyzer) {
                     if (errorMessage != nullptr) {
                         *errorMessage = analyzerError;
@@ -374,7 +393,8 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
                 analyzerVariant.emplace(std::move(*h264Analyzer));
             }
         } else {
-            auto h264Analyzer = rules::H264AnnexBAnalyzer::create(*source, &analyzerError);
+            auto h264Analyzer =
+                rules::H264AnnexBAnalyzer::create(*source, &analyzerError, cancellationSource->token());
             if (!h264Analyzer) {
                 if (errorMessage != nullptr) {
                     *errorMessage = analyzerError;
@@ -410,7 +430,8 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
                             std::move(*analyzerVariant), std::move(userState),
                             std::move(cacheSetup.owner), cacheSetup.status,
                             std::move(cacheSetup.errorMessage),
-                            std::move(verifiedFingerprint)));
+                            std::move(verifiedFingerprint),
+                            std::move(cancellationSource)));
 }
 
 AnalysisSessionRestoreResult
@@ -559,10 +580,14 @@ bool AnalysisSession::overrideFormat(const rules::RulePackageCatalog& catalog,
         return false;
     }
 
-    auto setup = setupResolvedAnalyzer(*source_, initialPage_, resolved, errorMessage);
+    auto cancellationSource = std::make_shared<core::CancellationSource>();
+    auto setup = setupResolvedAnalyzer(
+        *source_, initialPage_, resolved, cancellationSource->token(), errorMessage);
     if (!setup.has_value()) {
         return false;
     }
+
+    cancellationSource_ = std::move(cancellationSource);
 
     cacheOwner_.reset();
     pendingCacheWrites_.clear();

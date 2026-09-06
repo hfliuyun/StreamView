@@ -21,6 +21,7 @@ class QComboBox;
 class QDockWidget;
 class QLabel;
 class QModelIndex;
+class QProgressBar;
 class QPushButton;
 class QTableView;
 class QToolButton;
@@ -29,6 +30,7 @@ class QTreeView;
 namespace streamview::app {
 
 class AnalysisTreeModel;
+class DiagnosticsSummaryDock;
 class FieldInspector;
 class RawDataView;
 class TimelineTableModel;
@@ -113,6 +115,7 @@ public slots:
     bool saveSessionAs();
     void overrideFormat();
     void openRuleManager();
+    void cancelAnalysis();
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -126,6 +129,8 @@ private slots:
     void onSampleDoubleClicked(const QModelIndex& index);
     void onPrevPageClicked();
     void onNextPageClicked();
+    void onDiagnosticSelected(core::AnalysisNodeId nodeId,
+                              std::optional<core::FieldLocation> location);
 
 private:
     void setupMenus();
@@ -169,6 +174,9 @@ private:
     QLabel* formatAmbiguityLabel_ = nullptr;
     QWidget* formatAmbiguityBannerWidget_ = nullptr;
     QPushButton* resolveAmbiguityButton_ = nullptr;
+    QProgressBar* analysisProgressBar_ = nullptr;
+    QPushButton* cancelAnalysisButton_ = nullptr;
+    DiagnosticsSummaryDock* diagnosticsSummaryDock_ = nullptr;
 
     SourceSelection sourceSelection_;
 
@@ -198,6 +206,8 @@ private:
     QAction* actionOverrideFormat_ = nullptr;
     QAction* actionManageRules_ = nullptr;
     QAction* actionExit_ = nullptr;
+    QAction* actionToggleDiagnosticsDock_ = nullptr;
+    QAction* actionToggleTimelineDock_ = nullptr;
 
     SavePromptHandler savePromptHandler_;
     FileDialogHandler saveFileDialogHandler_;

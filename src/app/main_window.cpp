@@ -1,6 +1,7 @@
 #include "main_window.h"
 
 #include "analysis_tree_model.h"
+#include "diagnostics_summary_dock.h"
 #include "field_inspector.h"
 #include "format_override_dialog.h"
 #include "raw_data_view.h"
@@ -27,6 +28,7 @@
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QStandardPaths>
@@ -95,6 +97,24 @@ MainWindow::MainWindow(AnalysisSessionCacheOptions cacheOptions, QWidget* parent
     connect(rawDataView_, &RawDataView::sourceBitSelected,
             this, &MainWindow::selectSourceBit);
 
+    analysisProgressBar_ = new QProgressBar(this);
+    analysisProgressBar_->setObjectName(QStringLiteral("analysisProgressBar"));
+    analysisProgressBar_->setRange(0, 100);
+    analysisProgressBar_->setValue(0);
+    analysisProgressBar_->setTextVisible(true);
+    analysisProgressBar_->setMaximumWidth(160);
+    analysisProgressBar_->hide();
+    statusBar()->addPermanentWidget(analysisProgressBar_);
+
+    cancelAnalysisButton_ = new QPushButton(tr("Cancel"), this);
+    cancelAnalysisButton_->setObjectName(QStringLiteral("cancelAnalysisButton"));
+    cancelAnalysisButton_->setStyleSheet(
+        QStringLiteral("font-size: 11px; padding: 2px 6px; font-weight: normal;"));
+    cancelAnalysisButton_->hide();
+    connect(cancelAnalysisButton_, &QPushButton::clicked,
+            this, &MainWindow::cancelAnalysis);
+    statusBar()->addPermanentWidget(cancelAnalysisButton_);
+
     formatAmbiguityBannerWidget_ = new QWidget(this);
     formatAmbiguityBannerWidget_->setObjectName(QStringLiteral("formatAmbiguityBanner"));
     auto* bannerLayout = new QHBoxLayout(formatAmbiguityBannerWidget_);
@@ -156,6 +176,19 @@ void MainWindow::setupMenus() {
     actionExit_->setObjectName(QStringLiteral("actionExit"));
     actionExit_->setShortcut(QKeySequence::Quit);
     connect(actionExit_, &QAction::triggered, this, &QWidget::close);
+
+    auto* viewMenu = menuBar()->addMenu(tr("&View"));
+    viewMenu->setObjectName(QStringLiteral("menuView"));
+
+    actionToggleDiagnosticsDock_ = diagnosticsSummaryDock_->toggleViewAction();
+    actionToggleDiagnosticsDock_->setObjectName(QStringLiteral("actionToggleDiagnosticsDock"));
+    actionToggleDiagnosticsDock_->setText(tr("&Diagnostics"));
+    viewMenu->addAction(actionToggleDiagnosticsDock_);
+
+    actionToggleTimelineDock_ = timelineDock_->toggleViewAction();
+    actionToggleTimelineDock_->setObjectName(QStringLiteral("actionToggleTimelineDock"));
+    actionToggleTimelineDock_->setText(tr("&Timeline"));
+    viewMenu->addAction(actionToggleTimelineDock_);
 
     auto* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
     analysisMenu->setObjectName(QStringLiteral("menuAnalysis"));
@@ -316,6 +349,13 @@ void MainWindow::setupDocks() {
     timelineLayout->addWidget(timelineTableView_, 1);
     timelineDock_->setWidget(timelineContainer);
     addDockWidget(Qt::BottomDockWidgetArea, timelineDock_);
+
+    // --- Diagnostics dock (bottom) ---
+    diagnosticsSummaryDock_ = new DiagnosticsSummaryDock(this);
+    addDockWidget(Qt::BottomDockWidgetArea, diagnosticsSummaryDock_);
+    tabifyDockWidget(timelineDock_, diagnosticsSummaryDock_);
+    connect(diagnosticsSummaryDock_, &DiagnosticsSummaryDock::diagnosticSelected,
+            this, &MainWindow::onDiagnosticSelected);
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
@@ -656,6 +696,9 @@ void MainWindow::overrideFormat() {
     analysisModel_->clear();
     timelineModel_->clear();
     timelineTrackComboBox_->clear();
+    if (diagnosticsSummaryDock_ != nullptr) {
+        diagnosticsSummaryDock_->clear();
+    }
     navigationBreadcrumbFormats_.clear();
 
     analysisModel_->resetFromTree(session_->tree());
@@ -683,6 +726,12 @@ void MainWindow::openRuleManager() {
     }
     RuleManagerDialog dlg(this, catalog_, ruleStorePath_, bundledPackageIds_);
     dlg.exec();
+}
+
+void MainWindow::cancelAnalysis() {
+    if (session_) {
+        session_->requestCancellation();
+    }
 }
 
 bool MainWindow::openSessionFile(const QString& sessionPath, QString* errorMessage) {
@@ -717,6 +766,9 @@ bool MainWindow::openSessionFile(const QString& sessionPath, QString* errorMessa
     analysisModel_->clear();
     timelineModel_->clear();
     timelineTrackComboBox_->clear();
+    if (diagnosticsSummaryDock_ != nullptr) {
+        diagnosticsSummaryDock_->clear();
+    }
     session_.reset();
     navigationBreadcrumbFormats_.clear();
 
@@ -803,6 +855,9 @@ bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
     analysisModel_->clear();
     timelineModel_->clear();
     timelineTrackComboBox_->clear();
+    if (diagnosticsSummaryDock_ != nullptr) {
+        diagnosticsSummaryDock_->clear();
+    }
     session_.reset();
     navigationBreadcrumbFormats_.clear();
     candidate->enableCache(cacheOptions_);
@@ -854,6 +909,8 @@ void MainWindow::advanceAnalysis(quint64 generation) {
             analysisModel_->resetFromTree(session_->tree());
             analysisModel_->updateFromTree(session_->tree());
             ++analysisGeneration_;
+            analysisProgressBar_->hide();
+            cancelAnalysisButton_->hide();
             statusBar()->showMessage(tr("Analysis tree publication failed"));
             return;
         }
@@ -874,6 +931,8 @@ void MainWindow::advanceAnalysis(quint64 generation) {
 
     if (batch.status == AnalysisBatchStatus::InvalidBatchSize) {
         ++analysisGeneration_;
+        analysisProgressBar_->hide();
+        cancelAnalysisButton_->hide();
         statusBar()->showMessage(
             tr("Analysis batch rejected: %1").arg(batch.errorMessage));
         return;
@@ -882,6 +941,8 @@ void MainWindow::advanceAnalysis(quint64 generation) {
         batch.status == AnalysisBatchStatus::Cancelled ||
         batch.status == AnalysisBatchStatus::ResourceLimit ||
         batch.status == AnalysisBatchStatus::InvalidRule) {
+        analysisProgressBar_->hide();
+        cancelAnalysisButton_->hide();
         publishAnalysisStatus(batch.status, batch.errorMessage);
         if (rootTreeIsActive) {
             loadTracks();
@@ -891,6 +952,15 @@ void MainWindow::advanceAnalysis(quint64 generation) {
 
     if (!session_->finished()) {
         const quint64 cursor = session_->scanCursor();
+        if (session_->sizeBytes() > 0) {
+            const int progress = static_cast<int>((cursor * 100ULL) / session_->sizeBytes());
+            analysisProgressBar_->setValue(std::clamp(progress, 0, 100));
+        }
+        analysisProgressBar_->show();
+        cancelAnalysisButton_->show();
+        if (diagnosticsSummaryDock_ != nullptr) {
+            diagnosticsSummaryDock_->setTree(&session_->activeTree());
+        }
         statusBar()->showMessage(
             tr("Analyzing %1: %2/%3 bytes, %4 nodes")
                 .arg(session_->identity())
@@ -901,6 +971,8 @@ void MainWindow::advanceAnalysis(quint64 generation) {
         return;
     }
 
+    analysisProgressBar_->hide();
+    cancelAnalysisButton_->hide();
     publishAnalysisStatus(batch.status, batch.errorMessage);
     if (rootTreeIsActive) {
         loadTracks();
@@ -919,8 +991,16 @@ void MainWindow::pollAnalysisCache(quint64 generation) {
 
 void MainWindow::publishAnalysisStatus(AnalysisBatchStatus status,
                                        const QString& errorMessage) {
+    analysisProgressBar_->hide();
+    cancelAnalysisButton_->hide();
     if (!session_) {
+        if (diagnosticsSummaryDock_ != nullptr) {
+            diagnosticsSummaryDock_->clear();
+        }
         return;
+    }
+    if (diagnosticsSummaryDock_ != nullptr) {
+        diagnosticsSummaryDock_->setTree(&session_->activeTree());
     }
     if (status == AnalysisBatchStatus::Cancelled) {
         statusBar()->showMessage(
@@ -1106,7 +1186,14 @@ void MainWindow::updateNavigationUI() {
     if (!session_) {
         navigationBackButton_->setEnabled(false);
         navigationBreadcrumbLabel_->setText(QString());
+        if (diagnosticsSummaryDock_ != nullptr) {
+            diagnosticsSummaryDock_->clear();
+        }
         return;
+    }
+
+    if (diagnosticsSummaryDock_ != nullptr) {
+        diagnosticsSummaryDock_->setTree(&session_->activeTree());
     }
 
     navigationBackButton_->setEnabled(session_->canReturnToParent());
@@ -1393,6 +1480,9 @@ void MainWindow::selectAnalysisNode(const QModelIndex& current) {
     if (!session_) {
         fieldInspector_->clear();
         clearSourceSelection();
+        if (diagnosticsSummaryDock_ != nullptr) {
+            diagnosticsSummaryDock_->selectDiagnosticForNode(core::AnalysisNodeId{});
+        }
         return;
     }
     const auto nodeId = analysisModel_->nodeIdAt(current);
@@ -1400,9 +1490,15 @@ void MainWindow::selectAnalysisNode(const QModelIndex& current) {
     if (!node) {
         fieldInspector_->clear();
         clearSourceSelection();
+        if (diagnosticsSummaryDock_ != nullptr) {
+            diagnosticsSummaryDock_->selectDiagnosticForNode(core::AnalysisNodeId{});
+        }
         return;
     }
     fieldInspector_->setNode(*node);
+    if (diagnosticsSummaryDock_ != nullptr) {
+        diagnosticsSummaryDock_->selectDiagnosticForNode(*nodeId);
+    }
     if (!node->location() || node->location()->sourceSpans().empty()) {
         clearSourceSelection();
         return;
@@ -1453,6 +1549,44 @@ void MainWindow::selectSourceBit(quint64 absoluteBitOffset) {
     const auto node = session_->activeTree().node(*nodeId);
     if (node) {
         fieldInspector_->setNode(*node);
+    }
+}
+
+void MainWindow::onDiagnosticSelected(core::AnalysisNodeId nodeId,
+                                      std::optional<core::FieldLocation> location) {
+    if (!session_) {
+        return;
+    }
+    const QModelIndex nodeIndex = analysisModel_->indexForNodeId(nodeId);
+    if (nodeIndex.isValid()) {
+        for (QModelIndex ancestor = nodeIndex.parent(); ancestor.isValid();
+             ancestor = ancestor.parent()) {
+            analysisTreeView_->expand(ancestor);
+        }
+        analysisTreeView_->selectionModel()->setCurrentIndex(
+            nodeIndex, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        analysisTreeView_->scrollTo(nodeIndex, QAbstractItemView::PositionAtCenter);
+        const auto nodeOpt = session_->activeTree().node(nodeId);
+        if (nodeOpt.has_value()) {
+            fieldInspector_->setNode(*nodeOpt);
+        }
+    }
+    if (location.has_value() && !location->sourceSpans().empty()) {
+        SourceSelection selection;
+        selection.sourceIdentity = session_->identity();
+        selection.sourceSpans = location->sourceSpans();
+        setSourceSelection(std::move(selection));
+        selectSourceBit(location->sourceSpans().front().start().absoluteBitOffset());
+    } else {
+        const auto nodeOpt = session_->activeTree().node(nodeId);
+        if (nodeOpt.has_value() && nodeOpt->location().has_value() &&
+            !nodeOpt->location()->sourceSpans().empty()) {
+            SourceSelection selection;
+            selection.sourceIdentity = session_->identity();
+            selection.sourceSpans = nodeOpt->location()->sourceSpans();
+            setSourceSelection(std::move(selection));
+            selectSourceBit(nodeOpt->location()->sourceSpans().front().start().absoluteBitOffset());
+        }
     }
 }
 
