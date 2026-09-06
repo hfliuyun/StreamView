@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 6
-Last Completed Step: Task P6b（会话生命周期与强类型保存状态能力切片）—— 引入 SessionSaveStatus 强类型结果枚举与 SessionSaveResult 结构体；升级 AnalysisSession::saveSession(path, userState) 消除布尔压平并闭环 P2-26；落地磁盘变异检测与 SourceFingerprintMismatch；重构既有 6 处测试调用点并追加 6 个错误与原子替换用例
-Next Action: 启动 Task P6c（UI切片：MainWindow 保存/另存为/打开会话动作、setWindowModified 脏状态维护与书签/注释挂钩、closeEvent/maybeSave 弹窗协议与 UI 测试）
-Last Verification: Hosted Run 34028525200（Ubuntu 24.04 / Qt 6.11.1 job 101473727614, Windows 2022 / Qt 6.10.1 job 101473727560, macOS 15 / Qt 6.11.1 job 101473727376）全绿；本地 dev/ci/sanitize 49/49 全部通过；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
+Last Completed Step: Task P6c（MainWindow 会话操作动作、脏状态跟踪与未保存修改保护协议 UI 切片）—— 落实 File 菜单 Save/SaveAs/Open/Exit 动作集成；实现基于 setWindowModified 与 [*] 的窗口脏状态维护；提供书签与注释增删清空管理 API；实现 maybeSave 与 closeEvent 拦截防护（彻底闭环 P2-24）；扩充 8 个端到端 UI 测试用例使得 MainWindowTest 增至 38 槽全绿
+Next Action: 启动 Task P6d-1（能力切片：AnalysisSession::overrideFormat 核心 API 与 AnalysisSession::openFileWithExplicitRule 静态工厂与单元测试，P2-25）
+Last Verification: Hosted Run 34031197713（Ubuntu 24.04 / Qt 6.11.1 job 101480897026, Windows 2022 / Qt 6.10.1 job 101480897182, macOS 15 / Qt 6.11.1 job 101480897088）全绿；本地 dev/ci/sanitize 49/49 全部通过；MainWindowTest 38/38 槽通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
 Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -255,7 +255,7 @@ Blockers: 无
 ### 阶段 6 任务切片与依赖关系
 - [x] **Task P6a**（规范）：双语 ADR-0109 会话生命周期管理、格式手动覆盖与 Schema 演进策略（Markdown-only，设固定独立评审门禁）；
 - [x] **Task P6b**（能力切片）：`SessionSaveStatus` 强类型保存结果枚举、`AnalysisSession::saveSession(path, userState)` 返回结构体升级与单元测试；
-- **Task P6c**（UI切片）：`MainWindow` 保存/另存为/打开会话动作、`setWindowModified` 脏状态维护与书签/注释挂钩、`closeEvent` / `maybeSave` 弹窗协议（Save / Discard / Cancel，区分文件对话框取消与底层 I/O 报错）与 UI 测试；
+- [x] **Task P6c**（UI切片）：`MainWindow` 保存/另存为/打开会话动作、`setWindowModified` 脏状态维护与书签/注释挂钩、`closeEvent` / `maybeSave` 弹窗协议（Save / Discard / Cancel，区分文件对话框取消与底层 I/O 报错）与 UI 测试；
 - **Task P6d-1**（能力切片）：`AnalysisSession::overrideFormat` 核心 API 与 `AnalysisSession::openFileWithExplicitRule` 静态工厂与单元测试（P2-25）；
 - **Task P6d-2**（UI切片）：`FormatOverrideDialog` 界面、歧义横幅「解决歧义...」按钮集成与 UI 测试（闭环 P2-17/P2-19/P2-20，P2-25）；
 - **Task P6e**（UI与规则管理切片）：`RuleManagerDialog` 界面、规则包列表与版本展示、`.svrule` 导入安装与测试；
@@ -3169,3 +3169,35 @@ Blockers: 无
        * Windows 2022 / Qt 6.10.1：Job `101473727560`；
        * Ubuntu 24.04 / Qt 6.11.1：Job `101473727614`。
 
+- 2026-09-06：完成 Task P6c（会话操作动作、脏状态维护与未保存修改保护协议 UI 切片）：
+  1. `MainWindow` 菜单与会话动作集成（对齐 ADR-0109 §3.3）：
+     - File 菜单新增 `&Open Session...`、`&Save Session`（`Ctrl+S`）、`Save Session &As...`（`Ctrl+Shift+S`）、`E&xit`（`Ctrl+Q`）；
+     - 无活动媒体/会话时，`actionSaveSession` 与 `actionSaveSessionAs` 自动设为 disabled；载入媒体或恢复会话后自动启用；
+  2. 脏状态维护与书签/注释管理 API（对齐 ADR-0109 §3.3）：
+     - 基于 Qt `setWindowModified(bool)` 与 `[*]` 标题协议：打开媒体、恢复会话或保存成功后置为 clean；增删书签或注释后置为 dirty；翻页、折叠/展开、切换显示模式、高亮选择等纯探索性浏览操作保持 clean；
+     - 暴露表现层 API：`bookmarks()`, `annotations()`, `addBookmark()`, `removeBookmark()`, `clearBookmarks()`, `addAnnotation()`, `removeAnnotation()`, `clearAnnotations()`, `currentUserState()`；
+  3. 未保存修改保护协议（`maybeSave` / `closeEvent`，彻底闭环 P2-24）：
+     - `maybeSave()` 检查 dirty 状态，弹出 Save / Discard / Cancel 提示；
+     - Save 分支：当用户在另存为对话框点击取消时，静默中止返回 `false`，不弹出错误对话框（闭环 P2-24）；当底层保存发生文件 I/O 报错时，弹出模态错误对话框呈现详细错误原因并阻断退出以防数据丢失（闭环 P2-24）；
+     - Discard 分支：放弃修改并允许继续流程；
+     - Cancel 分支：中止操作，维持会话与脏状态不变；
+     - 重写 `closeEvent(event)`，在 `maybeSave()` 取消时 `event->ignore()`，放行时 `event->accept()`；
+     - 引入解耦测试委派：`setSavePromptHandlerForTesting`、`setSaveFileDialogHandlerForTesting`、`setOpenFileDialogHandlerForTesting`、`setMessageDialogHandlerForTesting`；
+  4. 单元与端到端 UI 测试扩充：
+     - `tests/app/main_window_test.cpp` 类末尾追加 8 个端到端 UI 自动化测试用例，`MainWindowTest` 增至 38 槽且全部通过：
+       * `sessionSaveActionsEnabledOnlyWhenSessionLoaded`
+       * `sessionDirtyStateTracksBookmarksAndAnnotations`
+       * `sessionSaveAndSaveAsPersistence`
+       * `maybeSavePromptHandlesSaveDiscardAndCancel`
+       * `maybeSaveHandlesSaveAsDialogCancelCleanly`（P2-24）
+       * `maybeSaveHandlesSaveIoErrorWithModalDialog`（P2-24）
+       * `closeEventRejectsWhenMaybeSaveCancelled`
+       * `openSessionFileRestoresUserStateAndUI`
+  5. 验证与全平台 CI 闭环：
+     - 规则静态校验：`svtool rule check` 对 4 个官方规则（MP4、AAC ASC、AAC ADTS、H.264 Annex B）全部 `Rule OK`；
+     - 本地矩阵验证：`dev`（49/49 PASS）、`ci`（49/49 PASS）、`sanitize`（49/49 PASS，ASan/UBSan 零告警）、`markdown_hygiene`（100% PASS）；
+     - 实现提交：`66c387b`（`feat(app): implement session actions dirty tracking and unsaved guardrails`）；
+     - Hosted CI 验证：Run `34031197713` 三平台全部 success：
+       * macOS 15 / Qt 6.11.1：Job `101480897088`；
+       * Ubuntu 24.04 / Qt 6.11.1：Job `101480897026`；
+       * Windows 2022 / Qt 6.10.1：Job `101480897182`。
