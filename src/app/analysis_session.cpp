@@ -139,6 +139,7 @@ AnalysisSession::AnalysisSession(std::unique_ptr<core::RandomAccessSource> sourc
                                  rules::H264AnnexBDetectionResult formatDetection,
                                  rules::AacAdtsDetectionResult aacFormatDetection,
                                  rules::Mp4DetectionResult mp4FormatDetection,
+                                 rules::FormatSelection formatSelection,
                                  std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer> analyzer,
                                  SessionUserState userState,
                                  std::unique_ptr<rules::AnalysisCacheOwner> cacheOwner,
@@ -148,6 +149,7 @@ AnalysisSession::AnalysisSession(std::unique_ptr<core::RandomAccessSource> sourc
       initialPage_(std::move(initialPage)), formatDetection_(std::move(formatDetection)),
       aacFormatDetection_(std::move(aacFormatDetection)),
       mp4FormatDetection_(std::move(mp4FormatDetection)),
+      formatSelection_(std::move(formatSelection)),
       analyzer_(std::move(analyzer)), userState_(std::move(userState)),
       cacheOwner_(std::move(cacheOwner)), cacheStatus_(cacheStatus),
       cacheErrorMessage_(std::move(cacheErrorMessage)) {}
@@ -210,10 +212,13 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
     std::optional<std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer>> analyzerVariant;
     QString analyzerError;
 
+    rules::FormatSelection formatSelection;
     if (resolvedRule != nullptr) {
         if (resolvedRule->package->manifest().packageId == QStringLiteral("org.streamview.aac") ||
             (resolvedRule->entryPoint &&
              resolvedRule->entryPoint->format == QStringLiteral("audio.aac.adts"))) {
+            formatSelection.format = rules::DetectedFormat::AacAdts;
+            formatSelection.reason = rules::DetectedFormatReason::AacFrameChain;
             aacFormatDetection =
                 rules::detectAacAdtsCandidate(initialPage.bytes, source->sizeBytes());
             auto aacAnalyzer =
@@ -229,6 +234,8 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
                    (resolvedRule->entryPoint &&
                     (resolvedRule->entryPoint->format == QStringLiteral("video.mp4") ||
                      resolvedRule->entryPoint->format == QStringLiteral("video/mp4")))) {
+            formatSelection.format = rules::DetectedFormat::Mp4Isobmff;
+            formatSelection.reason = rules::DetectedFormatReason::Mp4StructuralTiling;
             mp4FormatDetection =
                 rules::detectMp4Candidate(initialPage.bytes, source->sizeBytes());
             auto mp4Analyzer =
@@ -241,6 +248,8 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
             }
             analyzerVariant.emplace(std::move(*mp4Analyzer));
         } else {
+            formatSelection.format = rules::DetectedFormat::H264AnnexB;
+            formatSelection.reason = rules::DetectedFormatReason::H264AnchoredStartCodes;
             formatDetection =
                 rules::detectH264AnnexBCandidate(initialPage.bytes, source->sizeBytes());
             auto h264Analyzer =
@@ -261,10 +270,10 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
         mp4FormatDetection =
             rules::detectMp4Candidate(initialPage.bytes, source->sizeBytes());
 
-        const auto selection = rules::selectFormatFromDetection(
+        formatSelection = rules::selectFormatFromDetection(
             mp4FormatDetection, aacFormatDetection, formatDetection);
-        const bool chooseMp4 = selection.format == rules::DetectedFormat::Mp4Isobmff;
-        const bool chooseAac = selection.format == rules::DetectedFormat::AacAdts;
+        const bool chooseMp4 = formatSelection.format == rules::DetectedFormat::Mp4Isobmff;
+        const bool chooseAac = formatSelection.format == rules::DetectedFormat::AacAdts;
 
         if (chooseMp4) {
             auto mp4Analyzer = rules::Mp4IsobmffAnalyzer::create(*source, &analyzerError);
@@ -319,7 +328,7 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
     return std::unique_ptr<AnalysisSession>(
         new AnalysisSession(std::move(source), std::move(sourcePath), std::move(initialPage),
                             std::move(formatDetection), std::move(aacFormatDetection),
-                            std::move(mp4FormatDetection),
+                            std::move(mp4FormatDetection), std::move(formatSelection),
                             std::move(*analyzerVariant), std::move(userState),
                             std::move(cacheSetup.owner), cacheSetup.status,
                             std::move(cacheSetup.errorMessage)));

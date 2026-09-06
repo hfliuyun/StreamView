@@ -1,7 +1,9 @@
 #include "main_window.h"
 #include "raw_data_model.h"
 #include "raw_data_view.h"
+#include "timeline_table_model.h"
 
+#include <QComboBox>
 #include <QFile>
 #include <QDockWidget>
 #include <QLabel>
@@ -24,6 +26,7 @@ using streamview::app::MainWindow;
 using streamview::app::RawDataModel;
 using streamview::app::RawDataView;
 using streamview::app::RawDisplayMode;
+using streamview::app::TimelineTableModel;
 
 namespace {
 
@@ -877,6 +880,317 @@ private slots:
         QVERIFY(inspector->isVisible());
         QVERIFY(rawView->isVisible());
         verifyLayout();
+    }
+
+    void timelineDockAndAmbiguitySurfacePresent() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = writeFixture(
+            directory, QStringLiteral("valid.264"), QByteArray::fromHex("00000165"));
+        QVERIFY(!path.isEmpty());
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(path, &errorMessage), qPrintable(errorMessage));
+
+        auto* timelineDock = window.findChild<QDockWidget*>(QStringLiteral("timelineDock"));
+        auto* trackCombo = window.findChild<QComboBox*>(QStringLiteral("timelineTrackComboBox"));
+        auto* statusLabel = window.findChild<QLabel*>(QStringLiteral("timelineStatusLabel"));
+        auto* prevBtn = window.findChild<QToolButton*>(QStringLiteral("timelinePrevPageButton"));
+        auto* nextBtn = window.findChild<QToolButton*>(QStringLiteral("timelineNextPageButton"));
+        auto* pageLabel = window.findChild<QLabel*>(QStringLiteral("timelinePageLabel"));
+        auto* tableView = window.findChild<QTableView*>(QStringLiteral("timelineTableView"));
+        auto* ambiguityLabel = window.findChild<QLabel*>(QStringLiteral("formatAmbiguityLabel"));
+
+        QVERIFY(timelineDock != nullptr);
+        QVERIFY(trackCombo != nullptr);
+        QVERIFY(statusLabel != nullptr);
+        QVERIFY(prevBtn != nullptr);
+        QVERIFY(nextBtn != nullptr);
+        QVERIFY(pageLabel != nullptr);
+        QVERIFY(tableView != nullptr);
+        QVERIFY(ambiguityLabel != nullptr);
+
+        // Elementary stream has no tracks, so status indicates container tracks unavailable
+        QTRY_VERIFY(!statusLabel->isHidden());
+        QVERIFY(statusLabel->text().contains(QStringLiteral("Container tracks unavailable")));
+        QVERIFY(!prevBtn->isEnabled());
+        QVERIFY(!nextBtn->isEnabled());
+        QCOMPARE(trackCombo->count(), 0);
+        QCOMPARE(tableView->model()->rowCount(), 0);
+
+        // Ambiguity label is hidden for clean elementary stream
+        QVERIFY(ambiguityLabel->isHidden());
+    }
+
+    void surfacesFormatAmbiguityWarningWhenDetectionIsAmbiguous() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+
+        constexpr quint32 firstBoxSize = 0x0105U;
+        QByteArray bytes;
+        bytes.append(char(0x00));
+        bytes.append(char(0x00));
+        bytes.append(char(0x01));
+        bytes.append(char(0x05));
+        bytes.append("free", 4);
+        for (quint32 i = 0; i < firstBoxSize - 8U; ++i) {
+            if (i == 100U) {
+                bytes.append(char(0x00));
+                bytes.append(char(0x00));
+                bytes.append(char(0x01));
+                bytes.append(char(0x67));
+                i += 3U;
+                continue;
+            }
+            bytes.append(char(0xEE));
+        }
+        bytes.append(char(0x00));
+        bytes.append(char(0x00));
+        bytes.append(char(0x00));
+        bytes.append(char(0x18));
+        bytes.append("ftyp", 4);
+        bytes.append(QByteArray(16, '\0'));
+        bytes.append(char(0x00));
+        bytes.append(char(0x00));
+        bytes.append(char(0x00));
+        bytes.append(char(0x28));
+        bytes.append("mdat", 4);
+        bytes.append(QByteArray(32, '3'));
+
+        const QString path = writeFixture(directory, QStringLiteral("ambiguous.mp4"), bytes);
+        QVERIFY(!path.isEmpty());
+
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(path, &errorMessage), qPrintable(errorMessage));
+
+        auto* ambiguityLabel = window.findChild<QLabel*>(QStringLiteral("formatAmbiguityLabel"));
+        QVERIFY(ambiguityLabel != nullptr);
+        QTRY_VERIFY(!ambiguityLabel->isHidden());
+        QVERIFY(ambiguityLabel->text().contains(QStringLiteral("Ambiguous format")));
+    }
+
+    void rendersTruncatedTrackListWarning() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+
+        QByteArray bytes;
+        // Box 1: ftyp (24 bytes)
+        bytes.append(char(0x00));
+        bytes.append(char(0x00));
+        bytes.append(char(0x00));
+        bytes.append(char(0x18));
+        bytes.append("ftyp", 4);
+        bytes.append(QByteArray(16, '\0'));
+
+        // Box 2: free (16 bytes)
+        bytes.append(char(0x00));
+        bytes.append(char(0x00));
+        bytes.append(char(0x00));
+        bytes.append(char(0x10));
+        bytes.append("free", 4);
+        bytes.append(QByteArray(8, '\0'));
+
+        // Box 3: moov (32 bytes)
+        bytes.append(char(0x00));
+        bytes.append(char(0x00));
+        bytes.append(char(0x00));
+        bytes.append(char(0x20));
+        bytes.append("moov", 4);
+        bytes.append(QByteArray(24, '\0'));
+
+        // Box 4: mdat (declares 5000 bytes, but truncated after 20 bytes)
+        bytes.append(char(0x00));
+        bytes.append(char(0x00));
+        bytes.append(char(0x13));
+        bytes.append(char(0x88));
+        bytes.append("mdat", 4);
+        bytes.append(QByteArray(12, '\0'));
+
+        const QString path = writeFixture(directory, QStringLiteral("truncated.mp4"), bytes);
+        QVERIFY(!path.isEmpty());
+
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(path, &errorMessage), qPrintable(errorMessage));
+
+        auto* statusLabel = window.findChild<QLabel*>(QStringLiteral("timelineStatusLabel"));
+        QVERIFY(statusLabel != nullptr);
+        QTRY_VERIFY(!statusLabel->isHidden() &&
+                    statusLabel->text().contains(
+                        QStringLiteral("File is truncated; track list may be incomplete")));
+    }
+
+    void populatesTracksAndTimelineTable() {
+        const QString fixturePath =
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_avc_multi_nal.mp4");
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+
+        auto* trackCombo = window.findChild<QComboBox*>(QStringLiteral("timelineTrackComboBox"));
+        auto* tableView = window.findChild<QTableView*>(QStringLiteral("timelineTableView"));
+        auto* pageLabel = window.findChild<QLabel*>(QStringLiteral("timelinePageLabel"));
+        QVERIFY(trackCombo != nullptr);
+        QVERIFY(tableView != nullptr);
+        QVERIFY(pageLabel != nullptr);
+
+        QTRY_COMPARE(trackCombo->count(), 1);
+        QVERIFY(trackCombo->currentText().contains(QStringLiteral("Track 1")));
+        QVERIFY(trackCombo->currentText().contains(QStringLiteral("3 samples")));
+
+        auto* model = tableView->model();
+        QVERIFY(model != nullptr);
+        QCOMPARE(model->rowCount(), 3);
+        QCOMPARE(model->columnCount(), TimelineTableModel::ColumnCount);
+
+        QCOMPARE(model->headerData(TimelineTableModel::SampleIndex, Qt::Horizontal).toString(),
+                 QStringLiteral("Sample #"));
+        QCOMPARE(model->headerData(TimelineTableModel::SyncType, Qt::Horizontal).toString(),
+                 QStringLiteral("Type"));
+        QCOMPARE(model->headerData(TimelineTableModel::Dts, Qt::Horizontal).toString(),
+                 QStringLiteral("DTS"));
+        QCOMPARE(model->headerData(TimelineTableModel::Pts, Qt::Horizontal).toString(),
+                 QStringLiteral("PTS"));
+        QCOMPARE(model->headerData(TimelineTableModel::Duration, Qt::Horizontal).toString(),
+                 QStringLiteral("Duration"));
+        QCOMPARE(model->headerData(TimelineTableModel::SizeBytes, Qt::Horizontal).toString(),
+                 QStringLiteral("Size (B)"));
+
+        QCOMPARE(model->data(model->index(0, TimelineTableModel::SampleIndex)).toString(),
+                 QStringLiteral("0"));
+        QCOMPARE(model->data(model->index(0, TimelineTableModel::SyncType)).toString(),
+                 QStringLiteral("[Sync]"));
+        QCOMPARE(model->data(model->index(0, TimelineTableModel::Dts)).toString(),
+                 QStringLiteral("0"));
+        QCOMPARE(model->data(model->index(0, TimelineTableModel::Pts)).toString(),
+                 QStringLiteral("0"));
+        const quint64 size0 =
+            model->data(model->index(0, TimelineTableModel::SizeBytes)).toULongLong();
+        QVERIFY(size0 > 0);
+
+        QCOMPARE(model->data(model->index(1, TimelineTableModel::SampleIndex)).toString(),
+                 QStringLiteral("1"));
+        QCOMPARE(model->data(model->index(1, TimelineTableModel::SyncType)).toString(),
+                 QStringLiteral("-"));
+
+        QVERIFY(pageLabel->text().contains(QStringLiteral("Page 1 of 1")));
+        QVERIFY(pageLabel->text().contains(QStringLiteral("3")));
+    }
+
+    void selectingSampleRowHighlightsSourceBytesInRawDataView() {
+        const QString fixturePath =
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_avc_multi_nal.mp4");
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+
+        auto* trackCombo = window.findChild<QComboBox*>(QStringLiteral("timelineTrackComboBox"));
+        auto* tableView = window.findChild<QTableView*>(QStringLiteral("timelineTableView"));
+        auto* rawView = window.findChild<RawDataView*>(QStringLiteral("rawDataView"));
+        QVERIFY(trackCombo != nullptr);
+        QVERIFY(tableView != nullptr);
+        QVERIFY(rawView != nullptr);
+
+        QTRY_COMPARE(trackCombo->count(), 1);
+        QCOMPARE(tableView->model()->rowCount(), 3);
+
+        tableView->selectRow(0);
+        QTRY_VERIFY([&] {
+            const quint64 bitOffset0 =
+                tableView->model()->data(tableView->model()->index(0, TimelineTableModel::BitOffset)).toULongLong();
+            const quint64 byteIndex0 = bitOffset0 / 8U;
+            const QModelIndex rawByte0 = rawView->model()->index(
+                int(byteIndex0 / RawDataModel::ByteColumnCount),
+                RawDataModel::FirstByte + int(byteIndex0 % RawDataModel::ByteColumnCount));
+            return rawByte0.isValid() && rawView->model()->data(rawByte0, RawDataModel::SelectedBitsRole).toUInt() > 0;
+        }());
+
+        tableView->selectRow(1);
+        QTRY_VERIFY([&] {
+            const quint64 bitOffset1 =
+                tableView->model()->data(tableView->model()->index(1, TimelineTableModel::BitOffset)).toULongLong();
+            const quint64 byteIndex1 = bitOffset1 / 8U;
+            const QModelIndex rawByte1 = rawView->model()->index(
+                int(byteIndex1 / RawDataModel::ByteColumnCount),
+                RawDataModel::FirstByte + int(byteIndex1 % RawDataModel::ByteColumnCount));
+            return rawByte1.isValid() && rawView->model()->data(rawByte1, RawDataModel::SelectedBitsRole).toUInt() > 0;
+        }());
+    }
+
+    void navigatesIntoSampleAndReturnsToContainer() {
+        const QString fixturePath =
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_avc_multi_nal.mp4");
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+
+        auto* trackCombo = window.findChild<QComboBox*>(QStringLiteral("timelineTrackComboBox"));
+        auto* tableView = window.findChild<QTableView*>(QStringLiteral("timelineTableView"));
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        auto* backButton = window.findChild<QToolButton*>(QStringLiteral("navigationBackButton"));
+        auto* breadcrumbLabel = window.findChild<QLabel*>(QStringLiteral("navigationBreadcrumbLabel"));
+        auto* rawView = window.findChild<RawDataView*>(QStringLiteral("rawDataView"));
+        QVERIFY(trackCombo != nullptr);
+        QVERIFY(tableView != nullptr);
+        QVERIFY(treeView != nullptr);
+        QVERIFY(backButton != nullptr);
+        QVERIFY(breadcrumbLabel != nullptr);
+        QVERIFY(rawView != nullptr);
+
+        QTRY_COMPARE(trackCombo->count(), 1);
+        QCOMPARE(tableView->model()->rowCount(), 3);
+        QVERIFY(!backButton->isEnabled());
+
+        const QModelIndex sample0Index = tableView->model()->index(0, 0);
+        Q_EMIT tableView->doubleClicked(sample0Index);
+
+        QTRY_VERIFY(backButton->isEnabled());
+        QVERIFY(breadcrumbLabel->text().contains(QStringLiteral("Track 1")));
+        QVERIFY(breadcrumbLabel->text().contains(QStringLiteral("Sample #0 [Sync]")));
+
+        QTRY_VERIFY(findIndexByName(*treeView->model(), QStringLiteral("NalUnitHeader")).isValid());
+
+        backButton->click();
+
+        QTRY_VERIFY(!backButton->isEnabled());
+        QVERIFY(!breadcrumbLabel->text().contains(QStringLiteral("Sample #0")));
+        QVERIFY(findIndexByName(*treeView->model(), QStringLiteral("major_brand")).isValid());
+        QCOMPARE(tableView->currentIndex().row(), 0);
+
+        const quint64 bitOffset0 =
+            tableView->model()->data(tableView->model()->index(0, TimelineTableModel::BitOffset)).toULongLong();
+        const quint64 byteIndex0 = bitOffset0 / 8U;
+        const QModelIndex rawByte0 = rawView->model()->index(
+            int(byteIndex0 / RawDataModel::ByteColumnCount),
+            RawDataModel::FirstByte + int(byteIndex0 % RawDataModel::ByteColumnCount));
+        QVERIFY(rawByte0.isValid());
+        QVERIFY(rawView->model()->data(rawByte0, RawDataModel::SelectedBitsRole).toUInt() > 0);
+    }
+
+    void twoTracksSelectionSwitchesSampleList() {
+        const QString fixturePath =
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_two_tracks.mp4");
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+
+        auto* trackCombo = window.findChild<QComboBox*>(QStringLiteral("timelineTrackComboBox"));
+        auto* tableView = window.findChild<QTableView*>(QStringLiteral("timelineTableView"));
+        QVERIFY(trackCombo != nullptr);
+        QVERIFY(tableView != nullptr);
+
+        QTRY_COMPARE(trackCombo->count(), 2);
+        QVERIFY(trackCombo->itemText(0).contains(QStringLiteral("Track 1")));
+        QVERIFY(trackCombo->itemText(1).contains(QStringLiteral("Track 2")));
+
+        QCOMPARE(trackCombo->currentIndex(), 0);
+        QCOMPARE(tableView->model()->rowCount(), 2);
+
+        trackCombo->setCurrentIndex(1);
+
+        QTRY_COMPARE(trackCombo->currentIndex(), 1);
+        QCOMPARE(tableView->model()->rowCount(), 2);
     }
 };
 
