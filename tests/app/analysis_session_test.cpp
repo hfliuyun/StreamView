@@ -52,6 +52,8 @@ using streamview::app::RawDisplayMode;
 using streamview::app::SessionAnnotation;
 using streamview::app::SessionBookmark;
 using streamview::app::SessionDocument;
+using streamview::app::SessionSaveResult;
+using streamview::app::SessionSaveStatus;
 using streamview::app::SessionUserState;
 using streamview::core::AnalysisNodeId;
 using streamview::core::MaterializationState;
@@ -678,8 +680,9 @@ private slots:
         state.view.rawDisplayMode = RawDisplayMode::Combined;
         state.view.selectedSourceBitOffset = 25;
         state.view.selectedAnalysisPath = QStringLiteral("root/nal_unit[0]/NalUnitHeader");
-        QVERIFY2(original->saveSession(sessionPath, state, &errorMessage),
-                 qPrintable(errorMessage));
+        const auto saveResult = original->saveSession(sessionPath, state);
+        QVERIFY2(saveResult.succeeded(), qPrintable(saveResult.errorMessage));
+        QCOMPARE(saveResult.status, SessionSaveStatus::Saved);
         original.reset();
 
         auto package = streamview::rules::loadH264AnnexBRulePackage();
@@ -710,7 +713,9 @@ private slots:
         QString errorMessage;
         auto original = AnalysisSession::openFile(mediaPath, &errorMessage);
         QVERIFY2(original != nullptr, qPrintable(errorMessage));
-        QVERIFY2(original->saveSession(sessionPath, {}, &errorMessage), qPrintable(errorMessage));
+        const auto saveResult = original->saveSession(sessionPath, {});
+        QVERIFY2(saveResult.succeeded(), qPrintable(saveResult.errorMessage));
+        QCOMPARE(saveResult.status, SessionSaveStatus::Saved);
         original.reset();
         QVERIFY(writeFile(mediaPath, QByteArray::fromHex("0000014c")));
 
@@ -732,7 +737,9 @@ private slots:
         QString errorMessage;
         auto original = AnalysisSession::openFile(mediaPath, &errorMessage);
         QVERIFY2(original != nullptr, qPrintable(errorMessage));
-        QVERIFY2(original->saveSession(sessionPath, {}, &errorMessage), qPrintable(errorMessage));
+        const auto saveResult = original->saveSession(sessionPath, {});
+        QVERIFY2(saveResult.succeeded(), qPrintable(saveResult.errorMessage));
+        QCOMPARE(saveResult.status, SessionSaveStatus::Saved);
         original.reset();
 
         streamview::rules::RulePackageCatalog missingCatalog;
@@ -810,8 +817,10 @@ private slots:
             &errorMessage);
         QVERIFY2(session != nullptr, qPrintable(errorMessage));
 
-        QVERIFY(!session->saveSession(QStringLiteral("unused.svsession"), {}, &errorMessage));
-        QVERIFY(errorMessage.contains(QStringLiteral("local file"), Qt::CaseInsensitive));
+        const auto saveResult = session->saveSession(QStringLiteral("unused.svsession"), {});
+        QCOMPARE(saveResult.status, SessionSaveStatus::SourcePathMissing);
+        QVERIFY(!saveResult.succeeded());
+        QVERIFY(saveResult.errorMessage.contains(QStringLiteral("local file"), Qt::CaseInsensitive));
     }
 
     void writesStableProgressiveAndMaterializedPagesForLocalFiles() {
@@ -1580,8 +1589,9 @@ private slots:
 
         SessionUserState state;
         state.view.selectedSourceBitOffset = 1168;
-        QString saveError;
-        QVERIFY2(session->saveSession(docPath, state, &saveError), qPrintable(saveError));
+        const auto saveResult = session->saveSession(docPath, state);
+        QVERIFY2(saveResult.succeeded(), qPrintable(saveResult.errorMessage));
+        QCOMPARE(saveResult.status, SessionSaveStatus::Saved);
 
         const auto restore = AnalysisSession::restoreSession(docPath, catalog);
         QCOMPARE(restore.status, AnalysisSessionRestoreStatus::Restored);
@@ -2079,10 +2089,9 @@ private slots:
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         const QString sessionPath = directory.filePath(QStringLiteral("sample.svsession"));
-        SessionUserState state;
-        QString errorMessage;
-        QVERIFY2(session->saveSession(sessionPath, state, &errorMessage),
-                 qPrintable(errorMessage));
+        const auto saveResult = session->saveSession(sessionPath, {});
+        QVERIFY2(saveResult.succeeded(), qPrintable(saveResult.errorMessage));
+        QCOMPARE(saveResult.status, SessionSaveStatus::Saved);
 
         const auto restored = AnalysisSession::restoreSession(sessionPath, catalog);
         QCOMPARE(restored.status, AnalysisSessionRestoreStatus::Restored);
@@ -2450,6 +2459,130 @@ private slots:
                 QCOMPARE(isKey, desc.isSyncSample);
             }
         }
+    }
+
+    void saveSessionReportsSourceNotFileBackedForNonFileSourceWithPath() {
+        QString errorMessage;
+        auto session = AnalysisSession::create(
+            std::make_unique<MemorySource>(validAnnexB(), QStringLiteral("test.264")),
+            QStringLiteral("/virtual/test.264"),
+            &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+
+        const auto result = session->saveSession(QStringLiteral("unused.svsession"), {});
+        QCOMPARE(result.status, SessionSaveStatus::SourceNotFileBacked);
+        QVERIFY(!result.succeeded());
+        QVERIFY(result.errorMessage.contains(QStringLiteral("file-backed source"), Qt::CaseInsensitive));
+    }
+
+    void saveSessionReportsSourceFingerprintMismatchWhenFileMutatedOnDisk() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("fixture.264"));
+        const QString sessionPath = directory.filePath(QStringLiteral("fixture.svsession"));
+        QVERIFY(writeFile(mediaPath, validAnnexBBytes()));
+
+        QString errorMessage;
+        auto session = AnalysisSession::openFile(mediaPath, &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+        QVERIFY(session->initialFingerprint().has_value());
+
+        // Mutate the file on disk without changing size (4 bytes -> 4 bytes)
+        QVERIFY(writeFile(mediaPath, QByteArray::fromHex("00000108")));
+
+        const auto result = session->saveSession(sessionPath, {});
+        QCOMPARE(result.status, SessionSaveStatus::SourceFingerprintMismatch);
+        QVERIFY(!result.succeeded());
+        QVERIFY(result.errorMessage.contains(QStringLiteral("modified"), Qt::CaseInsensitive));
+    }
+
+    void saveSessionReportsSourceFingerprintFailedWhenFileSizeMutated() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("fixture.264"));
+        const QString sessionPath = directory.filePath(QStringLiteral("fixture.svsession"));
+        QVERIFY(writeFile(mediaPath, validAnnexBBytes()));
+
+        QString errorMessage;
+        auto session = AnalysisSession::openFile(mediaPath, &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+
+        // Mutate file size (4 bytes -> 8 bytes)
+        QVERIFY(writeFile(mediaPath, QByteArray::fromHex("0000010700000108")));
+
+        const auto result = session->saveSession(sessionPath, {});
+        QCOMPARE(result.status, SessionSaveStatus::SourceFingerprintFailed);
+        QVERIFY(!result.succeeded());
+        QVERIFY(result.errorMessage.contains(QStringLiteral("fingerprint"), Qt::CaseInsensitive) ||
+                result.errorMessage.contains(QStringLiteral("changed"), Qt::CaseInsensitive));
+    }
+
+    void saveSessionReportsDocumentValidationFailedForInvalidUserState() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("fixture.264"));
+        const QString sessionPath = directory.filePath(QStringLiteral("fixture.svsession"));
+        QVERIFY(writeFile(mediaPath, validAnnexBBytes()));
+
+        QString errorMessage;
+        auto session = AnalysisSession::openFile(mediaPath, &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+
+        SessionUserState invalidState;
+        // Invalid bookmark offset (exceeds media size of 4 bytes * 8 = 32 bits)
+        invalidState.bookmarks = {SessionBookmark{QStringLiteral("out_of_bounds"), 999999}};
+
+        const auto result = session->saveSession(sessionPath, invalidState);
+        QCOMPARE(result.status, SessionSaveStatus::DocumentValidationFailed);
+        QVERIFY(!result.succeeded());
+        QVERIFY(!result.errorMessage.isEmpty());
+    }
+
+    void saveSessionReportsFileIoErrorForUnwritablePath() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("fixture.264"));
+        QVERIFY(writeFile(mediaPath, validAnnexBBytes()));
+
+        QString errorMessage;
+        auto session = AnalysisSession::openFile(mediaPath, &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+
+        const QString unwritablePath =
+            directory.filePath(QStringLiteral("nonexistent_subdir/nested/fixture.svsession"));
+
+        const auto result = session->saveSession(unwritablePath, {});
+        QCOMPARE(result.status, SessionSaveStatus::FileIoError);
+        QVERIFY(!result.succeeded());
+        QVERIFY(!result.errorMessage.isEmpty());
+    }
+
+    void saveSessionAtomicallyReplacesExistingSessionFile() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("fixture.264"));
+        const QString sessionPath = directory.filePath(QStringLiteral("fixture.svsession"));
+        QVERIFY(writeFile(mediaPath, validAnnexBBytes()));
+
+        QString errorMessage;
+        auto session = AnalysisSession::openFile(mediaPath, &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+
+        SessionUserState state1;
+        state1.bookmarks = {SessionBookmark{QStringLiteral("first_save"), 0}};
+        const auto save1 = session->saveSession(sessionPath, state1);
+        QCOMPARE(save1.status, SessionSaveStatus::Saved);
+        QVERIFY(save1.succeeded());
+
+        SessionUserState state2;
+        state2.bookmarks = {SessionBookmark{QStringLiteral("second_save"), 8}};
+        const auto save2 = session->saveSession(sessionPath, state2);
+        QCOMPARE(save2.status, SessionSaveStatus::Saved);
+        QVERIFY(save2.succeeded());
+
+        auto loaded = SessionDocument::load(sessionPath);
+        QVERIFY2(loaded.succeeded(), qPrintable(loaded.errorMessage));
+        QCOMPARE(loaded.document->userState(), state2);
     }
 
 };
