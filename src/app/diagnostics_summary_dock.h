@@ -36,11 +36,16 @@ public:
         return static_cast<int>(displayedIndices_.size());
     }
 
+    void retranslateUi();
+
 signals:
     void diagnosticSelected(core::AnalysisNodeId nodeId, std::optional<core::FieldLocation> location);
 
 public slots:
     void selectDiagnosticForNode(core::AnalysisNodeId nodeId);
+
+protected:
+    void changeEvent(QEvent* event) override;
 
 private slots:
     void onFilterChanged(int index);
@@ -51,6 +56,7 @@ private:
     void updateSummaryLabel();
 
     QLabel* summaryLabel_ = nullptr;
+    QLabel* filterLabel_ = nullptr;
     QComboBox* severityFilterComboBox_ = nullptr;
     QTableWidget* tableWidget_ = nullptr;
 

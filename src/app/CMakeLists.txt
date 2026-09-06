@@ -9,6 +9,8 @@ add_library(streamview_app STATIC
     field_inspector.h
     format_override_dialog.cpp
     format_override_dialog.h
+    localization_manager.cpp
+    localization_manager.h
     main_window.cpp
     main_window.h
     raw_data_model.cpp
@@ -20,6 +22,8 @@ add_library(streamview_app STATIC
     session_document.cpp
     session_document.h
     source_selection.h
+    theme_manager.cpp
+    theme_manager.h
     timeline_table_model.cpp
     timeline_table_model.h
 )
