@@ -5,6 +5,7 @@
 #include <streamview/rules/dsl_ir.h>
 #include <streamview/rules/aac_adts_analyzer.h>
 #include <streamview/rules/aac_adts_detector.h>
+#include <streamview/rules/format_selection.h>
 #include <streamview/rules/h264_annex_b_analyzer.h>
 #include <streamview/rules/h264_annex_b_detector.h>
 #include <streamview/rules/language_version.h>
@@ -140,16 +141,10 @@ int analyzeSource(const QString& path) {
     const auto mp4Detection =
         streamview::rules::detectMp4Candidate(prefix, source->sizeBytes());
 
-    const auto mp4Conf =
-        mp4Detection.candidate ? std::optional(mp4Detection.candidate->confidence) : std::nullopt;
-    const auto aacConf =
-        aacDetection.candidate ? std::optional(aacDetection.candidate->confidence) : std::nullopt;
-    const auto h264Conf =
-        h264Detection.candidate ? std::optional(h264Detection.candidate->confidence) : std::nullopt;
+    const auto selection = streamview::rules::selectFormatFromDetection(
+        mp4Detection, aacDetection, h264Detection);
 
-    if (mp4Conf == streamview::rules::Mp4DetectionConfidence::Strong &&
-        h264Conf != streamview::rules::H264AnnexBDetectionConfidence::Strong &&
-        aacConf != streamview::rules::AacAdtsDetectionConfidence::Strong) {
+    if (selection.format == streamview::rules::DetectedFormat::Mp4Isobmff) {
         auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(*source, &errorMessage);
         if (!analyzer) {
             QTextStream(stderr) << path << ": " << errorMessage << '\n';
@@ -173,8 +168,7 @@ int analyzeSource(const QString& path) {
         return 0;
     }
 
-    if (aacConf == streamview::rules::AacAdtsDetectionConfidence::Strong &&
-        h264Conf != streamview::rules::H264AnnexBDetectionConfidence::Strong) {
+    if (selection.format == streamview::rules::DetectedFormat::AacAdts) {
         auto analyzer = streamview::rules::AacAdtsAnalyzer::create(*source, &errorMessage);
         if (!analyzer) {
             QTextStream(stderr) << path << ": " << errorMessage << '\n';
