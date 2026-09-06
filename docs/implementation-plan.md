@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5j-5（样本导航的 UI 往返：`MainWindow` 轨道/样本导航面板、时间线表格、同步关键帧徽标与样本到编解码语法导航）—— 交付底侧 `timelineDock`（轨道下拉列表、时间线表格、分页导航、状态/截断提示标签）；表格呈现 `Sample #`、`Type`（`[Sync]` 关键帧标记）、`DTS`、`PTS`、`Duration`、`Size (B)`、`Bit Offset`、`Desc Idx`；选中样本行在 `RawDataView` 精确高亮有效载荷字节区间；双击/回车通过 `AnalysisSession::enterSample()` 深入子编解码结构并更新面包屑（`Track <id> (<targetFormat>) > Sample #<index> [Sync]`）；后退按钮通过 `returnToParent()` 完整恢复父级容器树、轨道选择、样本分页、行选中与原始数据高亮；状态栏集成 `formatAmbiguityLabel` 呈现歧义检测告警；全量满足 P2-13 截断警示要求
-Next Action: Task P5j-6（验证与关闭切片）—— 100 GB 虚拟稀疏大文件矩阵验证、`ffprobe` 参考工具交叉比对、ADR-0103/0105/0108 确认与阶段 5 里程碑收官评审（按纪律条款第 5 条设固定独立评审门禁）
-Last Verification: Task P5j-5 — 本机 `dev`（Debug）、`ci`（Release）、`sanitize`（ASan/UBSan）三预设全量 49/49 CTest 通过（测试槽 `streamview_main_window_tests` 23 → 30 全部 PASS）；`svtool rule check` 全规则通过；Hosted CI Run `34022144929` 三平台全绿（macOS 15 Job `101456546127`、Ubuntu 24.04 Job `101456546000`、Windows 2022 Job `101456546072` 全部 success）
+Last Completed Step: Task P5j-6（验证与关闭切片）—— 100 GB 虚拟稀疏大文件矩阵验证、`ffprobe` 参考工具交叉比对、ADR-0103/0105/0106/0107/0108 确认与审查项 P2-12 闭环；阶段 5 检查清单全部项 100% 达成勾选
+Next Action: Phase 5 里程碑收官独立评审门禁（按纪律条款第 5 条执行）
+Last Verification: Task P5j-6 — 本机 `dev`（Debug）、`ci`（Release）、`sanitize`（ASan/UBSan）三预设全量 49/49 CTest 通过（测试槽 `streamview_analysis_session_tests` 44 → 47 全部 PASS）；`svtool rule check` 全规则通过；Hosted CI Run `34024244696` 三平台全绿（macOS 15 Job `101462267418`、Ubuntu 24.04 Job `101462267296`、Windows 2022 Job `101462267421` 全部 success）
 Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -245,7 +245,7 @@ Blockers: 无
 - [x] 根据 `stsc`、`stsz`、`stco/co64` 建立分页 sample 索引。
 - [x] 从 MP4 sample 进入 H.264/AAC 规则，并可返回容器字段。
 - [x] 对 `moof` 明确报告 fragmented MP4 不在首版范围。
-- [ ] 使用参考工具交叉验证 sample offset、时间戳和关键帧。
+- [x] 使用参考工具交叉验证 sample offset、时间戳和关键帧。
 
 ## 阶段 6：会话、规则管理和桌面体验
 
@@ -3043,3 +3043,32 @@ Blockers: 无
      - Ubuntu 24.04 / Qt 6.11.1：Job `101456546000`，`conclusion: success`；
      - Windows 2022 / Qt 6.10.1：Job `101456546072`，`conclusion: success`。
   6. 阶段 5 检查清单勾选：勾选 `:246`「从 MP4 sample 进入 H.264/AAC 规则，并可返回容器字段」。至此阶段 5 全部核心功能已交付，剩余唯一未勾选项 `:248` 留待 Task P5j-6 交叉比对与里程碑收官。
+
+- 2026-09-06：完成 Task P5j-6（验证与关闭切片：100 GB 虚拟稀疏大文件矩阵验证、`ffprobe` 参考工具交叉比对、ADR-0103/0105/0106/0107/0108 Accepted 确认与审查项 P2-12 闭环）：
+  1. 架构与规范确认：
+     - ADR-0103（跨层结构化条目执行与导航）、ADR-0105（容器样本导航与时间线索引）、ADR-0106（格式检测仲裁与证据不对称性）、ADR-0107（MP4 有界头部验证与大源检测）、ADR-0108（时间线样本导航与歧义呈现）在中英文双语状态中全部由 `Proposed` 转为 `Accepted`（commit `9035605`）；
+  2. 缺陷与审查项闭环：
+     - 解决登记审查项 P2-12：在 `src/app/analysis_session.cpp` 中将 `containerFailureStatus()` 的 `InvalidBatchSize` 映射修正为 `AnalysisSessionSampleStatus::NotAnalyzed`，彻底消除在批大小参数无效时错误报告规则包损坏（`InvalidRulePackage`）的误导性状态；
+  3. 100 GB 虚拟稀疏大文件验证：
+     - 在 `tests/fixtures/generate_mp4_p5j4_fixtures.py` 中新增 `generate_hundred_gigabyte_sparse_prefix()` 生成 677 字节头部 `mp4_p5j6_100gb_sparse_prefix.bin`（含 `ftyp` 20 B、`free` 16 B、`moov` 625 B 与 16 B 64 位 largesize `mdat` 头部，声明 100 GiB 总文件大小，并在 `trak` 中包含 `co64` 64 位 chunk 偏移：50 GiB 与 99 GiB，两样本各 40 字节有效载荷，并在 `stss` 声明为关键帧）；
+     - 在 `tests/app/analysis_session_test.cpp` 中新增 `HundredGigabyteSparseMp4Source` 虚拟稀疏源并编写 `pagesAndEntersSamplesInAHundredGigabyteVirtualSparseMp4Movie` 端到端集成测试，实证：在 100 GiB 超大源下，StreamView 维持严格有界 64 KiB 页面预算，零内存膨胀；精确计算并物化 50 GiB 和 99 GiB 处的 64 位 bit/byte 坐标（起始 bit 分别为 429,496,729,600 与 850,403,524,608）；通过 `enterSample()` 成功解包 4 字节长度前缀并驱动 `video.h264.nal` 完成 RBSP 执行物化，且通过 `returnToParent()` 干净退回容器树；
+  4. 参考工具 `ffprobe` 样本级交叉比对：
+     - 在 `tests/fixtures/generate_mp4_p5j4_fixtures.py` 中新增 `generate_bframe_sync()` 生成带有 `stss` 同步表与 `ctts` 呈现时间偏移表的 B 帧码流 `mp4_p5j6_bframe_sync.mp4`（4 个样本：样本 0 为 IDR 关键帧 PTS=0，样本 1 为 P 帧 DTS=1000/PTS=3000，样本 2 为 B 帧 DTS=2000/PTS=2000，样本 3 为 B 帧 DTS=3000/PTS=4000）；
+     - 在 `tests/app/analysis_session_test.cpp` 中新增 `crossValidatesSampleOffsetsTimestampsAndKeyframesAgainstFfprobe`：
+       * 双轨测试（`mp4_p5j4_two_tracks.mp4`）：对视频轨（2 个样本）与音频轨（2 个样本）的比对中，StreamView 计算出的 sample offset（`pos`）、大小（`size`）、`dts`、`pts`、`duration` 及 keyframe 标识与 `ffprobe -show_packets -of json` 的输出 100% 吻合（视频样本 0 偏移 1018 大小 20；视频样本 1 偏移 1038 大小 12；音频样本 0 偏移 1050 大小 96 关键帧；音频样本 1 偏移 1146 大小 80 关键帧）；
+       * B 帧及关键帧测试（`mp4_p5j6_bframe_sync.mp4`）：对包含 `ctts` 与 `stss` 的 4 个样本比对中，StreamView 计算出的 offset（681, 721, 741, 757）、size（40, 20, 16, 16）、dts（0, 1000, 2000, 3000）、pts（0, 3000, 2000, 4000）、duration（1000 各样本）及 keyframe 标志（仅样本 0 为关键帧）与 `ffprobe -show_packets -of json` 100% 完全一致；
+  5. 代码与规范提交：
+     - 规范与 ADR 状态转换 commit `9035605`：`docs: accept phase 5 adrs and specify p5j-6 verification`；
+     - 实现与测试 commit `a1fd6cc`：`feat(app): complete phase 5 verification with 100gb sparse and ffprobe cross check`。
+  6. 本地验证矩阵：
+     - `dev`（Debug）：49/49 CTest 全部 PASS；
+     - `ci`（Release）：49/49 CTest 全部 PASS；
+     - `sanitize`（ASan/UBSan）：49/49 CTest 全部 PASS，零 sanitizer 报错；
+     - 测试扩展：`streamview_analysis_session_tests` 增至 47 槽（新增 3 个测试全部 PASS：`tracksReportsNotAnalyzedAfterInvalidBatchSizeAndRecoversOnValidBatch`、`pagesAndEntersSamplesInAHundredGigabyteVirtualSparseMp4Movie`、`crossValidatesSampleOffsetsTimestampsAndKeyframesAgainstFfprobe`）；
+     - DSL 规则核验：`svtool rule check` 对全部官方规则通过。
+  7. Hosted CI 跨平台全量验证：Run ID `34024244696`（Commit `a1fd6cc`）
+     - macOS 15 / Qt 6.11.1：Job `101462267418`，`conclusion: success`；
+     - Ubuntu 24.04 / Qt 6.11.1：Job `101462267296`，`conclusion: success`；
+     - Windows 2022 / Qt 6.10.1：Job `101462267421`，`conclusion: success`。
+  8. 阶段 5 检查清单勾选：勾选 `:248`「使用参考工具交叉验证 sample offset、时间戳和关键帧」。阶段 5 所有检查清单项达成 100% 覆盖。
+  9. 依据纪律条款第 5 条设固定独立评审门禁：阶段 5 全部功能切片与验证切片已闭环，进入 Phase 5 里程碑收官独立评审。
