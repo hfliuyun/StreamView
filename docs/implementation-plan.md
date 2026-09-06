@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 6
-Last Completed Step: Task P6a（规范与生命周期架构）—— 制定双语 ADR-0109 会话生命周期管理、格式手动覆盖与 Schema 演进策略（确立 Schema Version 1 保持不变与后向兼容保证、UI 导航栈瞬态性、脏状态跟踪协议、格式手动覆盖及规则管理架构）
-Next Action: Task P6a 里程碑独立评审门禁（依据纪律条款第 5 条执行评审）
-Last Verification: Task P6a 规范与文档卫生 — 双语 ADR-0109 对称性校验通过；`ctest -R markdown_hygiene --preset dev` PASS；Markdown-only 依据 ADR-0019 跳过 Hosted CI
+Last Completed Step: Task P6b（会话生命周期与强类型保存状态能力切片）—— 引入 SessionSaveStatus 强类型结果枚举与 SessionSaveResult 结构体；升级 AnalysisSession::saveSession(path, userState) 消除布尔压平并闭环 P2-26；落地磁盘变异检测与 SourceFingerprintMismatch；重构既有 6 处测试调用点并追加 6 个错误与原子替换用例
+Next Action: 启动 Task P6c（UI切片：MainWindow 保存/另存为/打开会话动作、setWindowModified 脏状态维护与书签/注释挂钩、closeEvent/maybeSave 弹窗协议与 UI 测试）
+Last Verification: Hosted Run 34028525200（Ubuntu 24.04 / Qt 6.11.1 job 101473727614, Windows 2022 / Qt 6.10.1 job 101473727560, macOS 15 / Qt 6.11.1 job 101473727376）全绿；本地 dev/ci/sanitize 49/49 全部通过；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
 Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -253,8 +253,8 @@ Blockers: 无
 支持完整的桌面会话生命周期管理（脏状态跟踪、保存/另存为、未保存修改弹窗保护）、格式手动覆盖与歧义裁决（彻底闭环 P2-17/P2-19/P2-20）、本地规则包版本管理（查看已安装/内置包、`.svrule` 导入）、分析进度指示与取消、全局诊断面板以及明暗主题与中英双语国际化切换。同时严格保持 `SessionDocument` Schema Version 1 不变与不可变向后兼容性，UI 导航栈保持瞬态隔离。
 
 ### 阶段 6 任务切片与依赖关系
-- **Task P6a**（规范）：双语 ADR-0109 会话生命周期管理、格式手动覆盖与 Schema 演进策略（Markdown-only，设固定独立评审门禁）；
-- **Task P6b**（能力切片）：`SessionSaveStatus` 强类型保存结果枚举、`AnalysisSession::saveSession(path, userState)` 返回结构体升级与单元测试；
+- [x] **Task P6a**（规范）：双语 ADR-0109 会话生命周期管理、格式手动覆盖与 Schema 演进策略（Markdown-only，设固定独立评审门禁）；
+- [x] **Task P6b**（能力切片）：`SessionSaveStatus` 强类型保存结果枚举、`AnalysisSession::saveSession(path, userState)` 返回结构体升级与单元测试；
 - **Task P6c**（UI切片）：`MainWindow` 保存/另存为/打开会话动作、`setWindowModified` 脏状态维护与书签/注释挂钩、`closeEvent` / `maybeSave` 弹窗协议（Save / Discard / Cancel，区分文件对话框取消与底层 I/O 报错）与 UI 测试；
 - **Task P6d-1**（能力切片）：`AnalysisSession::overrideFormat` 核心 API 与 `AnalysisSession::openFileWithExplicitRule` 静态工厂与单元测试（P2-25）；
 - **Task P6d-2**（UI切片）：`FormatOverrideDialog` 界面、歧义横幅「解决歧义...」按钮集成与 UI 测试（闭环 P2-17/P2-19/P2-20，P2-25）；
@@ -3141,4 +3141,31 @@ Blockers: 无
        * 修正 raw view 页大小 64 KiB 的数字硬编码（P2-22）。
   2. 纪律约束与评审门禁：
      - 本任务为纯 Markdown 规范交付，依据纪律条款第 5 条（P6a 设固定独立评审门禁），等待用户独立评审通过后方可启动 Task P6b 实现。
+
+- 2026-09-06：完成 Task P6b（会话生命周期与保存状态核心能力切片）：
+  1. 状态枚举与保存结果契约升级（闭环 P2-26，对齐 ADR-0109 §3.2）：
+     - `src/app/session_document.h`：引入 `SessionSaveStatus` 强类型七态枚举（`Saved`, `SourcePathMissing`, `SourceNotFileBacked`, `SourceFingerprintFailed`, `SourceFingerprintMismatch`, `DocumentValidationFailed`, `FileIoError`）与 `SessionSaveResult` 结构体，提供 `succeeded()` 谓词与详细 `errorMessage`；
+     - `src/app/analysis_session.h` / `src/app/analysis_session.cpp`：
+       * 升级 `AnalysisSession::saveSession(path, userState)` 返回类型为 `SessionSaveResult`，消除原有 `bool` 返回值与出参压平；
+       * 会话构建时记录初始源指纹 `initialFingerprint_` 并暴露只读访问器 `initialFingerprint()`；在保存时重算指纹，若源文件在磁盘被外部变异且大小未变则精确报告 `SourceFingerprintMismatch`，若大小改变导致重算失败则报告 `SourceFingerprintFailed`；
+       * 新增 `AnalysisSession::create(source, sourcePath)` 重载，允许注入显式源路径；非文件源路径保存时报告 `SourceNotFileBacked`；虚拟源无路径保存时报告 `SourcePathMissing`；用户状态越界校验失败时报告 `DocumentValidationFailed`；目标路径不可写时报告 `FileIoError`；成功时报告 `Saved`；
+  2. 既有测试重构与全错误分支覆盖：
+     - 重构 `tests/app/analysis_session_test.cpp` 既有 6 处调用点，彻底淘汰布尔与 `!result.succeeded()` 弱断言，全部显式断言具体的具名 `SessionSaveStatus`（成功路径断言 `Saved`，行 817 失败路径断言 `SourcePathMissing`，完全闭环 P2-26）；
+     - 类末尾追加 6 个独立测试用例（零行号位移）：
+       * `saveSessionReportsSourceNotFileBackedForNonFileSourceWithPath`
+       * `saveSessionReportsSourceFingerprintMismatchWhenFileMutatedOnDisk`
+       * `saveSessionReportsSourceFingerprintFailedWhenFileSizeMutated`
+       * `saveSessionReportsDocumentValidationFailedForInvalidUserState`
+       * `saveSessionReportsFileIoErrorForUnwritablePath`
+       * `saveSessionAtomicallyReplacesExistingSessionFile`
+     - `tests/app/session_document_test.cpp` 末尾追加 `validatesSessionSaveResultContract`；
+     - 同步修正中英双语 ADR-0109 对 `analysis_session.h` 偏移后的精确行号引用（`L239`, `L326`, `L288`）；
+  3. 验证与全平台 CI 闭环：
+     - 规则静态校验：`svtool rule check` 对 4 个官方规则（MP4、AAC ASC、AAC ADTS、H.264 Annex B）全部 `Rule OK`；
+     - 本地矩阵验证：`dev`（49/49）、`ci`（49/49）、`sanitize`（49/49，ASan/UBSan 零告警）、`markdown_hygiene`（100% PASS）；
+     - 实现提交：`3edc17c`（`feat(app): upgrade session saving with strongly typed result status`）；
+     - Hosted CI 验证：Run `34028525200` 三平台全部 success：
+       * macOS 15 / Qt 6.11.1：Job `101473727376`；
+       * Windows 2022 / Qt 6.10.1：Job `101473727560`；
+       * Ubuntu 24.04 / Qt 6.11.1：Job `101473727614`。
 
