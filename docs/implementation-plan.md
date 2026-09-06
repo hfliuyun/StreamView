@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 6
-Last Completed Step: Task P6e（UI与规则管理切片：`RuleManagerDialog` 界面、规则包列表与版本展示、`.svrule` 导入安装与测试）—— 实现 `RulePackageCatalog::allPackages` 确定性排序查询与 `RulePackageStore::discoverInstalled` 本地 content-addressed 扫描；实现 `RuleManagerDialog` 规则包管理对话框（呈现 ID、版本、[Bundled]/[Installed] 来源、12位 content hash 与完整 SHA-256 Tooltip、入口点与格式描述）；支持「Install Package (.svrule)...」导入安装、内置官方规则防覆盖保护、幂等安装与版本冲突防护；在 MainWindow 主菜单集成 Tools > Manage Rules... 动作（actionManageRules）；编写独立测试套件 `RuleManagerDialogTest`（6/6 用例通过）与 MainWindowTest 集成测试（45/45 槽全绿）；三套本地矩阵全量 50/50 通过，Hosted CI 三平台全绿
-Next Action: 启动 Task P6f（UI切片：分析进度条展示、异步取消按钮与响应、DiagnosticsSummaryDock 全局诊断面板与双向跳转）
-Last Verification: Hosted Run 34042416633（Ubuntu 24.04 / Qt 6.11.1 job 101511446403, Windows 2022 / Qt 6.10.1 job 101511446361, macOS 15 / Qt 6.11.1 job 101511446256）全绿；本地 dev/ci/sanitize 50/50 全部通过；MainWindowTest 45/45 槽通过；RuleManagerDialogTest 6/6 用例通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
+Last Completed Step: Task P6f（UI切片：分析进度条展示、异步取消按钮与响应、`DiagnosticsSummaryDock` 全局诊断面板与双向跳转）—— 在 `AnalysisSession` 中引入 `CancellationSource` 与 `CancellationToken`，贯通底层解析批次异步取消；主窗口状态栏挂载 `analysisProgressBar` 与 `cancelAnalysisButton`，实时展示扫描进度，支持点击取消并保留已解析部分分析树与更新状态栏；实现 `DiagnosticsSummaryDock` 全局诊断面板（对象名 `diagnosticsSummaryDock`），提供严重性过滤、正反向双向选择跳转同步与坐标定位；主菜单新增 `View` 菜单与诊断/时间线面板显隐切换动作；编写独立测试套件 `DiagnosticsSummaryDockTest`（5/5 用例全绿）与扩充 `MainWindowTest`（49/49 槽全绿）；三套本地矩阵全量 51/51 通过，Hosted CI 三平台全绿
+Next Action: 启动 Task P6g（UI切片：明暗主题切换支持、基于 `QTranslator` 的中英双语动态切换与 UI 测试）
+Last Verification: Hosted Run 34045397030（Ubuntu 24.04 / Qt 6.11.1 job 101519439919, Windows 2022 / Qt 6.10.1 job 101519439903, macOS 15 / Qt 6.11.1 job 101519439804）全绿；本地 dev/ci/sanitize 51/51 全部通过；MainWindowTest 49/49 槽通过；DiagnosticsSummaryDockTest 5/5 用例通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
 Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -259,7 +259,7 @@ Blockers: 无
 - [x] **Task P6d-1**（能力切片）：`AnalysisSession::overrideFormat` 核心 API 与 `AnalysisSession::openFileWithExplicitRule` 静态工厂与单元测试（彻底闭环 P2-20，P2-25）；
 - [x] **Task P6d-2**（UI切片）：`FormatOverrideDialog` 界面、歧义横幅「解决歧义...」按钮集成与 UI 测试（闭环 P2-17/P2-19/P2-20，P2-25）；
 - [x] **Task P6e**（UI与规则管理切片）：`RuleManagerDialog` 界面、规则包列表与版本展示、`.svrule` 导入安装与测试；
-- **Task P6f**（UI切片）：分析进度条展示、异步取消按钮与响应、`DiagnosticsSummaryDock` 全局诊断面板与双向跳转；
+- [x] **Task P6f**（UI切片）：分析进度条展示、异步取消按钮与响应、`DiagnosticsSummaryDock` 全局诊断面板与双向跳转；
 - **Task P6g**（UI切片）：明暗主题切换支持、基于 `QTranslator` 的中英双语动态切换与 UI 测试；
 - **Task P6h**（验证切片）：全生命周期端到端回放、手动覆盖持久化恢复、修改保护交互分支、100 GB 虚拟稀疏源会话恢复验证，以及固化 Version 1 `.svsession` fixture 永久向后兼容守护测试（P2-23）；
 - **Task P6i**（关闭切片）：阶段 6 检查清单 100% 达成确认、双语文档收敛与里程碑收官独立评审门禁。
@@ -268,7 +268,7 @@ Blockers: 无
 - [x] 使用版本化 JSON 与 `QSaveFile` 实现 `.svsession` 原子保存。
 - [x] 保存源身份、规则精确版本/哈希、书签、注释、展开路径和视图状态。
 - [x] 大文件指纹使用大小、纳秒 mtime、首/中/尾各 1 MiB SHA-256；小文件全文哈希。
-- [ ] 实现保存/另存为、未保存关闭提示、格式手动覆盖和规则版本管理。
+- [x] 实现保存/另存为、未保存关闭提示、格式手动覆盖和规则版本管理。
 - [ ] 完成进度、取消、诊断汇总、明暗主题和中英双语切换。
 - [x] 验证源变化不会误绑定，旧会话按 package ID/version/content hash/entry-point ID
   精确恢复，且 missing/conflicting/incompatible rule 都显式失败。
@@ -3311,3 +3311,51 @@ Blockers: 无
        * Windows 2022 / Qt 6.10.1：Job `101511446361`（`success`）；
        * Ubuntu 24.04 / Qt 6.11.1：Job `101511446403`（`success`）；
        * macOS 15 / Qt 6.11.1：Job `101511446256`（`success`）。
+
+- 2026-09-07：完成 Task P6f（UI切片：分析进度条展示、异步取消按钮与响应、`DiagnosticsSummaryDock` 全局诊断面板与双向跳转）。
+  1. 架构与规范对齐：
+     - 严格遵循双语 ADR-0109 §6 进度指示、取消协议与全局诊断面板规范；
+     - 提交双语架构文档：`4208303`（`docs: specify progress, cancellation and diagnostics summary dock architecture`）；
+     - 核心解析会话取消协议：
+       * 在 `AnalysisSession` 中集成 `core::CancellationSource`，提供 `requestCancellation()` 与 `isCancellationRequested()`；
+       * 在 `openFile`、`openFileWithExplicitRule` 与 `overrideFormat` 中，通过 `cancellationSource_.token()` 将取消凭证下传至 `StructuralEntryRunner` 与 `CompoundStructuralRunner`；
+       * 批次分析中断时保留已物化的分析树前缀，确保用户可在部分结果上执行诊断排查与字节定位。
+  2. 状态栏进度条与异步取消响应（`src/app/main_window.h` / `src/app/main_window.cpp`）：
+     - 状态栏挂载 `analysisProgressBar_`（对象名 `analysisProgressBar`）与 `cancelAnalysisButton_`（对象名 `cancelAnalysisButton`，文案 `tr("Cancel")`）；
+     - 进度更新循环：在 `advanceAnalysis()` 批次迭代中实时采样当前游标与媒体源总大小比例，更新进度条百分比与文本 `Analysing: N% (M nodes)`；
+     - 异步取消：用户点击取消或触发 `cancelAnalysis()` 时调用 `session_->requestCancellation()`，中断后续批次，保留已有节点树并更新状态栏为 `Analysis cancelled: N nodes`，同时隐藏进度条与取消按钮。
+  3. 全局诊断面板与双向联动（`src/app/diagnostics_summary_dock.h` / `src/app/diagnostics_summary_dock.cpp`）：
+     - 新建 `DiagnosticsSummaryDock`（对象名 `diagnosticsSummaryDock`，标题 `tr("Diagnostics")`），停靠于主窗口右下侧；
+     - 面板内置：
+       * `diagnosticsSummaryLabel`：统计 Total、Errors、Warnings、Info 数量；
+       * `severityFilterComboBox`：支持 All、Errors & Warnings、Errors Only、Warnings Only、Info Only 多级过滤；
+       * `diagnosticsTableWidget`（4列）：呈现 Severity 图标与文本、Message 诊断描述、Field 归属字段名、Offset 格式化源地址（`0x... [bit N]`）；
+     - 双向选择联动与防递归死循环：
+       * 正向跳转：点击表格行触发 `diagnosticSelected(nodeId, location)`，主窗口自动展开并选中 `analysisTreeView_` 对应节点、更新 `fieldInspector_`，并在 `rawDataView_` 中高亮字节与位区间；
+       * 反向高亮：在分析树或十六进制视图中切换选中节点时触发 `selectAnalysisNode(nodeId)`，诊断面板自动定位并高亮对应诊断行；
+       * 内置 `isSyncingSelection_` 重入保护，彻底消除双向联动事件风暴。
+     - 主菜单扩展：新增 `View` 菜单（对象名 `menuView`），提供 `actionToggleDiagnosticsDock` 与 `actionToggleTimelineDock` 显隐切换动作。
+  4. 自动化测试扩充：
+     - 新建独立测试文件 `tests/app/diagnostics_summary_dock_test.cpp`，注册目标 `streamview_diagnostics_summary_dock_tests`（5/5 用例全绿）：
+       * `dockInitialState`：验证面板各控件对象名、初始空状态统计文案与表格行数；
+       * `populateFromSessionDiagnostics`：构造带 Error、Warning、Info 诊断的会话树，验证递归诊断聚合与行数据格式化；
+       * `severityFiltering`：验证在多级严重性过滤切换下表格行显隐与统计文案准确无误；
+       * `tableSelectionEmitsDiagnosticSelected`：验证用户点击诊断行时正向发射 `diagnosticSelected` 信号及对应 NodeId 与 FieldLocation；
+       * `selectAnalysisNodeHighlightsTableRow`：验证反向调用 `selectAnalysisNode` 时能够精确定位并高亮对应诊断行。
+     - `tests/app/main_window_test.cpp` 追加 4 个集成测试用例（`MainWindowTest` 增至 49 槽全绿）：
+       * `progressBarAndCancelButtonPresence`：验证状态栏进度条与取消按钮的对象名、初始隐藏状态与属性；
+       * `diagnosticsDockPresenceAndViewMenuAction`：验证诊断 Dock 挂载、`View` 菜单动作与显隐切换协议；
+       * `analysisCancellation`：验证触发取消后底层会话被中止、保留已有节点且状态栏展示取消提示；
+       * `diagnosticsSummaryDockBidirectionalSelection`：验证诊断面板与分析树、属性检视器、数据视图双向联动的完整端到端闭环。
+  5. 验证与全平台 Hosted CI 闭环：
+     - 规则静态校验：`svtool rule check` 对 4 个官方规则包源码全部 `Rule OK`；
+     - 本地三套全量构建与测试矩阵：
+       * `cmake --preset dev && cmake --build --preset dev && ctest --preset dev`（51/51 PASS，耗时 59.07s）；
+       * `cmake --preset ci && cmake --build --preset ci && ctest --preset ci`（51/51 PASS，耗时 9.13s）；
+       * `cmake --preset sanitize && cmake --build --preset sanitize && ctest --preset sanitize`（51/51 PASS，零 ASan/UBSan 告警，耗时 182.98s）；
+       * `ctest -R markdown_hygiene --preset dev`（100% PASS）；`git diff --check`（无空白缺陷）；
+     - 实现提交：`fc092ef`（`feat(app): implement analysis progress, cancellation and diagnostics summary dock`）；
+     - Hosted CI 验证：Run `34045397030` 三平台全部 success：
+       * Windows 2022 / Qt 6.10.1：Job `101519439903`（`success`）；
+       * Ubuntu 24.04 / Qt 6.11.1：Job `101519439919`（`success`）；
+       * macOS 15 / Qt 6.11.1：Job `101519439804`（`success`）。
