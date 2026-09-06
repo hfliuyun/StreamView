@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 6
-Last Completed Step: Task P6d-1（能力切片：AnalysisSession::overrideFormat 核心 API 与 AnalysisSession::openFileWithExplicitRule 静态工厂与单元测试，彻底闭环 P2-20 底层能力）—— 在 AnalysisSession 中提取 setupResolvedAnalyzer 统合分析器构建；实现 openFileWithExplicitRule 首等显式打开工厂；实现 overrideFormat 格式手动覆盖与缓存/导航栈/用户状态重置；重构 openPinnedMp4Fixture 彻底淘汰临时文件 hack（闭环 P2-20）；追加 4 个单元测试使得 AnalysisSessionTest 增至 57 槽全绿
-Next Action: 启动 Task P6d-2（UI切片：FormatOverrideDialog 界面、歧义横幅「解决歧义...」按钮集成与 UI 测试，闭环 P2-17/P2-19，P2-25）
-Last Verification: Hosted Run 34033034801（Ubuntu 24.04 / Qt 6.11.1 job 101486007813, Windows 2022 / Qt 6.10.1 job 101486007737, macOS 15 / Qt 6.11.1 job 101486007920）全绿；本地 dev/ci/sanitize 49/49 全部通过；AnalysisSessionTest 57/57 槽通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
+Last Completed Step: Task P6d-2（UI切片：FormatOverrideDialog 界面、歧义横幅「解决歧义...」按钮集成与 UI 测试，彻底闭环 P2-17/P2-19/P2-20，P2-25）—— 实现 FormatOverrideDialog 呈现 MP4/H264/AAC 候选列表、歧义提示横幅与 [Candidate]/[Current] 标识；在 MainWindow 状态栏永久歧义横幅中集成 resolveAmbiguityButton；在主菜单集成 Analysis > Override Format... 动作；实现 MainWindow::overrideFormat 驱动内核重分析、模型重构、歧义横幅消除与脏状态标记；tests/app/main_window_test.cpp 追加 6 个 UI 自动化测试用例增至 44 槽全绿
+Next Action: 启动 Task P6e（UI与规则管理切片：RuleManagerDialog 界面、规则包列表与版本展示、.svrule 导入安装与测试）
+Last Verification: Hosted Run 34035047867（Ubuntu 24.04 / Qt 6.11.1 job 101491463019, Windows 2022 / Qt 6.10.1 job 101491462980, macOS 15 / Qt 6.11.1 job 101491463124）全绿；本地 dev/ci/sanitize 49/49 全部通过；MainWindowTest 44/44 槽通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
 Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -257,7 +257,7 @@ Blockers: 无
 - [x] **Task P6b**（能力切片）：`SessionSaveStatus` 强类型保存结果枚举、`AnalysisSession::saveSession(path, userState)` 返回结构体升级与单元测试；
 - [x] **Task P6c**（UI切片）：`MainWindow` 保存/另存为/打开会话动作、`setWindowModified` 脏状态维护与书签/注释挂钩、`closeEvent` / `maybeSave` 弹窗协议（Save / Discard / Cancel，区分文件对话框取消与底层 I/O 报错）与 UI 测试；
 - [x] **Task P6d-1**（能力切片）：`AnalysisSession::overrideFormat` 核心 API 与 `AnalysisSession::openFileWithExplicitRule` 静态工厂与单元测试（彻底闭环 P2-20，P2-25）；
-- **Task P6d-2**（UI切片）：`FormatOverrideDialog` 界面、歧义横幅「解决歧义...」按钮集成与 UI 测试（闭环 P2-17/P2-19/P2-20，P2-25）；
+- [x] **Task P6d-2**（UI切片）：`FormatOverrideDialog` 界面、歧义横幅「解决歧义...」按钮集成与 UI 测试（闭环 P2-17/P2-19/P2-20，P2-25）；
 - **Task P6e**（UI与规则管理切片）：`RuleManagerDialog` 界面、规则包列表与版本展示、`.svrule` 导入安装与测试；
 - **Task P6f**（UI切片）：分析进度条展示、异步取消按钮与响应、`DiagnosticsSummaryDock` 全局诊断面板与双向跳转；
 - **Task P6g**（UI切片）：明暗主题切换支持、基于 `QTranslator` 的中英双语动态切换与 UI 测试；
@@ -3231,6 +3231,43 @@ Blockers: 无
        * `ctest -R markdown_hygiene --preset dev`（100% PASS）；`git diff --check`（无空白缺陷）；
      - 实现提交：`6a53767`（`feat(app): implement format override and explicit rule opening in analysis session`）；
      - Hosted CI 验证：Run `34033034801` 三平台全部 success：
-       * Ubuntu 24.04 / Qt 6.11.1：Job `101486007813`（`success`）；
-       * Windows 2022 / Qt 6.10.1：Job `101486007737`（`success`）；
-       * macOS 15 / Qt 6.11.1：Job `101486007920`（`success`）。
+        * Ubuntu 24.04 / Qt 6.11.1：Job `101486007813`（`success`）；
+        * Windows 2022 / Qt 6.10.1：Job `101486007737`（`success`）；
+        * macOS 15 / Qt 6.11.1：Job `101486007920`（`success`）。
+- **Task P6d-2 执行记录（UI切片：`FormatOverrideDialog` 界面、歧义横幅「解决歧义...」按钮集成与 UI 测试，彻底闭环 P2-17/P2-19/P2-20，P2-25）**：
+  1. 架构目标与纪律恪守：
+     - 严格依照 ADR-0109 §4.4 规范实现格式手动覆盖交互 UI 与歧义裁决逻辑，彻底闭环 P2-17（UI 消费歧义状态）、P2-19（用户覆盖仲裁模式流优先级）与 P2-20/P2-25（UI 切片与底层切片分离）；
+     - 恪守单主干与版本化约定，保持 `SessionDocument` Schema Version 1 完全不变。
+  2. 格式手动覆盖对话框实现（`src/app/format_override_dialog.h` / `src/app/format_override_dialog.cpp`）：
+     - 选项列表呈现：遍历 catalog 中的内置规则包（MP4 ISOBMFF、H.264 Annex B、AAC ADTS），构建 `FormatOverrideOption` 项；
+     - 歧义提示横幅：若当前会话存在歧义（`formatSelection.ambiguous()`），黄色高亮提示「Notice: Multiple conflicting formats (container vs elementary stream) were detected. Choose your intended format to resolve the ambiguity.」；
+     - 候选与当前标注：当前激活格式追加 `[Current]`，潜在冲突候选追加粗体 `[Candidate]`；歧义状态下智能预选中备选候选格式（例如 MP4 vs H.264 歧义时默认高亮 H.264 候选），方便用户一键裁决；
+     - 动态描述与按键绑定：切换选项时实时更新 `descriptionLabel_`，双击列表项或点击 `Override` 确认覆盖，点击 `Cancel` 或 Esc 安全退出。
+  3. 主窗口与歧义横幅按钮集成（`src/app/main_window.h` / `src/app/main_window.cpp`）：
+     - 状态栏歧义横幅容器升级：构建 `formatAmbiguityBannerWidget_` 水平布局容器，内嵌既有 `formatAmbiguityLabel_` 与新增 `resolveAmbiguityButton_`（文案 `tr("Resolve Ambiguity...")`），点击直达 `overrideFormat` 槽（彻底闭环 P2-17）；
+     - 分析菜单扩展：`Analysis` 菜单新增 `Analysis > Override Format...` (`actionOverrideFormat_`)，通过 `updateActionStates()` 确保仅在有活跃会话时启用；
+     - 格式覆盖调度槽：实现 `MainWindow::overrideFormat()`：
+       * 支持 `formatOverrideDialogHandler_` 测试委派以实现无头自动化测试注入；
+       * 校验目标规则有效性；若选中规则与当前规则相同且无歧义则安全提前返回；若有歧义则显式覆盖以消除歧义；
+       * 驱动 `session_->overrideFormat(catalog_, *targetRule)`，原子重置底层分析器；
+       * 递增 `analysisGeneration_`，清空选区、展开项、检视器与时间线，重构 `AnalysisTreeModel` 并触发 `advanceAnalysis` 重新发布第一批数据；
+       * 刷新歧义横幅（`updateAmbiguityUI()` 隐藏横幅）、重载轨道（`loadTracks()`）、重置导航栈，并调用 `setWindowModified(true)` 与 `updateWindowTitle()`，确保覆盖修改受 P6c 的 `maybeSave` 保护。
+  4. UI 自动化测试扩充（`tests/app/main_window_test.cpp` 追加 6 个用例，`MainWindowTest` 增至 44 槽全绿）：
+     - `overrideFormatActionEnabledOnlyWhenSessionLoaded`：实证菜单动作无会话时禁用、加载媒体源后激活；
+     - `ambiguityBannerShowsResolveAmbiguityButtonOnAmbiguousFormat`：实证歧义码流正确展示横幅文案与「Resolve Ambiguity...」按钮，纯净 Annex B 码流则保持隐藏；
+     - `resolveAmbiguityButtonTriggersOverrideFormatAndReanalyzes`：实证点击歧义按钮触发覆盖到 H.264 后，歧义横幅消失、窗口标记脏状态、分析树从 Box 节点重构为 NALU 节点、时间线状态提示容器轨道不可用；
+     - `overrideFormatMenuActionAllowsFormatSwitching`：实证通过主菜单动作从 H.264 覆盖为 AAC ADTS，窗口标记脏状态；
+     - `overrideFormatCancelledPreservesCurrentSession`：实证用户取消对话框时原会话格式、未修改状态与歧义横幅 100% 保持完好；
+     - `formatOverrideDialogConstructsAndSelectsCandidate`：实证 `FormatOverrideDialog` 组件在歧义与非歧义模式下候选标注、预选中行、描述更新与规则选择接口正确无误。
+  5. 验证与全平台 Hosted CI 闭环：
+     - 规则静态校验：`svtool rule check` 对 4 个官方规则包源码全部 `Rule OK`；
+     - 本地三套全量矩阵：
+       * `cmake --preset dev && cmake --build --preset dev && ctest --preset dev`（49/49 PASS，耗时 66.44s）；
+       * `cmake --preset ci && cmake --build --preset ci && ctest --preset ci`（49/49 PASS，耗时 11.45s）；
+       * `cmake --preset sanitize && cmake --build --preset sanitize && ctest --preset sanitize`（49/49 PASS，零 ASan/UBSan 告警，耗时 188.92s）；
+       * `ctest -R markdown_hygiene --preset dev`（100% PASS）；`git diff --check`（无空白缺陷）；
+     - 实现提交：`4da9520`（`feat(app): implement format override dialog and ambiguity resolution in main window`）；
+     - Hosted CI 验证：Run `34035047867` 三平台全部 success：
+       * Windows 2022 / Qt 6.10.1：Job `101491462980`（`success`）；
+       * Ubuntu 24.04 / Qt 6.11.1：Job `101491463019`（`success`）；
+       * macOS 15 / Qt 6.11.1：Job `101491463124`（`success`）。
