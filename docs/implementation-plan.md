@@ -1,10 +1,10 @@
 # StreamView v0.1 分阶段实施计划
 
 Status: In Progress
-Current Phase: 5
-Last Completed Step: Task P5j-6（验证与关闭切片）—— 100 GB 虚拟稀疏大文件矩阵验证、`ffprobe` 参考工具交叉比对、ADR-0103/0105/0106/0107/0108 确认与审查项 P2-12 闭环；阶段 5 检查清单全部项 100% 达成勾选
-Next Action: Phase 5 里程碑收官独立评审门禁（按纪律条款第 5 条执行）
-Last Verification: Task P5j-6 — 本机 `dev`（Debug）、`ci`（Release）、`sanitize`（ASan/UBSan）三预设全量 49/49 CTest 通过（测试槽 `streamview_analysis_session_tests` 44 → 47 全部 PASS）；`svtool rule check` 全规则通过；Hosted CI Run `34024244696` 三平台全绿（macOS 15 Job `101462267418`、Ubuntu 24.04 Job `101462267296`、Windows 2022 Job `101462267421` 全部 success）
+Current Phase: 6
+Last Completed Step: Phase 5 里程碑收官评审与 P1-1 闭环（无条件硬门禁 `ffprobe` 交叉比对与 CI 全矩阵 FFmpeg 跨平台安装；Hosted CI Run 34025463547 三平台全绿）
+Next Action: Phase 6 启动 — Task P6a（会话保存/另存为与版本管理规范定义，双语 ADR 编写）
+Last Verification: Phase 5 收官 P1-1 闭环 — 本机 `dev`（Debug 49/49）、`ci`（Release 49/49）、`sanitize`（ASan/UBSan 49/49，零错误）；`svtool rule check` 4/4 全规则通过；Hosted CI Run `34025463547` 三平台全绿（Ubuntu 24.04 Job `101465521019`、macOS 15 Job `101465521102`、Windows 2022 Job `101465521144` 全部 success，且各 Job 均成功安装 FFmpeg 并验证 `ffprobe` 可用性）
 Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -3065,6 +3065,7 @@ Blockers: 无
      - `ci`（Release）：49/49 CTest 全部 PASS；
      - `sanitize`（ASan/UBSan）：49/49 CTest 全部 PASS，零 sanitizer 报错；
      - 测试扩展：`streamview_analysis_session_tests` 增至 47 槽（新增 3 个测试全部 PASS：`tracksReportsNotAnalyzedAfterInvalidBatchSizeAndRecoversOnValidBatch`、`pagesAndEntersSamplesInAHundredGigabyteVirtualSparseMp4Movie`、`crossValidatesSampleOffsetsTimestampsAndKeyframesAgainstFfprobe`）；
+     - 实现与测试 commit `a1fd6cc`：`feat(app): complete phase 5 verification with 100gb sparse and ffprobe cross check`；
      - DSL 规则核验：`svtool rule check` 对全部官方规则通过。
   7. Hosted CI 跨平台全量验证：Run ID `34024244696`（Commit `a1fd6cc`）
      - macOS 15 / Qt 6.11.1：Job `101462267418`，`conclusion: success`；
@@ -3072,3 +3073,31 @@ Blockers: 无
      - Windows 2022 / Qt 6.10.1：Job `101462267421`，`conclusion: success`。
   8. 阶段 5 检查清单勾选：勾选 `:248`「使用参考工具交叉验证 sample offset、时间戳和关键帧」。阶段 5 所有检查清单项达成 100% 覆盖。
   9. 依据纪律条款第 5 条设固定独立评审门禁：阶段 5 全部功能切片与验证切片已闭环，进入 Phase 5 里程碑收官独立评审。
+
+- 2026-09-06：Phase 5 里程碑收官独立评审门禁裁定与 P1-1 闭环：
+  1. 里程碑评审裁定：
+     - 裁定放行（Required gate passed），附 1 项须先修的 P1（P1-1）与 2 项记录项（P2-20、P2-21）；
+     - P1-1 定性：`tests/app/analysis_session_test.cpp` 中的 `ffprobe` 交叉比对先前包裹在 `if (!ffprobePath.isEmpty())` 条件分支中，违反 §4.3 禁止的「可选分支制造真空通过」；在未预装 `ffprobe` 的 CI 环境中会导致后半段真实比对完全静默跳过，检查清单第 7 项（`:248`）失去 CI 硬闸门守护；
+     - P2 登记项：
+       * P2-20：交叉比对测试目前使用 `openPinnedMp4Fixture`，绕过了 `selectFormatFromDetection`；确认其设计定位为样本坐标、时间戳与关键帧的参考工具比对，而非端到端检测仲裁证明；
+       * P2-21：`ffprobe` 为当前唯一参考工具，后续可依环境扩充其他参考实现；
+     - ADR 双语核查：ADR-0103、0105、0106、0107、0108 中英文双语状态全部确认保持 `Accepted`，各节结构与核心语义严格对称对齐。
+  2. P1-1 修复落地与硬门禁建立：
+     - 测试硬门禁：在 `tests/app/analysis_session_test.cpp` 中彻底移除两处 `if (!ffprobePath.isEmpty())` 条件包裹（行 2280 与行 2416），统一替换为无条件断言 `QVERIFY2(!ffprobePath.isEmpty(), "reference cross-validation requires ffprobe in PATH");`，杜绝任何环境下的静默跳过；
+     - CI 全矩阵 FFmpeg 安装：在 `.github/workflows/ci.yml`（行 32–58）为三平台 runner 显式增加 FFmpeg 安装与可用性校验步骤：
+       * Ubuntu 24.04：`sudo apt-get update && sudo apt-get install -y ffmpeg`；
+       * macOS 15：`brew install ffmpeg`；
+       * Windows 2022：`choco install ffmpeg --no-progress` 并登记二进制路径至 `$env:GITHUB_PATH`；
+       * 跨平台通用步骤：`Verify FFprobe availability` 执行 `ffprobe -version`，确保三平台日志均留下不可伪造的工具版本凭据。
+  3. 代码与配置提交：
+     - 修复 commit `59ef1e0`：`fix(ci): require ffprobe cross check and install ffmpeg across ci matrix`。
+  4. 本地全量验证矩阵：
+     - 规则静态核验：`svtool rule check` 对全部官方规则通过（`aac_adts.svfmt`、`aac_asc.svfmt`、`h264_annex_b.svfmt`、`mp4_isobmff.svfmt` 4/4 Rule OK）；
+     - `dev`（Debug）：49/49 CTest 全部 PASS（`streamview_analysis_session_tests` 47/47 PASS，其中包含两项无条件 `ffprobe` 样本交叉比对）；
+     - `ci`（Release）：49/49 CTest 全部 PASS（全套耗时 9.77s）；
+     - `sanitize`（ASan/UBSan）：49/49 CTest 全部 PASS，耗时 177.34s，无任何内存泄露或未定义行为报错（0 leaks, 0 errors）。
+  5. Hosted CI 跨平台全量验证：Run ID `34025463547`（Commit `59ef1e0c3dc417aa02cff49f0bc9e278d5b5677e`）三平台全部 success：
+     - Ubuntu 24.04 / Qt 6.11.1：Job `101465521019`，`conclusion: success`（`Install FFmpeg` 29s，`Verify FFprobe availability` success，`Test` 17s success）；
+     - macOS 15 / Qt 6.11.1：Job `101465521102`，`conclusion: success`（`Install FFmpeg` 4s，`Verify FFprobe availability` success，`Test` 15s success）；
+     - Windows 2022 / Qt 6.10.1：Job `101465521144`，`conclusion: success`（`Install FFmpeg` 45s，`Verify FFprobe availability` success，`Test` 37s success）。
+  6. Phase 5 里程碑正式收官闭环，准备进入 Phase 6。
