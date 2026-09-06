@@ -307,6 +307,9 @@ private:
 /// resolves that tie in H.264's favour, leaving the session without a container
 /// analyzer. Pinning is what a caller that already knows the container does, and
 /// it keeps these tests measuring sample navigation rather than detection.
+/// Refactored in Task P6d-1 (ADR-0109 §4.4) to use first-class public API
+/// `AnalysisSession::openFileWithExplicitRule` directly instead of the historical
+/// temporary `.svsession` file save-and-restore indirection hack.
 [[nodiscard]] std::unique_ptr<AnalysisSession> openPinnedMp4Fixture(
     const QString& fixturePath, const streamview::rules::RulePackageCatalog& catalog) {
     auto loaded = streamview::rules::loadMp4IsobmffRulePackage();
@@ -319,37 +322,7 @@ private:
         return nullptr;
     }
 
-    QString errorMessage;
-    auto source = streamview::core::FileSource::open(fixturePath, &errorMessage);
-    if (source == nullptr) {
-        return nullptr;
-    }
-    auto fingerprint = source->fingerprint();
-    if (!fingerprint.succeeded()) {
-        return nullptr;
-    }
-    source.reset();
-
-    auto document = SessionDocument::create(fixturePath, fixturePath,
-                                            std::move(*fingerprint.fingerprint),
-                                            std::move(*pinned));
-    if (!document.has_value()) {
-        return nullptr;
-    }
-    QTemporaryDir directory;
-    if (!directory.isValid()) {
-        return nullptr;
-    }
-    const QString sessionPath = directory.filePath(QStringLiteral("pinned.svsession"));
-    if (!document->save(sessionPath, &errorMessage)) {
-        return nullptr;
-    }
-
-    auto restored = AnalysisSession::restoreSession(sessionPath, catalog);
-    if (restored.status != AnalysisSessionRestoreStatus::Restored) {
-        return nullptr;
-    }
-    return std::move(restored.session);
+    return AnalysisSession::openFileWithExplicitRule(fixturePath, catalog, *pinned);
 }
 
 [[nodiscard]] streamview::rules::RulePackageLoadResult
@@ -2583,6 +2556,166 @@ private slots:
         auto loaded = SessionDocument::load(sessionPath);
         QVERIFY2(loaded.succeeded(), qPrintable(loaded.errorMessage));
         QCOMPARE(loaded.document->userState(), state2);
+    }
+
+    void openFileWithExplicitRuleDirectlyAnalyzesTargetFormat() {
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto mp4Package = streamview::rules::loadMp4IsobmffRulePackage();
+        QVERIFY(mp4Package.succeeded() && mp4Package.package.has_value());
+        auto pinnedMp4 = streamview::rules::RuleEntryPointIdentity::create(
+            mp4Package.package->identity(), QStringLiteral("main"));
+        QVERIFY(pinnedMp4.has_value());
+
+        const QString fixturePath = QStringLiteral(
+            STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_avc_multi_nal.mp4");
+        QString errorMessage;
+        auto session = AnalysisSession::openFileWithExplicitRule(
+            fixturePath, catalog, *pinnedMp4, {}, &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+        QCOMPARE(session->formatSelection().format, streamview::rules::DetectedFormat::Mp4Isobmff);
+        QCOMPARE(session->formatSelection().reason, streamview::rules::DetectedFormatReason::Mp4StructuralTiling);
+        QVERIFY(!session->formatSelection().ambiguous());
+        QCOMPARE(session->ruleIdentity().packageIdentity(), mp4Package.package->identity());
+
+        const auto batch = session->analyzeBatch(100);
+        QVERIFY(batch.status == AnalysisBatchStatus::InProgress ||
+                batch.status == AnalysisBatchStatus::Complete);
+        QVERIFY(session->tree().nodeCount() > 0);
+    }
+
+    void openFileWithExplicitRuleFailsGracefullyForMissingOrInvalidRule() {
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto mp4Package = streamview::rules::loadMp4IsobmffRulePackage();
+        QVERIFY(mp4Package.succeeded() && mp4Package.package.has_value());
+        auto pinnedMp4 = streamview::rules::RuleEntryPointIdentity::create(
+            mp4Package.package->identity(), QStringLiteral("main"));
+        QVERIFY(pinnedMp4.has_value());
+
+        // 1. Non-existent file path
+        QString missingFileError;
+        auto missingFileSession = AnalysisSession::openFileWithExplicitRule(
+            QStringLiteral("/nonexistent/path/to/media.mp4"), catalog, *pinnedMp4, {}, &missingFileError);
+        QVERIFY(missingFileSession == nullptr);
+        QVERIFY(!missingFileError.isEmpty());
+
+        // 2. Existing file but nonexistent entry point / package
+        const QString fixturePath = QStringLiteral(
+            STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_avc_multi_nal.mp4");
+        const auto dummyPackage = streamview::rules::RulePackageIdentity::create(
+            QStringLiteral("org.streamview.nonexistent"),
+            QStringLiteral("1.0.0"),
+            QByteArray(32, '\x11'));
+        QVERIFY(dummyPackage.has_value());
+        auto invalidRule = streamview::rules::RuleEntryPointIdentity::create(
+            *dummyPackage, QStringLiteral("main"));
+        QVERIFY(invalidRule.has_value());
+
+        QString invalidRuleError;
+        auto invalidRuleSession = AnalysisSession::openFileWithExplicitRule(
+            fixturePath, catalog, *invalidRule, {}, &invalidRuleError);
+        QVERIFY(invalidRuleSession == nullptr);
+        QVERIFY(!invalidRuleError.isEmpty());
+    }
+
+    void overrideFormatSwitchesFormatAndClearsNavigationState() {
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto mp4Package = streamview::rules::loadMp4IsobmffRulePackage();
+        QVERIFY(mp4Package.succeeded() && mp4Package.package.has_value());
+        auto pinnedMp4 = streamview::rules::RuleEntryPointIdentity::create(
+            mp4Package.package->identity(), QStringLiteral("main"));
+        QVERIFY(pinnedMp4.has_value());
+
+        auto h264Package = streamview::rules::loadH264AnnexBRulePackage();
+        QVERIFY(h264Package.succeeded() && h264Package.package.has_value());
+        auto pinnedH264 = streamview::rules::RuleEntryPointIdentity::create(
+            h264Package.package->identity(), QStringLiteral("annex-b"));
+        QVERIFY(pinnedH264.has_value());
+
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mediaPath = directory.filePath(QStringLiteral("fixture.264"));
+        const QByteArray h264Bytes =
+            QByteArray::fromHex("00000109100000016742001eda01402000000168ce3c80");
+        QVERIFY(writeFile(mediaPath, h264Bytes));
+
+        QString openError;
+        auto session = AnalysisSession::openFile(mediaPath, &openError);
+        QVERIFY2(session != nullptr, qPrintable(openError));
+        QCOMPARE(session->formatSelection().format, streamview::rules::DetectedFormat::H264AnnexB);
+
+        // Run initial batch
+        const auto firstBatch = session->analyzeBatch(100);
+        QVERIFY(firstBatch.status == AnalysisBatchStatus::InProgress ||
+                firstBatch.status == AnalysisBatchStatus::Complete);
+        QVERIFY(session->tree().nodeCount() > 0);
+
+        // Artificially populate user navigation/view state
+        session->userState().expandedPaths = {QStringLiteral("root/slice_0")};
+        session->userState().view.selectedAnalysisPath = QStringLiteral("root/slice_0/header");
+        QVERIFY(!session->userState().expandedPaths.isEmpty());
+        QVERIFY(session->userState().view.selectedAnalysisPath.has_value());
+
+        // Now override format to MP4
+        QString overrideError;
+        const bool success = session->overrideFormat(catalog, *pinnedMp4, &overrideError);
+        QVERIFY2(success, qPrintable(overrideError));
+
+        // Verify state is clean and format is switched
+        QCOMPARE(session->formatSelection().format, streamview::rules::DetectedFormat::Mp4Isobmff);
+        QCOMPARE(session->formatSelection().reason, streamview::rules::DetectedFormatReason::Mp4StructuralTiling);
+        QVERIFY(!session->formatSelection().ambiguous());
+        QCOMPARE(session->ruleIdentity().packageIdentity(), mp4Package.package->identity());
+        QVERIFY(session->userState().expandedPaths.isEmpty());
+        QVERIFY(!session->userState().view.selectedAnalysisPath.has_value());
+        QCOMPARE(session->navigationDepth(), 0);
+        QVERIFY(!session->canReturnToParent());
+
+        // Now override back to H264 to verify round-trip re-analysis works cleanly
+        const bool switchBack = session->overrideFormat(catalog, *pinnedH264, &overrideError);
+        QVERIFY2(switchBack, qPrintable(overrideError));
+        QCOMPARE(session->formatSelection().format, streamview::rules::DetectedFormat::H264AnnexB);
+        QCOMPARE(session->ruleIdentity().packageIdentity(), h264Package.package->identity());
+
+        const auto secondBatch = session->analyzeBatch(100);
+        QVERIFY(secondBatch.status == AnalysisBatchStatus::InProgress ||
+                secondBatch.status == AnalysisBatchStatus::Complete);
+        QVERIFY(session->tree().nodeCount() > 0);
+    }
+
+    void overrideFormatFailsGracefullyWithoutCorruptingExistingSession() {
+        const auto catalog = makeCatalogWithOfficialPackages();
+        const QString fixturePath = QStringLiteral(
+            STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_avc_multi_nal.mp4");
+        QString openError;
+        auto session = AnalysisSession::openFile(fixturePath, &openError);
+        QVERIFY2(session != nullptr, qPrintable(openError));
+
+        const auto initialBatch = session->analyzeBatch(100);
+        QVERIFY(initialBatch.status == AnalysisBatchStatus::InProgress ||
+                initialBatch.status == AnalysisBatchStatus::Complete);
+        const auto oldFormat = session->formatSelection().format;
+        const auto oldRule = session->ruleIdentity().packageIdentity();
+        const auto oldNodeCount = session->tree().nodeCount();
+        QVERIFY(oldNodeCount > 0);
+
+        const auto dummyPackage = streamview::rules::RulePackageIdentity::create(
+            QStringLiteral("org.streamview.nonexistent"),
+            QStringLiteral("1.0.0"),
+            QByteArray(32, '\x11'));
+        QVERIFY(dummyPackage.has_value());
+        auto invalidRule = streamview::rules::RuleEntryPointIdentity::create(
+            *dummyPackage, QStringLiteral("main"));
+        QVERIFY(invalidRule.has_value());
+
+        QString overrideError;
+        const bool success = session->overrideFormat(catalog, *invalidRule, &overrideError);
+        QVERIFY(!success);
+        QVERIFY(!overrideError.isEmpty());
+
+        // Verify existing session remains intact
+        QCOMPARE(session->formatSelection().format, oldFormat);
+        QCOMPARE(session->ruleIdentity().packageIdentity(), oldRule);
+        QCOMPARE(session->tree().nodeCount(), oldNodeCount);
     }
 
 };
