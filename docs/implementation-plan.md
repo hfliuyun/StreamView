@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5j-4e（检测器信心判据与大文件越窗 box 证据切片）—— 解决真实大文件（`ftyp` + `moov` + 巨大 `mdat`）与 64 位 largesize `mdat` 越出 64 KiB 探测窗导致信心度衰退的问题：在 `detectMp4Candidate` 中，当 box 头部在探测窗内可验证且未越出源文件总大小时，将该 box 记入 `evidence`，其 `boxSpan` 严格限定为头部区间（8 字节或 16 字节），未检查的 body 不计入覆盖终点；保留了 ADR-0106 的覆盖终点不变量；箱数阈值严格保持 `>= 3` 为 `Strong`，faststart 大文件达到 `Strong` 并被 `selectFormatFromDetection` 判定为 `Mp4Isobmff`；前置阻塞切片已全量闭环
-Next Action: Task P5j-5（样本导航的 UI 往返：`MainWindow` 轨道/样本导航面板、时间线表格、同步关键帧徽标与样本到编解码语法导航）—— **检测优先级前置阻塞已全量清除**；P5j-5 UI 表面消费 `FormatSelection::ambiguous()` 与 `decided()`，且轨道列表须表达截断状态（P2-13）
-Last Verification: Task P5j-4e — 本机 `dev`（Debug）、`ci`（Release）、`sanitize`（ASan/UBSan）三预设全量 49/49 CTest 通过（测试槽 `streamview_mp4_box_detector_tests` 18 → 20，`streamview_format_selection_tests` 14 → 15 全部 PASS）；`svtool rule check` 全规则通过；`svtool analyze` 对 5 个真实 MP4 fixture 全部输出 `mp4_isobmff` 根；Hosted CI Run `34019955676` 三平台全绿（macOS 15 Job `101450577273`、Ubuntu 24.04 Job `101450577250`、Windows 2022 Job `101450577134` 全部 success）
-Blockers: 无（检测优先级前置阻塞已由 Task P5j-4d 与 Task P5j-4e 完整清除，真实大文件与 AVC-in-MP4 均能达 Strong 并正确判归容器）。P5j-5 前置必办项锁定为：UI 表面消费 `ambiguous()` 与 `decided()`；track 列表表达截断状态（P2-13）。
+Last Completed Step: Task P5j-5（样本导航的 UI 往返：`MainWindow` 轨道/样本导航面板、时间线表格、同步关键帧徽标与样本到编解码语法导航）—— 交付底侧 `timelineDock`（轨道下拉列表、时间线表格、分页导航、状态/截断提示标签）；表格呈现 `Sample #`、`Type`（`[Sync]` 关键帧标记）、`DTS`、`PTS`、`Duration`、`Size (B)`、`Bit Offset`、`Desc Idx`；选中样本行在 `RawDataView` 精确高亮有效载荷字节区间；双击/回车通过 `AnalysisSession::enterSample()` 深入子编解码结构并更新面包屑（`Track <id> (<targetFormat>) > Sample #<index> [Sync]`）；后退按钮通过 `returnToParent()` 完整恢复父级容器树、轨道选择、样本分页、行选中与原始数据高亮；状态栏集成 `formatAmbiguityLabel` 呈现歧义检测告警；全量满足 P2-13 截断警示要求
+Next Action: Task P5j-6（验证与关闭切片）—— 100 GB 虚拟稀疏大文件矩阵验证、`ffprobe` 参考工具交叉比对、ADR-0103/0105/0108 确认与阶段 5 里程碑收官评审（按纪律条款第 5 条设固定独立评审门禁）
+Last Verification: Task P5j-5 — 本机 `dev`（Debug）、`ci`（Release）、`sanitize`（ASan/UBSan）三预设全量 49/49 CTest 通过（测试槽 `streamview_main_window_tests` 23 → 30 全部 PASS）；`svtool rule check` 全规则通过；Hosted CI Run `34022144929` 三平台全绿（macOS 15 Job `101456546127`、Ubuntu 24.04 Job `101456546000`、Windows 2022 Job `101456546072` 全部 success）
+Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -243,7 +243,7 @@ Blockers: 无（检测优先级前置阻塞已由 Task P5j-4d 与 Task P5j-4e �
 - [x] 实现 `ftyp`、movie/track/media 层级、sample descriptions、时间与 sample tables、编辑列表。
 - [x] 实现 `avcC`、`esds`、AVC/AAC sample entry。
 - [x] 根据 `stsc`、`stsz`、`stco/co64` 建立分页 sample 索引。
-- [ ] 从 MP4 sample 进入 H.264/AAC 规则，并可返回容器字段。
+- [x] 从 MP4 sample 进入 H.264/AAC 规则，并可返回容器字段。
 - [x] 对 `moof` 明确报告 fragmented MP4 不在首版范围。
 - [ ] 使用参考工具交叉验证 sample offset、时间戳和关键帧。
 
@@ -3017,3 +3017,29 @@ Blockers: 无（检测优先级前置阻塞已由 Task P5j-4d 与 Task P5j-4e �
      - Ubuntu 24.04 / Qt 6.11.1：Job `101450577250`，`conclusion: success`；
      - Windows 2022 / Qt 6.10.1：Job `101450577134`，`conclusion: success`。
   7. 边界与纪律：仅修改 `src/rules/mp4_box_detector.cpp`、`tests/rules/mp4_box_detector_test.cpp`、`tests/rules/format_selection_test.cpp` 与 ADR/实施计划文档；未触碰 `src/core/`，无任何 FourCC 字面量（ADR-0099 clause 24 守住）；未修改任何规则包或 `rule.toml`。检测优先级阻塞切片已全量闭环，前置硬阻塞清除，Next Action 正式解冻进入 Task P5j-5。
+
+- 2026-09-06：完成 Task P5j-5（样本导航的 UI 往返：`MainWindow` 轨道/样本导航面板、时间线表格、同步关键帧徽标与样本到编解码语法导航集成）：
+  1. 架构与设计（ADR-0108，中英双语）：
+     - 在 `AnalysisSession` 中新增 `rules::FormatSelection` 成员与公共访问器 `formatSelection()`，透出格式判定与歧义信号；
+     - 建立 `TimelineTableModel` 提供 8 列标准数据投影：`Sample #`、`Type`（`[Sync]` / `-`）、`DTS`、`PTS`、`Duration`、`Size (B)`、`Bit Offset`、`Desc Idx`，并在 ToolTipRole 计算秒级 DTS/PTS 时间戳，单元格对齐依据字段类型（文本居中、数值右对齐）；
+     - `MainWindow` 底侧新增 `timelineDock`（`timelineDock_`）：包含轨道切换下拉框（`timelineTrackComboBox_`）、状态与截断警告标签（`timelineStatusLabel_`）、分页按钮与指示（`timelinePrevPageButton_`、`timelineNextPageButton_`、`timelinePageLabel_`）以及表格视图（`timelineTableView_`）；
+     - 状态栏集成 `formatAmbiguityLabel_`，在检测命中 `ambiguous()`（容器与基本流歧义）时呈现醒目告警；
+  2. 交互与双向连通：
+     - 单击/选择样本行：`onSampleSelectionChanged` 从当前行取得 `sourceSpans`，在 `RawDataView` 中精确高亮对应的媒体有效载荷字节；
+     - 双击/回车深入样本：`onSampleDoubleClicked` 或 `eventFilter` 捕获 Return/Enter，调用 `AnalysisSession::enterSample()` 物化子编解码分析树，切换 `AnalysisTreeModel`，更新面包屑为 `Track <id> (<targetFormat>) > Sample #<index> [Sync]`，自动展开第一层级；
+     - 后退按钮返回容器：`returnToParentFormat` 调用 `session_->returnToParent()`，无损恢复容器 MP4 树，自动定位并重选对应 track、计算并载入目标 page、选中该 sample 所在的表格行，并恢复原始数据视图高亮；
+     - 截断状态呈现（满足 P2-13）：当检测到分析树包含 `DiagnosticCode::TruncatedSource` 时，`timelineStatusLabel_` 明确提示 `"File is truncated; track list may be incomplete"`，杜绝把截断文件误导显示为「没有轨道」；
+  3. 代码提交记录：
+     - 规范 commit `f779eba`：`docs: specify timeline sample navigation ui in adr-0108`（双语 ADR-0108）；
+     - 实现与测试 commit `fd4853c`：`feat(app): integrate timeline sample navigation and ambiguity presentation`。
+  4. 本地验证矩阵：
+     - `dev`（Debug）：49/49 CTest 全部 PASS；
+     - `ci`（Release）：49/49 CTest 全部 PASS；
+     - `sanitize`（ASan/UBSan）：49/49 CTest 全部 PASS，无任何 sanitizer 报错（0 leaks, 0 errors）；
+     - 单元测试扩展：`streamview_main_window_tests` 增至 30 槽（新增 7 个用例：`timelineDockAndAmbiguitySurfacePresent`、`surfacesFormatAmbiguityWarningWhenDetectionIsAmbiguous`、`rendersTruncatedTrackListWarning`、`populatesTracksAndTimelineTable`、`selectingSampleRowHighlightsSourceBytesInRawDataView`、`navigatesIntoSampleAndReturnsToContainer`、`twoTracksSelectionSwitchesSampleList`）；
+     - 工具核验：`svtool rule check` 对全部官方规则通过。
+  5. Hosted CI 跨平台全量验证：Run ID `34022144929`（Commit `fd4853c813c4ad8a22e2e56259b2ef5403213640`）
+     - macOS 15 / Qt 6.11.1：Job `101456546127`，`conclusion: success`；
+     - Ubuntu 24.04 / Qt 6.11.1：Job `101456546000`，`conclusion: success`；
+     - Windows 2022 / Qt 6.10.1：Job `101456546072`，`conclusion: success`。
+  6. 阶段 5 检查清单勾选：勾选 `:246`「从 MP4 sample 进入 H.264/AAC 规则，并可返回容器字段」。至此阶段 5 全部核心功能已交付，剩余唯一未勾选项 `:248` 留待 Task P5j-6 交叉比对与里程碑收官。
