@@ -195,7 +195,7 @@ private slots:
         QCOMPARE(result.candidate->confidence, Mp4DetectionConfidence::Strong);
     }
 
-    void rejectsBoxWhoseBodyExtendsPastInspectedByteCount() {
+    void acceptsWindowExceedingBoxWhenHeaderIsVerifiable() {
         // 2 complete boxes in first 65500 bytes
         std::vector<std::byte> prefix(64U * 1024U, std::byte{0x00});
         const auto b1 = makeNormalBox(32768, 0x66747970);
@@ -208,9 +208,15 @@ private slots:
 
         const auto result = detectMp4Candidate(prefix, 100U * 1024U);
         QVERIFY(result.candidate.has_value());
-        // Only b1 and b2 are complete and verified within probe -> Probable (2 boxes)
-        QCOMPARE(result.candidate->confidence, Mp4DetectionConfidence::Probable);
-        QCOMPARE(result.candidate->evidence.size(), std::size_t(2));
+        // b1, b2, and b3 header are verified within probe -> Strong (3 boxes)
+        QCOMPARE(result.candidate->confidence, Mp4DetectionConfidence::Strong);
+        QCOMPARE(result.candidate->evidence.size(), std::size_t(3));
+        QVERIFY(result.candidate->evidence[2].boxSpan.has_value());
+        QCOMPARE(result.candidate->evidence[2].boxOffset, quint64(65500));
+        QCOMPARE(result.candidate->evidence[2].declaredBoxSize, quint64(1000));
+        QCOMPARE(result.candidate->evidence[2].boxSpan->start().absoluteBitOffset(), quint64(65500 * 8U));
+        QCOMPARE(result.candidate->evidence[2].boxSpan->bitLength(), quint64(8 * 8U));
+        QCOMPARE(result.candidate->evidence[2].boxSpan->endExclusive().byteOffset(), quint64(65508));
     }
 
     void allEvidenceSpansEndWithinInspectedByteCount() {
@@ -269,7 +275,8 @@ private slots:
         const auto result = detectMp4Candidate(prefix, 100U * 1024U);
         QVERIFY(result.candidate.has_value());
         QCOMPARE(result.candidate->confidence, Mp4DetectionConfidence::Strong);
-        QCOMPARE(result.candidate->evidence.size(), std::size_t(3));
+        QCOMPARE(result.candidate->evidence.size(), std::size_t(4));
+        QCOMPARE(result.candidate->evidence[3].boxSpan->endExclusive().byteOffset(), quint64(60008));
         for (const auto& ev : result.candidate->evidence) {
             QVERIFY(ev.boxSpan.has_value());
             QVERIFY(ev.boxSpan->endExclusive().byteOffset() <= result.inspectedByteCount);
@@ -309,7 +316,7 @@ private slots:
         QVERIFY(result.sourceFullyInspected);
     }
 
-    void rejectsLargeBoxWhoseBodyExtendsPastProbe() {
+    void acceptsWindowExceedingLargeBoxWhenHeaderIsVerifiable() {
         std::vector<std::byte> prefix(64U * 1024U, std::byte{0x00});
         const auto b1 = makeNormalBox(32768, 0x66747970);
         const auto b2 = makeNormalBox(32732, 0x6D6F6F76);
@@ -321,8 +328,62 @@ private slots:
 
         const auto result = detectMp4Candidate(prefix, 100U * 1024U);
         QVERIFY(result.candidate.has_value());
+        // b1, b2, and b3 large header are verified within probe -> Strong (3 boxes)
+        QCOMPARE(result.candidate->confidence, Mp4DetectionConfidence::Strong);
+        QCOMPARE(result.candidate->evidence.size(), std::size_t(3));
+        QVERIFY(result.candidate->evidence[2].boxSpan.has_value());
+        QCOMPARE(result.candidate->evidence[2].boxOffset, quint64(65500));
+        QCOMPARE(result.candidate->evidence[2].declaredBoxSize, quint64(1000));
+        QCOMPARE(result.candidate->evidence[2].boxSpan->start().absoluteBitOffset(), quint64(65500 * 8U));
+        QCOMPARE(result.candidate->evidence[2].boxSpan->bitLength(), quint64(16 * 8U));
+        QCOMPARE(result.candidate->evidence[2].boxSpan->endExclusive().byteOffset(), quint64(65516));
+    }
+
+    void rejectsWindowExceedingBoxWhenTruncatedInSource() {
+        std::vector<std::byte> prefix(64U * 1024U, std::byte{0x00});
+        const auto b1 = makeNormalBox(32768, 0x66747970);
+        const auto b2 = makeNormalBox(32732, 0x6D6F6F76);
+        std::copy(b1.begin(), b1.end(), prefix.begin());
+        std::copy(b2.begin(), b2.end(), prefix.begin() + 32768);
+        // Box 3 claims 100000, but source total size is only 70000 (truncated in source)
+        const auto b3 = makeNormalBox(100000, 0x6D646174);
+        std::copy_n(b3.begin(), 36, prefix.begin() + 65500);
+
+        const auto result = detectMp4Candidate(prefix, 70U * 1024U);
+        QVERIFY(result.candidate.has_value());
+        // b3 is truncated in source (65500 + 100000 > 71680), so discarded -> only b1 and b2
         QCOMPARE(result.candidate->confidence, Mp4DetectionConfidence::Probable);
         QCOMPARE(result.candidate->evidence.size(), std::size_t(2));
+    }
+
+    void detectsStrongCandidateInSyntheticLargeMovie() {
+        // Typical faststart movie layout: ftyp (32) + moov (2000) + 500 MB mdat
+        const quint64 sourceSizeBytes = 500U * 1024U * 1024U;
+        std::vector<std::byte> prefix(64U * 1024U, std::byte{0x00});
+        const auto ftyp = makeNormalBox(32, 0x66747970);
+        const auto moov = makeNormalBox(2000, 0x6D6F6F76);
+        std::copy(ftyp.begin(), ftyp.end(), prefix.begin());
+        std::copy(moov.begin(), moov.end(), prefix.begin() + 32);
+        // mdat starts at offset 2032, size 500 MB - 2032
+        const quint32 mdatSize = static_cast<quint32>(sourceSizeBytes - 2032U);
+        prefix[2032] = static_cast<std::byte>((mdatSize >> 24) & 0xFF);
+        prefix[2033] = static_cast<std::byte>((mdatSize >> 16) & 0xFF);
+        prefix[2034] = static_cast<std::byte>((mdatSize >> 8) & 0xFF);
+        prefix[2035] = static_cast<std::byte>(mdatSize & 0xFF);
+        prefix[2036] = std::byte{'m'};
+        prefix[2037] = std::byte{'d'};
+        prefix[2038] = std::byte{'a'};
+        prefix[2039] = std::byte{'t'};
+
+        const auto result = detectMp4Candidate(prefix, sourceSizeBytes);
+        QVERIFY(result.candidate.has_value());
+        QCOMPARE(result.candidate->confidence, Mp4DetectionConfidence::Strong);
+        QCOMPARE(result.candidate->evidence.size(), std::size_t(3));
+        QCOMPARE(result.candidate->evidence[0].boxOffset, quint64(0));
+        QCOMPARE(result.candidate->evidence[1].boxOffset, quint64(32));
+        QCOMPARE(result.candidate->evidence[2].boxOffset, quint64(2032));
+        QCOMPARE(result.candidate->evidence[2].declaredBoxSize, quint64(mdatSize));
+        QCOMPARE(result.candidate->evidence[2].boxSpan->endExclusive().byteOffset(), quint64(2040));
     }
 };
 
