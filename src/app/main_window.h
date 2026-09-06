@@ -12,6 +12,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <set>
 #include <vector>
 
 class QAction;
@@ -90,6 +91,20 @@ public:
     void setFormatOverrideDialogHandlerForTesting(FormatOverrideDialogHandler handler) {
         formatOverrideDialogHandler_ = std::move(handler);
     }
+    using RuleManagerDialogHandler = std::function<void(
+        QWidget*,
+        rules::RulePackageCatalog&,
+        const QString&,
+        const std::set<QString>&)>;
+    void setRuleManagerDialogHandlerForTesting(RuleManagerDialogHandler handler) {
+        ruleManagerDialogHandler_ = std::move(handler);
+    }
+    void setRuleStorePathForTesting(QString path) {
+        ruleStorePath_ = std::move(path);
+    }
+    [[nodiscard]] const QString& ruleStorePath() const noexcept {
+        return ruleStorePath_;
+    }
 
 public slots:
     void openFile();
@@ -97,6 +112,7 @@ public slots:
     bool saveSession();
     bool saveSessionAs();
     void overrideFormat();
+    void openRuleManager();
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -172,11 +188,15 @@ private:
     std::optional<QString> currentSessionFilePath_;
     std::vector<SessionBookmark> bookmarks_;
     std::vector<SessionAnnotation> annotations_;
+    QString ruleStorePath_;
+    std::set<QString> bundledPackageIds_;
+
     QAction* actionOpen_ = nullptr;
     QAction* actionOpenSession_ = nullptr;
     QAction* actionSaveSession_ = nullptr;
     QAction* actionSaveSessionAs_ = nullptr;
     QAction* actionOverrideFormat_ = nullptr;
+    QAction* actionManageRules_ = nullptr;
     QAction* actionExit_ = nullptr;
 
     SavePromptHandler savePromptHandler_;
@@ -184,6 +204,7 @@ private:
     FileDialogHandler openFileDialogHandler_;
     MessageDialogHandler messageDialogHandler_;
     FormatOverrideDialogHandler formatOverrideDialogHandler_;
+    RuleManagerDialogHandler ruleManagerDialogHandler_;
 };
 
 } // namespace streamview::app

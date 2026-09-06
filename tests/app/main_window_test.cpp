@@ -1856,6 +1856,37 @@ private slots:
         QVERIFY(cleanSelected.has_value());
         QCOMPARE(*cleanSelected, *h264Entry);
     }
+
+    void manageRulesMenuActionOpensRuleManagerDialog() {
+        MainWindow window;
+        auto* action = window.findChild<QAction*>(QStringLiteral("actionManageRules"));
+        QVERIFY(action != nullptr);
+        QVERIFY(action->isEnabled());
+
+        bool handlerInvoked = false;
+        QString capturedStorePath;
+        std::set<QString> capturedBundledIds;
+
+        window.setRuleManagerDialogHandlerForTesting(
+            [&](QWidget*,
+                streamview::rules::RulePackageCatalog& catalog,
+                const QString& storePath,
+                const std::set<QString>& bundledIds) {
+                handlerInvoked = true;
+                capturedStorePath = storePath;
+                capturedBundledIds = bundledIds;
+                QCOMPARE(catalog.allPackages().size(), std::size_t{3});
+            });
+
+        action->trigger();
+
+        QVERIFY(handlerInvoked);
+        QCOMPARE(capturedStorePath, window.ruleStorePath());
+        QCOMPARE(capturedBundledIds.size(), std::size_t{3});
+        QVERIFY(capturedBundledIds.find(QStringLiteral("org.streamview.aac")) != capturedBundledIds.end());
+        QVERIFY(capturedBundledIds.find(QStringLiteral("org.streamview.h264")) != capturedBundledIds.end());
+        QVERIFY(capturedBundledIds.find(QStringLiteral("org.streamview.mp4")) != capturedBundledIds.end());
+    }
 };
 
 QTEST_MAIN(MainWindowTest)

@@ -7,6 +7,7 @@
 #include <QStringView>
 
 #include <memory>
+#include <vector>
 
 namespace streamview::rules {
 
@@ -57,6 +58,7 @@ public:
                                                           QStringView runningLanguage,
                                                           QStringView runningEngine) const;
     [[nodiscard]] qsizetype packageCount() const noexcept { return packageCount_; }
+    [[nodiscard]] std::vector<std::shared_ptr<const RulePackage>> allPackages() const;
 
 private:
     QHash<QString, QHash<QString, std::shared_ptr<const RulePackage>>> packages_;

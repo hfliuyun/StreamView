@@ -5,6 +5,7 @@
 #include <QString>
 
 #include <optional>
+#include <vector>
 
 namespace streamview::rules {
 
@@ -69,6 +70,7 @@ class RulePackageStore final {
                                                              const QString& archivePath);
     [[nodiscard]] static RulePackageInstallResult install(const RulePackage& package,
                                                           const QString& storeRoot);
+    [[nodiscard]] static std::vector<RulePackage> discoverInstalled(const QString& storeRoot);
 };
 
 } // namespace streamview::rules
