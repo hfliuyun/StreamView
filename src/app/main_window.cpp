@@ -2,6 +2,7 @@
 
 #include "analysis_tree_model.h"
 #include "field_inspector.h"
+#include "format_override_dialog.h"
 #include "raw_data_view.h"
 #include "timeline_table_model.h"
 
@@ -23,6 +24,7 @@
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QSignalBlocker>
 #include <QStatusBar>
 #include <QStyle>
@@ -72,12 +74,28 @@ MainWindow::MainWindow(AnalysisSessionCacheOptions cacheOptions, QWidget* parent
     connect(rawDataView_, &RawDataView::sourceBitSelected,
             this, &MainWindow::selectSourceBit);
 
-    formatAmbiguityLabel_ = new QLabel(this);
+    formatAmbiguityBannerWidget_ = new QWidget(this);
+    formatAmbiguityBannerWidget_->setObjectName(QStringLiteral("formatAmbiguityBanner"));
+    auto* bannerLayout = new QHBoxLayout(formatAmbiguityBannerWidget_);
+    bannerLayout->setContentsMargins(0, 0, 0, 0);
+    bannerLayout->setSpacing(6);
+
+    formatAmbiguityLabel_ = new QLabel(formatAmbiguityBannerWidget_);
     formatAmbiguityLabel_->setObjectName(QStringLiteral("formatAmbiguityLabel"));
     formatAmbiguityLabel_->setStyleSheet(
-        QStringLiteral("color: #d9534f; font-weight: bold; margin-right: 8px;"));
-    formatAmbiguityLabel_->hide();
-    statusBar()->addPermanentWidget(formatAmbiguityLabel_);
+        QStringLiteral("color: #d9534f; font-weight: bold;"));
+    bannerLayout->addWidget(formatAmbiguityLabel_);
+
+    resolveAmbiguityButton_ = new QPushButton(tr("Resolve Ambiguity..."), formatAmbiguityBannerWidget_);
+    resolveAmbiguityButton_->setObjectName(QStringLiteral("resolveAmbiguityButton"));
+    resolveAmbiguityButton_->setStyleSheet(
+        QStringLiteral("font-size: 11px; padding: 2px 6px; font-weight: normal;"));
+    connect(resolveAmbiguityButton_, &QPushButton::clicked,
+            this, &MainWindow::overrideFormat);
+    bannerLayout->addWidget(resolveAmbiguityButton_);
+
+    formatAmbiguityBannerWidget_->hide();
+    statusBar()->addPermanentWidget(formatAmbiguityBannerWidget_);
 
     updateWindowTitle();
     updateActionStates();
@@ -117,6 +135,14 @@ void MainWindow::setupMenus() {
     actionExit_->setObjectName(QStringLiteral("actionExit"));
     actionExit_->setShortcut(QKeySequence::Quit);
     connect(actionExit_, &QAction::triggered, this, &QWidget::close);
+
+    auto* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
+    analysisMenu->setObjectName(QStringLiteral("menuAnalysis"));
+
+    actionOverrideFormat_ = analysisMenu->addAction(tr("&Override Format..."));
+    actionOverrideFormat_->setObjectName(QStringLiteral("actionOverrideFormat"));
+    actionOverrideFormat_->setEnabled(false);
+    connect(actionOverrideFormat_, &QAction::triggered, this, &MainWindow::overrideFormat);
 }
 
 void MainWindow::setupDocks() {
@@ -292,6 +318,9 @@ void MainWindow::updateActionStates() {
     }
     if (actionSaveSessionAs_ != nullptr) {
         actionSaveSessionAs_->setEnabled(hasSession);
+    }
+    if (actionOverrideFormat_ != nullptr) {
+        actionOverrideFormat_->setEnabled(hasSession);
     }
 }
 
@@ -550,6 +579,73 @@ void MainWindow::openSession() {
                                  tr("Could not open %1:\n%2").arg(path, errorMessage));
         }
     }
+}
+
+void MainWindow::overrideFormat() {
+    if (!session_) {
+        return;
+    }
+
+    std::optional<rules::RuleEntryPointIdentity> targetRule;
+    if (formatOverrideDialogHandler_) {
+        targetRule = formatOverrideDialogHandler_(
+            this, catalog_, session_->formatSelection(), session_->ruleIdentity());
+    } else {
+        FormatOverrideDialog dlg(
+            this, catalog_, session_->formatSelection(), session_->ruleIdentity());
+        if (dlg.exec() == QDialog::Accepted) {
+            targetRule = dlg.selectedRuleEntryPoint();
+        }
+    }
+
+    if (!targetRule.has_value()) {
+        return;
+    }
+
+    if (*targetRule == session_->ruleIdentity() && !session_->formatSelection().ambiguous()) {
+        return;
+    }
+
+    QString errorMessage;
+    if (!session_->overrideFormat(catalog_, *targetRule, &errorMessage)) {
+        if (messageDialogHandler_) {
+            messageDialogHandler_(this, tr("Format Override Failed"),
+                                  tr("Failed to override format:\n%1").arg(errorMessage));
+        } else {
+            QMessageBox::warning(this, tr("Format Override Failed"),
+                                 tr("Failed to override format:\n%1").arg(errorMessage));
+        }
+        return;
+    }
+
+    const quint64 generation = ++analysisGeneration_;
+    clearSourceSelection();
+    {
+        const QSignalBlocker blocker(analysisTreeView_->selectionModel());
+        analysisTreeView_->selectionModel()->clear();
+    }
+    fieldInspector_->clear();
+    analysisModel_->clear();
+    timelineModel_->clear();
+    timelineTrackComboBox_->clear();
+    navigationBreadcrumbFormats_.clear();
+
+    analysisModel_->resetFromTree(session_->tree());
+
+    advanceAnalysis(generation);
+
+    updateAmbiguityUI();
+    loadTracks();
+
+    analysisTreeView_->expandToDepth(1);
+    for (int i = 0; i < AnalysisTreeModel::ColumnCount; ++i) {
+        analysisTreeView_->resizeColumnToContents(i);
+    }
+
+    updateNavigationUI();
+    setWindowModified(true);
+    updateWindowTitle();
+    updateActionStates();
 }
 
 bool MainWindow::openSessionFile(const QString& sessionPath, QString* errorMessage) {
@@ -1235,15 +1331,24 @@ void MainWindow::updateAmbiguityUI() {
     if (!session_) {
         formatAmbiguityLabel_->clear();
         formatAmbiguityLabel_->hide();
+        if (formatAmbiguityBannerWidget_ != nullptr) {
+            formatAmbiguityBannerWidget_->hide();
+        }
         return;
     }
     if (session_->formatSelection().ambiguous()) {
         formatAmbiguityLabel_->setText(
             tr("Warning: Ambiguous format (container vs elementary stream detected)"));
         formatAmbiguityLabel_->show();
+        if (formatAmbiguityBannerWidget_ != nullptr) {
+            formatAmbiguityBannerWidget_->show();
+        }
     } else {
         formatAmbiguityLabel_->clear();
         formatAmbiguityLabel_->hide();
+        if (formatAmbiguityBannerWidget_ != nullptr) {
+            formatAmbiguityBannerWidget_->hide();
+        }
     }
 }
 

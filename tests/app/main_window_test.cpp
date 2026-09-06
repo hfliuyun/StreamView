@@ -1,19 +1,27 @@
+#include "format_override_dialog.h"
 #include "main_window.h"
 #include "raw_data_model.h"
 #include "raw_data_view.h"
 #include "timeline_table_model.h"
 
+#include <streamview/rules/aac_adts_analyzer.h>
+#include <streamview/rules/h264_annex_b_analyzer.h>
+#include <streamview/rules/mp4_isobmff_analyzer.h>
+
 #include <QAction>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QCoreApplication>
-#include <QFile>
+#include <QDialogButtonBox>
 #include <QDockWidget>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QListWidget>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
@@ -29,6 +37,7 @@
 #include <optional>
 
 using streamview::app::AnalysisSessionCacheOptions;
+using streamview::app::FormatOverrideDialog;
 using streamview::app::MainWindow;
 using streamview::app::RawDataModel;
 using streamview::app::RawDataView;
@@ -85,6 +94,40 @@ QString writeFixture(QTemporaryDir& directory, const QString& name, const QByteA
         return {};
     }
     return path;
+}
+
+QByteArray makeAmbiguousMp4Bytes() {
+    constexpr quint32 firstBoxSize = 0x0105U;
+    QByteArray bytes;
+    bytes.append(char(0x00));
+    bytes.append(char(0x00));
+    bytes.append(char(0x01));
+    bytes.append(char(0x05));
+    bytes.append("free", 4);
+    for (quint32 i = 0; i < firstBoxSize - 8U; ++i) {
+        if (i == 100U) {
+            bytes.append(char(0x00));
+            bytes.append(char(0x00));
+            bytes.append(char(0x01));
+            bytes.append(char(0x67));
+            i += 3U;
+            continue;
+        }
+        bytes.append(char(0xEE));
+    }
+    bytes.append(char(0x00));
+    bytes.append(char(0x00));
+    bytes.append(char(0x00));
+    bytes.append(char(0x18));
+    bytes.append("ftyp", 4);
+    bytes.append(QByteArray(16, '\0'));
+    bytes.append(char(0x00));
+    bytes.append(char(0x00));
+    bytes.append(char(0x00));
+    bytes.append(char(0x28));
+    bytes.append("mdat", 4);
+    bytes.append(QByteArray(32, '3'));
+    return bytes;
 }
 
 QModelIndex findIndexByName(const QAbstractItemModel& model,
@@ -1534,6 +1577,284 @@ private slots:
             QCOMPARE(treeView->model()->data(currentIdx).toString(), QStringLiteral("box[0]"));
             QVERIFY(treeView->isExpanded(currentIdx));
         }
+    }
+
+    void overrideFormatActionEnabledOnlyWhenSessionLoaded() {
+        MainWindow window;
+        auto* actionOverride = window.findChild<QAction*>(QStringLiteral("actionOverrideFormat"));
+        QVERIFY(actionOverride != nullptr);
+        QVERIFY(!actionOverride->isEnabled());
+
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = writeFixture(
+            directory, QStringLiteral("sample.264"), QByteArray::fromHex("00000165"));
+        QVERIFY(!path.isEmpty());
+
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(path, &errorMessage), qPrintable(errorMessage));
+        QVERIFY(actionOverride->isEnabled());
+    }
+
+    void ambiguityBannerShowsResolveAmbiguityButtonOnAmbiguousFormat() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString ambiguousPath = writeFixture(
+            directory, QStringLiteral("ambiguous.mp4"), makeAmbiguousMp4Bytes());
+        QVERIFY(!ambiguousPath.isEmpty());
+
+        MainWindow window;
+        auto* banner = window.findChild<QWidget*>(QStringLiteral("formatAmbiguityBanner"));
+        auto* label = window.findChild<QLabel*>(QStringLiteral("formatAmbiguityLabel"));
+        auto* btn = window.findChild<QPushButton*>(QStringLiteral("resolveAmbiguityButton"));
+        QVERIFY(banner != nullptr);
+        QVERIFY(label != nullptr);
+        QVERIFY(btn != nullptr);
+        QCOMPARE(btn->text(), QStringLiteral("Resolve Ambiguity..."));
+
+        // Initially hidden
+        QVERIFY(banner->isHidden());
+
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(ambiguousPath, &errorMessage), qPrintable(errorMessage));
+
+        // Ambiguous format surfaces banner, label and button
+        QTRY_VERIFY(!banner->isHidden());
+        QVERIFY(!label->isHidden());
+        QVERIFY(!btn->isHidden());
+        QVERIFY(label->text().contains(QStringLiteral("Ambiguous format")));
+
+        // Clean elementary stream in another window hides banner
+        const QString cleanPath = writeFixture(
+            directory, QStringLiteral("clean.264"), QByteArray::fromHex("00000165"));
+        MainWindow cleanWindow;
+        QVERIFY2(cleanWindow.openMediaSource(cleanPath, &errorMessage), qPrintable(errorMessage));
+        auto* cleanBanner = cleanWindow.findChild<QWidget*>(QStringLiteral("formatAmbiguityBanner"));
+        QVERIFY(cleanBanner != nullptr);
+        QVERIFY(cleanBanner->isHidden());
+    }
+
+    void resolveAmbiguityButtonTriggersOverrideFormatAndReanalyzes() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = writeFixture(
+            directory, QStringLiteral("ambiguous.mp4"), makeAmbiguousMp4Bytes());
+        QVERIFY(!path.isEmpty());
+
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(path, &errorMessage), qPrintable(errorMessage));
+
+        auto* banner = window.findChild<QWidget*>(QStringLiteral("formatAmbiguityBanner"));
+        auto* btn = window.findChild<QPushButton*>(QStringLiteral("resolveAmbiguityButton"));
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        auto* timelineStatus = window.findChild<QLabel*>(QStringLiteral("timelineStatusLabel"));
+        QVERIFY(banner != nullptr && btn != nullptr && treeView != nullptr && timelineStatus != nullptr);
+        QTRY_VERIFY(!banner->isHidden());
+
+        // Initially detected as MP4 ISOBMFF: root nodes are boxes
+        QVERIFY(findIndexByName(*treeView->model(), QStringLiteral("box[0]")).isValid());
+        QVERIFY(!window.isWindowModified());
+
+        auto h264Pkg = streamview::rules::loadH264AnnexBRulePackage();
+        QVERIFY(h264Pkg.succeeded() && h264Pkg.package.has_value());
+        auto h264Entry = streamview::rules::RuleEntryPointIdentity::create(
+            h264Pkg.package->identity(), QStringLiteral("annex-b"));
+        QVERIFY(h264Entry.has_value());
+
+        bool handlerCalled = false;
+        bool handlerSelectionAmbiguous = false;
+        QString handlerCurrentEntryPoint;
+        window.setFormatOverrideDialogHandlerForTesting([&](
+            QWidget*,
+            const streamview::rules::RulePackageCatalog&,
+            const streamview::rules::FormatSelection& selection,
+            const streamview::rules::RuleEntryPointIdentity& current)
+            -> std::optional<streamview::rules::RuleEntryPointIdentity> {
+            handlerCalled = true;
+            handlerSelectionAmbiguous = selection.ambiguous();
+            handlerCurrentEntryPoint = current.entryPointId();
+            return *h264Entry;
+        });
+
+        btn->click();
+        QVERIFY(handlerCalled);
+        QVERIFY(handlerSelectionAmbiguous);
+        QCOMPARE(handlerCurrentEntryPoint, QStringLiteral("main"));
+
+        // Ambiguity banner should now be hidden (ambiguity resolved)
+        QVERIFY(banner->isHidden());
+        QVERIFY(window.isWindowModified());
+
+        // Tree now has NAL units instead of boxes
+        QVERIFY(!findIndexByName(*treeView->model(), QStringLiteral("box[0]")).isValid());
+        QTRY_VERIFY(treeView->model()->rowCount() > 0);
+
+        // Timeline status shows container tracks unavailable for elementary stream
+        QTRY_VERIFY(!timelineStatus->isHidden());
+        QVERIFY(timelineStatus->text().contains(QStringLiteral("Container tracks unavailable")));
+    }
+
+    void overrideFormatMenuActionAllowsFormatSwitching() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = writeFixture(
+            directory, QStringLiteral("sample.264"), QByteArray::fromHex("00000165"));
+        QVERIFY(!path.isEmpty());
+
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(path, &errorMessage), qPrintable(errorMessage));
+        QVERIFY(!window.isWindowModified());
+
+        auto* actionOverride = window.findChild<QAction*>(QStringLiteral("actionOverrideFormat"));
+        QVERIFY(actionOverride != nullptr);
+
+        auto aacPkg = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(aacPkg.succeeded() && aacPkg.package.has_value());
+        auto aacEntry = streamview::rules::RuleEntryPointIdentity::create(
+            aacPkg.package->identity(), QStringLiteral("adts"));
+        QVERIFY(aacEntry.has_value());
+
+        bool handlerCalled = false;
+        QString handlerCurrentEntryPoint;
+        window.setFormatOverrideDialogHandlerForTesting([&](
+            QWidget*,
+            const streamview::rules::RulePackageCatalog&,
+            const streamview::rules::FormatSelection&,
+            const streamview::rules::RuleEntryPointIdentity& current)
+            -> std::optional<streamview::rules::RuleEntryPointIdentity> {
+            handlerCalled = true;
+            handlerCurrentEntryPoint = current.entryPointId();
+            return *aacEntry;
+        });
+
+        actionOverride->trigger();
+        QVERIFY(handlerCalled);
+        QCOMPARE(handlerCurrentEntryPoint, QStringLiteral("annex-b"));
+        QVERIFY(window.isWindowModified());
+    }
+
+    void overrideFormatCancelledPreservesCurrentSession() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = writeFixture(
+            directory, QStringLiteral("ambiguous.mp4"), makeAmbiguousMp4Bytes());
+        QVERIFY(!path.isEmpty());
+
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(path, &errorMessage), qPrintable(errorMessage));
+
+        auto* banner = window.findChild<QWidget*>(QStringLiteral("formatAmbiguityBanner"));
+        auto* btn = window.findChild<QPushButton*>(QStringLiteral("resolveAmbiguityButton"));
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        QVERIFY(banner != nullptr && btn != nullptr && treeView != nullptr);
+        QTRY_VERIFY(!banner->isHidden());
+
+        bool handlerCalled = false;
+        window.setFormatOverrideDialogHandlerForTesting([&](
+            QWidget*,
+            const streamview::rules::RulePackageCatalog&,
+            const streamview::rules::FormatSelection&,
+            const streamview::rules::RuleEntryPointIdentity&)
+            -> std::optional<streamview::rules::RuleEntryPointIdentity> {
+            handlerCalled = true;
+            return std::nullopt; // User cancelled
+        });
+
+        btn->click();
+        QVERIFY(handlerCalled);
+
+        // Banner remains visible (ambiguity not resolved)
+        QVERIFY(!banner->isHidden());
+        QVERIFY(!window.isWindowModified());
+        QVERIFY(findIndexByName(*treeView->model(), QStringLiteral("box[0]")).isValid());
+    }
+
+    void formatOverrideDialogConstructsAndSelectsCandidate() {
+        streamview::rules::RulePackageCatalog catalog;
+        auto mp4Pkg = streamview::rules::loadMp4IsobmffRulePackage();
+        auto h264Pkg = streamview::rules::loadH264AnnexBRulePackage();
+        auto aacPkg = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(mp4Pkg.succeeded() && mp4Pkg.package.has_value());
+        QVERIFY(h264Pkg.succeeded() && h264Pkg.package.has_value());
+        QVERIFY(aacPkg.succeeded() && aacPkg.package.has_value());
+
+        const auto mp4Identity = mp4Pkg.package->identity();
+        const auto h264Identity = h264Pkg.package->identity();
+        const auto aacIdentity = aacPkg.package->identity();
+
+        static_cast<void>(catalog.registerPackage(std::move(*mp4Pkg.package)));
+        static_cast<void>(catalog.registerPackage(std::move(*h264Pkg.package)));
+        static_cast<void>(catalog.registerPackage(std::move(*aacPkg.package)));
+
+        auto mp4Entry = streamview::rules::RuleEntryPointIdentity::create(
+            mp4Identity, QStringLiteral("main"));
+        auto h264Entry = streamview::rules::RuleEntryPointIdentity::create(
+            h264Identity, QStringLiteral("annex-b"));
+        QVERIFY(mp4Entry.has_value() && h264Entry.has_value());
+
+        // Test with ambiguous format selection
+        streamview::rules::FormatSelection ambiguousSelection;
+        ambiguousSelection.format = streamview::rules::DetectedFormat::Mp4Isobmff;
+        ambiguousSelection.reason = streamview::rules::DetectedFormatReason::AmbiguousContainerVersusElementaryStream;
+        QVERIFY(ambiguousSelection.ambiguous());
+
+        FormatOverrideDialog dlg(nullptr, catalog, ambiguousSelection, *mp4Entry);
+        auto* noticeBanner = dlg.findChild<QLabel*>(QStringLiteral("dialogAmbiguityBanner"));
+        auto* listWidget = dlg.findChild<QListWidget*>(QStringLiteral("optionsListWidget"));
+        auto* descLabel = dlg.findChild<QLabel*>(QStringLiteral("descriptionLabel"));
+        auto* buttonBox = dlg.findChild<QDialogButtonBox*>(QStringLiteral("buttonBox"));
+
+        QVERIFY(noticeBanner != nullptr);
+        QVERIFY(listWidget != nullptr);
+        QVERIFY(descLabel != nullptr);
+        QVERIFY(buttonBox != nullptr);
+
+        QVERIFY(!noticeBanner->isHidden());
+        QVERIFY(noticeBanner->text().contains(QStringLiteral("Notice: Multiple conflicting formats")));
+        QCOMPARE(listWidget->count(), 3);
+
+        // Pre-selection on ambiguous selection should be the competing candidate (H.264)
+        auto selected = dlg.selectedRuleEntryPoint();
+        QVERIFY(selected.has_value());
+        QCOMPARE(*selected, *h264Entry);
+        QVERIFY(!descLabel->text().isEmpty());
+
+        // Verify items contain proper annotations
+        bool foundCurrentAndCandidate = false;
+        bool foundCandidateOnly = false;
+        for (int i = 0; i < listWidget->count(); ++i) {
+            const QString text = listWidget->item(i)->text();
+            if (text.contains(QStringLiteral("[Current]")) && text.contains(QStringLiteral("[Candidate]"))) {
+                foundCurrentAndCandidate = true;
+            } else if (text.contains(QStringLiteral("[Candidate]"))) {
+                foundCandidateOnly = true;
+            }
+        }
+        QVERIFY(foundCurrentAndCandidate);
+        QVERIFY(foundCandidateOnly);
+
+        // Selecting MP4 item updates selection
+        listWidget->setCurrentRow(0);
+        selected = dlg.selectedRuleEntryPoint();
+        QVERIFY(selected.has_value());
+        QCOMPARE(*selected, *mp4Entry);
+
+        // Test with clean non-ambiguous selection
+        streamview::rules::FormatSelection cleanSelection;
+        cleanSelection.format = streamview::rules::DetectedFormat::H264AnnexB;
+        cleanSelection.reason = streamview::rules::DetectedFormatReason::H264AnchoredStartCodes;
+        QVERIFY(!cleanSelection.ambiguous());
+
+        FormatOverrideDialog cleanDlg(nullptr, catalog, cleanSelection, *h264Entry);
+        auto* cleanNoticeBanner = cleanDlg.findChild<QLabel*>(QStringLiteral("dialogAmbiguityBanner"));
+        QVERIFY(cleanNoticeBanner != nullptr);
+        QVERIFY(cleanNoticeBanner->isHidden());
+        auto cleanSelected = cleanDlg.selectedRuleEntryPoint();
+        QVERIFY(cleanSelected.has_value());
+        QCOMPARE(*cleanSelected, *h264Entry);
     }
 };
 
