@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 6
-Last Completed Step: Phase 5 里程碑收官评审与 P1-1 闭环（无条件硬门禁 `ffprobe` 交叉比对与 CI 全矩阵 FFmpeg 跨平台安装；Hosted CI Run 34025463547 三平台全绿）
-Next Action: Phase 6 启动 — Task P6a（会话保存/另存为与版本管理规范定义，双语 ADR 编写）
-Last Verification: Phase 5 收官 P1-1 闭环 — 本机 `dev`（Debug 49/49）、`ci`（Release 49/49）、`sanitize`（ASan/UBSan 49/49，零错误）；`svtool rule check` 4/4 全规则通过；Hosted CI Run `34025463547` 三平台全绿（Ubuntu 24.04 Job `101465521019`、macOS 15 Job `101465521102`、Windows 2022 Job `101465521144` 全部 success，且各 Job 均成功安装 FFmpeg 并验证 `ffprobe` 可用性）
+Last Completed Step: Task P6a（规范与生命周期架构）—— 制定双语 ADR-0109 会话生命周期管理、格式手动覆盖与 Schema 演进策略（确立 Schema Version 1 保持不变与后向兼容保证、UI 导航栈瞬态性、脏状态跟踪协议、格式手动覆盖及规则管理架构）
+Next Action: Task P6a 里程碑独立评审门禁（依据纪律条款第 5 条执行评审）
+Last Verification: Task P6a 规范与文档卫生 — 双语 ADR-0109 对称性校验通过；`ctest -R markdown_hygiene --preset dev` PASS；Markdown-only 依据 ADR-0019 跳过 Hosted CI
 Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -249,6 +249,21 @@ Blockers: 无
 
 ## 阶段 6：会话、规则管理和桌面体验
 
+### 目标与交付物
+支持完整的桌面会话生命周期管理（脏状态跟踪、保存/另存为、未保存修改弹窗保护）、格式手动覆盖与歧义裁决（彻底闭环 P2-17/P2-19/P2-20）、本地规则包版本管理（查看已安装/内置包、`.svrule` 导入）、分析进度指示与取消、全局诊断面板以及明暗主题与中英双语国际化切换。同时严格保持 `SessionDocument` Schema Version 1 不变与不可变向后兼容性，UI 导航栈保持瞬态隔离。
+
+### 阶段 6 任务切片与依赖关系
+- **Task P6a**（规范）：双语 ADR-0109 会话生命周期管理、格式手动覆盖与 Schema 演进策略（Markdown-only，设固定独立评审门禁）；
+- **Task P6b**（能力切片）：`AnalysisSession` / `SessionDocument` 脏状态跟踪（`isDirty`, `markDirty`, `clearDirty`）、文件路径绑定、`save()` 与 `saveAs()` 核心接口与单测；
+- **Task P6c**（UI切片）：`MainWindow` 保存/另存为/打开会话动作、`closeEvent` / `maybeSave` 弹窗协议（Save / Discard / Cancel）与 UI 测试；
+- **Task P6d**（能力与UI切片）：格式手动覆盖与歧义裁决（`AnalysisSession::overrideFormat`、歧义横幅「解决歧义...」按钮、`FormatOverrideDialog`，闭环 P2-17/P2-19/P2-20）；
+- **Task P6e**（UI与规则管理切片）：`RuleManagerDialog` 界面、规则包列表与版本展示、`.svrule` 导入安装与测试；
+- **Task P6f**（UI切片）：分析进度条展示、异步取消按钮与响应、`DiagnosticsSummaryDock` 全局诊断面板与双向跳转；
+- **Task P6g**（UI切片）：明暗主题切换支持、基于 `QTranslator` 的中英双语动态切换与 UI 测试；
+- **Task P6h**（验证切片）：全生命周期端到端回放、手动覆盖持久化恢复、修改保护交互分支与 100 GB 虚拟稀疏源会话恢复验证；
+- **Task P6i**（关闭切片）：阶段 6 检查清单 100% 达成确认、双语文档收敛与里程碑收官独立评审门禁。
+
+### 阶段 6 检查清单
 - [x] 使用版本化 JSON 与 `QSaveFile` 实现 `.svsession` 原子保存。
 - [x] 保存源身份、规则精确版本/哈希、书签、注释、展开路径和视图状态。
 - [x] 大文件指纹使用大小、纳秒 mtime、首/中/尾各 1 MiB SHA-256；小文件全文哈希。
@@ -3101,3 +3116,22 @@ Blockers: 无
      - macOS 15 / Qt 6.11.1：Job `101465521102`，`conclusion: success`（`Install FFmpeg` 4s，`Verify FFprobe availability` success，`Test` 15s success）；
      - Windows 2022 / Qt 6.10.1：Job `101465521144`，`conclusion: success`（`Install FFmpeg` 45s，`Verify FFprobe availability` success，`Test` 37s success）。
   6. Phase 5 里程碑正式收官闭环，准备进入 Phase 6。
+
+- 2026-09-06：完成 Task P6a（规范编写与生命周期架构：双语 ADR-0109 制定、Schema 演进策略与阶段 6 任务拆分）：
+  1. 架构决策与规范确立（双语 ADR-0109）：
+     - Schema 演进决策（明确回答用户与 §4.3 关切）：`SessionDocument` 序列化结构**严格保持在版本 1（`schemaVersion: 1`）**，阶段 6 不引入任何 schema 升级。理由：
+       * 格式手动覆盖在 Schema 1 中已 100% 具备表达能力：`rule` 对象（`packageId`、`packageVersion`、`contentSha256`、`entryPointId`）记录的是实际激活规则；会话恢复时直接根据该规则在目录中查找并构造分析器，完全绕过自动检测。因此手动覆盖后保存的会话在恢复时天然确定性恢复，无需添加冗余标志字段；
+       * UI 导航栈保持瞬态性：依据 ADR-0103 §6、ADR-0105 §6 与 §4.3，样本下钻与子格式导航是 GUI 临时检查视图，不可持久化到以不可变坐标为基准的紧凑会话文档中。保存时记录根容器状态与当前选中的绝对 bit 偏移，恢复后无损呈现根容器并高亮所选字节，保障系统稳健；
+       * 100% 完美向后兼容：现存所有 `.svsession` 文件继续无缝读取，零迁移成本；
+       * 演进约束：未来若引入版本 N，必须强制保持后向兼容（`schemaVersion == 1` 走不可变版本 1 解析器，旧文档绝不失效），且版本 1 继续严格执行 `hasExactKeys()` 封闭校验。
+     - 脏状态跟踪合同：`AnalysisSession` 提供 `isDirty()`、`markDirty()`、`clearDirty()` 与 `sessionFilePath()`；明确定义书签增删改、注释增删改以及格式手动覆盖为触发脏状态的变迁点，而树折叠展开、数据视图翻页滚动、节点选择等探索行为不标记脏状态；
+     - UI 未保存保护协议（`maybeSave()`）：在 `MainWindow` 关闭窗口、切换文件或退出应用时，若检测到 `isDirty()` 则弹出 `[保存]`（执行 save/saveAs 后放行）、`[放弃]`（放弃修改放行）、`[取消]`（中止退出/切换）模态确认对话框；
+     - 格式手动覆盖架构（彻底闭环 P2-17/P2-19/P2-20）：
+       * 歧义横幅新增「解决歧义...」按钮（P2-17）；主菜单新增「分析 > 覆盖格式...」；
+       * 用户显式覆盖选择终极解决 `format_selection.cpp` 启发式模式流优先级的妥协（P2-19）；
+       * 架构与测试上明确分离自动检测仲裁测试（`openFile()`）与固定规则覆盖测试（`openWithExplicitRule()`）（P2-20）；
+     - 规则版本管理架构：设计 `RuleManagerDialog`，支持展示已安装与内置规则包元数据（ID、版本、哈希、入口），并通过 `RulePackageStore` 导入验证外部 `.svrule` ZIP 包；
+     - 阶段 6 任务编排：串行划分为 P6a（规范）、P6b（脏状态核心）、P6c（UI 保存与防丢保护）、P6d（格式手动覆盖与歧义裁决）、P6e（规则管理）、P6f（进度/取消/诊断汇总）、P6g（主题与双语国际化）、P6h（端到端验证）、P6i（审查收官）。
+  2. 纪律约束与评审门禁：
+     - 本任务为纯 Markdown 规范交付，依据纪律条款第 5 条（P6a 设固定独立评审门禁），等待用户独立评审通过后方可启动 Task P6b 实现。
+
