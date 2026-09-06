@@ -58,6 +58,9 @@ def make_ftyp() -> bytes:
 
 def write_fixture(name: str, data: bytes) -> Path:
     out_path = FIXTURES_DIR / name
+    if out_path.exists() and out_path.read_bytes() == data:
+        print(f"Up to date: {out_path} ({len(data)} bytes)")
+        return out_path
     out_path.write_bytes(data)
     print(f"Generated {out_path} ({len(data)} bytes)")
     return out_path
@@ -383,6 +386,12 @@ def stco_box(offsets: list) -> bytes:
     return make_full_box("stco", 0, 0, payload)
 
 
+def co64_box(offsets: list) -> bytes:
+    payload = struct.pack(">I", len(offsets))
+    payload += b"".join(struct.pack(">Q", offset) for offset in offsets)
+    return make_full_box("co64", 0, 0, payload)
+
+
 def stss_box(sample_numbers: list) -> bytes:
     payload = struct.pack(">I", len(sample_numbers))
     payload += b"".join(struct.pack(">I", number) for number in sample_numbers)
@@ -652,12 +661,98 @@ def generate_terminal_resource_limit() -> Path:
     return write_fixture("mp4_p5j4_terminal_resource_limit.mp4", movie + nested)
 
 
+def generate_bframe_sync() -> Path:
+    """An AVC movie with explicit sync sample table (stss) and B-frame composition offsets (ctts).
+
+    Used for Task P5j-6 reference cross-validation against ffprobe:
+      - 4 samples at 30 fps (timescale 30000, duration 1000 per sample);
+      - Sample 0: IDR keyframe (sync sample 1), DTS=0, CTTS=0 -> PTS=0;
+      - Sample 1: P-frame, DTS=1000, CTTS=2000 -> PTS=3000;
+      - Sample 2: B-frame, DTS=2000, CTTS=0 -> PTS=2000;
+      - Sample 3: B-frame, DTS=3000, CTTS=1000 -> PTS=4000.
+    """
+    idr = b"\x65\x88\x84\x00" + b"\x12" * 32  # 36-byte IDR NAL
+    p = b"\x41\x9a" + b"\x34" * 14          # 16-byte P-slice NAL
+    b1 = b"\x01\x02" + b"\x56" * 10         # 12-byte B-slice NAL
+    b2 = b"\x01\x02" + b"\x78" * 10         # 12-byte B-slice NAL
+
+    sample_payloads = [
+        length_prefixed([idr]),  # 40 bytes
+        length_prefixed([p]),    # 20 bytes
+        length_prefixed([b1]),   # 16 bytes
+        length_prefixed([b2]),   # 16 bytes
+    ]
+    sizes = [len(s) for s in sample_payloads]
+
+    def build_traks(base: int) -> bytes:
+        stbl = make_stbl(
+            video_stsd(),
+            stts_box([(4, 1000)]),
+            stsc_box([(1, 4, 1)]),
+            stsz_box(0, sizes),
+            stco_box([base]),
+            stss=stss_box([1]),
+            ctts=ctts_box([(1, 0), (1, 2000), (1, 0), (1, 1000)], 0),
+        )
+        return make_trak(1, 30000, 4000, "vide", stbl)
+
+    return write_fixture(
+        "mp4_p5j6_bframe_sync.mp4",
+        assemble(build_traks, b"".join(sample_payloads)),
+    )
+
+
+def generate_hundred_gigabyte_sparse_prefix() -> Path:
+    """The prefix of a 100 GiB virtual sparse MP4 file.
+
+    Carries:
+      - ftyp (20 bytes);
+      - free (16 bytes);
+      - moov (609 bytes) containing an AVC track with 64-bit chunk offsets (co64):
+        * sample 0 chunk at 50 GiB (53,687,091,200 bytes)
+        * sample 1 chunk at 99 GiB (106,300,440,576 bytes)
+        * stsz with 2 samples of 40 bytes each
+        * stss declaring samples 1 and 2 as sync keyframes
+      - mdat header with 64-bit largesize (16 bytes) extending to 100 GiB total.
+    """
+    total_size = 100 * 1024 * 1024 * 1024
+    offset0 = 50 * 1024 * 1024 * 1024
+    offset1 = 99 * 1024 * 1024 * 1024
+
+    idr = b"\x65\x88\x84\x00" + b"\x12" * 32
+    sample_payload = length_prefixed([idr])
+    sizes = [len(sample_payload), len(sample_payload)]
+
+    stbl = make_stbl(
+        video_stsd(),
+        stts_box([(2, 1000)]),
+        stsc_box([(1, 1, 1), (2, 1, 1)]),
+        stsz_box(0, sizes),
+        co64_box([offset0, offset1]),
+        stss=stss_box([1, 2]),
+    )
+    trak = make_trak(1, 30000, 2000, "vide", stbl)
+    ftyp = make_ftyp()
+    free = make_box("free", b"\x00" * 8)
+    mvhd = make_mvhd_v0(1000, 2000, 2)
+    moov = make_box("moov", mvhd + trak)
+
+    prefix_without_mdat = ftyp + free + moov
+    mdat_largesize = total_size - len(prefix_without_mdat)
+    mdat_header = struct.pack(">I4sQ", 1, b"mdat", mdat_largesize)
+    prefix = prefix_without_mdat + mdat_header
+    assert len(prefix_without_mdat) + mdat_largesize == total_size
+    return write_fixture("mp4_p5j6_100gb_sparse_prefix.bin", prefix)
+
+
 def main() -> None:
     generate_avc_multi_nal()
     generate_aac_opaque()
     generate_two_track_movie()
     generate_avc_truncated_unit()
     generate_terminal_resource_limit()
+    generate_bframe_sync()
+    generate_hundred_gigabyte_sparse_prefix()
 
 
 if __name__ == "__main__":
