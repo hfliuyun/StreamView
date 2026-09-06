@@ -1,6 +1,6 @@
 # ADR-0103: Cross-Layer Structured Entry Execution, Coordinate Mapping, and Navigation Stack
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-08-18
 - **Authors**: StreamView Contributors
 

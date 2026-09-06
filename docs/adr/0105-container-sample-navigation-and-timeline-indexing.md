@@ -1,6 +1,6 @@
 # ADR-0105: Container Sample Navigation, Timeline Indexing, and Access Unit Execution Contracts
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-08-19
 - **Authors**: StreamView Contributors
 

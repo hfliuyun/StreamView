@@ -1,6 +1,6 @@
 # ADR-0108: Timeline Sample Navigation, Dock Integration, and Format Ambiguity Presentation
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-09-06
 - **Authors**: StreamView Contributors
 

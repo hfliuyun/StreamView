@@ -1,6 +1,6 @@
 # ADR-0107: MP4 Bounded Header Verification and Large Source Detection
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-08-30
 - **Authors**: StreamView Contributors
 

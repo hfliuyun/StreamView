@@ -1,6 +1,6 @@
 # ADR-0106: 格式检测仲裁与证据不对称
 
-- **状态**：Proposed
+- **状态**：Accepted
 - **日期**：2026-08-30
 - **作者**：StreamView Contributors
 

@@ -1,6 +1,6 @@
 # ADR-0103: 跨层结构型入口执行、坐标映射与导航栈合同
 
-- **状态**: Proposed
+- **状态**: Accepted
 - **日期**: 2026-08-18
 - **作者**: StreamView Contributors
 
