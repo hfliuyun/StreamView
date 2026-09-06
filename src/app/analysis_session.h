@@ -3,6 +3,7 @@
 #include "session_document.h"
 
 #include <streamview/core/analysis_model.h>
+#include <streamview/core/cancellation.h>
 #include <streamview/core/source.h>
 #include <streamview/core/source_pager.h>
 #include <streamview/rules/aac_adts_analyzer.h>
@@ -330,6 +331,8 @@ public:
         return initialFingerprint_;
     }
     void enableCache(AnalysisSessionCacheOptions cacheOptions);
+    void requestCancellation() noexcept;
+    [[nodiscard]] bool isCancellationRequested() const noexcept;
     [[nodiscard]] SessionSaveResult saveSession(
         const QString& sessionPath,
         const SessionUserState& userState) const;
@@ -398,7 +401,8 @@ private:
                     std::unique_ptr<rules::AnalysisCacheOwner> cacheOwner,
                     AnalysisSessionCacheStatus cacheStatus,
                     QString cacheErrorMessage,
-                    std::optional<core::SourceFingerprint> initialFingerprint = std::nullopt);
+                    std::optional<core::SourceFingerprint> initialFingerprint = std::nullopt,
+                    std::shared_ptr<core::CancellationSource> cancellationSource = nullptr);
     [[nodiscard]] static std::unique_ptr<AnalysisSession>
     createPrepared(std::unique_ptr<core::RandomAccessSource> source,
                    QString sourcePath,
@@ -458,6 +462,7 @@ private:
     /// next sample of the same track.
     std::unordered_map<QString, SubFormatSession> sampleSessions_;
     std::optional<core::SourceFingerprint> initialFingerprint_;
+    std::shared_ptr<core::CancellationSource> cancellationSource_;
 };
 
 enum class AnalysisSessionRestoreStatus : quint8 {

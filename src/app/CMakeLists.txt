@@ -3,6 +3,8 @@ add_library(streamview_app STATIC
     analysis_session.h
     analysis_tree_model.cpp
     analysis_tree_model.h
+    diagnostics_summary_dock.cpp
+    diagnostics_summary_dock.h
     field_inspector.cpp
     field_inspector.h
     format_override_dialog.cpp
