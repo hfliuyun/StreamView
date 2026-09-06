@@ -3,10 +3,17 @@
 #include "raw_data_view.h"
 #include "timeline_table_model.h"
 
+#include <QAction>
+#include <QCloseEvent>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QFile>
 #include <QDockWidget>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
+#include <QMessageBox>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
@@ -1191,6 +1198,342 @@ private slots:
 
         QTRY_COMPARE(trackCombo->currentIndex(), 1);
         QCOMPARE(tableView->model()->rowCount(), 2);
+    }
+
+    void sessionSaveActionsEnabledOnlyWhenSessionLoaded() {
+        MainWindow window;
+        auto* saveAction = window.findChild<QAction*>(QStringLiteral("actionSaveSession"));
+        auto* saveAsAction = window.findChild<QAction*>(QStringLiteral("actionSaveSessionAs"));
+        auto* openSessionAction = window.findChild<QAction*>(QStringLiteral("actionOpenSession"));
+        auto* exitAction = window.findChild<QAction*>(QStringLiteral("actionExit"));
+        QVERIFY(saveAction != nullptr);
+        QVERIFY(saveAsAction != nullptr);
+        QVERIFY(openSessionAction != nullptr);
+        QVERIFY(exitAction != nullptr);
+        QVERIFY(!saveAction->isEnabled());
+        QVERIFY(!saveAsAction->isEnabled());
+        QVERIFY(openSessionAction->isEnabled());
+        QVERIFY(exitAction->isEnabled());
+
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+
+        QVERIFY(saveAction->isEnabled());
+        QVERIFY(saveAsAction->isEnabled());
+    }
+
+    void sessionDirtyStateTracksBookmarksAndAnnotations() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString sessionPath = directory.filePath(QStringLiteral("dirty_track.svsession"));
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+        window.setSaveFileDialogHandlerForTesting([&](QWidget*, const QString&, const QString&) {
+            return sessionPath;
+        });
+
+        // 1. Initially clean after opening media
+        QVERIFY(!window.isWindowModified());
+        QVERIFY(window.windowTitle().contains(QStringLiteral("[*]")));
+
+        // 2. Adding bookmark marks dirty
+        window.addBookmark({.label = QStringLiteral("BM1"), .sourceBitOffset = 8});
+        QVERIFY(window.isWindowModified());
+        QCOMPARE(window.bookmarks().size(), 1);
+
+        // 3. Saving resets dirty to clean
+        QVERIFY(window.saveSession());
+        QVERIFY(!window.isWindowModified());
+
+        // 4. Removing bookmark marks dirty
+        window.removeBookmark(0);
+        QVERIFY(window.isWindowModified());
+        QVERIFY(window.bookmarks().empty());
+
+        // 5. Saving resets dirty to clean
+        QVERIFY(window.saveSession());
+        QVERIFY(!window.isWindowModified());
+
+        // 6. Adding annotation marks dirty
+        window.addAnnotation({.text = QStringLiteral("Note1"), .sourceBitOffset = 16, .bitLength = 8});
+        QVERIFY(window.isWindowModified());
+        QCOMPARE(window.annotations().size(), 1);
+
+        // 7. Clearing annotations marks dirty
+        window.clearAnnotations();
+        QVERIFY(window.isWindowModified());
+        QVERIFY(window.annotations().empty());
+
+        // 8. Saving resets dirty to clean
+        QVERIFY(window.saveSession());
+        QVERIFY(!window.isWindowModified());
+
+        // 9. Navigation/page interactions do not dirty session
+        auto* rawView = window.findChild<RawDataView*>(QStringLiteral("rawDataView"));
+        QVERIFY(rawView != nullptr);
+        rawView->model()->setDisplayMode(RawDisplayMode::Binary);
+        QVERIFY(!window.isWindowModified());
+    }
+
+    void sessionSaveAndSaveAsPersistence() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString sessionPath = directory.filePath(QStringLiteral("test.svsession"));
+
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+
+        window.addBookmark({.label = QStringLiteral("BM1"), .sourceBitOffset = 8});
+        window.addAnnotation({.text = QStringLiteral("Note1"), .sourceBitOffset = 16, .bitLength = 8});
+        QVERIFY(window.isWindowModified());
+
+        // Configure save file dialog handler to return sessionPath
+        window.setSaveFileDialogHandlerForTesting([&](QWidget*, const QString&, const QString&) {
+            return sessionPath;
+        });
+
+        // Save session triggers Save As when path is empty
+        QVERIFY(window.saveSession());
+        QVERIFY(window.currentSessionFilePath().has_value());
+        QCOMPARE(*window.currentSessionFilePath(), sessionPath);
+        QVERIFY(!window.isWindowModified());
+        QVERIFY(QFile::exists(sessionPath));
+
+        // Verify JSON contents
+        QFile file(sessionPath);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+        file.close();
+        QVERIFY(doc.isObject());
+        const QJsonObject root = doc.object();
+        QCOMPARE(root.value(QStringLiteral("schemaVersion")).toInt(), 1);
+        QCOMPARE(root.value(QStringLiteral("bookmarks")).toArray().size(), 1);
+        QCOMPARE(root.value(QStringLiteral("annotations")).toArray().size(), 1);
+
+        // Modify state again (dirty)
+        window.addBookmark({.label = QStringLiteral("BM2"), .sourceBitOffset = 24});
+        QVERIFY(window.isWindowModified());
+
+        // Direct save without dialog now overwrites sessionPath
+        bool dialogCalled = false;
+        window.setSaveFileDialogHandlerForTesting([&](QWidget*, const QString&, const QString&) {
+            dialogCalled = true;
+            return QString{};
+        });
+        QVERIFY(window.saveSession());
+        QVERIFY(!dialogCalled);
+        QVERIFY(!window.isWindowModified());
+
+        // Verify updated count in file
+        QFile fileUpdated(sessionPath);
+        QVERIFY(fileUpdated.open(QIODevice::ReadOnly));
+        const QJsonDocument docUpdated = QJsonDocument::fromJson(fileUpdated.readAll());
+        fileUpdated.close();
+        QCOMPARE(docUpdated.object().value(QStringLiteral("bookmarks")).toArray().size(), 2);
+    }
+
+    void maybeSavePromptHandlesSaveDiscardAndCancel() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString sessionPath = directory.filePath(QStringLiteral("prompt.svsession"));
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+
+        // Case A: Save accepted
+        {
+            MainWindow window;
+            QString errorMessage;
+            QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+            window.addBookmark({.label = QStringLiteral("B"), .sourceBitOffset = 8});
+            QVERIFY(window.isWindowModified());
+
+            window.setSavePromptHandlerForTesting([&](QWidget*) { return QMessageBox::Save; });
+            window.setSaveFileDialogHandlerForTesting([&](QWidget*, const QString&, const QString&) { return sessionPath; });
+
+            QVERIFY(window.maybeSave());
+            QVERIFY(!window.isWindowModified());
+            QVERIFY(window.currentSessionFilePath().has_value());
+            QCOMPARE(*window.currentSessionFilePath(), sessionPath);
+            QVERIFY(QFile::exists(sessionPath));
+        }
+
+        // Case B: Discard accepted
+        {
+            MainWindow window;
+            QString errorMessage;
+            QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+            window.addBookmark({.label = QStringLiteral("B"), .sourceBitOffset = 8});
+            QVERIFY(window.isWindowModified());
+
+            window.setSavePromptHandlerForTesting([&](QWidget*) { return QMessageBox::Discard; });
+
+            QVERIFY(window.maybeSave());
+            // Returned true (proceed allowed) without saving
+        }
+
+        // Case C: Cancel rejected
+        {
+            MainWindow window;
+            QString errorMessage;
+            QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+            window.addBookmark({.label = QStringLiteral("B"), .sourceBitOffset = 8});
+            QVERIFY(window.isWindowModified());
+
+            window.setSavePromptHandlerForTesting([&](QWidget*) { return QMessageBox::Cancel; });
+
+            QVERIFY(!window.maybeSave());
+            // Proceed rejected, still modified
+            QVERIFY(window.isWindowModified());
+        }
+    }
+
+    void maybeSaveHandlesSaveAsDialogCancelCleanly() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+        window.addBookmark({.label = QStringLiteral("B"), .sourceBitOffset = 8});
+        QVERIFY(window.isWindowModified());
+
+        bool messageDialogShown = false;
+        window.setSavePromptHandlerForTesting([&](QWidget*) { return QMessageBox::Save; });
+        window.setSaveFileDialogHandlerForTesting([&](QWidget*, const QString&, const QString&) { return QString{}; });
+        window.setMessageDialogHandlerForTesting([&](QWidget*, const QString&, const QString&) {
+            messageDialogShown = true;
+        });
+
+        // User cancelled save file selection -> maybeSave should return false, but NOT show critical error dialog
+        QVERIFY(!window.maybeSave());
+        QVERIFY(!messageDialogShown);
+        QVERIFY(window.isWindowModified());
+    }
+
+    void maybeSaveHandlesSaveIoErrorWithModalDialog() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+        window.addBookmark({.label = QStringLiteral("B"), .sourceBitOffset = 8});
+        QVERIFY(window.isWindowModified());
+
+        bool messageDialogShown = false;
+        QString reportedTitle;
+        QString reportedText;
+
+        window.setSavePromptHandlerForTesting([&](QWidget*) { return QMessageBox::Save; });
+        window.setSaveFileDialogHandlerForTesting([&](QWidget*, const QString&, const QString&) {
+            return QStringLiteral("/non_existent_directory_streamview_test_xyz/session.svsession");
+        });
+        window.setMessageDialogHandlerForTesting([&](QWidget*, const QString& title, const QString& text) {
+            messageDialogShown = true;
+            reportedTitle = title;
+            reportedText = text;
+        });
+
+        // Save fails due to FileIoError -> maybeSave returns false, and modal critical dialog is shown
+        QVERIFY(!window.maybeSave());
+        QVERIFY(messageDialogShown);
+        QVERIFY(!reportedTitle.isEmpty());
+        QVERIFY(!reportedText.isEmpty());
+        QVERIFY(window.isWindowModified());
+    }
+
+    void closeEventRejectsWhenMaybeSaveCancelled() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+        window.addBookmark({.label = QStringLiteral("B"), .sourceBitOffset = 8});
+        QVERIFY(window.isWindowModified());
+
+        // Cancel branch ignores close
+        window.setSavePromptHandlerForTesting([&](QWidget*) { return QMessageBox::Cancel; });
+        QCloseEvent cancelEvent;
+        QCoreApplication::sendEvent(&window, &cancelEvent);
+        QVERIFY(!cancelEvent.isAccepted());
+
+        // Discard branch accepts close
+        window.setSavePromptHandlerForTesting([&](QWidget*) { return QMessageBox::Discard; });
+        QCloseEvent discardEvent;
+        QCoreApplication::sendEvent(&window, &discardEvent);
+        QVERIFY(discardEvent.isAccepted());
+    }
+
+    void openSessionFileRestoresUserStateAndUI() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString sessionPath = directory.filePath(QStringLiteral("restore.svsession"));
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+
+        {
+            MainWindow window1;
+            QString errorMessage;
+            QVERIFY2(window1.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+
+            auto* treeView = window1.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+            QVERIFY(treeView != nullptr);
+
+            QModelIndex boxIndex;
+            QTRY_VERIFY((boxIndex = findIndexByName(*treeView->model(), QStringLiteral("box[0]"))).isValid());
+            treeView->expand(boxIndex);
+            treeView->setCurrentIndex(boxIndex);
+
+            // Change display mode in raw view
+            auto* rawView = window1.findChild<RawDataView*>(QStringLiteral("rawDataView"));
+            QVERIFY(rawView != nullptr);
+            rawView->model()->setDisplayMode(RawDisplayMode::Binary);
+
+            // Add bookmarks and annotations
+            window1.addBookmark({.label = QStringLiteral("BM_BOX0"), .sourceBitOffset = 64});
+            window1.addAnnotation({.text = QStringLiteral("Note on box0"), .sourceBitOffset = 64, .bitLength = 32});
+
+            window1.setSaveFileDialogHandlerForTesting([&](QWidget*, const QString&, const QString&) {
+                return sessionPath;
+            });
+            QVERIFY(window1.saveSession());
+            QVERIFY(QFile::exists(sessionPath));
+        }
+
+        // Open session in a second window
+        {
+            MainWindow window2;
+            QString errorMessage;
+            QVERIFY2(window2.openSessionFile(sessionPath, &errorMessage), qPrintable(errorMessage));
+
+            QVERIFY(window2.currentSessionFilePath().has_value());
+            QCOMPARE(*window2.currentSessionFilePath(), sessionPath);
+            QCOMPARE(window2.currentSourceIdentity(), fixturePath);
+            QVERIFY(!window2.isWindowModified());
+
+            // Bookmarks restored
+            const auto bookmarks = window2.bookmarks();
+            QCOMPARE(bookmarks.size(), 1);
+            QCOMPARE(bookmarks[0].label, QStringLiteral("BM_BOX0"));
+            QCOMPARE(bookmarks[0].sourceBitOffset, 64ULL);
+
+            // Annotations restored
+            const auto annotations = window2.annotations();
+            QCOMPARE(annotations.size(), 1);
+            QCOMPARE(annotations[0].text, QStringLiteral("Note on box0"));
+            QCOMPARE(annotations[0].sourceBitOffset, 64ULL);
+            QCOMPARE(annotations[0].bitLength, 32ULL);
+
+            // UI view restored
+            auto* rawView = window2.findChild<RawDataView*>(QStringLiteral("rawDataView"));
+            QVERIFY(rawView != nullptr);
+            QCOMPARE(rawView->model()->displayMode(), RawDisplayMode::Binary);
+
+            auto* treeView = window2.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+            QVERIFY(treeView != nullptr);
+            const QModelIndex currentIdx = treeView->currentIndex();
+            QVERIFY(currentIdx.isValid());
+            QCOMPARE(treeView->model()->data(currentIdx).toString(), QStringLiteral("box[0]"));
+            QVERIFY(treeView->isExpanded(currentIdx));
+        }
     }
 };
 

@@ -1,20 +1,28 @@
 #pragma once
 
 #include "analysis_session.h"
+#include "session_document.h"
 #include "source_selection.h"
 
 #include <QMainWindow>
+#include <QMessageBox>
 #include <QStringList>
 
-#include <memory>
 #include <cstdint>
-class QTreeView;
-class QModelIndex;
-class QToolButton;
-class QLabel;
+#include <functional>
+#include <memory>
+#include <optional>
+#include <vector>
+
+class QAction;
+class QCloseEvent;
 class QComboBox;
 class QDockWidget;
+class QLabel;
+class QModelIndex;
 class QTableView;
+class QToolButton;
+class QTreeView;
 
 namespace streamview::app {
 
@@ -33,13 +41,58 @@ public:
 
     [[nodiscard]] bool openMediaSource(const QString& path,
                                        QString* errorMessage = nullptr);
+    [[nodiscard]] bool openSessionFile(const QString& sessionPath,
+                                       QString* errorMessage = nullptr);
     [[nodiscard]] QString currentSourceIdentity() const;
+    [[nodiscard]] std::optional<QString> currentSessionFilePath() const noexcept {
+        return currentSessionFilePath_;
+    }
+
+    [[nodiscard]] const std::vector<SessionBookmark>& bookmarks() const noexcept {
+        return bookmarks_;
+    }
+    [[nodiscard]] const std::vector<SessionAnnotation>& annotations() const noexcept {
+        return annotations_;
+    }
+    void addBookmark(SessionBookmark bookmark);
+    void removeBookmark(std::size_t index);
+    void clearBookmarks();
+    void addAnnotation(SessionAnnotation annotation);
+    void removeAnnotation(std::size_t index);
+    void clearAnnotations();
+
+    [[nodiscard]] SessionUserState currentUserState() const;
+    [[nodiscard]] bool maybeSave();
+
+    // Testing hooks
+    using SavePromptHandler = std::function<QMessageBox::StandardButton(QWidget*)>;
+    using FileDialogHandler = std::function<QString(QWidget*, const QString&, const QString&)>;
+    using MessageDialogHandler = std::function<void(QWidget*, const QString&, const QString&)>;
+
+    void setSavePromptHandlerForTesting(SavePromptHandler handler) {
+        savePromptHandler_ = std::move(handler);
+    }
+    void setSaveFileDialogHandlerForTesting(FileDialogHandler handler) {
+        saveFileDialogHandler_ = std::move(handler);
+    }
+    void setOpenFileDialogHandlerForTesting(FileDialogHandler handler) {
+        openFileDialogHandler_ = std::move(handler);
+    }
+    void setMessageDialogHandlerForTesting(MessageDialogHandler handler) {
+        messageDialogHandler_ = std::move(handler);
+    }
+
+public slots:
+    void openFile();
+    void openSession();
+    bool saveSession();
+    bool saveSessionAs();
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
+    void closeEvent(QCloseEvent* event) override;
 
 private slots:
-    void openFile();
     void returnToParentFormat();
     void onTreeDoubleClicked(const QModelIndex& index);
     void onTrackSelectionChanged(int comboIndex);
@@ -66,6 +119,11 @@ private:
     void loadSamplePage(quint32 trackId, quint64 pageIndex);
     void updateTimelinePageControls();
     void updateAmbiguityUI();
+    [[nodiscard]] bool saveSessionToPath(const QString& path);
+    void updateWindowTitle();
+    void updateActionStates();
+    [[nodiscard]] QModelIndex findIndexByPath(const QString& path) const;
+    void expandNodeByPath(const QString& path);
 
     QTreeView* analysisTreeView_ = nullptr;
     AnalysisTreeModel* analysisModel_ = nullptr;
@@ -98,6 +156,20 @@ private:
     quint64 currentPageIndex_ = 0;
     quint64 currentTotalSamples_ = 0;
     quint32 currentTimescale_ = 1;
+
+    std::optional<QString> currentSessionFilePath_;
+    std::vector<SessionBookmark> bookmarks_;
+    std::vector<SessionAnnotation> annotations_;
+    QAction* actionOpen_ = nullptr;
+    QAction* actionOpenSession_ = nullptr;
+    QAction* actionSaveSession_ = nullptr;
+    QAction* actionSaveSessionAs_ = nullptr;
+    QAction* actionExit_ = nullptr;
+
+    SavePromptHandler savePromptHandler_;
+    FileDialogHandler saveFileDialogHandler_;
+    FileDialogHandler openFileDialogHandler_;
+    MessageDialogHandler messageDialogHandler_;
 };
 
 } // namespace streamview::app

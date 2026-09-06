@@ -11,9 +11,11 @@
 
 #include <QAction>
 #include <QBoxLayout>
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QDockWidget>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
@@ -30,6 +32,7 @@
 #include <QTreeView>
 
 #include <algorithm>
+#include <functional>
 #include <utility>
 
 namespace streamview::app {
@@ -46,7 +49,6 @@ MainWindow::MainWindow(QWidget* parent) : MainWindow({}, parent) {}
 
 MainWindow::MainWindow(AnalysisSessionCacheOptions cacheOptions, QWidget* parent)
     : QMainWindow(parent), cacheOptions_(std::move(cacheOptions)) {
-    setWindowTitle(tr("StreamView"));
     resize(1280, 800);
 
     auto aac = rules::loadAacAdtsRulePackage();
@@ -77,14 +79,44 @@ MainWindow::MainWindow(AnalysisSessionCacheOptions cacheOptions, QWidget* parent
     formatAmbiguityLabel_->hide();
     statusBar()->addPermanentWidget(formatAmbiguityLabel_);
 
+    updateWindowTitle();
+    updateActionStates();
     statusBar()->showMessage(tr("Ready"));
 }
 
 void MainWindow::setupMenus() {
     auto* fileMenu = menuBar()->addMenu(tr("&File"));
-    auto* openAction = fileMenu->addAction(tr("&Open..."));
-    openAction->setShortcut(QKeySequence::Open);
-    connect(openAction, &QAction::triggered, this, &MainWindow::openFile);
+    fileMenu->setObjectName(QStringLiteral("menuFile"));
+
+    actionOpen_ = fileMenu->addAction(tr("&Open..."));
+    actionOpen_->setObjectName(QStringLiteral("actionOpen"));
+    actionOpen_->setShortcut(QKeySequence::Open);
+    connect(actionOpen_, &QAction::triggered, this, &MainWindow::openFile);
+
+    actionOpenSession_ = fileMenu->addAction(tr("Open &Session..."));
+    actionOpenSession_->setObjectName(QStringLiteral("actionOpenSession"));
+    connect(actionOpenSession_, &QAction::triggered, this, &MainWindow::openSession);
+
+    fileMenu->addSeparator();
+
+    actionSaveSession_ = fileMenu->addAction(tr("&Save Session"));
+    actionSaveSession_->setObjectName(QStringLiteral("actionSaveSession"));
+    actionSaveSession_->setShortcut(QKeySequence::Save);
+    actionSaveSession_->setEnabled(false);
+    connect(actionSaveSession_, &QAction::triggered, this, [this] { static_cast<void>(saveSession()); });
+
+    actionSaveSessionAs_ = fileMenu->addAction(tr("Save Session &As..."));
+    actionSaveSessionAs_->setObjectName(QStringLiteral("actionSaveSessionAs"));
+    actionSaveSessionAs_->setShortcut(QKeySequence::SaveAs);
+    actionSaveSessionAs_->setEnabled(false);
+    connect(actionSaveSessionAs_, &QAction::triggered, this, [this] { static_cast<void>(saveSessionAs()); });
+
+    fileMenu->addSeparator();
+
+    actionExit_ = fileMenu->addAction(tr("E&xit"));
+    actionExit_->setObjectName(QStringLiteral("actionExit"));
+    actionExit_->setShortcut(QKeySequence::Quit);
+    connect(actionExit_, &QAction::triggered, this, &QWidget::close);
 }
 
 void MainWindow::setupDocks() {
@@ -232,10 +264,246 @@ void MainWindow::setupDocks() {
     addDockWidget(Qt::BottomDockWidgetArea, timelineDock_);
 }
 
+void MainWindow::closeEvent(QCloseEvent* event) {
+    if (maybeSave()) {
+        event->accept();
+    } else {
+        event->ignore();
+    }
+}
+
+void MainWindow::updateWindowTitle() {
+    QString title;
+    if (session_) {
+        const QString displayName = currentSessionFilePath_.has_value()
+                                        ? QFileInfo(*currentSessionFilePath_).fileName()
+                                        : QFileInfo(session_->source().identity()).fileName();
+        title = QStringLiteral("%1[*] - StreamView").arg(displayName);
+    } else {
+        title = QStringLiteral("StreamView");
+    }
+    setWindowTitle(title);
+}
+
+void MainWindow::updateActionStates() {
+    const bool hasSession = (session_ != nullptr);
+    if (actionSaveSession_ != nullptr) {
+        actionSaveSession_->setEnabled(hasSession);
+    }
+    if (actionSaveSessionAs_ != nullptr) {
+        actionSaveSessionAs_->setEnabled(hasSession);
+    }
+}
+
+void MainWindow::addBookmark(SessionBookmark bookmark) {
+    bookmarks_.push_back(std::move(bookmark));
+    setWindowModified(true);
+}
+
+void MainWindow::removeBookmark(std::size_t index) {
+    if (index < bookmarks_.size()) {
+        bookmarks_.erase(bookmarks_.begin() + static_cast<std::ptrdiff_t>(index));
+        setWindowModified(true);
+    }
+}
+
+void MainWindow::clearBookmarks() {
+    if (!bookmarks_.empty()) {
+        bookmarks_.clear();
+        setWindowModified(true);
+    }
+}
+
+void MainWindow::addAnnotation(SessionAnnotation annotation) {
+    annotations_.push_back(std::move(annotation));
+    setWindowModified(true);
+}
+
+void MainWindow::removeAnnotation(std::size_t index) {
+    if (index < annotations_.size()) {
+        annotations_.erase(annotations_.begin() + static_cast<std::ptrdiff_t>(index));
+        setWindowModified(true);
+    }
+}
+
+void MainWindow::clearAnnotations() {
+    if (!annotations_.empty()) {
+        annotations_.clear();
+        setWindowModified(true);
+    }
+}
+
+QModelIndex MainWindow::findIndexByPath(const QString& path) const {
+    if (path.isEmpty() || !analysisModel_) {
+        return {};
+    }
+    const QStringList parts = path.split(u'/', Qt::SkipEmptyParts);
+    if (parts.isEmpty()) {
+        return {};
+    }
+    QModelIndex currentParent;
+    for (const QString& part : parts) {
+        bool found = false;
+        const int rows = analysisModel_->rowCount(currentParent);
+        for (int r = 0; r < rows; ++r) {
+            const QModelIndex child = analysisModel_->index(r, AnalysisTreeModel::Name, currentParent);
+            if (analysisModel_->data(child, Qt::DisplayRole).toString() == part) {
+                currentParent = child;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            return {};
+        }
+    }
+    return currentParent;
+}
+
+void MainWindow::expandNodeByPath(const QString& path) {
+    const QModelIndex idx = findIndexByPath(path);
+    if (idx.isValid()) {
+        analysisTreeView_->setExpanded(idx, true);
+    }
+}
+
+SessionUserState MainWindow::currentUserState() const {
+    SessionUserState state;
+    state.bookmarks = bookmarks_;
+    state.annotations = annotations_;
+
+    if (analysisTreeView_ != nullptr && analysisModel_ != nullptr) {
+        std::function<void(const QModelIndex&, const QString&)> collectExpanded;
+        collectExpanded = [&](const QModelIndex& parentIndex, const QString& parentPath) {
+            const int rows = analysisModel_->rowCount(parentIndex);
+            for (int r = 0; r < rows; ++r) {
+                const QModelIndex idx = analysisModel_->index(r, AnalysisTreeModel::Name, parentIndex);
+                if (!idx.isValid()) {
+                    continue;
+                }
+                const QString nodeName = analysisModel_->data(idx, Qt::DisplayRole).toString();
+                const QString currentPath = parentPath.isEmpty() ? nodeName : parentPath + u'/' + nodeName;
+                if (analysisTreeView_->isExpanded(idx)) {
+                    state.expandedPaths.append(currentPath);
+                }
+                collectExpanded(idx, currentPath);
+            }
+        };
+        collectExpanded(QModelIndex{}, QString{});
+    }
+
+    if (rawDataView_ != nullptr && rawDataView_->model() != nullptr) {
+        state.view.rawPageIndex = rawDataView_->model()->pageIndex();
+        state.view.rawDisplayMode = rawDataView_->model()->displayMode();
+    }
+    if (!sourceSelection_.sourceSpans.empty()) {
+        state.view.selectedSourceBitOffset = sourceSelection_.sourceSpans.front().start().absoluteBitOffset();
+    }
+    if (analysisTreeView_ != nullptr && analysisModel_ != nullptr) {
+        const QModelIndex currentIdx = analysisTreeView_->currentIndex();
+        if (currentIdx.isValid()) {
+            QStringList pathComponents;
+            for (QModelIndex it = currentIdx; it.isValid(); it = it.parent()) {
+                const QModelIndex nameIdx = analysisModel_->index(it.row(), AnalysisTreeModel::Name, it.parent());
+                pathComponents.prepend(analysisModel_->data(nameIdx, Qt::DisplayRole).toString());
+            }
+            state.view.selectedAnalysisPath = pathComponents.join(u'/');
+        }
+    }
+    return state;
+}
+
+bool MainWindow::maybeSave() {
+    if (!session_ || !isWindowModified()) {
+        return true;
+    }
+
+    QMessageBox::StandardButton ret = QMessageBox::Cancel;
+    if (savePromptHandler_) {
+        ret = savePromptHandler_(this);
+    } else {
+        ret = QMessageBox::warning(
+            this, tr("Unsaved Changes"),
+            tr("The current session has unsaved changes. Do you want to save your changes before proceeding?"),
+            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+            QMessageBox::Save);
+    }
+
+    if (ret == QMessageBox::Save) {
+        return saveSession();
+    }
+    if (ret == QMessageBox::Discard) {
+        return true;
+    }
+    return false;
+}
+
+bool MainWindow::saveSession() {
+    if (!session_) {
+        return false;
+    }
+    if (currentSessionFilePath_.has_value() && !currentSessionFilePath_->isEmpty()) {
+        return saveSessionToPath(*currentSessionFilePath_);
+    }
+    return saveSessionAs();
+}
+
+bool MainWindow::saveSessionAs() {
+    if (!session_) {
+        return false;
+    }
+    QString path;
+    if (saveFileDialogHandler_) {
+        path = saveFileDialogHandler_(this, tr("Save Session"),
+                                      tr("StreamView Session (*.svsession);;All Files (*)"));
+    } else {
+        path = QFileDialog::getSaveFileName(
+            this, tr("Save Session"), QString(),
+            tr("StreamView Session (*.svsession);;All Files (*)"));
+    }
+    if (path.isEmpty()) {
+        return false;
+    }
+    return saveSessionToPath(path);
+}
+
+bool MainWindow::saveSessionToPath(const QString& path) {
+    if (!session_) {
+        return false;
+    }
+    const auto userState = currentUserState();
+    const auto result = session_->saveSession(path, userState);
+    if (!result.succeeded()) {
+        if (messageDialogHandler_) {
+            messageDialogHandler_(this, tr("Save Session Failed"),
+                                  tr("Could not save session to %1:\n%2").arg(path, result.errorMessage));
+        } else {
+            QMessageBox::critical(this, tr("Save Session Failed"),
+                                  tr("Could not save session to %1:\n%2").arg(path, result.errorMessage));
+        }
+        return false;
+    }
+
+    currentSessionFilePath_ = path;
+    setWindowModified(false);
+    updateWindowTitle();
+    statusBar()->showMessage(tr("Session saved: %1").arg(QFileInfo(path).fileName()), 3000);
+    return true;
+}
+
 void MainWindow::openFile() {
-    const QString path = QFileDialog::getOpenFileName(
-        this, tr("Open Media File"), QString(),
-        tr("H.264 Annex B (*.264 *.h264 *.bin);;All Files (*)"));
+    if (!maybeSave()) {
+        return;
+    }
+    QString path;
+    if (openFileDialogHandler_) {
+        path = openFileDialogHandler_(this, tr("Open Media File"),
+                                      tr("H.264 Annex B (*.264 *.h264 *.bin);;All Files (*)"));
+    } else {
+        path = QFileDialog::getOpenFileName(
+            this, tr("Open Media File"), QString(),
+            tr("H.264 Annex B (*.264 *.h264 *.bin);;All Files (*)"));
+    }
 
     if (path.isEmpty()) {
         return;
@@ -243,12 +511,145 @@ void MainWindow::openFile() {
 
     QString errorMessage;
     if (!openMediaSource(path, &errorMessage)) {
-        QMessageBox::warning(this, tr("Cannot Open File"),
-                             tr("Could not open %1:\n%2").arg(path, errorMessage));
+        if (messageDialogHandler_) {
+            messageDialogHandler_(this, tr("Cannot Open File"),
+                                  tr("Could not open %1:\n%2").arg(path, errorMessage));
+        } else {
+            QMessageBox::warning(this, tr("Cannot Open File"),
+                                 tr("Could not open %1:\n%2").arg(path, errorMessage));
+        }
     }
 }
 
+void MainWindow::openSession() {
+    if (!maybeSave()) {
+        return;
+    }
+
+    QString path;
+    if (openFileDialogHandler_) {
+        path = openFileDialogHandler_(this, tr("Open Session"),
+                                      tr("StreamView Session (*.svsession);;All Files (*)"));
+    } else {
+        path = QFileDialog::getOpenFileName(
+            this, tr("Open Session"), QString(),
+            tr("StreamView Session (*.svsession);;All Files (*)"));
+    }
+
+    if (path.isEmpty()) {
+        return;
+    }
+
+    QString errorMessage;
+    if (!openSessionFile(path, &errorMessage)) {
+        if (messageDialogHandler_) {
+            messageDialogHandler_(this, tr("Cannot Open Session"),
+                                  tr("Could not open %1:\n%2").arg(path, errorMessage));
+        } else {
+            QMessageBox::warning(this, tr("Cannot Open Session"),
+                                 tr("Could not open %1:\n%2").arg(path, errorMessage));
+        }
+    }
+}
+
+bool MainWindow::openSessionFile(const QString& sessionPath, QString* errorMessage) {
+    if (!maybeSave()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = tr("Operation cancelled by user");
+        }
+        return false;
+    }
+
+    auto restored = AnalysisSession::restoreSession(sessionPath, catalog_, cacheOptions_);
+    if (!restored.succeeded()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = restored.errorMessage.isEmpty()
+                                ? tr("Failed to restore session")
+                                : restored.errorMessage;
+        }
+        return false;
+    }
+
+    auto candidate = std::move(restored.session);
+    const auto savedUserState = candidate->userState();
+
+    const quint64 generation = ++analysisGeneration_;
+    clearSourceSelection();
+    {
+        const QSignalBlocker blocker(analysisTreeView_->selectionModel());
+        analysisTreeView_->selectionModel()->clear();
+    }
+    fieldInspector_->clear();
+    rawDataView_->clear();
+    analysisModel_->clear();
+    timelineModel_->clear();
+    timelineTrackComboBox_->clear();
+    session_.reset();
+    navigationBreadcrumbFormats_.clear();
+
+    session_ = std::move(candidate);
+    bookmarks_ = savedUserState.bookmarks;
+    annotations_ = savedUserState.annotations;
+    currentSessionFilePath_ = sessionPath;
+
+    rawError_.clear();
+    rawLoaded_ = rawDataView_->setSource(
+        &session_->source(), session_->initialPage(), &rawError_);
+    analysisModel_->resetFromTree(session_->tree());
+
+    advanceAnalysis(generation);
+
+    updateAmbiguityUI();
+    loadTracks();
+
+    if (!savedUserState.expandedPaths.isEmpty()) {
+        for (const QString& p : savedUserState.expandedPaths) {
+            expandNodeByPath(p);
+        }
+    } else {
+        analysisTreeView_->expandToDepth(1);
+    }
+
+    for (int i = 0; i < AnalysisTreeModel::ColumnCount; ++i) {
+        analysisTreeView_->resizeColumnToContents(i);
+    }
+
+    if (savedUserState.view.rawPageIndex > 0 && rawDataView_->model() != nullptr) {
+        static_cast<void>(rawDataView_->model()->loadPage(savedUserState.view.rawPageIndex));
+    }
+    if (rawDataView_->model() != nullptr) {
+        rawDataView_->model()->setDisplayMode(savedUserState.view.rawDisplayMode);
+    }
+    if (savedUserState.view.selectedSourceBitOffset.has_value()) {
+        selectSourceBit(*savedUserState.view.selectedSourceBitOffset);
+    }
+    if (savedUserState.view.selectedAnalysisPath.has_value()) {
+        const QModelIndex idx = findIndexByPath(*savedUserState.view.selectedAnalysisPath);
+        if (idx.isValid()) {
+            analysisTreeView_->setCurrentIndex(idx);
+            selectAnalysisNode(idx);
+        }
+    }
+
+    updateNavigationUI();
+    setWindowModified(false);
+    updateWindowTitle();
+    updateActionStates();
+
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return true;
+}
+
 bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
+    if (!maybeSave()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = tr("Operation cancelled by user");
+        }
+        return false;
+    }
+
     QString candidateError;
     auto candidate = AnalysisSession::openFile(path, &candidateError);
     if (!candidate) {
@@ -273,6 +674,9 @@ bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
     navigationBreadcrumbFormats_.clear();
     candidate->enableCache(cacheOptions_);
     session_ = std::move(candidate);
+    bookmarks_.clear();
+    annotations_.clear();
+    currentSessionFilePath_.reset();
 
     rawError_.clear();
     rawLoaded_ = rawDataView_->setSource(
@@ -294,6 +698,9 @@ bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
     }
 
     updateNavigationUI();
+    setWindowModified(false);
+    updateWindowTitle();
+    updateActionStates();
 
     if (errorMessage != nullptr) {
         errorMessage->clear();
