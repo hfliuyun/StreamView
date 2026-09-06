@@ -105,7 +105,7 @@ A critical architectural boundary governs session persistence:
         const QString& sessionPath,
         const SessionUserState& userState) const;
     ```
-    (Upgraded from the existing `bool saveSession(...)` in [src/app/analysis_session.h:326](../../src/app/analysis_session.h#L326) to return a typed status struct).
+    (Upgraded from the existing `bool saveSession(...)` in [src/app/analysis_session.h:333](../../src/app/analysis_session.h#L333) to return a typed status struct).
 - **`MainWindow` / Document Coordinator (Presentation Layer)**:
   - Owns the live `SessionUserState` ([src/app/session_document.h:42-49](../../src/app/session_document.h#L42-L49)), which aggregates:
     * `bookmarks`: vector of `SessionBookmark`;
@@ -180,7 +180,7 @@ In `MainWindow`, any action that would discard the current session (`openFile()`
 ### 4. Format Manual Override Architecture (P1-2, Closing P2-17, P2-19, P2-20)
 
 #### 1. Interactive Ambiguity Resolution (P2-17)
-In `MainWindow`, when `session_->formatSelection().ambiguous()` ([src/app/analysis_session.h:288](../../src/app/analysis_session.h#L288)) is true:
+In `MainWindow`, when `session_->formatSelection().ambiguous()` ([src/app/analysis_session.h:294](../../src/app/analysis_session.h#L294)) is true:
 - The ambiguity banner surfaced in Task P5j-5 displays an interactive **"Resolve Ambiguity..."** button alongside the warning.
 - Clicking this button opens the `FormatOverrideDialog` pre-populated with the conflicting candidate formats (e.g. `MP4 (ISOBMFF)` vs `H.264 (Annex B)`).
 

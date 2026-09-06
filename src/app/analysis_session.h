@@ -259,6 +259,12 @@ public:
     create(std::unique_ptr<core::RandomAccessSource> source,
            QString sourcePath,
            QString* errorMessage = nullptr);
+    [[nodiscard]] static std::unique_ptr<AnalysisSession>
+    openFileWithExplicitRule(const QString& path,
+                             const rules::RulePackageCatalog& catalog,
+                             const rules::RuleEntryPointIdentity& targetRule,
+                             AnalysisSessionCacheOptions cacheOptions = {},
+                             QString* errorMessage = nullptr);
     [[nodiscard]] static AnalysisSessionRestoreResult
     restoreSession(const QString& sessionPath, const rules::RulePackageCatalog& catalog);
     [[nodiscard]] static AnalysisSessionRestoreResult
@@ -309,6 +315,7 @@ public:
             analyzer_);
     }
     [[nodiscard]] const SessionUserState& userState() const noexcept { return userState_; }
+    [[nodiscard]] SessionUserState& userState() noexcept { return userState_; }
     [[nodiscard]] AnalysisSessionCacheStatus cacheStatus() const noexcept {
         return cacheStatus_;
     }
@@ -326,6 +333,10 @@ public:
     [[nodiscard]] SessionSaveResult saveSession(
         const QString& sessionPath,
         const SessionUserState& userState) const;
+    [[nodiscard]] bool overrideFormat(
+        const rules::RulePackageCatalog& catalog,
+        const rules::RuleEntryPointIdentity& targetRule,
+        QString* errorMessage = nullptr);
 
     [[nodiscard]] AnalysisSessionNavigationResult enterChildFormat(
         core::AnalysisNodeId nodeId,

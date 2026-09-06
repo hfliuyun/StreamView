@@ -131,6 +131,76 @@ struct SessionCacheSetup final {
     return result;
 }
 
+using SessionAnalyzerVariant =
+    std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer>;
+
+struct ResolvedAnalyzerSetup final {
+    rules::FormatSelection formatSelection;
+    rules::H264AnnexBDetectionResult formatDetection;
+    rules::AacAdtsDetectionResult aacFormatDetection;
+    rules::Mp4DetectionResult mp4FormatDetection;
+    std::optional<SessionAnalyzerVariant> analyzer;
+};
+
+[[nodiscard]] std::optional<ResolvedAnalyzerSetup> setupResolvedAnalyzer(
+    const core::RandomAccessSource& source,
+    const core::SourcePage& initialPage,
+    const rules::RuleCatalogLookupResult& resolvedRule,
+    QString* errorMessage) {
+    ResolvedAnalyzerSetup setup;
+    QString analyzerError;
+
+    if (resolvedRule.package->manifest().packageId == QStringLiteral("org.streamview.aac") ||
+        (resolvedRule.entryPoint &&
+         resolvedRule.entryPoint->format == QStringLiteral("audio.aac.adts"))) {
+        setup.formatSelection.format = rules::DetectedFormat::AacAdts;
+        setup.formatSelection.reason = rules::DetectedFormatReason::AacFrameChain;
+        setup.aacFormatDetection =
+            rules::detectAacAdtsCandidate(initialPage.bytes, source.sizeBytes());
+        auto aacAnalyzer =
+            rules::AacAdtsAnalyzer::create(source, resolvedRule, &analyzerError);
+        if (!aacAnalyzer) {
+            if (errorMessage != nullptr) {
+                *errorMessage = analyzerError;
+            }
+            return std::nullopt;
+        }
+        setup.analyzer.emplace(std::move(*aacAnalyzer));
+    } else if (resolvedRule.package->manifest().packageId == QStringLiteral("org.streamview.mp4") ||
+               (resolvedRule.entryPoint &&
+                (resolvedRule.entryPoint->format == QStringLiteral("video.mp4") ||
+                 resolvedRule.entryPoint->format == QStringLiteral("video/mp4")))) {
+        setup.formatSelection.format = rules::DetectedFormat::Mp4Isobmff;
+        setup.formatSelection.reason = rules::DetectedFormatReason::Mp4StructuralTiling;
+        setup.mp4FormatDetection =
+            rules::detectMp4Candidate(initialPage.bytes, source.sizeBytes());
+        auto mp4Analyzer =
+            rules::Mp4IsobmffAnalyzer::create(source, resolvedRule, &analyzerError);
+        if (!mp4Analyzer) {
+            if (errorMessage != nullptr) {
+                *errorMessage = analyzerError;
+            }
+            return std::nullopt;
+        }
+        setup.analyzer.emplace(std::move(*mp4Analyzer));
+    } else {
+        setup.formatSelection.format = rules::DetectedFormat::H264AnnexB;
+        setup.formatSelection.reason = rules::DetectedFormatReason::H264AnchoredStartCodes;
+        setup.formatDetection =
+            rules::detectH264AnnexBCandidate(initialPage.bytes, source.sizeBytes());
+        auto h264Analyzer =
+            rules::H264AnnexBAnalyzer::create(source, resolvedRule, &analyzerError);
+        if (!h264Analyzer) {
+            if (errorMessage != nullptr) {
+                *errorMessage = analyzerError;
+            }
+            return std::nullopt;
+        }
+        setup.analyzer.emplace(std::move(*h264Analyzer));
+    }
+    return setup;
+}
+
 } // namespace
 
 AnalysisSession::AnalysisSession(std::unique_ptr<core::RandomAccessSource> source,
@@ -188,6 +258,36 @@ AnalysisSession::create(std::unique_ptr<core::RandomAccessSource> source,
 }
 
 std::unique_ptr<AnalysisSession>
+AnalysisSession::openFileWithExplicitRule(const QString& path,
+                                         const rules::RulePackageCatalog& catalog,
+                                         const rules::RuleEntryPointIdentity& targetRule,
+                                         AnalysisSessionCacheOptions cacheOptions,
+                                         QString* errorMessage) {
+    auto source = core::FileSource::open(path, errorMessage);
+    if (!source) {
+        return nullptr;
+    }
+    rules::RuleCatalogLookupResult resolved = catalog.resolve(
+        targetRule.packageIdentity(), targetRule.entryPointId(),
+        rules::languageVersion(), core::version());
+    if (!resolved.succeeded()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = resolved.errorMessage.isEmpty()
+                                ? QStringLiteral("Failed to resolve explicit rule package")
+                                : resolved.errorMessage;
+        }
+        return nullptr;
+    }
+    core::SourceFingerprintResult fingerprint = source->fingerprint();
+    std::optional<core::SourceFingerprint> verifiedFingerprint;
+    if (fingerprint.succeeded() && fingerprint.fingerprint.has_value()) {
+        verifiedFingerprint = std::move(fingerprint.fingerprint);
+    }
+    return createPrepared(std::move(source), path, &resolved, {}, std::move(cacheOptions),
+                          std::move(verifiedFingerprint), errorMessage);
+}
+
+std::unique_ptr<AnalysisSession>
 AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source,
                                 QString sourcePath,
                                 const rules::RuleCatalogLookupResult* resolvedRule,
@@ -223,54 +323,15 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
 
     rules::FormatSelection formatSelection;
     if (resolvedRule != nullptr) {
-        if (resolvedRule->package->manifest().packageId == QStringLiteral("org.streamview.aac") ||
-            (resolvedRule->entryPoint &&
-             resolvedRule->entryPoint->format == QStringLiteral("audio.aac.adts"))) {
-            formatSelection.format = rules::DetectedFormat::AacAdts;
-            formatSelection.reason = rules::DetectedFormatReason::AacFrameChain;
-            aacFormatDetection =
-                rules::detectAacAdtsCandidate(initialPage.bytes, source->sizeBytes());
-            auto aacAnalyzer =
-                rules::AacAdtsAnalyzer::create(*source, *resolvedRule, &analyzerError);
-            if (!aacAnalyzer) {
-                if (errorMessage != nullptr) {
-                    *errorMessage = analyzerError;
-                }
-                return nullptr;
-            }
-            analyzerVariant.emplace(std::move(*aacAnalyzer));
-        } else if (resolvedRule->package->manifest().packageId == QStringLiteral("org.streamview.mp4") ||
-                   (resolvedRule->entryPoint &&
-                    (resolvedRule->entryPoint->format == QStringLiteral("video.mp4") ||
-                     resolvedRule->entryPoint->format == QStringLiteral("video/mp4")))) {
-            formatSelection.format = rules::DetectedFormat::Mp4Isobmff;
-            formatSelection.reason = rules::DetectedFormatReason::Mp4StructuralTiling;
-            mp4FormatDetection =
-                rules::detectMp4Candidate(initialPage.bytes, source->sizeBytes());
-            auto mp4Analyzer =
-                rules::Mp4IsobmffAnalyzer::create(*source, *resolvedRule, &analyzerError);
-            if (!mp4Analyzer) {
-                if (errorMessage != nullptr) {
-                    *errorMessage = analyzerError;
-                }
-                return nullptr;
-            }
-            analyzerVariant.emplace(std::move(*mp4Analyzer));
-        } else {
-            formatSelection.format = rules::DetectedFormat::H264AnnexB;
-            formatSelection.reason = rules::DetectedFormatReason::H264AnchoredStartCodes;
-            formatDetection =
-                rules::detectH264AnnexBCandidate(initialPage.bytes, source->sizeBytes());
-            auto h264Analyzer =
-                rules::H264AnnexBAnalyzer::create(*source, *resolvedRule, &analyzerError);
-            if (!h264Analyzer) {
-                if (errorMessage != nullptr) {
-                    *errorMessage = analyzerError;
-                }
-                return nullptr;
-            }
-            analyzerVariant.emplace(std::move(*h264Analyzer));
+        auto setup = setupResolvedAnalyzer(*source, initialPage, *resolvedRule, errorMessage);
+        if (!setup.has_value()) {
+            return nullptr;
         }
+        formatSelection = std::move(setup->formatSelection);
+        formatDetection = std::move(setup->formatDetection);
+        aacFormatDetection = std::move(setup->aacFormatDetection);
+        mp4FormatDetection = std::move(setup->mp4FormatDetection);
+        analyzerVariant = std::move(setup->analyzer);
     } else {
         formatDetection =
             rules::detectH264AnnexBCandidate(initialPage.bytes, source->sizeBytes());
@@ -474,6 +535,64 @@ SessionSaveResult AnalysisSession::saveSession(const QString& sessionPath,
     }
     result.status = SessionSaveStatus::Saved;
     return result;
+}
+
+bool AnalysisSession::overrideFormat(const rules::RulePackageCatalog& catalog,
+                                    const rules::RuleEntryPointIdentity& targetRule,
+                                    QString* errorMessage) {
+    if (!source_) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("No media source was provided");
+        }
+        return false;
+    }
+
+    rules::RuleCatalogLookupResult resolved = catalog.resolve(
+        targetRule.packageIdentity(), targetRule.entryPointId(),
+        rules::languageVersion(), core::version());
+    if (!resolved.succeeded()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = resolved.errorMessage.isEmpty()
+                                ? QStringLiteral("Failed to resolve explicit rule package")
+                                : resolved.errorMessage;
+        }
+        return false;
+    }
+
+    auto setup = setupResolvedAnalyzer(*source_, initialPage_, resolved, errorMessage);
+    if (!setup.has_value()) {
+        return false;
+    }
+
+    cacheOwner_.reset();
+    pendingCacheWrites_.clear();
+    cacheStatus_ = AnalysisSessionCacheStatus::Disabled;
+    cacheErrorMessage_.clear();
+    nextProgressiveCachePageIndex_ = 0;
+    materializedCacheSubmitted_ = false;
+
+    navigationStack_.clear();
+    subFormatSessions_.clear();
+    trackIndices_.clear();
+    sampleIndicesBuilt_ = false;
+    sampleSessions_.clear();
+
+    userState_.expandedPaths.clear();
+    userState_.view.selectedAnalysisPath.reset();
+
+    analysisStarted_ = false;
+    lastBatchStatus_ = AnalysisBatchStatus::InProgress;
+
+    formatSelection_ = std::move(setup->formatSelection);
+    formatDetection_ = std::move(setup->formatDetection);
+    aacFormatDetection_ = std::move(setup->aacFormatDetection);
+    mp4FormatDetection_ = std::move(setup->mp4FormatDetection);
+    analyzer_ = std::move(*setup->analyzer);
+
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return true;
 }
 
 AnalysisBatchResult AnalysisSession::analyzeBatch(

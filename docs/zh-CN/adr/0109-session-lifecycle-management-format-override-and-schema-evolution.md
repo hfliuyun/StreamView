@@ -105,7 +105,7 @@ StreamView 阶段 5 完整交付了非分片 ISO BMFF MP4/MOV 容器解析、元
         const QString& sessionPath,
         const SessionUserState& userState) const;
     ```
-    （由 [src/app/analysis_session.h:326](../../src/app/analysis_session.h#L326) 现有的 `bool saveSession(...)` 升级为返回强类型结果结构体）。
+    （由 [src/app/analysis_session.h:333](../../src/app/analysis_session.h#L333) 现有的 `bool saveSession(...)` 升级为返回强类型结果结构体）。
 - **`MainWindow` / 文档协调者（表现层）**：
   - 持有活跃的 `SessionUserState`（[src/app/session_document.h:42-49](../../src/app/session_document.h#L42-L49)），聚合以下组件状态：
     * `bookmarks`：`SessionBookmark` 列表；
@@ -180,7 +180,7 @@ struct SessionSaveResult final {
 ### 4. 格式手动覆盖架构（P1-2，闭环 P2-17、P2-19、P2-20）
 
 #### 1. 歧义交互式裁决（P2-17）
-在 `MainWindow` 中，当 `session_->formatSelection().ambiguous()`（[src/app/analysis_session.h:288](../../src/app/analysis_session.h#L288)）为真时：
+在 `MainWindow` 中，当 `session_->formatSelection().ambiguous()`（[src/app/analysis_session.h:294](../../src/app/analysis_session.h#L294)）为真时：
 - Task P5j-5 引入的歧义横幅将显示交互式 **「解决歧义...」** 按钮；
 - 点击后弹出 `FormatOverrideDialog` 对话框，预选发生竞争冲突的候选格式（例如 `MP4 (ISOBMFF)` 与 `H.264 (Annex B)`）。
 
