@@ -263,7 +263,37 @@ public:
 
 ---
 
-### 7. 阶段 6 任务拆分与依赖编排（P6a – P6i，P2-25）
+### 7. 桌面主题与双语动态本地化架构
+
+为在多元操作系统环境及多语言团队协作场景下提供一致、现代的桌面交互体验，Task P6g 引入动态主题管理与无需重启的即时双语本地化：
+
+1. **桌面主题模式（`ThemeMode`）**：
+   - 支持三种主题模式：
+     - `ThemeMode::Light`（浅色）：标准浅色调色板，具有清晰的高对比度、暗色字形排版与柔和结构边框；
+     - `ThemeMode::Dark`（深色）：针对二进制与语法解析场景优化的深色高对比调色板，具备暗中性背景、亮灰字形与适配的高亮选区；
+     - `ThemeMode::System`（跟随系统）：通过 `QGuiApplication::styleHints()->colorScheme()` 动态跟踪操作系统外观设置，响应 OS 明暗主题切换。
+   - 主题由 `ThemeManager` 统一调度，向所有基础控件、Dock、对话框以及自绘表面（`RawDataView`、`AnalysisTreeView`、`DiagnosticsSummaryDock`）注入一致的 `QPalette` 调色板与配色方案。
+   - `MainWindow` 在 `View > Theme` 子菜单（对象名 `menuTheme`）中提供互斥单选动作组（`QActionGroup`）：
+     - `actionThemeSystem`（`tr("System")`）
+     - `actionThemeLight`（`tr("Light")`）
+     - `actionThemeDark`（`tr("Dark")`）
+
+2. **双语动态本地化与零重启热重载（Hot-Reload）**：
+   - StreamView 支持两套基线语言：
+     - `en`：英语（基准物料与代码词条）；
+     - `zh_CN`：简体中文。
+   - 所有面向用户的界面文本严格使用 Qt `tr(...)` 包装。
+   - 中文翻译预先编译为二进制 `.qm` 资源，并内嵌于应用资源系统（`:/translations/streamview_zh_CN.qm`）。
+   - `MainWindow` 在 `changeEvent(QEvent*)` 中监听 `QEvent::LanguageChange` 事件：
+     - 切换语言时通过 `QCoreApplication::installTranslator()` / `removeTranslator()` 动态挂载或卸载 `QTranslator`；
+     - 调用 `retranslateUi()`，即时刷新所有菜单标题（File、Edit、View、Analysis、Tools、Help）、菜单项文案、状态栏提示、Dock 标题（`tr("Diagnostics")`、`tr("Timeline")`）、搜索与占位提示以及表头，完全无需重启应用程序。
+   - `MainWindow` 在 `View > Language` 子菜单（对象名 `menuLanguage`）中提供互斥单选动作组（`QActionGroup`）：
+     - `actionLanguageEnglish`（`tr("English")`）
+     - `actionLanguageChinese`（`tr("Simplified Chinese (简体中文)")`）
+
+---
+
+### 8. 阶段 6 任务拆分与依赖编排（P6a – P6i，P2-25）
 
 为严格遵守项目纪律（单任务闭环 SOP、能力与消费者不混杂提交、固定独立评审门禁），阶段 6 划分为以下串行任务切片：
 

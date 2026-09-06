@@ -263,7 +263,37 @@ To provide robust desktop feedback during large-file inspection and surfaced str
 
 ---
 
-### 7. Phase 6 Work Breakdown Structure (P6a – P6i, P2-25)
+### 7. Desktop Theme and Dynamic Bilingual Localization Architecture
+
+To establish an accessible, modern desktop experience across diverse operating environments and multilingual teams, Task P6g introduces dynamic theme management and zero-restart bilingual localization:
+
+1. **Desktop Theme Modes (`ThemeMode`)**:
+   - Three distinct theme modes are supported:
+     - `ThemeMode::Light`: Standard light palette with crisp contrast, dark typography, and subdued structural element outlines.
+     - `ThemeMode::Dark`: High-contrast dark palette tailored for binary and syntax inspection, featuring deep neutral backgrounds, light typography, and adjusted selection tints.
+     - `ThemeMode::System`: Dynamically tracks the underlying desktop environment theme via `QGuiApplication::styleHints()->colorScheme()`, reacting to OS appearance changes.
+   - The theme is managed via `ThemeManager`, applying consistent `QPalette` palettes to all widgets, docks, dialogs, and custom-rendered surfaces (`RawDataView`, `AnalysisTreeView`, `DiagnosticsSummaryDock`).
+   - `MainWindow` exposes a `View > Theme` submenu (`menuTheme`) containing a mutually exclusive `QActionGroup`:
+     - `actionThemeSystem` (`tr("System")`)
+     - `actionThemeLight` (`tr("Light")`)
+     - `actionThemeDark` (`tr("Dark")`)
+
+2. **Dynamic Bilingual Localization & Zero-Restart Hot-Reload**:
+   - StreamView supports two baseline locales:
+     - `en`: English (base canonical catalog).
+     - `zh_CN`: Simplified Chinese (简体中文).
+   - UI strings are enclosed in standard Qt `tr(...)` translation calls.
+   - Chinese translations are compiled into a binary `.qm` resource file embedded within the application binary (`:/translations/streamview_zh_CN.qm`).
+   - `MainWindow` listens to `QEvent::LanguageChange` in its `changeEvent(QEvent*)` override:
+     - Switching languages dynamically installs or uninstalls `QTranslator` instances via `QCoreApplication::installTranslator()` / `removeTranslator()`.
+     - Invokes `retranslateUi()`, which refreshes all menu titles (File, Edit, View, Analysis, Tools, Help), menu action labels, status bar indicators, dock titles (`tr("Diagnostics")`, `tr("Timeline")`), search prompts, and table header labels immediately without restarting the application.
+   - `MainWindow` exposes a `View > Language` submenu (`menuLanguage`) containing a mutually exclusive `QActionGroup`:
+     - `actionLanguageEnglish` (`tr("English")`)
+     - `actionLanguageChinese` (`tr("Simplified Chinese (简体中文)")`)
+
+---
+
+### 8. Phase 6 Work Breakdown Structure (P6a – P6i, P2-25)
 
 To ensure strict compliance with project discipline (independent SOP closed loops, clean capability-vs-consumer separation, and mandatory review gates), Phase 6 is partitioned into the following sequential task slices:
 
