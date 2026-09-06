@@ -20,6 +20,7 @@ class QComboBox;
 class QDockWidget;
 class QLabel;
 class QModelIndex;
+class QPushButton;
 class QTableView;
 class QToolButton;
 class QTreeView;
@@ -81,12 +82,21 @@ public:
     void setMessageDialogHandlerForTesting(MessageDialogHandler handler) {
         messageDialogHandler_ = std::move(handler);
     }
+    using FormatOverrideDialogHandler = std::function<std::optional<rules::RuleEntryPointIdentity>(
+        QWidget*,
+        const rules::RulePackageCatalog&,
+        const rules::FormatSelection&,
+        const rules::RuleEntryPointIdentity&)>;
+    void setFormatOverrideDialogHandlerForTesting(FormatOverrideDialogHandler handler) {
+        formatOverrideDialogHandler_ = std::move(handler);
+    }
 
 public slots:
     void openFile();
     void openSession();
     bool saveSession();
     bool saveSessionAs();
+    void overrideFormat();
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -141,6 +151,8 @@ private:
     QTableView* timelineTableView_ = nullptr;
     TimelineTableModel* timelineModel_ = nullptr;
     QLabel* formatAmbiguityLabel_ = nullptr;
+    QWidget* formatAmbiguityBannerWidget_ = nullptr;
+    QPushButton* resolveAmbiguityButton_ = nullptr;
 
     SourceSelection sourceSelection_;
 
@@ -164,12 +176,14 @@ private:
     QAction* actionOpenSession_ = nullptr;
     QAction* actionSaveSession_ = nullptr;
     QAction* actionSaveSessionAs_ = nullptr;
+    QAction* actionOverrideFormat_ = nullptr;
     QAction* actionExit_ = nullptr;
 
     SavePromptHandler savePromptHandler_;
     FileDialogHandler saveFileDialogHandler_;
     FileDialogHandler openFileDialogHandler_;
     MessageDialogHandler messageDialogHandler_;
+    FormatOverrideDialogHandler formatOverrideDialogHandler_;
 };
 
 } // namespace streamview::app

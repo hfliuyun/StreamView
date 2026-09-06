@@ -5,6 +5,8 @@ add_library(streamview_app STATIC
     analysis_tree_model.h
     field_inspector.cpp
     field_inspector.h
+    format_override_dialog.cpp
+    format_override_dialog.h
     main_window.cpp
     main_window.h
     raw_data_model.cpp
