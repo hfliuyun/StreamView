@@ -242,7 +242,28 @@ A dedicated dialog `RuleManagerDialog` (invoked via `Tools > Manage Rules...`, t
 
 ---
 
-### 6. Phase 6 Work Breakdown Structure (P6a – P6i, P2-25)
+### 6. Analysis Progress, Asynchronous Cancellation, and Diagnostics Summary Architecture
+
+To provide robust desktop feedback during large-file inspection and surfaced stream irregularities, Task P6f establishes responsive progress tracking, non-blocking cancellation, and a unified diagnostics overview:
+
+1. **Status Bar Progress Indicator & Interactive Cancellation**:
+   - A `QProgressBar` (`analysisProgressBar`) is embedded in `MainWindow` status bar, active during ongoing incremental analysis (`!session_->finished() && !isCancelled()`), displaying byte scan progress (`session_->scanCursor()` / `session_->sizeBytes()`).
+   - An adjacent `QPushButton` (`cancelAnalysisButton`, labeled `Cancel`) allows interactive cancellation of in-flight analysis.
+   - Triggering cancellation requests cancellation via `core::CancellationSource` / `session_->requestCancellation()`. The active analyzer batch halts promptly and returns `AnalysisBatchStatus::Cancelled`.
+   - Upon cancellation, status bar displays `Analysis cancelled: N nodes`, hides the progress bar and cancel button, and strictly preserves the partially materialized `AnalysisTree` without memory leaks or state corruption.
+
+2. **`DiagnosticsSummaryDock` Global Diagnostics Panel**:
+   - A dedicated `QDockWidget` (`diagnosticsSummaryDock`, titled `Diagnostics`) positioned in the bottom dock area aggregates all `ParseDiagnostic` occurrences across the entire active `AnalysisTree`.
+   - Includes a summary label (`diagnosticsSummaryLabel`) displaying total diagnostic counts broken down by severity (Error, Warning, Info) and a severity filter combo box (`severityFilterComboBox`).
+   - Displays a table (`diagnosticsTableWidget`) with columns: `Severity`, `Message`, `Field / Node`, and `Offset / Range`.
+   - **Bidirectional Selection Protocol**:
+     - *Forward Navigation*: Selecting a diagnostic row automatically locates, expands, and selects the associated `AnalysisNode` in `AnalysisTreeView`, updates `FieldInspector`, and navigates/highlights the exact byte and bit range in `RawDataView`.
+     - *Reverse Navigation*: Selecting a node with diagnostics in `AnalysisTreeView` highlights and scrolls to the corresponding row in `DiagnosticsSummaryDock`.
+   - View menu provides a toggle action (`actionToggleDiagnosticsDock`) to show or hide the dock.
+
+---
+
+### 7. Phase 6 Work Breakdown Structure (P6a – P6i, P2-25)
 
 To ensure strict compliance with project discipline (independent SOP closed loops, clean capability-vs-consumer separation, and mandatory review gates), Phase 6 is partitioned into the following sequential task slices:
 
