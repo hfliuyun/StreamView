@@ -1,8 +1,10 @@
 #pragma once
 
 #include "analysis_session.h"
+#include "localization_manager.h"
 #include "session_document.h"
 #include "source_selection.h"
+#include "theme_manager.h"
 
 #include <QMainWindow>
 #include <QMessageBox>
@@ -16,10 +18,12 @@
 #include <vector>
 
 class QAction;
+class QActionGroup;
 class QCloseEvent;
 class QComboBox;
 class QDockWidget;
 class QLabel;
+class QMenu;
 class QModelIndex;
 class QProgressBar;
 class QPushButton;
@@ -108,6 +112,8 @@ public:
         return ruleStorePath_;
     }
 
+    void retranslateUi();
+
 public slots:
     void openFile();
     void openSession();
@@ -116,10 +122,13 @@ public slots:
     void overrideFormat();
     void openRuleManager();
     void cancelAnalysis();
+    void setThemeMode(ThemeMode mode);
+    void setLanguage(Language lang);
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
     void closeEvent(QCloseEvent* event) override;
+    void changeEvent(QEvent* event) override;
 
 private slots:
     void returnToParentFormat();
@@ -199,6 +208,16 @@ private:
     QString ruleStorePath_;
     std::set<QString> bundledPackageIds_;
 
+    QDockWidget* analysisDock_ = nullptr;
+    QDockWidget* fieldDock_ = nullptr;
+
+    QMenu* menuFile_ = nullptr;
+    QMenu* menuView_ = nullptr;
+    QMenu* menuTheme_ = nullptr;
+    QMenu* menuLanguage_ = nullptr;
+    QMenu* menuAnalysis_ = nullptr;
+    QMenu* menuTools_ = nullptr;
+
     QAction* actionOpen_ = nullptr;
     QAction* actionOpenSession_ = nullptr;
     QAction* actionSaveSession_ = nullptr;
@@ -208,6 +227,15 @@ private:
     QAction* actionExit_ = nullptr;
     QAction* actionToggleDiagnosticsDock_ = nullptr;
     QAction* actionToggleTimelineDock_ = nullptr;
+
+    QAction* actionThemeSystem_ = nullptr;
+    QAction* actionThemeLight_ = nullptr;
+    QAction* actionThemeDark_ = nullptr;
+    QActionGroup* themeActionGroup_ = nullptr;
+
+    QAction* actionLanguageEnglish_ = nullptr;
+    QAction* actionLanguageChinese_ = nullptr;
+    QActionGroup* languageActionGroup_ = nullptr;
 
     SavePromptHandler savePromptHandler_;
     FileDialogHandler saveFileDialogHandler_;

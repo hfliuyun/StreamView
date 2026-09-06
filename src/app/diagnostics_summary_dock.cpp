@@ -2,6 +2,7 @@
 
 #include <QColor>
 #include <QComboBox>
+#include <QEvent>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -30,8 +31,8 @@ DiagnosticsSummaryDock::DiagnosticsSummaryDock(QWidget* parent)
 
     topLayout->addStretch();
 
-    auto* filterLabel = new QLabel(tr("Filter:"), container);
-    topLayout->addWidget(filterLabel);
+    filterLabel_ = new QLabel(tr("Filter:"), container);
+    topLayout->addWidget(filterLabel_);
 
     severityFilterComboBox_ = new QComboBox(container);
     severityFilterComboBox_->setObjectName(QStringLiteral("severityFilterComboBox"));
@@ -263,6 +264,38 @@ void DiagnosticsSummaryDock::rebuildTable() {
         auto* locItem = new QTableWidgetItem(locText);
         tableWidget_->setItem(row, 3, locItem);
     }
+}
+
+void DiagnosticsSummaryDock::retranslateUi() {
+    setWindowTitle(tr("Diagnostics"));
+    if (filterLabel_ != nullptr) {
+        filterLabel_->setText(tr("Filter:"));
+    }
+    if (severityFilterComboBox_ != nullptr) {
+        const int count = severityFilterComboBox_->count();
+        if (count >= 4) {
+            severityFilterComboBox_->setItemText(0, tr("All Severities"));
+            severityFilterComboBox_->setItemText(1, tr("Errors Only"));
+            severityFilterComboBox_->setItemText(2, tr("Warnings & Errors"));
+            severityFilterComboBox_->setItemText(3, tr("Info"));
+        }
+    }
+    if (tableWidget_ != nullptr) {
+        tableWidget_->setHorizontalHeaderLabels({
+            tr("Severity"),
+            tr("Message"),
+            tr("Field / Node"),
+            tr("Offset / Range")
+        });
+    }
+    updateSummaryLabel();
+}
+
+void DiagnosticsSummaryDock::changeEvent(QEvent* event) {
+    if (event != nullptr && event->type() == QEvent::LanguageChange) {
+        retranslateUi();
+    }
+    QDockWidget::changeEvent(event);
 }
 
 } // namespace streamview::app

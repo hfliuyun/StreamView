@@ -14,6 +14,7 @@
 #include <streamview/rules/rule_package_store.h>
 
 #include <QAction>
+#include <QActionGroup>
 #include <QBoxLayout>
 #include <QCloseEvent>
 #include <QComboBox>
@@ -144,74 +145,124 @@ MainWindow::MainWindow(AnalysisSessionCacheOptions cacheOptions, QWidget* parent
 }
 
 void MainWindow::setupMenus() {
-    auto* fileMenu = menuBar()->addMenu(tr("&File"));
-    fileMenu->setObjectName(QStringLiteral("menuFile"));
+    menuFile_ = menuBar()->addMenu(tr("&File"));
+    menuFile_->setObjectName(QStringLiteral("menuFile"));
 
-    actionOpen_ = fileMenu->addAction(tr("&Open..."));
+    actionOpen_ = menuFile_->addAction(tr("&Open..."));
     actionOpen_->setObjectName(QStringLiteral("actionOpen"));
     actionOpen_->setShortcut(QKeySequence::Open);
     connect(actionOpen_, &QAction::triggered, this, &MainWindow::openFile);
 
-    actionOpenSession_ = fileMenu->addAction(tr("Open &Session..."));
+    actionOpenSession_ = menuFile_->addAction(tr("Open &Session..."));
     actionOpenSession_->setObjectName(QStringLiteral("actionOpenSession"));
     connect(actionOpenSession_, &QAction::triggered, this, &MainWindow::openSession);
 
-    fileMenu->addSeparator();
+    menuFile_->addSeparator();
 
-    actionSaveSession_ = fileMenu->addAction(tr("&Save Session"));
+    actionSaveSession_ = menuFile_->addAction(tr("&Save Session"));
     actionSaveSession_->setObjectName(QStringLiteral("actionSaveSession"));
     actionSaveSession_->setShortcut(QKeySequence::Save);
     actionSaveSession_->setEnabled(false);
     connect(actionSaveSession_, &QAction::triggered, this, [this] { static_cast<void>(saveSession()); });
 
-    actionSaveSessionAs_ = fileMenu->addAction(tr("Save Session &As..."));
+    actionSaveSessionAs_ = menuFile_->addAction(tr("Save Session &As..."));
     actionSaveSessionAs_->setObjectName(QStringLiteral("actionSaveSessionAs"));
     actionSaveSessionAs_->setShortcut(QKeySequence::SaveAs);
     actionSaveSessionAs_->setEnabled(false);
     connect(actionSaveSessionAs_, &QAction::triggered, this, [this] { static_cast<void>(saveSessionAs()); });
 
-    fileMenu->addSeparator();
+    menuFile_->addSeparator();
 
-    actionExit_ = fileMenu->addAction(tr("E&xit"));
+    actionExit_ = menuFile_->addAction(tr("E&xit"));
     actionExit_->setObjectName(QStringLiteral("actionExit"));
     actionExit_->setShortcut(QKeySequence::Quit);
     connect(actionExit_, &QAction::triggered, this, &QWidget::close);
 
-    auto* viewMenu = menuBar()->addMenu(tr("&View"));
-    viewMenu->setObjectName(QStringLiteral("menuView"));
+    menuView_ = menuBar()->addMenu(tr("&View"));
+    menuView_->setObjectName(QStringLiteral("menuView"));
+
+    // --- Theme Submenu ---
+    menuTheme_ = menuView_->addMenu(tr("Theme"));
+    menuTheme_->setObjectName(QStringLiteral("menuTheme"));
+
+    themeActionGroup_ = new QActionGroup(this);
+    themeActionGroup_->setExclusive(true);
+
+    actionThemeSystem_ = menuTheme_->addAction(tr("System"));
+    actionThemeSystem_->setObjectName(QStringLiteral("actionThemeSystem"));
+    actionThemeSystem_->setCheckable(true);
+    themeActionGroup_->addAction(actionThemeSystem_);
+    connect(actionThemeSystem_, &QAction::triggered, this, [this] { setThemeMode(ThemeMode::System); });
+
+    actionThemeLight_ = menuTheme_->addAction(tr("Light"));
+    actionThemeLight_->setObjectName(QStringLiteral("actionThemeLight"));
+    actionThemeLight_->setCheckable(true);
+    themeActionGroup_->addAction(actionThemeLight_);
+    connect(actionThemeLight_, &QAction::triggered, this, [this] { setThemeMode(ThemeMode::Light); });
+
+    actionThemeDark_ = menuTheme_->addAction(tr("Dark"));
+    actionThemeDark_->setObjectName(QStringLiteral("actionThemeDark"));
+    actionThemeDark_->setCheckable(true);
+    themeActionGroup_->addAction(actionThemeDark_);
+    connect(actionThemeDark_, &QAction::triggered, this, [this] { setThemeMode(ThemeMode::Dark); });
+
+    actionThemeSystem_->setChecked(true);
+
+    // --- Language Submenu ---
+    menuLanguage_ = menuView_->addMenu(tr("Language"));
+    menuLanguage_->setObjectName(QStringLiteral("menuLanguage"));
+
+    languageActionGroup_ = new QActionGroup(this);
+    languageActionGroup_->setExclusive(true);
+
+    actionLanguageEnglish_ = menuLanguage_->addAction(tr("English"));
+    actionLanguageEnglish_->setObjectName(QStringLiteral("actionLanguageEnglish"));
+    actionLanguageEnglish_->setCheckable(true);
+    languageActionGroup_->addAction(actionLanguageEnglish_);
+    connect(actionLanguageEnglish_, &QAction::triggered, this, [this] { setLanguage(Language::English); });
+
+    actionLanguageChinese_ = menuLanguage_->addAction(tr("Simplified Chinese (简体中文)"));
+    actionLanguageChinese_->setObjectName(QStringLiteral("actionLanguageChinese"));
+    actionLanguageChinese_->setCheckable(true);
+    languageActionGroup_->addAction(actionLanguageChinese_);
+    connect(actionLanguageChinese_, &QAction::triggered, this, [this] { setLanguage(Language::SimplifiedChinese); });
+
+    actionLanguageEnglish_->setChecked(true);
+
+    menuView_->addSeparator();
 
     actionToggleDiagnosticsDock_ = diagnosticsSummaryDock_->toggleViewAction();
     actionToggleDiagnosticsDock_->setObjectName(QStringLiteral("actionToggleDiagnosticsDock"));
     actionToggleDiagnosticsDock_->setText(tr("&Diagnostics"));
-    viewMenu->addAction(actionToggleDiagnosticsDock_);
+    menuView_->addAction(actionToggleDiagnosticsDock_);
 
     actionToggleTimelineDock_ = timelineDock_->toggleViewAction();
     actionToggleTimelineDock_->setObjectName(QStringLiteral("actionToggleTimelineDock"));
     actionToggleTimelineDock_->setText(tr("&Timeline"));
-    viewMenu->addAction(actionToggleTimelineDock_);
+    menuView_->addAction(actionToggleTimelineDock_);
 
-    auto* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
-    analysisMenu->setObjectName(QStringLiteral("menuAnalysis"));
+    menuAnalysis_ = menuBar()->addMenu(tr("&Analysis"));
+    menuAnalysis_->setObjectName(QStringLiteral("menuAnalysis"));
 
-    actionOverrideFormat_ = analysisMenu->addAction(tr("&Override Format..."));
+    actionOverrideFormat_ = menuAnalysis_->addAction(tr("&Override Format..."));
     actionOverrideFormat_->setObjectName(QStringLiteral("actionOverrideFormat"));
     actionOverrideFormat_->setEnabled(false);
     connect(actionOverrideFormat_, &QAction::triggered, this, &MainWindow::overrideFormat);
 
-    auto* toolsMenu = menuBar()->addMenu(tr("&Tools"));
-    toolsMenu->setObjectName(QStringLiteral("menuTools"));
+    menuTools_ = menuBar()->addMenu(tr("&Tools"));
+    menuTools_->setObjectName(QStringLiteral("menuTools"));
 
-    actionManageRules_ = toolsMenu->addAction(tr("&Manage Rules..."));
+    actionManageRules_ = menuTools_->addAction(tr("&Manage Rules..."));
     actionManageRules_->setObjectName(QStringLiteral("actionManageRules"));
     connect(actionManageRules_, &QAction::triggered, this, &MainWindow::openRuleManager);
 }
 
 void MainWindow::setupDocks() {
     // --- Analysis Tree dock (left) ---
-    auto* analysisDock = new QDockWidget(tr("Analysis Tree"), this);
-    analysisDock->setObjectName(QStringLiteral("analysisTreeDock"));
+    analysisDock_ = new QDockWidget(tr("Analysis Tree"), this);
+    analysisDock_->setObjectName(QStringLiteral("analysisTreeDock"));
 
-    auto* treeContainer = new QWidget(analysisDock);
+    auto* treeContainer = new QWidget(analysisDock_);
     auto* treeLayout = new QVBoxLayout(treeContainer);
     treeLayout->setContentsMargins(0, 0, 0, 0);
     treeLayout->setSpacing(2);
@@ -259,16 +310,16 @@ void MainWindow::setupDocks() {
             this, &MainWindow::onTreeDoubleClicked);
 
     treeLayout->addWidget(analysisTreeView_, 1);
-    analysisDock->setWidget(treeContainer);
-    addDockWidget(Qt::LeftDockWidgetArea, analysisDock);
+    analysisDock_->setWidget(treeContainer);
+    addDockWidget(Qt::LeftDockWidgetArea, analysisDock_);
 
     // --- Field Inspector dock (right) ---
-    auto* inspectorDock = new QDockWidget(tr("Field Inspector"), this);
-    inspectorDock->setObjectName(QStringLiteral("fieldInspectorDock"));
-    fieldInspector_ = new FieldInspector(inspectorDock);
+    fieldDock_ = new QDockWidget(tr("Field Inspector"), this);
+    fieldDock_->setObjectName(QStringLiteral("fieldInspectorDock"));
+    fieldInspector_ = new FieldInspector(fieldDock_);
     fieldInspector_->setObjectName(QStringLiteral("fieldInspector"));
-    inspectorDock->setWidget(fieldInspector_);
-    addDockWidget(Qt::RightDockWidgetArea, inspectorDock);
+    fieldDock_->setWidget(fieldInspector_);
+    addDockWidget(Qt::RightDockWidgetArea, fieldDock_);
 
     // --- Timeline & Samples dock (bottom) ---
     timelineDock_ = new QDockWidget(tr("Timeline & Samples"), this);
@@ -1602,6 +1653,131 @@ void MainWindow::setSourceSelection(SourceSelection selection) {
 void MainWindow::clearSourceSelection() {
     sourceSelection_ = {};
     rawDataView_->setSourceSelection({});
+}
+
+void MainWindow::setThemeMode(ThemeMode mode) {
+    ThemeManager::instance().setThemeMode(mode);
+    if (actionThemeSystem_ != nullptr) {
+        actionThemeSystem_->setChecked(mode == ThemeMode::System);
+    }
+    if (actionThemeLight_ != nullptr) {
+        actionThemeLight_->setChecked(mode == ThemeMode::Light);
+    }
+    if (actionThemeDark_ != nullptr) {
+        actionThemeDark_->setChecked(mode == ThemeMode::Dark);
+    }
+}
+
+void MainWindow::setLanguage(Language lang) {
+    LocalizationManager::instance().setLanguage(lang);
+    if (actionLanguageEnglish_ != nullptr) {
+        actionLanguageEnglish_->setChecked(lang == Language::English);
+    }
+    if (actionLanguageChinese_ != nullptr) {
+        actionLanguageChinese_->setChecked(lang == Language::SimplifiedChinese);
+    }
+}
+
+void MainWindow::changeEvent(QEvent* event) {
+    if (event != nullptr && event->type() == QEvent::LanguageChange) {
+        retranslateUi();
+    }
+    QMainWindow::changeEvent(event);
+}
+
+void MainWindow::retranslateUi() {
+    if (menuFile_ != nullptr) {
+        menuFile_->setTitle(tr("&File"));
+    }
+    if (actionOpen_ != nullptr) {
+        actionOpen_->setText(tr("&Open..."));
+    }
+    if (actionOpenSession_ != nullptr) {
+        actionOpenSession_->setText(tr("Open &Session..."));
+    }
+    if (actionSaveSession_ != nullptr) {
+        actionSaveSession_->setText(tr("&Save Session"));
+    }
+    if (actionSaveSessionAs_ != nullptr) {
+        actionSaveSessionAs_->setText(tr("Save Session &As..."));
+    }
+    if (actionExit_ != nullptr) {
+        actionExit_->setText(tr("E&xit"));
+    }
+
+    if (menuView_ != nullptr) {
+        menuView_->setTitle(tr("&View"));
+    }
+    if (menuTheme_ != nullptr) {
+        menuTheme_->setTitle(tr("Theme"));
+    }
+    if (actionThemeSystem_ != nullptr) {
+        actionThemeSystem_->setText(tr("System"));
+    }
+    if (actionThemeLight_ != nullptr) {
+        actionThemeLight_->setText(tr("Light"));
+    }
+    if (actionThemeDark_ != nullptr) {
+        actionThemeDark_->setText(tr("Dark"));
+    }
+    if (menuLanguage_ != nullptr) {
+        menuLanguage_->setTitle(tr("Language"));
+    }
+    if (actionLanguageEnglish_ != nullptr) {
+        actionLanguageEnglish_->setText(tr("English"));
+    }
+    if (actionLanguageChinese_ != nullptr) {
+        actionLanguageChinese_->setText(tr("Simplified Chinese (简体中文)"));
+    }
+    if (actionToggleDiagnosticsDock_ != nullptr) {
+        actionToggleDiagnosticsDock_->setText(tr("&Diagnostics"));
+    }
+    if (actionToggleTimelineDock_ != nullptr) {
+        actionToggleTimelineDock_->setText(tr("&Timeline"));
+    }
+
+    if (menuAnalysis_ != nullptr) {
+        menuAnalysis_->setTitle(tr("&Analysis"));
+    }
+    if (actionOverrideFormat_ != nullptr) {
+        actionOverrideFormat_->setText(tr("&Override Format..."));
+    }
+
+    if (menuTools_ != nullptr) {
+        menuTools_->setTitle(tr("&Tools"));
+    }
+    if (actionManageRules_ != nullptr) {
+        actionManageRules_->setText(tr("&Manage Rules..."));
+    }
+
+    if (analysisDock_ != nullptr) {
+        analysisDock_->setWindowTitle(tr("Analysis Tree"));
+    }
+    if (fieldDock_ != nullptr) {
+        fieldDock_->setWindowTitle(tr("Field Inspector"));
+    }
+    if (timelineDock_ != nullptr) {
+        timelineDock_->setWindowTitle(tr("Timeline & Samples"));
+    }
+    if (diagnosticsSummaryDock_ != nullptr) {
+        diagnosticsSummaryDock_->retranslateUi();
+    }
+
+    if (navigationBackButton_ != nullptr) {
+        navigationBackButton_->setToolTip(tr("Return to parent"));
+        navigationBackButton_->setAccessibleName(tr("Return to parent format"));
+    }
+    if (cancelAnalysisButton_ != nullptr) {
+        cancelAnalysisButton_->setText(tr("Cancel"));
+    }
+    if (resolveAmbiguityButton_ != nullptr) {
+        resolveAmbiguityButton_->setText(tr("Resolve Ambiguity..."));
+    }
+    if (formatAmbiguityLabel_ != nullptr) {
+        formatAmbiguityLabel_->setText(tr("Ambiguous media format detected."));
+    }
+
+    updateWindowTitle();
 }
 
 } // namespace streamview::app

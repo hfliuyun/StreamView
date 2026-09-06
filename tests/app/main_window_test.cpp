@@ -43,9 +43,13 @@ using streamview::app::AnalysisSessionCacheOptions;
 using streamview::app::DiagnosticsSummaryDock;
 using streamview::app::FormatOverrideDialog;
 using streamview::app::MainWindow;
+using streamview::app::Language;
+using streamview::app::LocalizationManager;
 using streamview::app::RawDataModel;
 using streamview::app::RawDataView;
 using streamview::app::RawDisplayMode;
+using streamview::app::ThemeManager;
+using streamview::app::ThemeMode;
 using streamview::app::TimelineTableModel;
 
 namespace {
@@ -1999,6 +2003,87 @@ private slots:
         QVERIFY(header.isValid());
         treeView->setCurrentIndex(header);
         QTRY_VERIFY(table->currentRow() >= 0);
+    }
+
+    void themeMenuActionsToggleThemeMode() {
+        MainWindow window;
+        auto* menuTheme = window.findChild<QMenu*>(QStringLiteral("menuTheme"));
+        QVERIFY(menuTheme != nullptr);
+
+        auto* actionSystem = window.findChild<QAction*>(QStringLiteral("actionThemeSystem"));
+        auto* actionLight = window.findChild<QAction*>(QStringLiteral("actionThemeLight"));
+        auto* actionDark = window.findChild<QAction*>(QStringLiteral("actionThemeDark"));
+        QVERIFY(actionSystem != nullptr);
+        QVERIFY(actionLight != nullptr);
+        QVERIFY(actionDark != nullptr);
+
+        // Switch to Dark
+        actionDark->trigger();
+        QCOMPARE(ThemeManager::instance().themeMode(), ThemeMode::Dark);
+        QCOMPARE(ThemeManager::instance().isDark(), true);
+        QVERIFY(actionDark->isChecked());
+
+        // Switch to Light
+        actionLight->trigger();
+        QCOMPARE(ThemeManager::instance().themeMode(), ThemeMode::Light);
+        QCOMPARE(ThemeManager::instance().isDark(), false);
+        QVERIFY(actionLight->isChecked());
+
+        // Restore System
+        actionSystem->trigger();
+        QCOMPARE(ThemeManager::instance().themeMode(), ThemeMode::System);
+        QVERIFY(actionSystem->isChecked());
+    }
+
+    void languageMenuActionsDynamicRetranslation() {
+        MainWindow window;
+        auto* menuLanguage = window.findChild<QMenu*>(QStringLiteral("menuLanguage"));
+        QVERIFY(menuLanguage != nullptr);
+
+        auto* actionEnglish = window.findChild<QAction*>(QStringLiteral("actionLanguageEnglish"));
+        auto* actionChinese = window.findChild<QAction*>(QStringLiteral("actionLanguageChinese"));
+        QVERIFY(actionEnglish != nullptr);
+        QVERIFY(actionChinese != nullptr);
+
+        auto* menuFile = window.findChild<QMenu*>(QStringLiteral("menuFile"));
+        auto* menuView = window.findChild<QMenu*>(QStringLiteral("menuView"));
+        auto* dock = window.findChild<DiagnosticsSummaryDock*>(QStringLiteral("diagnosticsSummaryDock"));
+        auto* cancelButton = window.findChild<QPushButton*>(QStringLiteral("cancelAnalysisButton"));
+        auto* tableWidget = dock ? dock->findChild<QTableWidget*>(QStringLiteral("diagnosticsTableWidget")) : nullptr;
+
+        QVERIFY(menuFile != nullptr);
+        QVERIFY(menuView != nullptr);
+        QVERIFY(dock != nullptr);
+        QVERIFY(cancelButton != nullptr);
+        QVERIFY(tableWidget != nullptr);
+
+        // Initially in English
+        QCOMPARE(menuFile->title(), QStringLiteral("&File"));
+        QCOMPARE(menuView->title(), QStringLiteral("&View"));
+        QCOMPARE(dock->windowTitle(), QStringLiteral("Diagnostics"));
+        QCOMPARE(cancelButton->text(), QStringLiteral("Cancel"));
+
+        // Switch to Chinese
+        actionChinese->trigger();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(LocalizationManager::instance().currentLanguage(), Language::SimplifiedChinese);
+        QCOMPARE(menuFile->title(), QString::fromUtf8("文件(&F)"));
+        QCOMPARE(menuView->title(), QString::fromUtf8("视图(&V)"));
+        QCOMPARE(dock->windowTitle(), QString::fromUtf8("诊断"));
+        QCOMPARE(cancelButton->text(), QString::fromUtf8("取消"));
+        QCOMPARE(tableWidget->horizontalHeaderItem(0)->text(), QString::fromUtf8("严重性"));
+
+        // Switch back to English
+        actionEnglish->trigger();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(LocalizationManager::instance().currentLanguage(), Language::English);
+        QCOMPARE(menuFile->title(), QStringLiteral("&File"));
+        QCOMPARE(menuView->title(), QStringLiteral("&View"));
+        QCOMPARE(dock->windowTitle(), QStringLiteral("Diagnostics"));
+        QCOMPARE(cancelButton->text(), QStringLiteral("Cancel"));
+        QCOMPARE(tableWidget->horizontalHeaderItem(0)->text(), QStringLiteral("Severity"));
     }
 };
 
