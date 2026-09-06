@@ -1,6 +1,6 @@
 # ADR-0107: MP4 有界头部验证与大源检测
 
-- **状态**：提议（Proposed）
+- **状态**：Accepted
 - **日期**：2026-08-30
 - **作者**：StreamView Contributors
 

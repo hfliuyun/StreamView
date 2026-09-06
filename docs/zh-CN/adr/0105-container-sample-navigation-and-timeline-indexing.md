@@ -1,6 +1,6 @@
 # ADR-0105: 容器样本导航、时间线索引与访问单元执行合同
 
-- **状态**：Proposed
+- **状态**：Accepted
 - **日期**：2026-08-19
 - **作者**：StreamView Contributors
 

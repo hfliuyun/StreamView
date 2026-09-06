@@ -1,6 +1,6 @@
 # ADR-0106: Format Detection Arbitration and Evidence Asymmetry
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-08-30
 - **Authors**: StreamView Contributors
 
