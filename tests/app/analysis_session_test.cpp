@@ -2274,86 +2274,87 @@ private slots:
             QCOMPARE(aPage.descriptors[1].duration, 1024ULL);
             QVERIFY(aPage.descriptors[1].isSyncSample);
 
-            // Cross-validate against ffprobe process if available in environment
+            // Cross-validate against ffprobe process (mandatory reference gate)
             const QString ffprobePath =
                 QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
-            if (!ffprobePath.isEmpty()) {
-                QProcess process;
-                process.start(ffprobePath, {
-                    QStringLiteral("-loglevel"), QStringLiteral("quiet"),
-                    QStringLiteral("-show_packets"),
-                    QStringLiteral("-of"), QStringLiteral("json"),
-                    fixturePath
-                });
-                QVERIFY(process.waitForFinished(10000));
-                QCOMPARE(process.exitCode(), 0);
+            QVERIFY2(!ffprobePath.isEmpty(), "reference cross-validation requires ffprobe in PATH");
 
-                const auto jsonDoc = QJsonDocument::fromJson(process.readAllStandardOutput());
-                QVERIFY(!jsonDoc.isNull());
-                const auto packets = jsonDoc.object().value(QStringLiteral("packets")).toArray();
-                QCOMPARE(packets.size(), 4);
+            QProcess process;
+            process.start(ffprobePath, {
+                QStringLiteral("-loglevel"), QStringLiteral("quiet"),
+                QStringLiteral("-show_packets"),
+                QStringLiteral("-of"), QStringLiteral("json"),
+                fixturePath
+            });
+            QVERIFY(process.waitForFinished(10000));
+            QCOMPARE(process.exitCode(), 0);
 
-                auto parsePkt = [](const QJsonObject& obj) {
-                    struct Pkt {
-                        int streamIndex = 0;
-                        quint64 pos = 0;
-                        quint64 size = 0;
-                        qint64 pts = 0;
-                        qint64 dts = 0;
-                        quint64 duration = 0;
-                        bool isKey = false;
-                    };
-                    const auto valToU64 = [](const QJsonValue& v) -> quint64 {
-                        return v.isString() ? v.toString().toULongLong() : static_cast<quint64>(v.toInteger());
-                    };
-                    const auto valToI64 = [](const QJsonValue& v) -> qint64 {
-                        return v.isString() ? v.toString().toLongLong() : v.toInteger();
-                    };
-                    return Pkt{
-                        .streamIndex = obj.value(QStringLiteral("stream_index")).toInt(),
-                        .pos = valToU64(obj.value(QStringLiteral("pos"))),
-                        .size = valToU64(obj.value(QStringLiteral("size"))),
-                        .pts = valToI64(obj.value(QStringLiteral("pts"))),
-                        .dts = valToI64(obj.value(QStringLiteral("dts"))),
-                        .duration = valToU64(obj.value(QStringLiteral("duration"))),
-                        .isKey = obj.value(QStringLiteral("flags")).toString().contains(QLatin1Char('K')),
-                    };
+            const auto jsonDoc = QJsonDocument::fromJson(process.readAllStandardOutput());
+            QVERIFY(!jsonDoc.isNull());
+            const auto packets = jsonDoc.object().value(QStringLiteral("packets")).toArray();
+            QCOMPARE(packets.size(), 4);
+
+            auto parsePkt = [](const QJsonObject& obj) {
+                struct Pkt {
+                    int streamIndex = 0;
+                    quint64 pos = 0;
+                    quint64 size = 0;
+                    qint64 pts = 0;
+                    qint64 dts = 0;
+                    quint64 duration = 0;
+                    bool isKey = false;
                 };
+                const auto valToU64 = [](const QJsonValue& v) -> quint64 {
+                    return v.isString() ? v.toString().toULongLong() : static_cast<quint64>(v.toInteger());
+                };
+                const auto valToI64 = [](const QJsonValue& v) -> qint64 {
+                    return v.isString() ? v.toString().toLongLong() : v.toInteger();
+                };
+                return Pkt{
+                    .streamIndex = obj.value(QStringLiteral("stream_index")).toInt(),
+                    .pos = valToU64(obj.value(QStringLiteral("pos"))),
+                    .size = valToU64(obj.value(QStringLiteral("size"))),
+                    .pts = valToI64(obj.value(QStringLiteral("pts"))),
+                    .dts = valToI64(obj.value(QStringLiteral("dts"))),
+                    .duration = valToU64(obj.value(QStringLiteral("duration"))),
+                    .isKey = obj.value(QStringLiteral("flags")).toString().contains(QLatin1Char('K')),
+                };
+            };
 
-                const auto p0 = parsePkt(packets[0].toObject());
-                QCOMPARE(p0.streamIndex, 0);
-                QCOMPARE(p0.pos, vPage.descriptors[0].sourceSpans[0].start().byteOffset());
-                QCOMPARE(p0.size, vPage.descriptors[0].sourceSpans[0].bitLength() / 8ULL);
-                QCOMPARE(p0.dts, vPage.descriptors[0].dts);
-                QCOMPARE(p0.pts, vPage.descriptors[0].pts);
-                QCOMPARE(p0.duration, vPage.descriptors[0].duration);
+            const auto p0 = parsePkt(packets[0].toObject());
+            QCOMPARE(p0.streamIndex, 0);
+            QCOMPARE(p0.pos, vPage.descriptors[0].sourceSpans[0].start().byteOffset());
+            QCOMPARE(p0.size, vPage.descriptors[0].sourceSpans[0].bitLength() / 8ULL);
+            QCOMPARE(p0.dts, vPage.descriptors[0].dts);
+            QCOMPARE(p0.pts, vPage.descriptors[0].pts);
+            QCOMPARE(p0.duration, vPage.descriptors[0].duration);
 
-                const auto p1 = parsePkt(packets[1].toObject());
-                QCOMPARE(p1.streamIndex, 0);
-                QCOMPARE(p1.pos, vPage.descriptors[1].sourceSpans[0].start().byteOffset());
-                QCOMPARE(p1.size, vPage.descriptors[1].sourceSpans[0].bitLength() / 8ULL);
-                QCOMPARE(p1.dts, vPage.descriptors[1].dts);
-                QCOMPARE(p1.pts, vPage.descriptors[1].pts);
-                QCOMPARE(p1.duration, vPage.descriptors[1].duration);
+            const auto p1 = parsePkt(packets[1].toObject());
+            QCOMPARE(p1.streamIndex, 0);
+            QCOMPARE(p1.pos, vPage.descriptors[1].sourceSpans[0].start().byteOffset());
+            QCOMPARE(p1.size, vPage.descriptors[1].sourceSpans[0].bitLength() / 8ULL);
+            QCOMPARE(p1.dts, vPage.descriptors[1].dts);
+            QCOMPARE(p1.pts, vPage.descriptors[1].pts);
+            QCOMPARE(p1.duration, vPage.descriptors[1].duration);
 
-                const auto p2 = parsePkt(packets[2].toObject());
-                QCOMPARE(p2.streamIndex, 1);
-                QCOMPARE(p2.pos, aPage.descriptors[0].sourceSpans[0].start().byteOffset());
-                QCOMPARE(p2.size, aPage.descriptors[0].sourceSpans[0].bitLength() / 8ULL);
-                QCOMPARE(p2.dts, aPage.descriptors[0].dts);
-                QCOMPARE(p2.pts, aPage.descriptors[0].pts);
-                QCOMPARE(p2.duration, aPage.descriptors[0].duration);
-                QCOMPARE(p2.isKey, aPage.descriptors[0].isSyncSample);
+            const auto p2 = parsePkt(packets[2].toObject());
+            QCOMPARE(p2.streamIndex, 1);
+            QCOMPARE(p2.pos, aPage.descriptors[0].sourceSpans[0].start().byteOffset());
+            QCOMPARE(p2.size, aPage.descriptors[0].sourceSpans[0].bitLength() / 8ULL);
+            QCOMPARE(p2.dts, aPage.descriptors[0].dts);
+            QCOMPARE(p2.pts, aPage.descriptors[0].pts);
+            QCOMPARE(p2.duration, aPage.descriptors[0].duration);
+            QCOMPARE(p2.isKey, aPage.descriptors[0].isSyncSample);
 
-                const auto p3 = parsePkt(packets[3].toObject());
-                QCOMPARE(p3.streamIndex, 1);
-                QCOMPARE(p3.pos, aPage.descriptors[1].sourceSpans[0].start().byteOffset());
-                QCOMPARE(p3.size, aPage.descriptors[1].sourceSpans[0].bitLength() / 8ULL);
-                QCOMPARE(p3.dts, aPage.descriptors[1].dts);
-                QCOMPARE(p3.pts, aPage.descriptors[1].pts);
-                QCOMPARE(p3.duration, aPage.descriptors[1].duration);
-                QCOMPARE(p3.isKey, aPage.descriptors[1].isSyncSample);
-            }
+            const auto p3 = parsePkt(packets[3].toObject());
+            QCOMPARE(p3.streamIndex, 1);
+            QCOMPARE(p3.pos, aPage.descriptors[1].sourceSpans[0].start().byteOffset());
+            QCOMPARE(p3.size, aPage.descriptors[1].sourceSpans[0].bitLength() / 8ULL);
+            QCOMPARE(p3.dts, aPage.descriptors[1].dts);
+            QCOMPARE(p3.pts, aPage.descriptors[1].pts);
+            QCOMPARE(p3.duration, aPage.descriptors[1].duration);
+            QCOMPARE(p3.isKey, aPage.descriptors[1].isSyncSample);
+
         }
 
         // 2. B-frame & sync sample table movie cross-validation
@@ -2409,44 +2410,44 @@ private slots:
             QCOMPARE(page.descriptors[3].duration, 1000ULL);
             QVERIFY(!page.descriptors[3].isSyncSample);
 
-            // Cross-validate against ffprobe process if available in environment
+            // Cross-validate against ffprobe process mandatory reference check
             const QString ffprobePath =
                 QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
-            if (!ffprobePath.isEmpty()) {
-                QProcess process;
-                process.start(ffprobePath, {
-                    QStringLiteral("-loglevel"), QStringLiteral("quiet"),
-                    QStringLiteral("-show_packets"),
-                    QStringLiteral("-of"), QStringLiteral("json"),
-                    fixturePath
-                });
-                QVERIFY(process.waitForFinished(10000));
-                QCOMPARE(process.exitCode(), 0);
+            QVERIFY2(!ffprobePath.isEmpty(), "reference cross-validation requires ffprobe in PATH");
 
-                const auto jsonDoc = QJsonDocument::fromJson(process.readAllStandardOutput());
-                QVERIFY(!jsonDoc.isNull());
-                const auto packets = jsonDoc.object().value(QStringLiteral("packets")).toArray();
-                QCOMPARE(packets.size(), 4);
+            QProcess process;
+            process.start(ffprobePath, {
+                QStringLiteral("-loglevel"), QStringLiteral("quiet"),
+                QStringLiteral("-show_packets"),
+                QStringLiteral("-of"), QStringLiteral("json"),
+                fixturePath
+            });
+            QVERIFY(process.waitForFinished(10000));
+            QCOMPARE(process.exitCode(), 0);
 
-                const auto valToU64 = [](const QJsonValue& v) -> quint64 {
-                    return v.isString() ? v.toString().toULongLong() : static_cast<quint64>(v.toInteger());
-                };
-                const auto valToI64 = [](const QJsonValue& v) -> qint64 {
-                    return v.isString() ? v.toString().toLongLong() : v.toInteger();
-                };
+            const auto jsonDoc = QJsonDocument::fromJson(process.readAllStandardOutput());
+            QVERIFY(!jsonDoc.isNull());
+            const auto packets = jsonDoc.object().value(QStringLiteral("packets")).toArray();
+            QCOMPARE(packets.size(), 4);
 
-                for (int i = 0; i < 4; ++i) {
-                    const auto obj = packets[i].toObject();
-                    const auto& desc = page.descriptors[static_cast<std::size_t>(i)];
-                    QCOMPARE(desc.sourceSpans.size(), std::size_t{1});
-                    QCOMPARE(valToU64(obj.value(QStringLiteral("pos"))), desc.sourceSpans[0].start().byteOffset());
-                    QCOMPARE(valToU64(obj.value(QStringLiteral("size"))), desc.sourceSpans[0].bitLength() / 8ULL);
-                    QCOMPARE(valToI64(obj.value(QStringLiteral("dts"))), desc.dts);
-                    QCOMPARE(valToI64(obj.value(QStringLiteral("pts"))), desc.pts);
-                    QCOMPARE(valToU64(obj.value(QStringLiteral("duration"))), desc.duration);
-                    const bool isKey = obj.value(QStringLiteral("flags")).toString().contains(QLatin1Char('K'));
-                    QCOMPARE(isKey, desc.isSyncSample);
-                }
+            const auto valToU64 = [](const QJsonValue& v) -> quint64 {
+                return v.isString() ? v.toString().toULongLong() : static_cast<quint64>(v.toInteger());
+            };
+            const auto valToI64 = [](const QJsonValue& v) -> qint64 {
+                return v.isString() ? v.toString().toLongLong() : v.toInteger();
+            };
+
+            for (int i = 0; i < 4; ++i) {
+                const auto obj = packets[i].toObject();
+                const auto& desc = page.descriptors[static_cast<std::size_t>(i)];
+                QCOMPARE(desc.sourceSpans.size(), std::size_t{1});
+                QCOMPARE(valToU64(obj.value(QStringLiteral("pos"))), desc.sourceSpans[0].start().byteOffset());
+                QCOMPARE(valToU64(obj.value(QStringLiteral("size"))), desc.sourceSpans[0].bitLength() / 8ULL);
+                QCOMPARE(valToI64(obj.value(QStringLiteral("dts"))), desc.dts);
+                QCOMPARE(valToI64(obj.value(QStringLiteral("pts"))), desc.pts);
+                QCOMPARE(valToU64(obj.value(QStringLiteral("duration"))), desc.duration);
+                const bool isKey = obj.value(QStringLiteral("flags")).toString().contains(QLatin1Char('K'));
+                QCOMPARE(isKey, desc.isSyncSample);
             }
         }
     }

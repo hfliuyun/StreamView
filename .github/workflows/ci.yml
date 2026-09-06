@@ -29,6 +29,34 @@ jobs:
       - name: Check out source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
+      - name: Install FFmpeg (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install FFmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+
+      - name: Install FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install ffmpeg --no-progress
+          $candidates = @(
+            "C:\ProgramData\chocolatey\bin",
+            "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin"
+          )
+          foreach ($dir in $candidates) {
+            if (Test-Path (Join-Path $dir "ffprobe.exe")) {
+              Add-Content -Path $env:GITHUB_PATH -Value $dir
+            }
+          }
+
+      - name: Verify FFprobe availability
+        run: ffprobe -version
+
       - name: Install Qt
         if: runner.os != 'Windows'
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730
