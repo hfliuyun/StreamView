@@ -254,13 +254,14 @@ Blockers: 无
 
 ### 阶段 6 任务切片与依赖关系
 - **Task P6a**（规范）：双语 ADR-0109 会话生命周期管理、格式手动覆盖与 Schema 演进策略（Markdown-only，设固定独立评审门禁）；
-- **Task P6b**（能力切片）：`AnalysisSession` / `SessionDocument` 脏状态跟踪（`isDirty`, `markDirty`, `clearDirty`）、文件路径绑定、`save()` 与 `saveAs()` 核心接口与单测；
-- **Task P6c**（UI切片）：`MainWindow` 保存/另存为/打开会话动作、`closeEvent` / `maybeSave` 弹窗协议（Save / Discard / Cancel）与 UI 测试；
-- **Task P6d**（能力与UI切片）：格式手动覆盖与歧义裁决（`AnalysisSession::overrideFormat`、歧义横幅「解决歧义...」按钮、`FormatOverrideDialog`，闭环 P2-17/P2-19/P2-20）；
+- **Task P6b**（能力切片）：`SessionSaveStatus` 强类型保存结果枚举、`AnalysisSession::saveSession(path, userState)` 返回结构体升级与单元测试；
+- **Task P6c**（UI切片）：`MainWindow` 保存/另存为/打开会话动作、`setWindowModified` 脏状态维护与书签/注释挂钩、`closeEvent` / `maybeSave` 弹窗协议（Save / Discard / Cancel，区分文件对话框取消与底层 I/O 报错）与 UI 测试；
+- **Task P6d-1**（能力切片）：`AnalysisSession::overrideFormat` 核心 API 与 `AnalysisSession::openFileWithExplicitRule` 静态工厂与单元测试（P2-25）；
+- **Task P6d-2**（UI切片）：`FormatOverrideDialog` 界面、歧义横幅「解决歧义...」按钮集成与 UI 测试（闭环 P2-17/P2-19/P2-20，P2-25）；
 - **Task P6e**（UI与规则管理切片）：`RuleManagerDialog` 界面、规则包列表与版本展示、`.svrule` 导入安装与测试；
 - **Task P6f**（UI切片）：分析进度条展示、异步取消按钮与响应、`DiagnosticsSummaryDock` 全局诊断面板与双向跳转；
 - **Task P6g**（UI切片）：明暗主题切换支持、基于 `QTranslator` 的中英双语动态切换与 UI 测试；
-- **Task P6h**（验证切片）：全生命周期端到端回放、手动覆盖持久化恢复、修改保护交互分支与 100 GB 虚拟稀疏源会话恢复验证；
+- **Task P6h**（验证切片）：全生命周期端到端回放、手动覆盖持久化恢复、修改保护交互分支、100 GB 虚拟稀疏源会话恢复验证，以及固化 Version 1 `.svsession` fixture 永久向后兼容守护测试（P2-23）；
 - **Task P6i**（关闭切片）：阶段 6 检查清单 100% 达成确认、双语文档收敛与里程碑收官独立评审门禁。
 
 ### 阶段 6 检查清单
@@ -3124,14 +3125,20 @@ Blockers: 无
        * UI 导航栈保持瞬态性：依据 ADR-0103 §6、ADR-0105 §6 与 §4.3，样本下钻与子格式导航是 GUI 临时检查视图，不可持久化到以不可变坐标为基准的紧凑会话文档中。保存时记录根容器状态与当前选中的绝对 bit 偏移，恢复后无损呈现根容器并高亮所选字节，保障系统稳健；
        * 100% 完美向后兼容：现存所有 `.svsession` 文件继续无缝读取，零迁移成本；
        * 演进约束：未来若引入版本 N，必须强制保持后向兼容（`schemaVersion == 1` 走不可变版本 1 解析器，旧文档绝不失效），且版本 1 继续严格执行 `hasExactKeys()` 封闭校验。
-     - 脏状态跟踪合同：`AnalysisSession` 提供 `isDirty()`、`markDirty()`、`clearDirty()` 与 `sessionFilePath()`；明确定义书签增删改、注释增删改以及格式手动覆盖为触发脏状态的变迁点，而树折叠展开、数据视图翻页滚动、节点选择等探索行为不标记脏状态；
-     - UI 未保存保护协议（`maybeSave()`）：在 `MainWindow` 关闭窗口、切换文件或退出应用时，若检测到 `isDirty()` 则弹出 `[保存]`（执行 save/saveAs 后放行）、`[放弃]`（放弃修改放行）、`[取消]`（中止退出/切换）模态确认对话框；
-     - 格式手动覆盖架构（彻底闭环 P2-17/P2-19/P2-20）：
+     - 状态所有权划分与保存状态契约（P1-1 修复）：
+       * 明确划分 `SessionUserState`（书签、注释、展开路径、视图状态）由 UI 表现层 `MainWindow` 持有与维护，核心层 `AnalysisSession` 作为无头引擎不持有视图状态；
+       * 升级 `AnalysisSession::saveSession(path, userState)` 返回强类型 `SessionSaveResult`（含 `SessionSaveStatus` 具名枚举：`Saved`, `SourcePathMissing`, `SourceNotFileBacked`, `SourceFingerprintFailed`, `SourceFingerprintMismatch`, `DocumentValidationFailed`, `FileIoError`），彻底消除布尔压平隐患；
+       * 澄清书签/注释增删为 `MainWindow` UI 动作（P6b/P6c 引入），脏状态由 `MainWindow` 基于 Qt 标准窗口修改机制（`setWindowModified`）维护；
+     - UI 未保存保护协议（`maybeSave()`，P2-24 修复）：在 `MainWindow` 关闭窗口、切换文件或退出应用时，若检测到修改则弹出确认框，明确区分文件对话框点击取消（干净中止）与底层保存失败（弹出模态错误对话框呈现详细错误后中止，杜绝假成功）；
+     - 格式手动覆盖架构（P1-2 / P2-20 修复，闭环 P2-17 与 P2-19）：
        * 歧义横幅新增「解决歧义...」按钮（P2-17）；主菜单新增「分析 > 覆盖格式...」；
        * 用户显式覆盖选择终极解决 `format_selection.cpp` 启发式模式流优先级的妥协（P2-19）；
-       * 架构与测试上明确分离自动检测仲裁测试（`openFile()`）与固定规则覆盖测试（`openWithExplicitRule()`）（P2-20）；
+       * 规范明确标注待新增 API：`AnalysisSession::overrideFormat` 与 `AnalysisSession::openFileWithExplicitRule`（均显式标注为 Task P6d-1 待新增），P2-20 状态正式核定为「待 Task P6d 交付后闭环」；
      - 规则版本管理架构：设计 `RuleManagerDialog`，支持展示已安装与内置规则包元数据（ID、版本、哈希、入口），并通过 `RulePackageStore` 导入验证外部 `.svrule` ZIP 包；
-     - 阶段 6 任务编排：串行划分为 P6a（规范）、P6b（脏状态核心）、P6c（UI 保存与防丢保护）、P6d（格式手动覆盖与歧义裁决）、P6e（规则管理）、P6f（进度/取消/诊断汇总）、P6g（主题与双语国际化）、P6h（端到端验证）、P6i（审查收官）。
+     - 阶段 6 任务编排（P2-23 与 P2-25 修复）：
+       * P6d 拆分为 P6d-1（能力切片：`overrideFormat` 与 `openFileWithExplicitRule`）与 P6d-2（UI切片：`FormatOverrideDialog` 与横幅按钮），严格对齐能力与消费者分离（P2-25）；
+       * P6h 明确包含固化 Version 1 `.svsession` 测试夹具与跨平台永久可读性回归测试（P2-23）；
+       * 修正 raw view 页大小 64 KiB 的数字硬编码（P2-22）。
   2. 纪律约束与评审门禁：
      - 本任务为纯 Markdown 规范交付，依据纪律条款第 5 条（P6a 设固定独立评审门禁），等待用户独立评审通过后方可启动 Task P6b 实现。
 
