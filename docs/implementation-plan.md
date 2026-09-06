@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 6
-Last Completed Step: Task P6f（UI切片：分析进度条展示、异步取消按钮与响应、`DiagnosticsSummaryDock` 全局诊断面板与双向跳转）—— 在 `AnalysisSession` 中引入 `CancellationSource` 与 `CancellationToken`，贯通底层解析批次异步取消；主窗口状态栏挂载 `analysisProgressBar` 与 `cancelAnalysisButton`，实时展示扫描进度，支持点击取消并保留已解析部分分析树与更新状态栏；实现 `DiagnosticsSummaryDock` 全局诊断面板（对象名 `diagnosticsSummaryDock`），提供严重性过滤、正反向双向选择跳转同步与坐标定位；主菜单新增 `View` 菜单与诊断/时间线面板显隐切换动作；编写独立测试套件 `DiagnosticsSummaryDockTest`（5/5 用例全绿）与扩充 `MainWindowTest`（49/49 槽全绿）；三套本地矩阵全量 51/51 通过，Hosted CI 三平台全绿
-Next Action: 启动 Task P6g（UI切片：明暗主题切换支持、基于 `QTranslator` 的中英双语动态切换与 UI 测试）
-Last Verification: Hosted Run 34045397030（Ubuntu 24.04 / Qt 6.11.1 job 101519439919, Windows 2022 / Qt 6.10.1 job 101519439903, macOS 15 / Qt 6.11.1 job 101519439804）全绿；本地 dev/ci/sanitize 51/51 全部通过；MainWindowTest 49/49 槽通过；DiagnosticsSummaryDockTest 5/5 用例通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
+Last Completed Step: Task P6g（UI切片：明暗主题切换支持、基于 `QTranslator` 的中英双语动态切换与 UI 测试）—— 实现 `ThemeManager` 统一调度 System、Light、Dark 三种模式高对比度与深色调色板，监听系统外观切换事件；实现 `LocalizationManager` 与嵌入式原生中文翻译器，覆盖全量 UI 词条；`MainWindow` 挂载 Theme 与 Language 单选动作组，主窗口与 `DiagnosticsSummaryDock` 重写 `changeEvent(QEvent::LanguageChange)` 驱动 `retranslateUi()` 实现零重启即时双语热重载；编写独立测试套件 `ThemeLocalizationTest`（2/2 用例通过）与扩充 `MainWindowTest`（51/51 槽全绿）；三套本地矩阵全量 52/52 全部通过，Hosted CI 三平台全绿
+Next Action: 启动 Task P6h（验证切片：全生命周期端到端回放、手动覆盖持久化恢复、修改保护交互分支、100 GB 虚拟稀疏源会话恢复验证，以及固化 Version 1 `.svsession` fixture 永久向后兼容守护测试）
+Last Verification: Hosted Run 34047972121（Ubuntu 24.04 / Qt 6.11.1 job 101526340069, Windows 2022 / Qt 6.10.1 job 101526339986, macOS 15 / Qt 6.11.1 job 101526340054）全绿；本地 dev/ci/sanitize 52/52 全部通过；MainWindowTest 51/51 槽通过；ThemeLocalizationTest 2/2 用例通过；DiagnosticsSummaryDockTest 5/5 用例通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
 Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -260,7 +260,7 @@ Blockers: 无
 - [x] **Task P6d-2**（UI切片）：`FormatOverrideDialog` 界面、歧义横幅「解决歧义...」按钮集成与 UI 测试（闭环 P2-17/P2-19/P2-20，P2-25）；
 - [x] **Task P6e**（UI与规则管理切片）：`RuleManagerDialog` 界面、规则包列表与版本展示、`.svrule` 导入安装与测试；
 - [x] **Task P6f**（UI切片）：分析进度条展示、异步取消按钮与响应、`DiagnosticsSummaryDock` 全局诊断面板与双向跳转；
-- **Task P6g**（UI切片）：明暗主题切换支持、基于 `QTranslator` 的中英双语动态切换与 UI 测试；
+- [x] **Task P6g**（UI切片）：明暗主题切换支持、基于 `QTranslator` 的中英双语动态切换与 UI 测试；
 - **Task P6h**（验证切片）：全生命周期端到端回放、手动覆盖持久化恢复、修改保护交互分支、100 GB 虚拟稀疏源会话恢复验证，以及固化 Version 1 `.svsession` fixture 永久向后兼容守护测试（P2-23）；
 - **Task P6i**（关闭切片）：阶段 6 检查清单 100% 达成确认、双语文档收敛与里程碑收官独立评审门禁。
 
@@ -269,7 +269,7 @@ Blockers: 无
 - [x] 保存源身份、规则精确版本/哈希、书签、注释、展开路径和视图状态。
 - [x] 大文件指纹使用大小、纳秒 mtime、首/中/尾各 1 MiB SHA-256；小文件全文哈希。
 - [x] 实现保存/另存为、未保存关闭提示、格式手动覆盖和规则版本管理。
-- [ ] 完成进度、取消、诊断汇总、明暗主题和中英双语切换。
+- [x] 完成进度、取消、诊断汇总、明暗主题和中英双语切换。
 - [x] 验证源变化不会误绑定，旧会话按 package ID/version/content hash/entry-point ID
   精确恢复，且 missing/conflicting/incompatible rule 都显式失败。
 
@@ -3359,3 +3359,42 @@ Blockers: 无
        * Windows 2022 / Qt 6.10.1：Job `101519439903`（`success`）；
        * Ubuntu 24.04 / Qt 6.11.1：Job `101519439919`（`success`）；
        * macOS 15 / Qt 6.11.1：Job `101519439804`（`success`）。
+
+- 2026-09-07：完成 Task P6g（UI切片：明暗主题切换支持、基于 `QTranslator` 的中英双语动态切换与 UI 测试）。
+  1. 架构与规范对齐：
+     - 严格遵循双语 ADR-0109 §7 桌面主题与双语动态本地化架构设计规范；
+     - 提交双语架构文档：`3a61501`（`docs: specify theme management and bilingual dynamic localization architecture`）；
+     - 设计原则：零重启即时热重载（Zero-Restart Hot-Reload）、高对比度可读性、系统外观无缝自适应以及规范的 Qt 国际化基础设施。
+  2. 主题管理架构实现（`src/app/theme_manager.h` / `src/app/theme_manager.cpp`）：
+     - 实现 `ThemeManager` 单例，支持三种主题模式：
+       * `ThemeMode::Light`：浅色调色板，具有清晰的高对比度、暗色字形排版与柔和结构边框；
+       * `ThemeMode::Dark`：深色调色板，具备暗中性背景（`#1e1e1e` / `#252526`）、亮灰字形（`#d4d4d4`）与高对比选区（`#094771`）；
+       * `ThemeMode::System`：通过 `QGuiApplication::styleHints()->colorScheme()` 动态跟踪操作系统明暗设置，监听 `colorSchemeChanged` 信号自适应切换；
+     - 通过 `QApplication::setPalette()` 注入调色板，自动作用于全部窗口、Dock 面板与自绘视图（`RawDataView`、`AnalysisTreeView`）。
+  3. 双语动态本地化与零重启热重载（`src/app/localization_manager.h` / `src/app/localization_manager.cpp`）：
+     - 维护标准翻译源文件 `src/app/translations/streamview_zh_CN.ts`；
+     - 实现 `LocalizationManager` 单例与嵌入式原生 `ChineseTranslator`（继承自 `QTranslator`），覆盖所有面向用户的菜单、Dock、按钮、状态栏与对话框提示词条；
+     - 热重载协议：切换至中文时调用 `QCoreApplication::installTranslator` 并向所有顶层窗口派发 `QEvent::LanguageChange` 事件；切换回英文时卸载翻译器并通知；
+     - `MainWindow` 与 `DiagnosticsSummaryDock` 重写 `changeEvent(QEvent*)`，在捕获 `LanguageChange` 时执行 `retranslateUi()`，刷新菜单、动作文本、表头与占位提示，彻底消除应用重启成本。
+  4. 菜单集成：
+     - 在主菜单 `View` 下集成 `Theme` 子菜单（`menuTheme`），提供 `System`、`Light`、`Dark` 互斥单选动作组（`themeActionGroup_`）；
+     - 在主菜单 `View` 下集成 `Language` 子菜单（`menuLanguage`），提供 `English` 与 `Simplified Chinese (简体中文)` 互斥单选动作组（`languageActionGroup_`）。
+  5. 自动化测试扩充：
+     - 新建独立测试文件 `tests/app/theme_localization_test.cpp`，注册目标 `streamview_theme_localization_tests`（2/2 用例全绿）：
+       * `testThemeManagerModesAndPalettes`：验证各主题模式切换、调色板颜色差异、`isDark()` 判定与 `themeChanged` 信号发射；
+       * `testLocalizationManagerSwitching`：验证中英文切换、翻译器挂载/卸载、`QCoreApplication::translate` 查找及双语双向恢复。
+     - `tests/app/main_window_test.cpp` 追加 2 个集成测试用例（`MainWindowTest` 增至 51 槽全绿）：
+       * `themeMenuActionsToggleThemeMode`：实测通过主菜单动作切换 Dark 与 Light 模式，验证单选状态与主题管理器同步；
+       * `languageMenuActionsDynamicRetranslation`：实测通过主菜单动作切换中文与英文，验证菜单栏、诊断面板标题、表头、按钮文案在无重启条件下的全量即时热更新。
+  6. 验证与全平台 Hosted CI 闭环：
+     - 规则静态校验：`svtool rule check` 对 4 个官方规则包源码全部 `Rule OK`；
+     - 本地三套全量构建与测试矩阵：
+       * `cmake --preset dev && cmake --build --preset dev && ctest --preset dev`（52/52 PASS，耗时 64.09s）；
+       * `cmake --preset ci && cmake --build --preset ci && ctest --preset ci`（52/52 PASS，耗时 14.75s）；
+       * `cmake --preset sanitize && cmake --build --preset sanitize && ctest --preset sanitize`（52/52 PASS，零 ASan/UBSan 告警，耗时 191.71s）；
+       * `ctest -R markdown_hygiene --preset dev`（100% PASS）；`git diff --check`（无空白缺陷）；
+     - 实现提交：`b79c9ef`（`feat(app): implement desktop theme mode and bilingual dynamic localization`）；
+     - Hosted CI 验证：Run `34047972121` 三平台全部 success：
+       * Windows 2022 / Qt 6.10.1：Job `101526339986`（`success`）；
+       * Ubuntu 24.04 / Qt 6.11.1：Job `101526340069`（`success`）；
+       * macOS 15 / Qt 6.11.1：Job `101526340054`（`success`）。
