@@ -13,9 +13,14 @@
 #include <streamview/rules/rule_package.h>
 
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QProcess>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QUuid>
@@ -475,6 +480,62 @@ void collectNodesByTargetFormat(
     }
     return std::nullopt;
 }
+
+class HundredGigabyteSparseMp4Source final : public RandomAccessSource {
+public:
+    static constexpr quint64 TotalSizeBytes = 100ULL * 1024ULL * 1024ULL * 1024ULL; // 100 GiB
+    static constexpr quint64 Sample0OffsetBytes = 50ULL * 1024ULL * 1024ULL * 1024ULL; // 50 GiB
+    static constexpr quint64 Sample1OffsetBytes = 99ULL * 1024ULL * 1024ULL * 1024ULL; // 99 GiB
+
+    explicit HundredGigabyteSparseMp4Source(std::vector<std::byte> prefixBytes,
+                                           std::vector<std::byte> samplePayload)
+        : prefix_(std::move(prefixBytes)), samplePayload_(std::move(samplePayload)) {}
+
+    [[nodiscard]] quint64 sizeBytes() const noexcept override {
+        return TotalSizeBytes;
+    }
+
+    [[nodiscard]] QString identity() const override {
+        return QStringLiteral("hundred-gigabyte-sparse-movie");
+    }
+
+    [[nodiscard]] SourceReadResult
+    readAt(quint64 byteOffset, std::span<std::byte> destination) const override {
+        if (byteOffset >= TotalSizeBytes) {
+            return {SourceReadStatus::EndOfSource, 0, {}};
+        }
+        const auto available = TotalSizeBytes - byteOffset;
+        const auto count = std::min<quint64>(available, destination.size());
+        std::fill_n(destination.begin(), count, std::byte{0x00});
+
+        auto copyFromRegion = [&](quint64 regionStart, const std::vector<std::byte>& regionData) {
+            const quint64 regionEnd = regionStart + regionData.size();
+            const quint64 requestStart = byteOffset;
+            const quint64 requestEnd = byteOffset + count;
+            if (requestStart < regionEnd && requestEnd > regionStart) {
+                const quint64 overlapStart = std::max(requestStart, regionStart);
+                const quint64 overlapEnd = std::min(requestEnd, regionEnd);
+                const auto destOffset = static_cast<std::size_t>(overlapStart - requestStart);
+                const auto srcOffset = static_cast<std::size_t>(overlapStart - regionStart);
+                const auto copyLen = static_cast<std::size_t>(overlapEnd - overlapStart);
+                std::copy_n(regionData.data() + srcOffset, copyLen,
+                            destination.begin() + static_cast<std::ptrdiff_t>(destOffset));
+            }
+        };
+
+        copyFromRegion(0ULL, prefix_);
+        copyFromRegion(Sample0OffsetBytes, samplePayload_);
+        copyFromRegion(Sample1OffsetBytes, samplePayload_);
+
+        const auto status = count == destination.size() ? SourceReadStatus::Complete
+                                                        : SourceReadStatus::EndOfSource;
+        return {status, static_cast<std::size_t>(count), {}};
+    }
+
+private:
+    std::vector<std::byte> prefix_;
+    std::vector<std::byte> samplePayload_;
+};
 
 } // namespace
 
@@ -2029,6 +2090,367 @@ private slots:
         QCOMPARE(restored.session->navigationDepth(), std::size_t{0});
         QCOMPARE(restored.session->currentSampleFrame(), nullptr);
     }
+
+    void tracksReportsNotAnalyzedAfterInvalidBatchSizeAndRecoversOnValidBatch() {
+        const QString fixturePath =
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_avc_multi_nal.mp4");
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto session = openPinnedMp4Fixture(fixturePath, catalog);
+        QVERIFY(session != nullptr);
+
+        const auto invalidBatch = session->analyzeBatch(0);
+        QCOMPARE(invalidBatch.status, AnalysisBatchStatus::InvalidBatchSize);
+        QVERIFY(!session->finished());
+
+        const auto tracksAfterInvalid = session->tracks();
+        QCOMPARE(tracksAfterInvalid.status, AnalysisSessionSampleStatus::NotAnalyzed);
+        QVERIFY(tracksAfterInvalid.tracks.empty());
+        QVERIFY(!tracksAfterInvalid.errorMessage.isEmpty());
+
+        AnalysisSessionSamplePageRequest request;
+        request.trackId = 1;
+        request.pageSize = 10;
+        const auto pageAfterInvalid = session->samplesForTrack(request);
+        QCOMPARE(pageAfterInvalid.status, AnalysisSessionSampleStatus::NotAnalyzed);
+        QVERIFY(pageAfterInvalid.descriptors.empty());
+
+        const auto enterAfterInvalid = session->enterSample(1, 0, catalog);
+        QCOMPARE(enterAfterInvalid.status, AnalysisSessionSampleStatus::NotAnalyzed);
+
+        const auto validBatch = session->analyzeBatch(100);
+        QCOMPARE(validBatch.status, AnalysisBatchStatus::Complete);
+        QVERIFY(session->finished());
+
+        const auto tracksAfterValid = session->tracks();
+        QCOMPARE(tracksAfterValid.status, AnalysisSessionSampleStatus::Available);
+        QCOMPARE(tracksAfterValid.tracks.size(), std::size_t{1});
+        QCOMPARE(tracksAfterValid.tracks[0].trackId, 1U);
+    }
+
+    void pagesAndEntersSamplesInAHundredGigabyteVirtualSparseMp4Movie() {
+        QFile prefixFile(QStringLiteral(
+            STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j6_100gb_sparse_prefix.bin"));
+        QVERIFY(prefixFile.open(QIODevice::ReadOnly));
+        const QByteArray prefixData = prefixFile.readAll();
+        QCOMPARE(prefixData.size(), 677);
+        std::vector<std::byte> prefixBytes(static_cast<std::size_t>(prefixData.size()));
+        std::memcpy(prefixBytes.data(), prefixData.constData(), static_cast<std::size_t>(prefixData.size()));
+
+        const QByteArray sampleData = QByteArray::fromHex(
+            "00000024658884001212121212121212121212121212121212121212121212121212121212121212");
+        QCOMPARE(sampleData.size(), 40);
+        std::vector<std::byte> samplePayload(static_cast<std::size_t>(sampleData.size()));
+        std::memcpy(samplePayload.data(), sampleData.constData(), static_cast<std::size_t>(sampleData.size()));
+
+        auto source = std::make_unique<HundredGigabyteSparseMp4Source>(
+            std::move(prefixBytes), std::move(samplePayload));
+        QCOMPARE(source->sizeBytes(), 100ULL * 1024ULL * 1024ULL * 1024ULL);
+
+        QString errorMessage;
+        auto session = AnalysisSession::create(std::move(source), &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+
+        const auto batch = session->analyzeBatch(100);
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
+        QVERIFY(session->finished());
+
+        const auto tracks = session->tracks();
+        QCOMPARE(tracks.status, AnalysisSessionSampleStatus::Available);
+        QCOMPARE(tracks.tracks.size(), std::size_t{1});
+        const auto& track = tracks.tracks[0];
+        QCOMPARE(track.trackId, 1U);
+        QCOMPARE(track.timescale, 30000U);
+        QCOMPARE(track.sampleCount, 2ULL);
+        QCOMPARE(track.targetFormat, QStringLiteral("video.h264.nal"));
+
+        AnalysisSessionSamplePageRequest request;
+        request.trackId = 1;
+        request.pageIndex = 0;
+        request.pageSize = 10;
+        const auto page = session->samplesForTrack(request);
+        QCOMPARE(page.status, AnalysisSessionSampleStatus::Available);
+        QCOMPARE(page.descriptors.size(), std::size_t{2});
+
+        const auto& s0 = page.descriptors[0];
+        QCOMPARE(s0.sampleIndex, 0ULL);
+        QCOMPARE(s0.sourceSpans.size(), std::size_t{1});
+        QCOMPARE(s0.sourceSpans[0].start().byteOffset(), 50ULL * 1024ULL * 1024ULL * 1024ULL);
+        QCOMPARE(s0.sourceSpans[0].bitLength() / 8ULL, 40ULL);
+        QCOMPARE(s0.sourceSpans[0].start().absoluteBitOffset(), (50ULL * 1024ULL * 1024ULL * 1024ULL) * 8ULL);
+        QCOMPARE(s0.dts, 0LL);
+        QCOMPARE(s0.pts, 0LL);
+        QCOMPARE(s0.duration, 1000ULL);
+        QVERIFY(s0.isSyncSample);
+
+        const auto& s1 = page.descriptors[1];
+        QCOMPARE(s1.sampleIndex, 1ULL);
+        QCOMPARE(s1.sourceSpans.size(), std::size_t{1});
+        QCOMPARE(s1.sourceSpans[0].start().byteOffset(), 99ULL * 1024ULL * 1024ULL * 1024ULL);
+        QCOMPARE(s1.sourceSpans[0].bitLength() / 8ULL, 40ULL);
+        QCOMPARE(s1.sourceSpans[0].start().absoluteBitOffset(), (99ULL * 1024ULL * 1024ULL * 1024ULL) * 8ULL);
+        QCOMPARE(s1.dts, 1000LL);
+        QCOMPARE(s1.pts, 1000LL);
+        QCOMPARE(s1.duration, 1000ULL);
+        QVERIFY(s1.isSyncSample);
+
+        const auto catalog = makeCatalogWithOfficialPackages();
+        const auto entered0 = session->enterSample(1, 0, catalog);
+        QCOMPARE(entered0.status, AnalysisSessionSampleStatus::Available);
+        QVERIFY(entered0.entered());
+        QCOMPARE(session->navigationDepth(), std::size_t{1});
+        QVERIFY(session->currentSampleFrame() != nullptr);
+        QCOMPARE(session->currentSampleFrame()->sample.sampleIndex, 0ULL);
+
+        const auto returned0 = session->returnToParent();
+        QCOMPARE(returned0.status, AnalysisSessionReturnStatus::Returned);
+        QCOMPARE(session->navigationDepth(), std::size_t{0});
+
+        const auto entered1 = session->enterSample(1, 1, catalog);
+        QCOMPARE(entered1.status, AnalysisSessionSampleStatus::Available);
+        QVERIFY(entered1.entered());
+        QCOMPARE(session->navigationDepth(), std::size_t{1});
+        QVERIFY(session->currentSampleFrame() != nullptr);
+        QCOMPARE(session->currentSampleFrame()->sample.sampleIndex, 1ULL);
+
+        const auto returned1 = session->returnToParent();
+        QCOMPARE(returned1.status, AnalysisSessionReturnStatus::Returned);
+        QCOMPARE(session->navigationDepth(), std::size_t{0});
+    }
+
+    void crossValidatesSampleOffsetsTimestampsAndKeyframesAgainstFfprobe() {
+        const auto catalog = makeCatalogWithOfficialPackages();
+
+        // 1. Multi-track movie cross-validation
+        {
+            const QString fixturePath = QStringLiteral(
+                STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_two_tracks.mp4");
+            auto session = openPinnedMp4Fixture(fixturePath, catalog);
+            QVERIFY(session != nullptr);
+            QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+
+            const auto tracks = session->tracks();
+            QCOMPARE(tracks.status, AnalysisSessionSampleStatus::Available);
+            QCOMPARE(tracks.tracks.size(), std::size_t{2});
+
+            AnalysisSessionSamplePageRequest vReq{.trackId = 1, .pageSize = 10};
+            const auto vPage = session->samplesForTrack(vReq);
+            QCOMPARE(vPage.status, AnalysisSessionSampleStatus::Available);
+            QCOMPARE(vPage.descriptors.size(), std::size_t{2});
+
+            // StreamView expected ground truth for Track 1 (video)
+            QCOMPARE(vPage.descriptors[0].sourceSpans.size(), std::size_t{1});
+            QCOMPARE(vPage.descriptors[0].sourceSpans[0].start().byteOffset(), 1018ULL);
+            QCOMPARE(vPage.descriptors[0].sourceSpans[0].bitLength() / 8ULL, 20ULL);
+            QCOMPARE(vPage.descriptors[0].dts, 0LL);
+            QCOMPARE(vPage.descriptors[0].pts, 0LL);
+            QCOMPARE(vPage.descriptors[0].duration, 1000ULL);
+
+            QCOMPARE(vPage.descriptors[1].sourceSpans.size(), std::size_t{1});
+            QCOMPARE(vPage.descriptors[1].sourceSpans[0].start().byteOffset(), 1038ULL);
+            QCOMPARE(vPage.descriptors[1].sourceSpans[0].bitLength() / 8ULL, 12ULL);
+            QCOMPARE(vPage.descriptors[1].dts, 1000LL);
+            QCOMPARE(vPage.descriptors[1].pts, 1000LL);
+            QCOMPARE(vPage.descriptors[1].duration, 1000ULL);
+
+            AnalysisSessionSamplePageRequest aReq{.trackId = 2, .pageSize = 10};
+            const auto aPage = session->samplesForTrack(aReq);
+            QCOMPARE(aPage.status, AnalysisSessionSampleStatus::Available);
+            QCOMPARE(aPage.descriptors.size(), std::size_t{2});
+
+            // StreamView expected ground truth for Track 2 (audio)
+            QCOMPARE(aPage.descriptors[0].sourceSpans.size(), std::size_t{1});
+            QCOMPARE(aPage.descriptors[0].sourceSpans[0].start().byteOffset(), 1050ULL);
+            QCOMPARE(aPage.descriptors[0].sourceSpans[0].bitLength() / 8ULL, 96ULL);
+            QCOMPARE(aPage.descriptors[0].dts, 0LL);
+            QCOMPARE(aPage.descriptors[0].pts, 0LL);
+            QCOMPARE(aPage.descriptors[0].duration, 1024ULL);
+            QVERIFY(aPage.descriptors[0].isSyncSample);
+
+            QCOMPARE(aPage.descriptors[1].sourceSpans.size(), std::size_t{1});
+            QCOMPARE(aPage.descriptors[1].sourceSpans[0].start().byteOffset(), 1146ULL);
+            QCOMPARE(aPage.descriptors[1].sourceSpans[0].bitLength() / 8ULL, 80ULL);
+            QCOMPARE(aPage.descriptors[1].dts, 1024LL);
+            QCOMPARE(aPage.descriptors[1].pts, 1024LL);
+            QCOMPARE(aPage.descriptors[1].duration, 1024ULL);
+            QVERIFY(aPage.descriptors[1].isSyncSample);
+
+            // Cross-validate against ffprobe process if available in environment
+            const QString ffprobePath =
+                QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+            if (!ffprobePath.isEmpty()) {
+                QProcess process;
+                process.start(ffprobePath, {
+                    QStringLiteral("-loglevel"), QStringLiteral("quiet"),
+                    QStringLiteral("-show_packets"),
+                    QStringLiteral("-of"), QStringLiteral("json"),
+                    fixturePath
+                });
+                QVERIFY(process.waitForFinished(10000));
+                QCOMPARE(process.exitCode(), 0);
+
+                const auto jsonDoc = QJsonDocument::fromJson(process.readAllStandardOutput());
+                QVERIFY(!jsonDoc.isNull());
+                const auto packets = jsonDoc.object().value(QStringLiteral("packets")).toArray();
+                QCOMPARE(packets.size(), 4);
+
+                auto parsePkt = [](const QJsonObject& obj) {
+                    struct Pkt {
+                        int streamIndex = 0;
+                        quint64 pos = 0;
+                        quint64 size = 0;
+                        qint64 pts = 0;
+                        qint64 dts = 0;
+                        quint64 duration = 0;
+                        bool isKey = false;
+                    };
+                    const auto valToU64 = [](const QJsonValue& v) -> quint64 {
+                        return v.isString() ? v.toString().toULongLong() : static_cast<quint64>(v.toInteger());
+                    };
+                    const auto valToI64 = [](const QJsonValue& v) -> qint64 {
+                        return v.isString() ? v.toString().toLongLong() : v.toInteger();
+                    };
+                    return Pkt{
+                        .streamIndex = obj.value(QStringLiteral("stream_index")).toInt(),
+                        .pos = valToU64(obj.value(QStringLiteral("pos"))),
+                        .size = valToU64(obj.value(QStringLiteral("size"))),
+                        .pts = valToI64(obj.value(QStringLiteral("pts"))),
+                        .dts = valToI64(obj.value(QStringLiteral("dts"))),
+                        .duration = valToU64(obj.value(QStringLiteral("duration"))),
+                        .isKey = obj.value(QStringLiteral("flags")).toString().contains(QLatin1Char('K')),
+                    };
+                };
+
+                const auto p0 = parsePkt(packets[0].toObject());
+                QCOMPARE(p0.streamIndex, 0);
+                QCOMPARE(p0.pos, vPage.descriptors[0].sourceSpans[0].start().byteOffset());
+                QCOMPARE(p0.size, vPage.descriptors[0].sourceSpans[0].bitLength() / 8ULL);
+                QCOMPARE(p0.dts, vPage.descriptors[0].dts);
+                QCOMPARE(p0.pts, vPage.descriptors[0].pts);
+                QCOMPARE(p0.duration, vPage.descriptors[0].duration);
+
+                const auto p1 = parsePkt(packets[1].toObject());
+                QCOMPARE(p1.streamIndex, 0);
+                QCOMPARE(p1.pos, vPage.descriptors[1].sourceSpans[0].start().byteOffset());
+                QCOMPARE(p1.size, vPage.descriptors[1].sourceSpans[0].bitLength() / 8ULL);
+                QCOMPARE(p1.dts, vPage.descriptors[1].dts);
+                QCOMPARE(p1.pts, vPage.descriptors[1].pts);
+                QCOMPARE(p1.duration, vPage.descriptors[1].duration);
+
+                const auto p2 = parsePkt(packets[2].toObject());
+                QCOMPARE(p2.streamIndex, 1);
+                QCOMPARE(p2.pos, aPage.descriptors[0].sourceSpans[0].start().byteOffset());
+                QCOMPARE(p2.size, aPage.descriptors[0].sourceSpans[0].bitLength() / 8ULL);
+                QCOMPARE(p2.dts, aPage.descriptors[0].dts);
+                QCOMPARE(p2.pts, aPage.descriptors[0].pts);
+                QCOMPARE(p2.duration, aPage.descriptors[0].duration);
+                QCOMPARE(p2.isKey, aPage.descriptors[0].isSyncSample);
+
+                const auto p3 = parsePkt(packets[3].toObject());
+                QCOMPARE(p3.streamIndex, 1);
+                QCOMPARE(p3.pos, aPage.descriptors[1].sourceSpans[0].start().byteOffset());
+                QCOMPARE(p3.size, aPage.descriptors[1].sourceSpans[0].bitLength() / 8ULL);
+                QCOMPARE(p3.dts, aPage.descriptors[1].dts);
+                QCOMPARE(p3.pts, aPage.descriptors[1].pts);
+                QCOMPARE(p3.duration, aPage.descriptors[1].duration);
+                QCOMPARE(p3.isKey, aPage.descriptors[1].isSyncSample);
+            }
+        }
+
+        // 2. B-frame & sync sample table movie cross-validation
+        {
+            const QString fixturePath = QStringLiteral(
+                STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j6_bframe_sync.mp4");
+            auto session = openPinnedMp4Fixture(fixturePath, catalog);
+            QVERIFY(session != nullptr);
+            QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+
+            const auto tracks = session->tracks();
+            QCOMPARE(tracks.status, AnalysisSessionSampleStatus::Available);
+            QCOMPARE(tracks.tracks.size(), std::size_t{1});
+
+            AnalysisSessionSamplePageRequest req{.trackId = 1, .pageSize = 10};
+            const auto page = session->samplesForTrack(req);
+            QCOMPARE(page.status, AnalysisSessionSampleStatus::Available);
+            QCOMPARE(page.descriptors.size(), std::size_t{4});
+
+            // Sample 0: IDR sync keyframe, DTS 0, PTS 0
+            QCOMPARE(page.descriptors[0].sourceSpans.size(), std::size_t{1});
+            QCOMPARE(page.descriptors[0].sourceSpans[0].start().byteOffset(), 681ULL);
+            QCOMPARE(page.descriptors[0].sourceSpans[0].bitLength() / 8ULL, 40ULL);
+            QCOMPARE(page.descriptors[0].dts, 0LL);
+            QCOMPARE(page.descriptors[0].pts, 0LL);
+            QCOMPARE(page.descriptors[0].duration, 1000ULL);
+            QVERIFY(page.descriptors[0].isSyncSample);
+
+            // Sample 1: P-frame, DTS 1000, CTTS 2000 -> PTS 3000
+            QCOMPARE(page.descriptors[1].sourceSpans.size(), std::size_t{1});
+            QCOMPARE(page.descriptors[1].sourceSpans[0].start().byteOffset(), 721ULL);
+            QCOMPARE(page.descriptors[1].sourceSpans[0].bitLength() / 8ULL, 20ULL);
+            QCOMPARE(page.descriptors[1].dts, 1000LL);
+            QCOMPARE(page.descriptors[1].pts, 3000LL);
+            QCOMPARE(page.descriptors[1].duration, 1000ULL);
+            QVERIFY(!page.descriptors[1].isSyncSample);
+
+            // Sample 2: B-frame, DTS 2000, CTTS 0 -> PTS 2000
+            QCOMPARE(page.descriptors[2].sourceSpans.size(), std::size_t{1});
+            QCOMPARE(page.descriptors[2].sourceSpans[0].start().byteOffset(), 741ULL);
+            QCOMPARE(page.descriptors[2].sourceSpans[0].bitLength() / 8ULL, 16ULL);
+            QCOMPARE(page.descriptors[2].dts, 2000LL);
+            QCOMPARE(page.descriptors[2].pts, 2000LL);
+            QCOMPARE(page.descriptors[2].duration, 1000ULL);
+            QVERIFY(!page.descriptors[2].isSyncSample);
+
+            // Sample 3: B-frame, DTS 3000, CTTS 1000 -> PTS 4000
+            QCOMPARE(page.descriptors[3].sourceSpans.size(), std::size_t{1});
+            QCOMPARE(page.descriptors[3].sourceSpans[0].start().byteOffset(), 757ULL);
+            QCOMPARE(page.descriptors[3].sourceSpans[0].bitLength() / 8ULL, 16ULL);
+            QCOMPARE(page.descriptors[3].dts, 3000LL);
+            QCOMPARE(page.descriptors[3].pts, 4000LL);
+            QCOMPARE(page.descriptors[3].duration, 1000ULL);
+            QVERIFY(!page.descriptors[3].isSyncSample);
+
+            // Cross-validate against ffprobe process if available in environment
+            const QString ffprobePath =
+                QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+            if (!ffprobePath.isEmpty()) {
+                QProcess process;
+                process.start(ffprobePath, {
+                    QStringLiteral("-loglevel"), QStringLiteral("quiet"),
+                    QStringLiteral("-show_packets"),
+                    QStringLiteral("-of"), QStringLiteral("json"),
+                    fixturePath
+                });
+                QVERIFY(process.waitForFinished(10000));
+                QCOMPARE(process.exitCode(), 0);
+
+                const auto jsonDoc = QJsonDocument::fromJson(process.readAllStandardOutput());
+                QVERIFY(!jsonDoc.isNull());
+                const auto packets = jsonDoc.object().value(QStringLiteral("packets")).toArray();
+                QCOMPARE(packets.size(), 4);
+
+                const auto valToU64 = [](const QJsonValue& v) -> quint64 {
+                    return v.isString() ? v.toString().toULongLong() : static_cast<quint64>(v.toInteger());
+                };
+                const auto valToI64 = [](const QJsonValue& v) -> qint64 {
+                    return v.isString() ? v.toString().toLongLong() : v.toInteger();
+                };
+
+                for (int i = 0; i < 4; ++i) {
+                    const auto obj = packets[i].toObject();
+                    const auto& desc = page.descriptors[static_cast<std::size_t>(i)];
+                    QCOMPARE(desc.sourceSpans.size(), std::size_t{1});
+                    QCOMPARE(valToU64(obj.value(QStringLiteral("pos"))), desc.sourceSpans[0].start().byteOffset());
+                    QCOMPARE(valToU64(obj.value(QStringLiteral("size"))), desc.sourceSpans[0].bitLength() / 8ULL);
+                    QCOMPARE(valToI64(obj.value(QStringLiteral("dts"))), desc.dts);
+                    QCOMPARE(valToI64(obj.value(QStringLiteral("pts"))), desc.pts);
+                    QCOMPARE(valToU64(obj.value(QStringLiteral("duration"))), desc.duration);
+                    const bool isKey = obj.value(QStringLiteral("flags")).toString().contains(QLatin1Char('K'));
+                    QCOMPARE(isKey, desc.isSyncSample);
+                }
+            }
+        }
+    }
+
 };
 
 QTEST_GUILESS_MAIN(AnalysisSessionTest)

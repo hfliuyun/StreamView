@@ -727,8 +727,8 @@ namespace {
     case AnalysisBatchStatus::ResourceLimit:
         return AnalysisSessionSampleStatus::ResourceLimit;
     case AnalysisBatchStatus::InvalidRule:
-    case AnalysisBatchStatus::InvalidBatchSize:
         return AnalysisSessionSampleStatus::InvalidRulePackage;
+    case AnalysisBatchStatus::InvalidBatchSize:
     case AnalysisBatchStatus::InProgress:
     case AnalysisBatchStatus::Complete:
         break;
