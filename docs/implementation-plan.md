@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 6
-Last Completed Step: Task P6c（MainWindow 会话操作动作、脏状态跟踪与未保存修改保护协议 UI 切片）—— 落实 File 菜单 Save/SaveAs/Open/Exit 动作集成；实现基于 setWindowModified 与 [*] 的窗口脏状态维护；提供书签与注释增删清空管理 API；实现 maybeSave 与 closeEvent 拦截防护（彻底闭环 P2-24）；扩充 8 个端到端 UI 测试用例使得 MainWindowTest 增至 38 槽全绿
-Next Action: 启动 Task P6d-1（能力切片：AnalysisSession::overrideFormat 核心 API 与 AnalysisSession::openFileWithExplicitRule 静态工厂与单元测试，P2-25）
-Last Verification: Hosted Run 34031197713（Ubuntu 24.04 / Qt 6.11.1 job 101480897026, Windows 2022 / Qt 6.10.1 job 101480897182, macOS 15 / Qt 6.11.1 job 101480897088）全绿；本地 dev/ci/sanitize 49/49 全部通过；MainWindowTest 38/38 槽通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
+Last Completed Step: Task P6d-1（能力切片：AnalysisSession::overrideFormat 核心 API 与 AnalysisSession::openFileWithExplicitRule 静态工厂与单元测试，彻底闭环 P2-20 底层能力）—— 在 AnalysisSession 中提取 setupResolvedAnalyzer 统合分析器构建；实现 openFileWithExplicitRule 首等显式打开工厂；实现 overrideFormat 格式手动覆盖与缓存/导航栈/用户状态重置；重构 openPinnedMp4Fixture 彻底淘汰临时文件 hack（闭环 P2-20）；追加 4 个单元测试使得 AnalysisSessionTest 增至 57 槽全绿
+Next Action: 启动 Task P6d-2（UI切片：FormatOverrideDialog 界面、歧义横幅「解决歧义...」按钮集成与 UI 测试，闭环 P2-17/P2-19，P2-25）
+Last Verification: Hosted Run 34033034801（Ubuntu 24.04 / Qt 6.11.1 job 101486007813, Windows 2022 / Qt 6.10.1 job 101486007737, macOS 15 / Qt 6.11.1 job 101486007920）全绿；本地 dev/ci/sanitize 49/49 全部通过；AnalysisSessionTest 57/57 槽通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
 Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -256,7 +256,7 @@ Blockers: 无
 - [x] **Task P6a**（规范）：双语 ADR-0109 会话生命周期管理、格式手动覆盖与 Schema 演进策略（Markdown-only，设固定独立评审门禁）；
 - [x] **Task P6b**（能力切片）：`SessionSaveStatus` 强类型保存结果枚举、`AnalysisSession::saveSession(path, userState)` 返回结构体升级与单元测试；
 - [x] **Task P6c**（UI切片）：`MainWindow` 保存/另存为/打开会话动作、`setWindowModified` 脏状态维护与书签/注释挂钩、`closeEvent` / `maybeSave` 弹窗协议（Save / Discard / Cancel，区分文件对话框取消与底层 I/O 报错）与 UI 测试；
-- **Task P6d-1**（能力切片）：`AnalysisSession::overrideFormat` 核心 API 与 `AnalysisSession::openFileWithExplicitRule` 静态工厂与单元测试（P2-25）；
+- [x] **Task P6d-1**（能力切片）：`AnalysisSession::overrideFormat` 核心 API 与 `AnalysisSession::openFileWithExplicitRule` 静态工厂与单元测试（彻底闭环 P2-20，P2-25）；
 - **Task P6d-2**（UI切片）：`FormatOverrideDialog` 界面、歧义横幅「解决歧义...」按钮集成与 UI 测试（闭环 P2-17/P2-19/P2-20，P2-25）；
 - **Task P6e**（UI与规则管理切片）：`RuleManagerDialog` 界面、规则包列表与版本展示、`.svrule` 导入安装与测试；
 - **Task P6f**（UI切片）：分析进度条展示、异步取消按钮与响应、`DiagnosticsSummaryDock` 全局诊断面板与双向跳转；
@@ -3201,3 +3201,36 @@ Blockers: 无
        * macOS 15 / Qt 6.11.1：Job `101480897088`；
        * Ubuntu 24.04 / Qt 6.11.1：Job `101480897026`；
        * Windows 2022 / Qt 6.10.1：Job `101480897182`。
+- **Task P6d-1 执行记录（能力切片：`AnalysisSession::overrideFormat` 与 `AnalysisSession::openFileWithExplicitRule`，彻底闭环 P2-20）**：
+  1. 架构目标与纪律恪守：
+     - 严格依照 ADR-0109 §4.4 规范落地内核首等格式覆盖与显式打开能力，杜绝在 UI 消费者（P6d-2）之前搭载未就绪能力；
+     - 恪守单主干与版本化约定，保持 `SessionDocument` Schema Version 1 完全不变。
+  2. 核心架构与 API 实现（`src/app/analysis_session.h` / `src/app/analysis_session.cpp`）：
+     - 统一分析器构造 helper：提取 `setupResolvedAnalyzer`，统一处理 `ResolvedRulePackage` 对 H.264 Annex B、AAC ADTS 与 MP4 ISOBMFF 的分发构建，在 `createPrepared`、`openFileWithExplicitRule` 与 `overrideFormat` 间实现 100% 代码复用；
+     - 显式规则打开工厂：实现 `AnalysisSession::openFileWithExplicitRule(path, catalog, targetRule, cacheOptions, errorMessage)`，直接打开文件、校验源指纹并在规则 catalog 中 resolve 入口点以启动分析；
+     - 格式手动覆盖能力：实现 `AnalysisSession::overrideFormat(catalog, targetRule, errorMessage)`：
+       * 在重构分析器前确保底层源有效；
+       * 彻底重置所有与旧格式绑定的瞬态与缓存状态：清空 `pendingCacheWrites_` 并释放 `cacheOwner_`，重置缓存状态为 `Disabled`；清空 `navigationStack_`、`subFormatSessions_`、`trackIndices_` 与 `sampleSessions_`；
+       * 清空表现层暂存的 `userState_.expandedPaths` 与 `userState_.view.selectedAnalysisPath`；
+       * 重置 `analysisStarted_ = false` 与 `lastBatchStatus_ = InProgress`，保证下一次 `analyzeBatch` 从头无缝分发给新分析器；
+       * 当且仅当新分析器与格式环境成功构建后才原子替换原 `analyzer_`，若规则解析或构建失败则原会话结构 100% 保持完好，实现失败优雅保全。
+  3. 测试重构与临时文件 Hack 淘汰（彻底闭环 P2-20）：
+     - 重构 `tests/app/analysis_session_test.cpp` 既有 `openPinnedMp4Fixture`，彻底移除原先构造 `SessionDocument`、保存磁盘临时 `.svsession` 并调用 `restoreSession` 的 ad-hoc 间接绕行，直接由首等公共 API `AnalysisSession::openFileWithExplicitRule` 驱动，为 Phase 5 sample 导航全套测试奠定稳固的首等内核基础；
+     - 修正 ADR-0109 双语文件中因扩展代码产生的 `src/app/analysis_session.h` 行号引用（L333 与 L294）。
+  4. 单元测试扩充（`tests/app/analysis_session_test.cpp` 追加 4 个用例，测试集增至 57 槽全绿）：
+     - `openFileWithExplicitRuleDirectlyAnalyzesTargetFormat`：实证显式规则可直接命中 MP4 ISOBMFF 并正常产出树节点；
+     - `openFileWithExplicitRuleFailsGracefullyForMissingOrInvalidRule`：实证不存在文件路径或未知规则身份时安全返回 `nullptr` 并给出明确错误信息；
+     - `overrideFormatSwitchesFormatAndClearsNavigationState`：实证从强判定 H.264 会话手动切换为 MP4，导航栈与展开路径被彻底清空，随后往返覆盖回 H.264 仍可重新触发分析并产生有效树节点；
+     - `overrideFormatFailsGracefullyWithoutCorruptingExistingSession`：实证传入非法规则包时返回 `false`，原会话的格式判定、规则身份与节点数毫发无损。
+  5. 验证与全平台 Hosted CI 闭环：
+     - 规则静态校验：`svtool rule check` 对 4 个官方规则包源码（MP4、AAC ASC、AAC ADTS、H.264 Annex B）全部 `Rule OK`；
+     - 本地三套全量矩阵：
+       * `cmake --preset dev && cmake --build --preset dev && ctest --preset dev`（49/49 PASS，耗时 59.86s）；
+       * `cmake --preset ci && cmake --build --preset ci && ctest --preset ci`（49/49 PASS，耗时 14.10s）；
+       * `cmake --preset sanitize && cmake --build --preset sanitize && ctest --preset sanitize`（49/49 PASS，零 ASan/UBSan 告警，耗时 203.89s）；
+       * `ctest -R markdown_hygiene --preset dev`（100% PASS）；`git diff --check`（无空白缺陷）；
+     - 实现提交：`6a53767`（`feat(app): implement format override and explicit rule opening in analysis session`）；
+     - Hosted CI 验证：Run `34033034801` 三平台全部 success：
+       * Ubuntu 24.04 / Qt 6.11.1：Job `101486007813`（`success`）；
+       * Windows 2022 / Qt 6.10.1：Job `101486007737`（`success`）；
+       * macOS 15 / Qt 6.11.1：Job `101486007920`（`success`）。
