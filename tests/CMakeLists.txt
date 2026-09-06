@@ -178,6 +178,13 @@ if(TARGET streamview_app)
         PRIVATE
             STREAMVIEW_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
     )
+    streamview_add_app_test(streamview_rule_manager_dialog_tests app/rule_manager_dialog_test.cpp)
+    target_link_libraries(streamview_rule_manager_dialog_tests PRIVATE Qt6::Sql)
+    target_compile_definitions(
+        streamview_rule_manager_dialog_tests
+        PRIVATE
+            STREAMVIEW_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    )
 endif()
 streamview_add_rules_test(
     streamview_h264_annex_b_analyzer_tests

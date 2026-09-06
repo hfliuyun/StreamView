@@ -168,4 +168,28 @@ RulePackageInstallResult RulePackageStore::install(const RulePackage& package,
             QStringLiteral("Unable to atomically install content-addressed package")};
 }
 
+std::vector<RulePackage> RulePackageStore::discoverInstalled(const QString& storeRoot) {
+    std::vector<RulePackage> result;
+    if (storeRoot.isEmpty()) {
+        return result;
+    }
+    const QDir sha256Dir(QDir(storeRoot).filePath(QStringLiteral("sha256")));
+    if (!sha256Dir.exists()) {
+        return result;
+    }
+    const QStringList shards = sha256Dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+    for (const QString& shard : shards) {
+        const QDir shardDir(sha256Dir.filePath(shard));
+        const QStringList digests = shardDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+        for (const QString& digest : digests) {
+            const QString packageDir = shardDir.filePath(digest);
+            auto imported = importDirectory(packageDir);
+            if (imported.succeeded() && imported.package.has_value()) {
+                result.push_back(std::move(*imported.package));
+            }
+        }
+    }
+    return result;
+}
+
 } // namespace streamview::rules

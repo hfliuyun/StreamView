@@ -4,16 +4,19 @@
 #include "field_inspector.h"
 #include "format_override_dialog.h"
 #include "raw_data_view.h"
+#include "rule_manager_dialog.h"
 #include "timeline_table_model.h"
 
 #include <streamview/rules/aac_adts_analyzer.h>
 #include <streamview/rules/h264_annex_b_analyzer.h>
 #include <streamview/rules/mp4_isobmff_analyzer.h>
+#include <streamview/rules/rule_package_store.h>
 
 #include <QAction>
 #include <QBoxLayout>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QDir>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -26,6 +29,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QStyle>
 #include <QTableView>
@@ -53,6 +57,17 @@ MainWindow::MainWindow(AnalysisSessionCacheOptions cacheOptions, QWidget* parent
     : QMainWindow(parent), cacheOptions_(std::move(cacheOptions)) {
     resize(1280, 800);
 
+    const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (!appData.isEmpty()) {
+        ruleStorePath_ = QDir(appData).filePath(QStringLiteral("rules"));
+    }
+
+    bundledPackageIds_ = {
+        QStringLiteral("org.streamview.aac"),
+        QStringLiteral("org.streamview.h264"),
+        QStringLiteral("org.streamview.mp4")
+    };
+
     auto aac = rules::loadAacAdtsRulePackage();
     if (aac.succeeded() && aac.package) {
         static_cast<void>(catalog_.registerPackage(std::move(*aac.package)));
@@ -64,6 +79,12 @@ MainWindow::MainWindow(AnalysisSessionCacheOptions cacheOptions, QWidget* parent
     auto mp4 = rules::loadMp4IsobmffRulePackage();
     if (mp4.succeeded() && mp4.package) {
         static_cast<void>(catalog_.registerPackage(std::move(*mp4.package)));
+    }
+
+    if (!ruleStorePath_.isEmpty()) {
+        for (auto&& pkg : rules::RulePackageStore::discoverInstalled(ruleStorePath_)) {
+            static_cast<void>(catalog_.registerPackage(std::move(pkg)));
+        }
     }
 
     rawDataView_ = new RawDataView(this);
@@ -143,6 +164,13 @@ void MainWindow::setupMenus() {
     actionOverrideFormat_->setObjectName(QStringLiteral("actionOverrideFormat"));
     actionOverrideFormat_->setEnabled(false);
     connect(actionOverrideFormat_, &QAction::triggered, this, &MainWindow::overrideFormat);
+
+    auto* toolsMenu = menuBar()->addMenu(tr("&Tools"));
+    toolsMenu->setObjectName(QStringLiteral("menuTools"));
+
+    actionManageRules_ = toolsMenu->addAction(tr("&Manage Rules..."));
+    actionManageRules_->setObjectName(QStringLiteral("actionManageRules"));
+    connect(actionManageRules_, &QAction::triggered, this, &MainWindow::openRuleManager);
 }
 
 void MainWindow::setupDocks() {
@@ -646,6 +674,15 @@ void MainWindow::overrideFormat() {
     setWindowModified(true);
     updateWindowTitle();
     updateActionStates();
+}
+
+void MainWindow::openRuleManager() {
+    if (ruleManagerDialogHandler_) {
+        ruleManagerDialogHandler_(this, catalog_, ruleStorePath_, bundledPackageIds_);
+        return;
+    }
+    RuleManagerDialog dlg(this, catalog_, ruleStorePath_, bundledPackageIds_);
+    dlg.exec();
 }
 
 bool MainWindow::openSessionFile(const QString& sessionPath, QString* errorMessage) {
