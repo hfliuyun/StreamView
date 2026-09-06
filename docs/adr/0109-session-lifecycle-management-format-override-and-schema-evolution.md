@@ -287,13 +287,50 @@ To establish an accessible, modern desktop experience across diverse operating e
    - `MainWindow` listens to `QEvent::LanguageChange` in its `changeEvent(QEvent*)` override:
      - Switching languages dynamically installs or uninstalls `QTranslator` instances via `QCoreApplication::installTranslator()` / `removeTranslator()`.
      - Invokes `retranslateUi()`, which refreshes all menu titles (File, Edit, View, Analysis, Tools, Help), menu action labels, status bar indicators, dock titles (`tr("Diagnostics")`, `tr("Timeline")`), search prompts, and table header labels immediately without restarting the application.
-   - `MainWindow` exposes a `View > Language` submenu (`menuLanguage`) containing a mutually exclusive `QActionGroup`:
+    - `MainWindow` exposes a `View > Language` submenu (`menuLanguage`) containing a mutually exclusive `QActionGroup`:
      - `actionLanguageEnglish` (`tr("English")`)
      - `actionLanguageChinese` (`tr("Simplified Chinese (简体中文)")`)
 
 ---
 
-### 8. Phase 6 Work Breakdown Structure (P6a – P6i, P2-25)
+### 8. Session Persistence Regression, Golden Version 1 Compatibility, and Sparse Source Restoration Architecture
+
+To conclusively verify that session lifecycle persistence, format manual overrides, and large-source restorations perform reliably without data corruption or memory degradation, Task P6h establishes the following verification protocols:
+
+1. **Frozen Version 1 Golden Fixture Guardrail (`tests/fixtures/v1_golden.svsession`, P2-23)**:
+   - A canonical, fully-formed Version 1 `.svsession` document is permanently checked into the repository (`tests/fixtures/v1_golden.svsession`).
+   - The fixture contains all specified closed-schema fields:
+     - `schemaVersion: 1`
+     - `source`: file kind, canonical path, size, and multi-chunk SHA-256 fingerprint.
+     - `rule`: exact package ID, semantic version, content SHA-256, and entry-point ID.
+     - `userState`: bookmarks with source bit offsets and annotations with multi-bit ranges and text.
+     - `viewState`: primary bit cursor selection and hierarchical tree expansion paths.
+   - Dedicated regression tests verify that `SessionDocument::parseJson()` permanently reads and deserializes this golden fixture with bit-for-bit fidelity, safeguarding long-term backward compatibility across future releases.
+
+2. **100 GB Virtual Sparse Source Session Restoration Protocol**:
+   - A 100 GiB virtual media source is constructed via OS sparse file allocation (seeking to $100 \times 2^{30} - 1$ bytes and writing a terminal byte, consuming minimal physical storage).
+   - Verifies the boundary fingerprinting engine: calculating SHA-256 digests across the first 1 MiB, middle 1 MiB, and trailing 1 MiB without reading the intermediate empty 100 GB into memory.
+   - Verifies session serialization and subsequent restoration against the 100 GB source, proving that memory RSS remains bounded within default budgets (< 128 MiB) and fingerprint verification strictly guards against source alteration.
+
+3. **Format Manual Override Persistence & Replay Protocol**:
+   - Executes an end-to-end replay on an ambiguous bitstream:
+     - Loading the media source where auto-detection flags multiple candidates.
+     - Applying explicit manual override to select an alternate candidate rule.
+     - Adding bookmarks and expanding nodes, then saving the session to disk.
+     - Destroying the session and reopening the saved `.svsession` file.
+     - Asserts that the restored session directly binds the user-overridden rule without re-triggering ambiguity banners or prompting the user, while preserving bookmarks, selected bit offset, and a clean (unmodified) window state.
+
+4. **Unsaved Modifications Guardrail Full-Path Replay**:
+   - Verifies exhaustive automated permutations of `maybeSave()`:
+     - Clean session transition: opening/closing without user prompts.
+     - Dirty session with Save confirmation: persisting changes and transitioning.
+     - Dirty session with Discard confirmation: proceeding without writing to disk.
+     - Dirty session with Cancel confirmation: safely aborting the operation and maintaining modified state.
+     - File dialog dismissal and write-failure handling: preserving unsaved data upon I/O errors.
+
+---
+
+### 9. Phase 6 Work Breakdown Structure (P6a – P6i, P2-25)
 
 To ensure strict compliance with project discipline (independent SOP closed loops, clean capability-vs-consumer separation, and mandatory review gates), Phase 6 is partitioned into the following sequential task slices:
 
