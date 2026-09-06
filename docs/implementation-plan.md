@@ -2,10 +2,10 @@
 
 Status: In Progress
 Current Phase: 5
-Last Completed Step: Task P5j-4d（P5j-5 前置阻塞切片，`Required` 门禁已放行）—— 格式检测仲裁收敛为单一决策点 `rules::selectFormatFromDetection`（`src/rules/format_selection.{h,cpp}`），修复「模式证据对容器证据一票否决」缺陷：真实 AVC-in-MP4 不再被误判为裸 H.264 Annex B；`src/app/analysis_session.cpp` 与 `tools/svtool/main.cpp` 两份同源谓词已各自替换为对该函数的调用，仲裁仅依据源坐标（覆盖终点包含性 + Annex B/ADTS 起始锚定合取判据），无 FourCC 字面量，ADR-0099 clause 24 未被触碰；复审已放行，P2-18 与 P2-19 已登记
-Next Action: Task P5j-4e（检测器信心判据与大文件越窗 box 证据切片）—— **检测优先级前置阻塞仅对可被完整检查的源清除**；按 P5j-4d 复审裁定，真实大文件及非 faststart 影片在 64 KiB 窗丢弃越窗 box 导致 `Probable`/`Weak` 衰退的问题为 P5j-5 前置硬阻塞，必须单独立片修检测器信心判据（越窗 box 头部可验证时计入证据、body 不计入覆盖终点），放行后再开启 P5j-5
-Last Verification: Task P5j-4d — 本机 `dev` 预设 49/49 CTest 通过（测试槽 48 → 49，新增 `streamview_format_selection_tests` 14 个测试槽全部 PASS）；单变量反向变异实证承重：单项移除 `h264Anchored` 令 `unanchoredH264PatternCannotOutrankPartialContainerTiling` 报红，单项移除 `aacAnchored` 令 `unanchoredAacPatternCannotOutrankPartialContainerTiling` 报红；回滚后 `format_selection.cpp` SHA-256 与变异前逐字节一致，全仓无残留 `MUTATION` 标记；用户可见面已实跑核验：`svtool analyze` 对 5 个真实 MP4 fixture 全部输出 `mp4_isobmff` 根并展开 box 树；Hosted CI Run `34018308918` 三平台全绿（macOS 15 Job `101446055969`、Windows 2022 Job `101446056031`、Ubuntu 24.04 Job `101446056072` 全部 success）
-Blockers: 一项（检测优先级前置阻塞**仅对可被完整检查的源清除**）。真实大文件（`ftyp` + `moov` + 巨大 `mdat` 越窗退为 `Probable`）、非 faststart（`ftyp` + 巨大 `mdat` + 尾部 `moov` 退为 `Weak`）及首 box 为 64 位 largesize `mdat` 误判为裸流之缺陷，按复审裁定立为 Task P5j-4e（前置阻塞切片，必须在 P5j-5 之前完成并放行），越窗 box 头部可验证时计入证据、body 不计入覆盖终点。另：P5j-5 必须消费 `FormatSelection::ambiguous()` 并落到用户可见面。
+Last Completed Step: Task P5j-4e（检测器信心判据与大文件越窗 box 证据切片）—— 解决真实大文件（`ftyp` + `moov` + 巨大 `mdat`）与 64 位 largesize `mdat` 越出 64 KiB 探测窗导致信心度衰退的问题：在 `detectMp4Candidate` 中，当 box 头部在探测窗内可验证且未越出源文件总大小时，将该 box 记入 `evidence`，其 `boxSpan` 严格限定为头部区间（8 字节或 16 字节），未检查的 body 不计入覆盖终点；保留了 ADR-0106 的覆盖终点不变量；箱数阈值严格保持 `>= 3` 为 `Strong`，faststart 大文件达到 `Strong` 并被 `selectFormatFromDetection` 判定为 `Mp4Isobmff`；前置阻塞切片已全量闭环
+Next Action: Task P5j-5（样本导航的 UI 往返：`MainWindow` 轨道/样本导航面板、时间线表格、同步关键帧徽标与样本到编解码语法导航）—— **检测优先级前置阻塞已全量清除**；P5j-5 UI 表面消费 `FormatSelection::ambiguous()` 与 `decided()`，且轨道列表须表达截断状态（P2-13）
+Last Verification: Task P5j-4e — 本机 `dev`（Debug）、`ci`（Release）、`sanitize`（ASan/UBSan）三预设全量 49/49 CTest 通过（测试槽 `streamview_mp4_box_detector_tests` 18 → 20，`streamview_format_selection_tests` 14 → 15 全部 PASS）；`svtool rule check` 全规则通过；`svtool analyze` 对 5 个真实 MP4 fixture 全部输出 `mp4_isobmff` 根；Hosted CI Run `34019955676` 三平台全绿（macOS 15 Job `101450577273`、Ubuntu 24.04 Job `101450577250`、Windows 2022 Job `101450577134` 全部 success）
+Blockers: 无（检测优先级前置阻塞已由 Task P5j-4d 与 Task P5j-4e 完整清除，真实大文件与 AVC-in-MP4 均能达 Strong 并正确判归容器）。P5j-5 前置必办项锁定为：UI 表面消费 `ambiguous()` 与 `decided()`；track 列表表达截断状态（P2-13）。
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -2999,3 +2999,21 @@ Blockers: 一项（检测优先级前置阻塞**仅对可被完整检查的源�
      - macOS 15 / Qt 6.11.1：Job `101446055969`，`conclusion: success`；
      - Windows 2022 / Qt 6.10.1：Job `101446056031`，`conclusion: success`（MSVC 下 `<algorithm>` 编译通过，P2-16 跨平台闭环）；
      - Ubuntu 24.04 / Qt 6.11.1：Job `101446056072`，`conclusion: success`。
+- 2026-08-30：完成 Task P5j-4e（检测器信心判据与大文件越窗 box 证据切片）—— 解决真实大文件及 64 位 largesize 越窗 box 丢弃导致的探测衰退硬阻塞：
+  1. 缺陷定性：`detectMp4Candidate` 原实现遇 `boxSize > remainingInInspection` 时无条件 `break` 丢弃该 box。导致真实大文件（`ftyp` + `moov` + 巨大 `mdat`）只能记录 2 个 box 退为 `Probable`，被 `selectFormatFromDetection` 判定为未达 `Strong` 而错误退回裸 H.264 Annex B；首 box 为 64 位 largesize `mdat` 更是只得 0 个 box。
+  2. 修复方案（ADR-0107，中英双语）：在 `detectMp4Candidate` 中，若 box 头部在 64 KiB 窗内完整，且 `boxSize <= sourceSizeBytes - offset`（未越出源文件总大小），则将该 box 计入 `evidence`；其 `boxSpan` 严格限定为头部区间（普通 box 8 字节、largesize 16 字节），body 不计入覆盖终点。随后终止扫描（因下一 box 起始位置已超窗）。
+  3. 契约守住：严格遵守复审裁定（3）约束，未放宽 `>= 3` 箱为 `Strong` 的置信度门槛，杜绝在任意短数据上引发误报；同时严格保证所有 `evidence.boxSpan` 终点 `<= inspectedByteCount`，`mp4CoverageEndBytes` 绝不虚假延伸进未检查的 body，ADR-0106 的几何覆盖终点与包含性判据完好无损。
+  4. 代码提交记录：
+     - 规范 commit `85d350c`：`docs: specify mp4 bounded header verification in adr-0107`（双语 ADR-0107）；
+     - 实现与测试 commit `bde55d7`：`feat(rules): verify window-exceeding mp4 box headers within bounded probe`。
+  5. 本地验证矩阵：
+     - `dev`（Debug）：49/49 CTest 全部 PASS；
+     - `ci`（Release）：49/49 CTest 全部 PASS；
+     - `sanitize`（ASan/UBSan）：49/49 CTest 全部 PASS，无任何 sanitizer 报错；
+     - 单元测试扩展：`streamview_mp4_box_detector_tests` 增至 20 槽（新增越窗普通 box 头部验证、越窗 largesize 头部验证、源截断超窗拒绝、合成 500 MB faststart 大文件达 Strong 且 span 钉死在 2040）；`streamview_format_selection_tests` 增至 15 槽（新增 500 MB faststart AVC-in-MP4 仲裁测试，实证即使 `mdat` 内含有效 H.264 起始码，因 MP4 达 Strong 且起始码未锚定，仲裁坚定选择 `Mp4Isobmff` / `Mp4SubsumesPatternEvidence`）；
+     - 工具核验：`svtool rule check` 对全部官方规则通过；`svtool analyze` 对 5 个 MP4 fixture 正常展开 box 树。
+  6. Hosted CI 跨平台全量验证：Run ID `34019955676`（Commit `bde55d7f2b771a7a7d8c7e33cd15e2d6625eec17`）
+     - macOS 15 / Qt 6.11.1：Job `101450577273`，`conclusion: success`；
+     - Ubuntu 24.04 / Qt 6.11.1：Job `101450577250`，`conclusion: success`；
+     - Windows 2022 / Qt 6.10.1：Job `101450577134`，`conclusion: success`。
+  7. 边界与纪律：仅修改 `src/rules/mp4_box_detector.cpp`、`tests/rules/mp4_box_detector_test.cpp`、`tests/rules/format_selection_test.cpp` 与 ADR/实施计划文档；未触碰 `src/core/`，无任何 FourCC 字面量（ADR-0099 clause 24 守住）；未修改任何规则包或 `rule.toml`。检测优先级阻塞切片已全量闭环，前置硬阻塞清除，Next Action 正式解冻进入 Task P5j-5。
