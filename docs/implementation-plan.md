@@ -4,7 +4,7 @@ Status: In Progress
 Current Phase: 5
 Last Completed Step: Task P5j-4d（P5j-5 前置阻塞切片，`Required` 门禁已放行）—— 格式检测仲裁收敛为单一决策点 `rules::selectFormatFromDetection`（`src/rules/format_selection.{h,cpp}`），修复「模式证据对容器证据一票否决」缺陷：真实 AVC-in-MP4 不再被误判为裸 H.264 Annex B；`src/app/analysis_session.cpp` 与 `tools/svtool/main.cpp` 两份同源谓词已各自替换为对该函数的调用，仲裁仅依据源坐标（覆盖终点包含性 + Annex B/ADTS 起始锚定合取判据），无 FourCC 字面量，ADR-0099 clause 24 未被触碰；复审已放行，P2-18 与 P2-19 已登记
 Next Action: Task P5j-4e（检测器信心判据与大文件越窗 box 证据切片）—— **检测优先级前置阻塞仅对可被完整检查的源清除**；按 P5j-4d 复审裁定，真实大文件及非 faststart 影片在 64 KiB 窗丢弃越窗 box 导致 `Probable`/`Weak` 衰退的问题为 P5j-5 前置硬阻塞，必须单独立片修检测器信心判据（越窗 box 头部可验证时计入证据、body 不计入覆盖终点），放行后再开启 P5j-5
-Last Verification: Task P5j-4d — 本机 `dev` 预设 49/49 CTest 通过（测试槽 48 → 49，新增 `streamview_format_selection_tests` 14 个测试槽全部 PASS）；单变量反向变异实证承重：单项移除 `h264Anchored` 令 `unanchoredH264PatternCannotOutrankPartialContainerTiling` 报红，单项移除 `aacAnchored` 令 `unanchoredAacPatternCannotOutrankPartialContainerTiling` 报红；回滚后 `format_selection.cpp` SHA-256 与变异前逐字节一致，全仓无残留 `MUTATION` 标记；用户可见面已实跑核验：`svtool analyze` 对 5 个真实 MP4 fixture 全部输出 `mp4_isobmff` 根并展开 box 树
+Last Verification: Task P5j-4d — 本机 `dev` 预设 49/49 CTest 通过（测试槽 48 → 49，新增 `streamview_format_selection_tests` 14 个测试槽全部 PASS）；单变量反向变异实证承重：单项移除 `h264Anchored` 令 `unanchoredH264PatternCannotOutrankPartialContainerTiling` 报红，单项移除 `aacAnchored` 令 `unanchoredAacPatternCannotOutrankPartialContainerTiling` 报红；回滚后 `format_selection.cpp` SHA-256 与变异前逐字节一致，全仓无残留 `MUTATION` 标记；用户可见面已实跑核验：`svtool analyze` 对 5 个真实 MP4 fixture 全部输出 `mp4_isobmff` 根并展开 box 树；Hosted CI Run `34018308918` 三平台全绿（macOS 15 Job `101446055969`、Windows 2022 Job `101446056031`、Ubuntu 24.04 Job `101446056072` 全部 success）
 Blockers: 一项（检测优先级前置阻塞**仅对可被完整检查的源清除**）。真实大文件（`ftyp` + `moov` + 巨大 `mdat` 越窗退为 `Probable`）、非 faststart（`ftyp` + 巨大 `mdat` + 尾部 `moov` 退为 `Weak`）及首 box 为 64 位 largesize `mdat` 误判为裸流之缺陷，按复审裁定立为 Task P5j-4e（前置阻塞切片，必须在 P5j-5 之前完成并放行），越窗 box 头部可验证时计入证据、body 不计入覆盖终点。另：P5j-5 必须消费 `FormatSelection::ambiguous()` 并落到用户可见面。
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -2995,3 +2995,7 @@ Blockers: 一项（检测优先级前置阻塞**仅对可被完整检查的源�
      - **P2-18（测试属性说明）**：`anchoredAacCollisionProducesAmbiguousSelection` 是手工构造候选的白盒分支覆盖用例，不经真实检测器（真实字节同时满足偏移 0 为 ADTS 同步字与 3 箱铺砌不可构造），证明仲裁分支可达。
      - **P2-19（二元模式流优先级认知落差）**：`aacStrong && !h264Strong` 仍保留旧式优先级；在 `mp4Strong` 为假、AAC 锚定而 H.264 未锚定的输入上 H.264 仍胜出，建议在 Task P5j-4e 或后续切片统一梳理模式流间优先级。
   3. 后续路线图锁定：放行后执行三步提交与推送；推送后先立并执行 **Task P5j-4e**（检测器信心判据切片：越窗 box 头部可验证时计入证据、body 不计入覆盖终点），放行后再开 Task P5j-5。P5j-5 前置必办项锁定为：UI 表面消费 `ambiguous()` 与 `decided()`；track 列表表达截断状态（P2-13）。
+  4. Hosted CI Run `34018308918` 三平台成功验证：
+     - macOS 15 / Qt 6.11.1：Job `101446055969`，`conclusion: success`；
+     - Windows 2022 / Qt 6.10.1：Job `101446056031`，`conclusion: success`（MSVC 下 `<algorithm>` 编译通过，P2-16 跨平台闭环）；
+     - Ubuntu 24.04 / Qt 6.11.1：Job `101446056072`，`conclusion: success`。
