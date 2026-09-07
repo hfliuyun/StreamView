@@ -1,0 +1,7 @@
+struct NodeA {
+    bits<8> a;
+}
+struct NodeB {
+    bits<8> b;
+}
+entry NodeA;

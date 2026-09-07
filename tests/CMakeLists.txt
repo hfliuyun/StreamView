@@ -265,3 +265,43 @@ add_test(
     COMMAND ${CMAKE_COMMAND} -DPROJECT_SOURCE_DIR=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_markdown_hygiene.cmake
 )
 
+option(STREAMVIEW_ENABLE_LIBFUZZER "Enable LLVM libFuzzer engine for fuzz targets" OFF)
+
+function(streamview_add_fuzz_target target source corpus_dir)
+    qt_add_executable(${target} ${source})
+    target_link_libraries(${target} PRIVATE StreamView::Core StreamView::Rules Qt6::Core)
+    streamview_set_warnings(${target})
+    set_target_properties(${target} PROPERTIES WIN32_EXECUTABLE FALSE)
+    target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/fuzz")
+    target_compile_definitions(
+        ${target}
+        PRIVATE
+            STREAMVIEW_FUZZ_CORPUS_DIR="${corpus_dir}"
+            STREAMVIEW_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    )
+    if(STREAMVIEW_ENABLE_LIBFUZZER)
+        target_compile_options(${target} PRIVATE -fsanitize=fuzzer)
+        target_link_options(${target} PRIVATE -fsanitize=fuzzer)
+        target_compile_definitions(${target} PRIVATE STREAMVIEW_ENABLE_LIBFUZZER=1)
+    endif()
+    add_test(NAME ${target} COMMAND ${target})
+endfunction()
+
+streamview_add_fuzz_target(
+    streamview_fuzz_dsl_parser
+    fuzz/fuzz_dsl_parser.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fuzz/dsl_parser"
+)
+
+streamview_add_fuzz_target(
+    streamview_fuzz_dsl_compiler
+    fuzz/fuzz_dsl_compiler.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fuzz/dsl_compiler"
+)
+
+streamview_add_fuzz_target(
+    streamview_fuzz_dsl_vm
+    fuzz/fuzz_dsl_vm.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fuzz/dsl_vm"
+)
+

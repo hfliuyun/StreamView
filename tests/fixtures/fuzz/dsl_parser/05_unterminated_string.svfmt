@@ -1,0 +1,4 @@
+struct Bad {
+    @tag("unterminated string literal
+    bits<8> val;
+}

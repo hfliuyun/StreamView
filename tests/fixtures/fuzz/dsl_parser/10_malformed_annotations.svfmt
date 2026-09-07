@@ -1,0 +1,5 @@
+@invalid(===, 123)
+struct Annotated {
+    @unknown() bits<8> x;
+}
+entry Annotated;

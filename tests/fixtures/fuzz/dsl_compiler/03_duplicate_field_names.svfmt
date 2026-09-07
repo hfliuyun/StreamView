@@ -1,0 +1,5 @@
+struct Dupe {
+    bits<8> field;
+    bits<8> field;
+}
+entry Dupe;

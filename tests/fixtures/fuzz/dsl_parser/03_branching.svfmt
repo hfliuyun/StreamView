@@ -1,0 +1,9 @@
+struct Branch {
+    bits<8> flag;
+    if (flag == 1) {
+        bits<16> data;
+    } else {
+        bits<8> data;
+    }
+}
+entry Branch;

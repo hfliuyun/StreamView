@@ -1,0 +1,3 @@
+struct NoEntry {
+    bits<8> x;
+}

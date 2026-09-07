@@ -1,0 +1,8 @@
+enum Mode { A = 0; B = 1; }
+struct Complex {
+    bits<16, little> num;
+    bits<8> mode @enum(Mode);
+    ue ue_val;
+    se se_val;
+}
+entry Complex;

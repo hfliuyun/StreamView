@@ -1,0 +1,4 @@
+/* this comment is never closed
+struct Comment {
+    bits<8> x;
+}

@@ -1,0 +1,5 @@
+struct InvalidWidth {
+    bits<0> zero;
+    bits<65> too_large;
+}
+entry InvalidWidth;

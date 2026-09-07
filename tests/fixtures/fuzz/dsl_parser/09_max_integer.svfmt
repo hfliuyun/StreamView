@@ -1,0 +1,4 @@
+struct MaxInt {
+    bits<18446744073709551615> overflow_bits;
+}
+entry MaxInt;
