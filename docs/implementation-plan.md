@@ -1,10 +1,10 @@
 # StreamView v0.1 分阶段实施计划
 
 Status: In Progress
-Current Phase: 6
-Last Completed Step: Task P6i（关闭切片与独立评审整改全量落地：P0/P1/P2 整改项闭环、双语文档与 ADR-0109 精确对齐、同名兄弟路径消歧、中文翻译 100% 覆盖守卫、无条件断言加固；三平台 Hosted CI 全绿，本地三套矩阵 53/53 全通且零 Sanitizer 告警）
-Next Action: 阶段 6 里程碑收官重新提请门禁评审（报告 P0/P1/P2 整改闭环与证据链），待用户裁定放行后进入 Phase 7 / Task P7a。
-Last Verification: Hosted Run 34096773221（Windows 2022 / Qt 6.10.1 job 101662071808, macOS 15 / Qt 6.11.1 job 101662071979, Ubuntu 24.04 / Qt 6.11.1 job 101662071973）全绿；本地 dev/ci/sanitize 53/53 全部通过；SessionPersistenceRegressionTest 5/5 用例通过；MainWindowTest 51/51 槽通过；ThemeLocalizationTest 3/3 用例通过（含 146 处 tr() 中文全量覆盖静态守卫）；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
+Current Phase: 7
+Last Completed Step: Phase 6 里程碑门禁正式放行（Milestone Gate Passed；P0/P1/P2 整改项闭环与双语 ADR-0109 收敛）；Task P7a 规范启动（双语 ADR-0110 阶段 7 安全加固、模糊测试策略、性能基线与发布自动化，设固定独立评审门禁）
+Next Action: 编码实现 Task P7a（P1-1-R1 本地化跨行拼接正则守卫先红后绿闭环、P1-2-R1 同名兄弟消歧变异实证与计划表述限定）
+Last Verification: Hosted Run 34096773221（Windows 2022 / Qt 6.10.1 job 101662071808, macOS 15 / Qt 6.11.1 job 101662071979, Ubuntu 24.04 / Qt 6.11.1 job 101662071973）全绿；本地 dev/ci/sanitize 53/53 全部通过；SessionPersistenceRegressionTest 4 槽（QTest totals 6）通过；MainWindowTest 50 槽（QTest totals 52）通过；ThemeLocalizationTest 3 槽（QTest totals 5）通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
 Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -257,7 +257,7 @@ Blockers: 无
 - [x] **Task P6b**（能力切片）：`SessionSaveStatus` 强类型保存结果枚举、`AnalysisSession::saveSession(path, userState)` 返回结构体升级与单元测试；
 - [x] **Task P6c**（UI切片）：`MainWindow` 保存/另存为/打开会话动作、`setWindowModified` 脏状态维护与书签/注释挂钩、`closeEvent` / `maybeSave` 弹窗协议（Save / Discard / Cancel，区分文件对话框取消与底层 I/O 报错）与 UI 测试；
 - [x] **Task P6d-1**（能力切片）：`AnalysisSession::overrideFormat` 核心 API 与 `AnalysisSession::openFileWithExplicitRule` 静态工厂与单元测试（彻底闭环 P2-20，P2-25）；
-- [x] **Task P6d-2**（UI切片）：`FormatOverrideDialog` 界面、歧义横幅「解决歧义...」按钮集成与 UI 测试（闭环 P2-17/P2-19/P2-20，P2-25）；
+- [x] **Task P6d-2**（UI切片）：`FormatOverrideDialog` 界面、歧义横幅「解决歧义...」按钮集成与 UI 测试（闭环 P2-17/P2-20/P2-25，P2-19 缓解）；
 - [x] **Task P6e**（UI与规则管理切片）：`RuleManagerDialog` 界面、规则包列表与版本展示、`.svrule` 导入安装与测试；
 - [x] **Task P6f**（UI切片）：分析进度条展示、异步取消按钮与响应、`DiagnosticsSummaryDock` 全局诊断面板与双向跳转；
 - [x] **Task P6g**（UI切片）：明暗主题切换支持、基于 `QTranslator` 的中英双语动态切换与 UI 测试；
@@ -275,6 +275,21 @@ Blockers: 无
 
 ## 阶段 7：安全、性能与发布
 
+### 阶段 7 任务切片与依赖关系
+- [ ] **Task P7a**（规范与前置守卫闭环）：编写双语 ADR-0110；闭环 P1-1-R1（本地化正则跨行拼接先红后绿修复）；闭环 P1-2-R1（同名兄弟消歧变异实证与表述限定）；确立阶段 7 WBS（设固定独立评审门禁）；
+- [ ] **Task P7b**（模糊测试框架与核心目标）：实现 DSL parser、compiler、VM 的 fuzz 驱动，并将独立 fuzz 回放接入 CTest；
+- [ ] **Task P7c**（规则包与格式扫描器 Fuzzing）：实现 `RulePackageStore`（ZIP/manifest）、H.264、AAC 与 MP4 box/sample 提取器的 fuzz 驱动；
+- [ ] **Task P7d**（静态分析与警告级别提升）：配置 Clang-Tidy 检查规则并提升 dev/ci 的编译器告警门禁；
+- [ ] **Task P7e**（性能基线与基准测试体系）：实现初始视图延迟、100 GB 稀疏内存占用及已知偏移页面读取延迟的自动化回归基准；观测 `collectExpanded` 与异步恢复；
+- [ ] **Task P7f**（Windows 打包自动化）：配置 CPack 与 `windeployqt` 自动化生成 Windows x64 独立 ZIP；
+- [ ] **Task P7g**（macOS 打包自动化）：配置 `macdeployqt` 自动化生成 macOS ARM64 `.app.zip`；
+- [ ] **Task P7h**（Linux 打包与打包门禁）：配置 Linux x86_64 AppImage 生成流水线；完成 SBOM 与合规许可证清单（设固定独立评审门禁）；
+- [ ] **Task P7i**（预发布试跑与 `v0.1.0-alpha`）：打标签并生成 alpha 阶段分发资产；
+- [ ] **Task P7j**（跨环境验证与 `v0.1.0-beta`）：在目标环境中全量验证 beta 候选包；
+- [ ] **Task P7k**（发布候选与 `v0.1.0-rc`）：最终完整性核验、双语文档冻结与 RC 打标；
+- [ ] **Task P7l**（最终发布门禁与 `v0.1.0` GA）：全量清单 100% 验收、发布签字并发布 GA（设固定独立评审门禁）。
+
+### 阶段 7 检查清单
 - [ ] fuzz DSL lexer/parser/VM、规则包、映射和官方规则。
 - [ ] Linux/macOS 运行 ASan/UBSan；三平台运行静态检查与完整测试。
 - [ ] 验证初始视图约两秒可用、100 GB 测试源 RSS 不超过 512 MiB、已知 offset 页面读取 p95 小于 100 ms。
@@ -3478,7 +3493,7 @@ Blockers: 无
   3. P1-2 分析树同名兄弟路径消歧与精确节点恢复：
      - `SessionUserState` 序列化格式规范化为 `<nodeName>#<row>`；
      - `MainWindow::findIndexByPath()` 实现三级寻址（行号 $O(1)$ 验证 -> 传统名称匹配 -> 纯数字行号 legacy 兼容）；
-     - 在 `tests/app/main_window_test.cpp` 补充真实 H.264 码流（SPS `num_ref_frames_in_pic_order_cnt_cycle = 2`）测试，断言恢复后 `nodeIdAt()` 与 `selectedNodeId` 严格一致（`openSessionFileRestoresDisambiguatedSameNamedSiblingsByNodeId`）。
+     - 在 `tests/app/main_window_test.cpp` 补充真实 H.264 码流（SPS `num_ref_frames_in_pic_order_cnt_cycle = 2`）测试，断言恢复后 `nodeIdAt()` 与 `selectedNodeId` 严格一致（`openSessionFileRestoresDisambiguatedSameNamedSiblingsByNodeId`；注：当前 fixture 验证的是路径往返保真，尚未证明同名消歧，由 Task P7a 进一步补充同名兄弟变异实证）。
   4. P1-3 与 P2 历史审查项状态校准与测试加固：
      - 校准 P2-18 与 P2-21 为 Known Limitation，P2-19 为 Mitigated，登记 P2-27、P2-28；
      - P2-30：`SessionPersistenceRegressionTest` 中 `banner != nullptr` 无条件断言 `isHidden()`；
