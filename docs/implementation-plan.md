@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 7
-Last Completed Step: Task P7a 独立评审门禁整改（P2-42 至 P2-46 闭环：终态 rootTreeIsActive 守卫、格式覆盖清理待恢复状态、用户主动点选抢占清空 pending 选择、格式覆盖对话框 tr() 补齐与 154 词条强校验、双语 ADR-0110 路径消歧语义规范）
-Next Action: 提请用户确认 Task P7a 整改闭环结果，待用户明确确认后启动 Task P7b（模糊测试框架与核心目标）
-Last Verification: Hosted Run 34126116782（Windows 2022 / Qt 6.10.1 job 101755067036, macOS 15 / Qt 6.11.1 job 101755067103, Ubuntu 24.04 / Qt 6.11.1 job 101755066821）全绿；本地 dev 53/53（71.62s）、ci 53/53（14.54s）、sanitize 53/53（203.31s，零 ASan/UBSan 告警）全部通过；MainWindowTest 53 槽（QTest totals 55）通过；ThemeLocalizationTest 3 槽（QTest totals 5，154 词条强校验 227 次调用）通过；SessionPersistenceRegressionTest 4 槽（QTest totals 6）通过；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
+Last Completed Step: Task P7b（DSL 核心模糊测试框架与三大目标建立，双语 ADR-0111，30 语料回放与 CTest 集成）
+Next Action: 启动 Task P7c（规则包与格式扫描器 Fuzzing：RulePackageStore、H.264、AAC、MP4）
+Last Verification: Hosted Run 34128721897（macOS job 101763432314, Windows job 101763432591, Ubuntu job 101763432655 全绿）；本地 dev 56/56（62.81s）、ci 56/56（13.48s）、sanitize 56/56（197.83s，零 ASan/UBSan 告警）全过；fuzz_dsl_parser/compiler/vm 30 语料全部执行（3/3 2.22s）；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
 Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -277,7 +277,7 @@ Blockers: 无
 
 ### 阶段 7 任务切片与依赖关系
 - [x] **Task P7a**（规范与前置守卫闭环）：编写双语 ADR-0110；闭环 P1-1-R1（本地化正则跨行拼接先红后绿修复）；闭环 P1-2-R1（同名兄弟消歧变异实证与表述限定）；确立阶段 7 WBS（设固定独立评审门禁）；
-- [ ] **Task P7b**（模糊测试框架与核心目标）：实现 DSL parser、compiler、VM 的 fuzz 驱动，并将独立 fuzz 回放接入 CTest；
+- [x] **Task P7b**（模糊测试框架与核心目标）：实现 DSL parser、compiler、VM 的 fuzz 驱动，并将独立 fuzz 回放接入 CTest；
 - [ ] **Task P7c**（规则包与格式扫描器 Fuzzing）：实现 `RulePackageStore`（ZIP/manifest）、H.264、AAC 与 MP4 box/sample 提取器的 fuzz 驱动；
 - [ ] **Task P7d**（静态分析与警告级别提升）：配置 Clang-Tidy 检查规则并提升 dev/ci 的编译器告警门禁；
 - [ ] **Task P7e**（性能基线与基准测试体系）：实现初始视图延迟、100 GB 稀疏内存占用及已知偏移页面读取延迟的自动化回归基准；观测 `collectExpanded` 与异步恢复；
@@ -3552,3 +3552,26 @@ Blockers: 无
        * macOS 15 / Qt 6.11.1：Job `101755067103`（`success`）；
        * Ubuntu 24.04 / Qt 6.11.1：Job `101755066821`（`success`）；
        * Windows 2022 / Qt 6.10.1：Job `101755067036`（`success`）。
+
+- 2026-09-07：完成 Task P7b（DSL 核心模糊测试框架与核心目标，全矩阵三平台验证）。
+  1. 规范先行（双语 ADR-0111）：
+     - 编写双语 ADR-0111（`docs/adr/0111-dsl-core-fuzzing-harness-and-standalone-playback.md` 及 `docs/zh-CN/adr/0111-dsl-core-fuzzing-harness-and-standalone-playback.md`）；
+     - 确立 libFuzzer 与独立回放驱动的双模架构（`STREAMVIEW_ENABLE_LIBFUZZER` 条件编译），无外部 LLVM/libFuzzer 依赖时自动回退为跨平台确定性语料遍历；
+     - 规范三大核心目标不变式（解析器确定性与无崩溃、编译器单调性与作用域安全、VM 零崩溃与指令/内存预算熔断）；
+     - 规范提交：`3607765`（`docs: specify dsl core fuzzing harness and standalone playback in adr-0111`）。
+  2. 模糊测试驱动与跨平台独立回放实现：
+     - 在 `tests/fuzz/standalone_fuzz_driver.h` 中实现跨平台回放驱动：基于 Qt `QDir`/`QFile` 读取 `STREAMVIEW_FUZZ_CORPUS_DIR`，支持无参数遍历与单文件精准回放；
+     - 在 `tests/fuzz/fuzz_dsl_parser.cpp` 中实现语法/词法解析 fuzz 目标，覆盖 `DslLexer::lex` 与 `DslParser::parse`；
+     - 在 `tests/fuzz/fuzz_dsl_compiler.cpp` 中实现编译器语义与字节码生成 fuzz 目标，覆盖 `DslCompiler::compile` 与 `DslCompiler::compileForTarget`；
+     - 在 `tests/fuzz/fuzz_dsl_vm.cpp` 中实现 VM 执行与解码 fuzz 目标：定义全特性验证 Schema `FuzzHeader`（覆盖 enum, bits, ue, se, if/else, switch/case, repeat, lazy）并注入基于 `AnalysisNodeId(1)` 初始化的 `AnalysisTree`，由 `FuzzMemorySource` 提供任意变异码流，施加 10,000 条指令上限熔断；
+     - 在 `tests/fixtures/fuzz/` 构建 30 个初始种子语料（parser 10 个、compiler 10 个、vm 10 个），全面覆盖合法结构、超长标识符、深度嵌套、溢出值及截断畸形码流；
+     - 在 `tests/CMakeLists.txt` 抽象 `streamview_add_fuzz_target` 函数，并将 `streamview_fuzz_dsl_parser`、`streamview_fuzz_dsl_compiler`、`streamview_fuzz_dsl_vm` 注册进 CTest 套件（测试总数由 53 增至 56）；
+     - 实现提交：`3ffd76a`（`feat(rules): implement dsl parser compiler and vm fuzz drivers with standalone playback`）。
+  3. 全矩阵与 Hosted CI 验证：
+     - 本地 dev（56/56，62.81s）、ci（56/56，13.48s）、sanitize（56/56，197.83s，零 ASan/UBSan 告警）全部通过；
+     - 3 个 fuzz 独立回放目标 30/30 语料全部 PASS（2.22s）；
+     - svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS；
+     - Hosted CI Run `34128721897`（head_sha: `3ffd76a805651b898f3c8ee370f81d0a3e726236`）三平台全部 success：
+       * macOS 15 / Qt 6.11.1：Job `101763432314`（`success`）；
+       * Windows 2022 / Qt 6.10.1：Job `101763432591`（`success`）；
+       * Ubuntu 24.04 / Qt 6.11.1：Job `101763432655`（`success`）。
