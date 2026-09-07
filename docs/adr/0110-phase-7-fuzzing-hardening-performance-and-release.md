@@ -39,7 +39,7 @@ The independent milestone review of Phase 6 cleared the milestone gate while att
 **Decision**: Implement a modular, multi-target fuzzing harness covering all untrusted data ingestion boundaries.
 
 #### 1.1 Fuzz Targets Matrix
-StreamView exposes five distinct trust boundaries where untrusted or malformed binary streams interact with parsing logic:
+StreamView exposes six distinct trust boundaries where untrusted or malformed binary streams interact with parsing logic:
 
 | Target Name | Component Under Test | Ingestion Interface | Threat Model & Invariants |
 | :--- | :--- | :--- | :--- |
@@ -54,6 +54,7 @@ StreamView exposes five distinct trust boundaries where untrusted or malformed b
 - **Engine**: Build targets supporting LLVM `libFuzzer` (`-fsanitize=fuzzer,address,undefined`) when built with Clang.
 - **Standalone Mode**: Provide an embedded standalone driver (`main()` entry point) for every fuzzer target to enable deterministic execution of corpus test cases under CTest across all three CI platforms (Ubuntu, macOS, Windows) without requiring `libFuzzer` runtime libraries.
 - **Corpus Management**: Seed corpora derived from existing fixture suites (`tests/fixtures/`) augmented with known edge cases (zero-length streams, max-integer headers, truncated NAL units, cyclic box hierarchies).
+- **Path Disambiguation Corpus Target (Task P7c)**: In Task P7c, rule package and format scanner fuzzing corpora will explicitly incorporate synthetic syntax trees whose field and node names contain `#<digits>` (e.g., `tag#1`, `entry#0`) to verify path resolution robustness and confirm zero collision with `#<row>` sibling disambiguation.
 
 ---
 
@@ -125,6 +126,20 @@ Releases proceed strictly through sequential git tags:
 
 ---
 
+### 5. Analysis Path Disambiguation and Restoration Semantics
+
+**Decision**: Formally document and enforce the three-tier node resolution semantics in `MainWindow::findIndexByPath(const QString& path)`:
+1. **Tier 1 (Sibling Index Disambiguation)**: If a path token contains `#<row>` where `<row>` is one or more ASCII digits at `lastIndexOf('#') > 0`, attempt to match the child node at row `<row>` whose name strictly matches the prefix before `#`.
+2. **Tier 2 (Exact Literal Fallback)**: If Tier 1 fails to match (e.g., the node is not at row `<row>`, or `<row>` is out of bounds, or the node is literally named `prefix#<digits>`), fall back to scanning all children for an exact literal name match where `data(Qt::DisplayRole).toString() == part`. This guarantees that nodes legitimately named with `#<digits>` remain fully addressable.
+3. **Tier 3 (Legacy Row Number Fallback)**: If Tier 2 fails and the entire token is numeric, treat it as a direct row index for backward compatibility with legacy test fixtures.
+
+Furthermore, state restoration lifecycle guarantees are hardened:
+- **Navigation Isolation**: Pending tree restoration (`applyPendingTreeState()`) is strictly prohibited from executing when `session_->navigationDepth() != 0`, preventing root paths from corrupting child/sample trees (P2-43).
+- **Format Override Reset**: Overriding format (`MainWindow::overrideFormat()`) unconditionally clears pending selection and expanded paths to prevent cross-format path collision (P2-44).
+- **Interactive Preemption**: Any manual user selection in `analysisTreeView` while streaming analysis is in progress immediately clears `pendingSelectedAnalysisPath_`, preventing asynchronous batch arrivals from stealing the user's cursor (P2-45).
+
+---
+
 ## Phase 7 Work Breakdown Structure (WBS)
 
 - [ ] **Task P7a** (Specification & Review Remediations): Author bilingual ADR-0110; resolve P1-1-R1 (red-then-green multiline string localization guard); resolve P1-2-R1 (sibling disambiguation mutation proof); update Phase 7 WBS (Fixed Independent Review Gate).
@@ -144,11 +159,18 @@ Releases proceed strictly through sequential git tags:
 
 ## Review Items Addressed
 
-- **P1-1-R1**: Multiline concatenated string literal localization guard and strict dictionary mapping.
-- **P1-2-R1**: Sibling disambiguation mutation testing proof and qualification.
-- **P2-36**: Aligning review item status definitions between documentation and reports.
-- **P2-37**: Synchronizing historical task status in `implementation-plan.md`.
-- **P2-38**: Standardizing test count reporting metrics.
-- **P2-39**: Correcting formal document citation links.
-- **P2-40**: Documenting `#` character boundary semantics in node paths.
-- **P2-41**: Documenting release build execution time baselines.
+- **P1-1-R1**: Multiline concatenated string literal localization guard and strict dictionary mapping (red-then-green verified in `tests/app/theme_localization_test.cpp:140-164`, commit `6e8f9a0`).
+- **P1-2-R1**: Sibling disambiguation mutation testing proof (verified with inverted `#<row>` deletion failure test in `tests/app/main_window_test.cpp:2248-2281`, commit `6e8f9a0`).
+- **P2-36**: Aligning review item status definitions between documentation and review reports.
+- **P2-37**: Synchronizing historical task status in `docs/implementation-plan.md:253` ("P2-19 缓解").
+- **P2-38**: Standardizing test count reporting metrics to "N test slots (QTest totals M)".
+- **P2-39**: Correcting formal document citation links to `docs/adr/0019-skip-ci-for-markdown-only-changes.md`.
+- **P2-40**: Documenting `#<row>` boundary resolution semantics and scheduling `#<digits>` node name fuzzing corpus for Task P7c.
+- **P2-43**: Guarding terminal `advanceAnalysis()` pending tree restoration with `rootTreeIsActive` (`src/app/main_window.cpp:1092-1096`).
+- **P2-44**: Resetting pending tree selection and expansion states upon format override in `MainWindow::overrideFormat()` (`src/app/main_window.cpp:820-821`).
+- **P2-45**: Preempting pending restored selection when user manually interacts with analysis tree during streaming analysis (`src/app/main_window.cpp:307-309`).
+- **P2-46**: Wrapping built-in format options in `FormatOverrideDialog` with `tr()`, expanding dictionary to 154 keys, and upgrading `ThemeLocalizationTest` assertions to 154 keys and 227 calls (`src/app/localization_manager.cpp:35-43`, `tests/app/theme_localization_test.cpp:170-171`).
+
+## Deferred Review Items
+
+- **P2-41**: Formal release build execution time profiling and performance regression harness is deferred to Task P7e (performance baselines), rather than using uncalibrated CI runner wall-clock times.
