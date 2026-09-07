@@ -1,6 +1,6 @@
 # ADR-0109: Session Lifecycle Management, Format Manual Override, and Schema Evolution Policy
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-09-06
 - **Authors**: StreamView Contributors
 
@@ -334,7 +334,7 @@ To conclusively verify that session lifecycle persistence, format manual overrid
 
 To ensure strict compliance with project discipline (independent SOP closed loops, clean capability-vs-consumer separation, and mandatory review gates), Phase 6 is partitioned into the following sequential task slices:
 
-- **Task P6a**（Specification & Lifecycle Architecture — *Current Task*）：
+- **Task P6a**（Specification & Lifecycle Architecture）：
   - Dual-language ADR-0109 defining session lifecycle, user state ownership, dirty tracking, format manual override, rule manager, and schema evolution policy (Markdown-only).
   - Milestone review gate per discipline rule 5.
 - **Task P6b**（Session Lifecycle & Save Status Core Slice）：

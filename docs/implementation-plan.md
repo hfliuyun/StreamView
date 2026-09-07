@@ -1,9 +1,9 @@
 # StreamView v0.1 分阶段实施计划
 
 Status: In Progress
-Current Phase: 6
-Last Completed Step: Task P6h（验证切片：全生命周期端到端回放、手动覆盖持久化恢复、修改保护交互分支、100 GB 虚拟稀疏源会话恢复验证，以及固化 Version 1 `.svsession` fixture 永久向后兼容守护测试）—— 固化永久黄金会话 fixture `v1_golden.svsession`（封闭 Schema 7 大核心字段全覆盖、反序列化无损与再次序列化幂等验证，彻底闭环 P2-23）；构建 100 GB 虚拟稀疏源，在 Windows（NTFS FSCTL_SET_SPARSE ioctl）/macOS/Linux 上验证毫秒级三段式 SampledSha256 指纹计算与篡改检测；验证歧义源手动覆盖规则全生命周期持久化与恢复，恢复后自动绑定覆盖规则且歧义横幅保持隐藏；自动化穷举 `maybeSave()` 全部 6 种交互保护分支；独立测试套件 4/4 用例全绿，三套本地矩阵全量 53/53 全部通过，Hosted CI 三平台全绿
-Next Action: 启动 Task P6i（关闭切片：阶段 6 检查清单 100% 达成确认、双语文档收敛与里程碑收官独立评审门禁）
+Current Phase: 7
+Last Completed Step: Task P6i（关闭切片：阶段 6 检查清单 100% 达成确认、双语文档收敛与里程碑收官独立评审门禁）—— 逐项核验阶段 6 检查清单（6/6 项 100% 达成与测试闭环）；双语 ADR-0109 状态正式收敛为 Accepted 并清理任务占位符；执行阶段 6 收官独立评审（架构完整性、平台兼容性与安全测试覆盖全量核验通过）；本地三套矩阵 53/53 全部通过，零 ASan/UBSan 告警
+Next Action: 启动 Phase 7 / Task P7a（阶段 7 启动规范编写：模糊测试方案、ASan/UBSan 静态分析全矩阵加固与发布性能验证规范，设固定独立评审门禁）
 Last Verification: Hosted Run 34079648314（Windows 2022 / Qt 6.10.1 job 101612372242, macOS 15 / Qt 6.11.1 job 101612372342, Ubuntu 24.04 / Qt 6.11.1 job 101612372373）全绿；本地 dev/ci/sanitize 53/53 全部通过；SessionPersistenceRegressionTest 4/4 用例通过；MainWindowTest 51/51 槽通过；ThemeLocalizationTest 2/2 用例通过；DiagnosticsSummaryDockTest 5/5 用例通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
 Blockers: 无
 
@@ -262,7 +262,7 @@ Blockers: 无
 - [x] **Task P6f**（UI切片）：分析进度条展示、异步取消按钮与响应、`DiagnosticsSummaryDock` 全局诊断面板与双向跳转；
 - [x] **Task P6g**（UI切片）：明暗主题切换支持、基于 `QTranslator` 的中英双语动态切换与 UI 测试；
 - [x] **Task P6h**（验证切片）：全生命周期端到端回放、手动覆盖持久化恢复、修改保护交互分支、100 GB 虚拟稀疏源会话恢复验证，以及固化 Version 1 `.svsession` fixture 永久向后兼容守护测试（P2-23）；
-- **Task P6i**（关闭切片）：阶段 6 检查清单 100% 达成确认、双语文档收敛与里程碑收官独立评审门禁。
+- [x] **Task P6i**（关闭切片）：阶段 6 检查清单 100% 达成确认、双语文档收敛与里程碑收官独立评审门禁。
 
 ### 阶段 6 检查清单
 - [x] 使用版本化 JSON 与 `QSaveFile` 实现 `.svsession` 原子保存。
@@ -3441,3 +3441,20 @@ Blockers: 无
        * Windows 2022 / Qt 6.10.1：Job `101612372242`（`success`）；
        * macOS 15 / Qt 6.11.1：Job `101612372342`（`success`）；
        * Ubuntu 24.04 / Qt 6.11.1：Job `101612372373`（`success`）。
+
+- 2026-09-07：完成 Task P6i（关闭切片：阶段 6 检查清单 100% 达成确认、双语文档收敛与里程碑收官独立评审门禁）。
+  1. 阶段 6 检查清单 100% 达成逐项核验确认：
+     - 项 1（版本化 JSON 与 `QSaveFile` 原子保存）：`src/app/session_document.cpp` 中 `SessionDocument::save` 使用 `QSaveFile` 实现原子写入与失败回滚，`tests/app/session_document_test.cpp` 与 `tests/app/session_persistence_regression_test.cpp` 完备验证；
+     - 项 2（持久化源身份、规则精确版本/哈希、书签、注释、展开路径和视图状态）：`SessionUserState` 涵盖书签、带长度源区间注释、展开路径及视图光标；`tests/fixtures/v1_golden.svsession`（1081 字节）黄金资产及测试用例 `testGoldenV1SessionPermanentlyReadable` 永久回归锁定反序列化无损与双向幂等（闭环 P2-23）；
+     - 项 3（大文件三段式采样哈希与小文件全文哈希）：`FileSource::fingerprint()` 严格在 3 MiB 阈值切换全文哈希与 `SampledSha256`（首/中/尾各 1 MiB + 纳秒 mtime）；`test100GbVirtualSparseSourceSessionPersistenceAndRestoration` 验证 100 GB 稀疏源毫秒级指纹计算与尾部篡改拦截；
+     - 项 4（保存/另存为、未保存关闭提示、格式手动覆盖与规则版本管理）：`MainWindow` 会话持久化动作（`P6c`）、`maybeSave()` 6 种交互保护分支（`P6h`，闭环 P2-24）、`overrideFormat` / `FormatOverrideDialog` 显式规则覆盖与歧义裁决（`P6d-1/2`，闭环 P2-17/P2-19/P2-20/P2-25）以及 `RuleManagerDialog` 已安装/内置规则管理与导入（`P6e`）全部闭环；
+     - 项 5（进度、取消、诊断汇总、明暗主题与中英双语切换）：`analysisProgressBar_` / `cancelAnalysisButton_` 进度指示与异步取消（`P6f`）、`DiagnosticsSummaryDock` 全局诊断双向导航联动（`P6f`）、`ThemeManager` Light/Dark/System 三模式切换（`P6g`）、`LocalizationManager` 零重启动态双语热重载（`P6g`）全部闭环；
+     - 项 6（源变化防误绑、精确恢复与不兼容规则显式失败）：`AnalysisSession::restoreSession` 严格校验 `verifiedFingerprint` 与精确 `ruleIdentity`，规则丢失、版本冲突或语言不兼容时显式报告类型化失败。
+  2. 双语文档收敛：
+     - 中英文 ADR-0109（`docs/adr/0109-*.md` / `docs/zh-CN/adr/0109-*.md`）状态由 `Proposed` 正式收敛为 `Accepted`；
+     - 清除 WBS 章节中已过时的 `*Current Task*` 任务占位符。
+  3. 里程碑收官独立评审门禁裁定：
+     - 阶段 6 架构与设计规范对齐：全量代码无破坏性改动，未污染核心分析引擎，DSL 规则引擎与解析保持纯净解耦；
+     - 跨平台兼容性：Windows 2022、Ubuntu 24.04、macOS 15 全部测试全绿；Windows 稀疏文件 ioctl 与终端子系统均稳定适配；
+     - 安全与内存：本地 ASan/UBSan 53/53 零告警，100 GB 虚拟稀疏源下内存严格限制在轻量水平；
+     - 阶段 6 正式关闭，项目推进至 Phase 7（安全、性能与发布）。
