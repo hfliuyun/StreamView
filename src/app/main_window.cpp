@@ -304,6 +304,9 @@ void MainWindow::setupDocks() {
 
     connect(analysisTreeView_->selectionModel(), &QItemSelectionModel::currentChanged,
             this, [this](const QModelIndex& current, const QModelIndex&) {
+                if (!isApplyingPendingTreeState_) {
+                    pendingSelectedAnalysisPath_.reset();
+                }
                 selectAnalysisNode(current);
             });
     connect(analysisTreeView_, &QTreeView::doubleClicked,
@@ -549,9 +552,10 @@ void MainWindow::expandNodeByPath(const QString& path) {
 }
 
 void MainWindow::applyPendingTreeState() {
-    if (!analysisModel_ || !analysisTreeView_) {
+    if (!analysisModel_ || !analysisTreeView_ || !session_ || session_->navigationDepth() != 0) {
         return;
     }
+    isApplyingPendingTreeState_ = true;
     if (!pendingExpandedPaths_.isEmpty()) {
         QStringList remaining;
         for (const QString& p : pendingExpandedPaths_) {
@@ -572,6 +576,7 @@ void MainWindow::applyPendingTreeState() {
             pendingSelectedAnalysisPath_.reset();
         }
     }
+    isApplyingPendingTreeState_ = false;
 }
 
 SessionUserState MainWindow::currentUserState() const {
@@ -812,6 +817,8 @@ void MainWindow::overrideFormat() {
         diagnosticsSummaryDock_->clear();
     }
     navigationBreadcrumbFormats_.clear();
+    pendingSelectedAnalysisPath_.reset();
+    pendingExpandedPaths_.clear();
 
     analysisModel_->resetFromTree(session_->tree());
 
@@ -1082,9 +1089,11 @@ void MainWindow::advanceAnalysis(quint64 generation) {
 
     analysisProgressBar_->hide();
     cancelAnalysisButton_->hide();
-    applyPendingTreeState();
-    pendingSelectedAnalysisPath_.reset();
-    pendingExpandedPaths_.clear();
+    if (rootTreeIsActive) {
+        applyPendingTreeState();
+        pendingSelectedAnalysisPath_.reset();
+        pendingExpandedPaths_.clear();
+    }
     publishAnalysisStatus(batch.status, batch.errorMessage);
     if (rootTreeIsActive) {
         loadTracks();

@@ -167,8 +167,8 @@ void ThemeLocalizationTest::testAllAppTrLiteralsHaveChineseTranslations() {
              qPrintable(QStringLiteral("Missing Chinese translations for literals:\n%1")
                             .arg(missingLiterals.join(QStringLiteral("\n")))));
     QCOMPARE(uniqueScannedLiterals.size(), static_cast<qsizetype>(LocalizationManager::chineseDictionarySize()));
-    QCOMPARE(uniqueScannedLiterals.size(), qsizetype{148});
-    QCOMPARE(totalCalls, 221);
+    QCOMPARE(uniqueScannedLiterals.size(), qsizetype{154});
+    QCOMPARE(totalCalls, 227);
 }
 
 QTEST_MAIN(ThemeLocalizationTest)

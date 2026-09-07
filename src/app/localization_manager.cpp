@@ -32,6 +32,15 @@ const std::unordered_map<std::string_view, QString>& chineseTranslations() {
         {"Notice: Multiple conflicting formats (container vs elementary stream) were detected. "
          "Choose your intended format to resolve the ambiguity.",
          QString::fromUtf8("检测到多种冲突的格式（容器格式与基本码流）。请选择目标格式以解决歧义。")},
+        {"MP4 (ISOBMFF)", QString::fromUtf8("MP4 (ISOBMFF)")},
+        {"ISO Base Media File Format (ISO/IEC 14496-12) container with box structures.",
+         QString::fromUtf8("ISO 基础媒体文件格式 (ISO/IEC 14496-12) 带有 Box 结构的容器格式。")},
+        {"H.264 (Annex B)", QString::fromUtf8("H.264 (Annex B)")},
+        {"H.264 / AVC byte stream with Annex B start codes (0x000001).",
+         QString::fromUtf8("带有 Annex B 起始码 (0x000001) 的 H.264 / AVC 字节流。")},
+        {"AAC (ADTS)", QString::fromUtf8("AAC (ADTS)")},
+        {"Advanced Audio Coding (AAC) in Audio Data Transport Stream (ADTS) frames.",
+         QString::fromUtf8("音频数据传输流 (ADTS) 帧结构的进阶音频编码 (AAC)。")},
 
         // Main Menus & Actions
         {"&File", QString::fromUtf8("文件(&F)")},
