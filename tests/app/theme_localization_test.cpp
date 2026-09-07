@@ -3,6 +3,9 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QRegularExpression>
 #include <QSignalSpy>
 #include <QTest>
 
@@ -14,6 +17,7 @@ class ThemeLocalizationTest : public QObject {
 private slots:
     void testThemeManagerModesAndPalettes();
     void testLocalizationManagerSwitching();
+    void testAllAppTrLiteralsHaveChineseTranslations();
 };
 
 void ThemeLocalizationTest::testThemeManagerModesAndPalettes() {
@@ -76,6 +80,44 @@ void ThemeLocalizationTest::testLocalizationManagerSwitching() {
 
     // Restore initial language
     loc.setLanguage(initialLanguage);
+}
+
+void ThemeLocalizationTest::testAllAppTrLiteralsHaveChineseTranslations() {
+    const QString appDir = QString::fromLatin1(STREAMVIEW_SOURCE_DIR "/src/app");
+    QDir dir(appDir);
+    const QStringList files = dir.entryList({QStringLiteral("*.cpp"), QStringLiteral("*.h")}, QDir::Files);
+    QVERIFY(!files.isEmpty());
+
+    const QRegularExpression trRegex(QStringLiteral(R"raw(\btr\(\s*"((?:[^"\\]|\\.)*)"\s*\))raw"));
+
+    QStringList missingLiterals;
+    int inspectedCount = 0;
+
+    for (const QString& fileName : files) {
+        QFile file(dir.filePath(fileName));
+        QVERIFY(file.open(QIODevice::ReadOnly | QIODevice::Text));
+        const QString content = QString::fromUtf8(file.readAll());
+        auto matchIterator = trRegex.globalMatch(content);
+        while (matchIterator.hasNext()) {
+            const auto match = matchIterator.next();
+            QString rawLiteral = match.captured(1);
+            // Unescape C++ string escapes
+            rawLiteral.replace(QStringLiteral(R"(\n)"), QStringLiteral("\n"));
+            rawLiteral.replace(QStringLiteral(R"(\")"), QStringLiteral("\""));
+            rawLiteral.replace(QStringLiteral(R"(\\)"), QStringLiteral("\\"));
+            ++inspectedCount;
+
+            const std::string stdLiteral = rawLiteral.toStdString();
+            if (!LocalizationManager::hasChineseTranslation(stdLiteral)) {
+                missingLiterals.append(QStringLiteral("[%1] in %2").arg(rawLiteral, fileName));
+            }
+        }
+    }
+
+    QVERIFY(inspectedCount >= 140);
+    QVERIFY2(missingLiterals.isEmpty(),
+             qPrintable(QStringLiteral("Missing Chinese translations for literals:\n%1")
+                            .arg(missingLiterals.join(QStringLiteral("\n")))));
 }
 
 QTEST_MAIN(ThemeLocalizationTest)

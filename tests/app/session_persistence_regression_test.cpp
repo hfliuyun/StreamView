@@ -304,17 +304,21 @@ void SessionPersistenceRegressionTest::testFormatOverrideFullLifecyclePersistenc
         QCOMPARE(window2.bookmarks()[0].label, QStringLiteral("Overridden H264 Sync"));
         QCOMPARE(window2.bookmarks()[0].sourceBitOffset, 32ULL);
 
-        // Active session rule must match overridden rule directly
+        // Active session rule must match overridden rule directly (P2-31)
+        const auto activeRule = window2.activeRuleIdentity();
+        QVERIFY(activeRule.has_value());
+        QCOMPARE(activeRule->packageIdentity().packageId(), QStringLiteral("org.streamview.h264"));
+        QCOMPARE(activeRule->entryPointId(), QStringLiteral("annex-b"));
+
         auto* treeView = window2.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
         QVERIFY(treeView != nullptr);
         QVERIFY(treeView->model() != nullptr);
         QVERIFY(treeView->model()->rowCount() >= 1);
 
-        // Format ambiguity banner must remain hidden (no re-prompt)
+        // Format ambiguity banner must remain hidden (no re-prompt, P2-30 unconditional assertion)
         auto* banner = window2.findChild<QWidget*>(QStringLiteral("formatAmbiguityBanner"));
-        if (banner != nullptr) {
-            QVERIFY(banner->isHidden());
-        }
+        QVERIFY(banner != nullptr);
+        QVERIFY(banner->isHidden());
     }
 }
 

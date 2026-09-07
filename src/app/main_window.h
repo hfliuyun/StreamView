@@ -112,6 +112,13 @@ public:
         return ruleStorePath_;
     }
 
+    [[nodiscard]] std::optional<rules::RuleEntryPointIdentity> activeRuleIdentity() const noexcept {
+        if (session_ != nullptr) {
+            return session_->ruleIdentity();
+        }
+        return std::nullopt;
+    }
+
     void retranslateUi();
 
 public slots:

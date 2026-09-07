@@ -493,14 +493,47 @@ QModelIndex MainWindow::findIndexByPath(const QString& path) const {
     for (const QString& part : parts) {
         bool found = false;
         const int rows = analysisModel_->rowCount(currentParent);
-        for (int r = 0; r < rows; ++r) {
-            const QModelIndex child = analysisModel_->index(r, AnalysisTreeModel::Name, currentParent);
-            if (analysisModel_->data(child, Qt::DisplayRole).toString() == part) {
-                currentParent = child;
-                found = true;
-                break;
+        if (rows <= 0) {
+            return {};
+        }
+
+        // 1. Check for name#row syntax (sibling index disambiguation)
+        const qsizetype hashPos = part.lastIndexOf(u'#');
+        if (hashPos > 0) {
+            bool ok = false;
+            const int rowHint = part.sliced(hashPos + 1).toInt(&ok);
+            if (ok && rowHint >= 0 && rowHint < rows) {
+                const QString targetName = part.left(hashPos);
+                const QModelIndex candidate = analysisModel_->index(rowHint, AnalysisTreeModel::Name, currentParent);
+                if (analysisModel_->data(candidate, Qt::DisplayRole).toString() == targetName) {
+                    currentParent = candidate;
+                    found = true;
+                }
             }
         }
+
+        // 2. Fallback: match by exact name
+        if (!found) {
+            for (int r = 0; r < rows; ++r) {
+                const QModelIndex child = analysisModel_->index(r, AnalysisTreeModel::Name, currentParent);
+                if (analysisModel_->data(child, Qt::DisplayRole).toString() == part) {
+                    currentParent = child;
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        // 3. Fallback: numeric row index (e.g. legacy "/0/0" fixtures)
+        if (!found) {
+            bool isNumber = false;
+            const int rowNumber = part.toInt(&isNumber);
+            if (isNumber && rowNumber >= 0 && rowNumber < rows) {
+                currentParent = analysisModel_->index(rowNumber, AnalysisTreeModel::Name, currentParent);
+                found = true;
+            }
+        }
+
         if (!found) {
             return {};
         }
@@ -530,7 +563,8 @@ SessionUserState MainWindow::currentUserState() const {
                     continue;
                 }
                 const QString nodeName = analysisModel_->data(idx, Qt::DisplayRole).toString();
-                const QString currentPath = parentPath.isEmpty() ? nodeName : parentPath + u'/' + nodeName;
+                const QString segment = QStringLiteral("%1#%2").arg(nodeName).arg(r);
+                const QString currentPath = parentPath.isEmpty() ? segment : parentPath + u'/' + segment;
                 if (analysisTreeView_->isExpanded(idx)) {
                     state.expandedPaths.append(currentPath);
                 }
@@ -553,7 +587,8 @@ SessionUserState MainWindow::currentUserState() const {
             QStringList pathComponents;
             for (QModelIndex it = currentIdx; it.isValid(); it = it.parent()) {
                 const QModelIndex nameIdx = analysisModel_->index(it.row(), AnalysisTreeModel::Name, it.parent());
-                pathComponents.prepend(analysisModel_->data(nameIdx, Qt::DisplayRole).toString());
+                const QString nodeName = analysisModel_->data(nameIdx, Qt::DisplayRole).toString();
+                pathComponents.prepend(QStringLiteral("%1#%2").arg(nodeName).arg(it.row()));
             }
             state.view.selectedAnalysisPath = pathComponents.join(u'/');
         }
