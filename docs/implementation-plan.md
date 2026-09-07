@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 7
-Last Completed Step: Task P7b（DSL 核心模糊测试框架与三大目标建立，双语 ADR-0111，30 语料回放与 CTest 集成）
-Next Action: 启动 Task P7c（规则包与格式扫描器 Fuzzing：RulePackageStore、H.264、AAC、MP4）
-Last Verification: Hosted Run 34128721897（macOS job 101763432314, Windows job 101763432591, Ubuntu job 101763432655 全绿）；本地 dev 56/56（62.81s）、ci 56/56（13.48s）、sanitize 56/56（197.83s，零 ASan/UBSan 告警）全过；fuzz_dsl_parser/compiler/vm 30 语料全部执行（3/3 2.22s）；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
+Last Completed Step: Task P7c（规则包与格式扫描器 Fuzzing：RulePackageStore、H.264/AAC/MP4 扫描器与 MP4 Sample 提取器，双语 ADR-0112，30 种子语料全矩阵验证）
+Next Action: 启动 Task P7d（静态分析与警告级别提升：Clang-Tidy 配置与编译器告警门禁）
+Last Verification: Hosted Run 34131133295（Ubuntu job 101771262705, macOS job 101771263055, Windows job 101771263139 全绿）；本地 dev 59/59（62.84s）、ci 59/59（12.37s）、sanitize 59/59（198.39s，零 ASan/UBSan 告警）全过；fuzz_rule_package_store/fuzz_format_detectors/fuzz_mp4_sample_extractor 30 语料独立回放全部 PASS；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
 Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -278,7 +278,7 @@ Blockers: 无
 ### 阶段 7 任务切片与依赖关系
 - [x] **Task P7a**（规范与前置守卫闭环）：编写双语 ADR-0110；闭环 P1-1-R1（本地化正则跨行拼接先红后绿修复）；闭环 P1-2-R1（同名兄弟消歧变异实证与表述限定）；确立阶段 7 WBS（设固定独立评审门禁）；
 - [x] **Task P7b**（模糊测试框架与核心目标）：实现 DSL parser、compiler、VM 的 fuzz 驱动，并将独立 fuzz 回放接入 CTest；
-- [ ] **Task P7c**（规则包与格式扫描器 Fuzzing）：实现 `RulePackageStore`（ZIP/manifest）、H.264、AAC 与 MP4 box/sample 提取器的 fuzz 驱动；
+- [x] **Task P7c**（规则包与格式扫描器 Fuzzing）：实现 `RulePackageStore`（ZIP/manifest）、H.264、AAC 与 MP4 box/sample 提取器的 fuzz 驱动；
 - [ ] **Task P7d**（静态分析与警告级别提升）：配置 Clang-Tidy 检查规则并提升 dev/ci 的编译器告警门禁；
 - [ ] **Task P7e**（性能基线与基准测试体系）：实现初始视图延迟、100 GB 稀疏内存占用及已知偏移页面读取延迟的自动化回归基准；观测 `collectExpanded` 与异步恢复；
 - [ ] **Task P7f**（Windows 打包自动化）：配置 CPack 与 `windeployqt` 自动化生成 Windows x64 独立 ZIP；
@@ -3575,3 +3575,26 @@ Blockers: 无
        * macOS 15 / Qt 6.11.1：Job `101763432314`（`success`）；
        * Windows 2022 / Qt 6.10.1：Job `101763432591`（`success`）；
        * Ubuntu 24.04 / Qt 6.11.1：Job `101763432655`（`success`）。
+
+- 2026-09-07：完成 Task P7c（规则包存储、格式探测器与 MP4 Sample 提取器 Fuzzing，全矩阵三平台验证）。
+  1. 规范先行（双语 ADR-0112）：
+     - 编写双语 ADR-0112（`docs/adr/0112-rule-package-and-format-scanner-fuzzing.md` 及 `docs/zh-CN/adr/0112-rule-package-and-format-scanner-fuzzing.md`）；
+     - 规范三大次级信任边界（规则包归档解包存储、格式探测与切片扫描、MP4 样本表提取与索引构建）的双模 Fuzz 驱动与威胁模型；
+     - 规范针对 Zip Slip 目录穿越、zip bomb 解压膨胀、清单畸形、伪同步字风暴、自循环 box 链与 64 位整数算术溢出的防线不变式；
+     - 依据 ADR-0110 §1.2 明确纳入包含 `#<数字>`（如 `tag#1`、`entry#0`）合成语料以实证路径解析与同名兄弟消歧隔离；
+     - 规范提交：`d87b096`（`docs: specify rule package and format scanner fuzzing harness in adr-0112`）。
+  2. 模糊测试驱动与种子语料实现：
+     - 在 `tests/fuzz/fuzz_rule_package_store.cpp` 中实现规则包解包与文件树加载 fuzz 目标，覆盖 `RulePackageStore::importArchive`、`RulePackageStore::writeArchive` 及 `RulePackage::fromFiles`；
+     - 在 `tests/fuzz/fuzz_format_detectors.cpp` 中实现多格式探测与切片扫描 fuzz 目标，覆盖 `detectH264AnnexBCandidate`/`H264StartCodeScanner`、`detectAacAdtsCandidate`/`AacAdtsScanner` 及 `detectMp4Candidate`/`Mp4BoxScanner`，由内存源提供数据并施加 4 轮流式推进配额；
+     - 在 `tests/fuzz/fuzz_mp4_sample_extractor.cpp` 中实现样本提取与索引运算 fuzz 目标：路径 1 经由 `Mp4IsobmffAnalyzer` 驱动 `Mp4SampleTableExtractor::extract`，路径 2 直接反序列化构造 `Mp4TrackSampleTables` 驱动 `Mp4SampleTableIndex::build` 与 `descriptorPage`，实测乘法与时间戳算术溢出防护；
+     - 在 `tests/fixtures/fuzz/` 构建 30 个初始种子语料（`rule_package/` 10 个、`format_detectors/` 10 个、`mp4_sample_extractor/` 10 个），全面覆盖合法包、Zip Slip 穿越、损坏清单、高密伪同步字、自循环 box、64 位 largesize、整数溢出与 `#<数字>` 合成语法树；
+     - 在 `tests/CMakeLists.txt` 中注册 `streamview_fuzz_rule_package_store`、`streamview_fuzz_format_detectors`、`streamview_fuzz_mp4_sample_extractor` 进 CTest 套件（测试总数由 56 增至 59）；
+     - 实现提交：`9375996`（`feat(rules): implement rule package format detector and mp4 sample fuzz drivers`）。
+  3. 全矩阵与 Hosted CI 验证：
+     - 本地 dev（59/59，62.84s）、ci（59/59，12.37s）、sanitize（59/59，198.39s，零 ASan/UBSan 告警）全部通过；
+     - 3 个新增 fuzz 目标 30/30 种子语料无参数确定性独立回放全部 PASS（全套 6 个 fuzz 目标 60/60 语料全部绿灯）；
+     - svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS；
+     - Hosted CI Run `34131133295`（head_sha: `9375996ab0e2d58d8f1e1e4163f41731a79a6b3b`）三平台全部 success：
+       * Ubuntu 24.04 / Qt 6.11.1：Job `101771262705`（`success`）；
+       * macOS 15 / Qt 6.11.1：Job `101771263055`（`success`）；
+       * Windows 2022 / Qt 6.10.1：Job `101771263139`（`success`）。
