@@ -34,10 +34,12 @@ With the core container and elementary format engines in place, Phase 6 focuses 
    - Project discipline §4.3 also dictates: *"Do not bundle capability and its first format consumer into the same commit"*.
 2. **Historical Review Item Audit**:
    - **P2-17**: `formatSelection.ambiguous()` must be consumed as a trigger for format manual override in the UI.
-   - **P2-18**: AAC ambiguity branches in detection arbitration represent whitebox candidate coverage and must be acknowledged.
-   - **P2-19**: Pattern stream priority vs anchored detection disparity (`format_selection.cpp:145`) is cleanly resolved when manual format override supersedes heuristic stream-level tie-breakers.
-   - **P2-20**: Cross-validation in tests currently uses the test helper `openPinnedMp4Fixture()`; in Phase 6, pinned rule construction becomes an explicit, supported feature path (`openFileWithExplicitRule()`, to be introduced in Task P6d-1), separating pinned-rule tests from end-to-end detection arbitration tests (`openFile()`).
-   - **P2-21**: Single reference tool (`ffprobe`) limitation is recorded and accepted.
+   - **P2-18**: AAC ambiguity branches in detection arbitration represent whitebox candidate coverage and are acknowledged as a known testing characteristic.
+   - **P2-19**: Pattern stream priority vs anchored detection disparity (`format_selection.cpp:145`) is mitigated via user-facing manual format override; automatic heuristic tie-breaker refinement remains pending future work.
+   - **P2-20**: Cross-validation in tests currently uses the test helper `openPinnedMp4Fixture()`; in Phase 6, pinned rule construction becomes an explicit, supported feature path (`openFileWithExplicitRule()`, introduced in Task P6d-1), separating pinned-rule tests from end-to-end detection arbitration tests (`openFile()`).
+   - **P2-21**: Single reference tool (`ffprobe`) limitation is recorded and acknowledged as a known limitation.
+   - **P2-27**: `SessionSaveStatus` layering and strongly-typed persistence result contract.
+   - **P2-28**: Semantics of user bookmarks and annotations across format overrides.
 
 ---
 
@@ -88,7 +90,16 @@ With the core container and elementary format engines in place, Phase 6 focuses 
    - **No Dual-Write Complexity**: Until a new schema version is accepted by an explicit ADR, StreamView shall only write canonical Version 1 JSON.
    - **Migration Policy**: New versions must document an explicit translation mapping from Version 1 constructs to Version N constructs.
 3. **Fixture-Guarded Immutability (P2-23)**:
-   Task P6h shall commit a frozen, read-only Version 1 `.svsession` fixture into `tests/fixtures/` and add a regression test asserting that it can always be parsed and loaded across all platforms without error.
+   Task P6h committed a frozen, read-only Version 1 `.svsession` fixture into `tests/fixtures/v1_golden.svsession` and regression tests assert that it can always be parsed and loaded across all platforms without error.
+4. **Analysis Path Sibling Disambiguation Specification (P1-2)**:
+   In `SessionUserState`, `expandedPaths` and `view.selectedAnalysisPath` represent hierarchical coordinates through the active `AnalysisTree`. In format trees, sibling nodes under the same parent may share identical display names (e.g. repeated fields or framing structures such as `offset_for_ref_frame` or `trailing_zero_8bits`).
+   To guarantee deterministic and bit-precise restoration without shifting cursor selections to an arbitrary first matching sibling:
+   - **Serialization Format**: Each path segment shall be serialized as `<nodeName>#<rowInParent>` (e.g. `nal_unit[0]#0/SequenceParameterSetRbsp#1/offset_for_ref_frame#12`).
+   - **Deserialization Protocol (`findIndexByPath`)**:
+     1. *Row Hint Verification*: If the segment ends with `#<row>` and `<row>` is within parent child bounds, check whether the child at that row has display text `<nodeName>`. If so, immediately select this child ($O(1)$ precision).
+     2. *Legacy Name Match Fallback*: If step 1 fails or no `#<row>` exists, scan sibling nodes sequentially for exact matching display name.
+     3. *Legacy Numeric Index Fallback*: If step 2 fails and the segment is purely decimal digits (such as legacy `"/0/0"` fixtures), resolve the corresponding row index directly.
+   This guarantees 100% backward compatibility with existing Version 1 session documents while ensuring sibling disambiguation in live workflows.
 
 ---
 
@@ -217,11 +228,20 @@ public:
 } // namespace streamview::app
 ```
 
-#### 4. P2-19 and P2-20 Status
-- **P2-19 Status**: Stream-level tie-breaker heuristics in `format_selection.cpp:145` (such as `aacStrong && !h264Strong`) remain strictly auto-detection fallbacks. The user-facing manual override mechanism provides the ultimate authority, allowing users to override any heuristic decision.
-- **P2-20 Status**: Will be closed upon Task P6d delivery. Tests will clearly separate:
-  a) End-to-end auto-detection arbitration tests (`openFile()`), verifying correct detection without pinning.
-  b) Explicit rule override tests (`openFileWithExplicitRule()`), replacing the ad-hoc test helper `openPinnedMp4Fixture()` with the first-class public API.
+#### 4. Historical Review Item Audit & Resolution Status
+- **P2-17 (Ambiguity Trigger in UI)**: **CLOSED**. Implemented `formatAmbiguityBannerWidget_` and interactive "Resolve Ambiguity..." button in `MainWindow` connecting directly to `FormatOverrideDialog`.
+- **P2-18 (AAC Whitebox Candidate Coverage)**: **ACKNOWLEDGED / KNOWN LIMITATION**. Recorded as a known testing trait (arbitration unit test relies on synthetic candidates).
+- **P2-19 (Pattern Priority vs Anchored Arbitration)**: **MITIGATED**. User-guided manual format override empowers users to resolve conflicting detections. Automated path heuristics in `format_selection.cpp:145` remain pending future arbitration refinements.
+- **P2-20 (Explicit Rule Construction API)**: **CLOSED**. Replaced ad-hoc `openPinnedMp4Fixture()` with first-class public API `AnalysisSession::openFileWithExplicitRule()`.
+- **P2-21 (Single Reference Tool)**: **ACKNOWLEDGED / KNOWN LIMITATION**. Acknowledged that cross-validation uses `ffprobe` as an external reference tool without runtime FFmpeg dependencies.
+- **P2-26 (Strongly-Typed Save Status)**: **CLOSED**. Replaced boolean returns with `SessionSaveStatus` and `SessionSaveResult`.
+- **P2-27 (Save Status Layering Attribution)**: **CLOSED**. Defined `SessionSaveStatus` in `session_document.h` and integrated with `AnalysisSession::saveSession()`.
+- **P2-28 (Bookmark/Annotation Semantics on Override)**: **CLOSED / SPECIFIED**. Addressed in §4.5 below.
+
+#### 5. Bookmark & Annotation Preservation Across Format Overrides (P2-28, P2-33)
+When `AnalysisSession::overrideFormat()` or the UI format override workflow is applied:
+- `bookmarks_` and `annotations_`: Preserved unchanged. Bookmarks and annotations record absolute media source bit coordinates (`SourceBitAddress` and bit lengths), reflecting the user's focus on ground-truth byte/bit ranges in the physical stream regardless of higher-level AST interpretations.
+- `navigationStack_`, `expandedPaths`, and `selectedAnalysisPath`: Reset and cleared. Hierarchical node paths and AST navigation depth are schema-specific and become invalid when the active rule changes.
 
 ---
 
@@ -278,16 +298,18 @@ To establish an accessible, modern desktop experience across diverse operating e
      - `actionThemeLight` (`tr("Light")`)
      - `actionThemeDark` (`tr("Dark")`)
 
-2. **Dynamic Bilingual Localization & Zero-Restart Hot-Reload**:
+2. **Dynamic Bilingual Localization & Zero-Restart Hot-Reload (P1-1)**:
    - StreamView supports two baseline locales:
      - `en`: English (base canonical catalog).
      - `zh_CN`: Simplified Chinese (简体中文).
    - UI strings are enclosed in standard Qt `tr(...)` translation calls.
-   - Chinese translations are compiled into a binary `.qm` resource file embedded within the application binary (`:/translations/streamview_zh_CN.qm`).
+   - Built-in `ChineseTranslator` provides 100% comprehensive dictionary coverage for all `tr(...)` literals in `src/app/` (146 distinct literals across menus, toolbars, diagnostics, rule manager, override dialog, inspectors, and tables).
+   - `ChineseTranslator::translate()` explicitly returns null `QString()` for unmapped strings to trigger standard Qt translation fallback to source text, documented with explicit comments.
+   - Guarded by automated CTest `testAllAppTrLiteralsHaveChineseTranslations` in `theme_localization_test.cpp`, ensuring any newly introduced `tr()` without a corresponding entry immediately fails build/test verification.
    - `MainWindow` listens to `QEvent::LanguageChange` in its `changeEvent(QEvent*)` override:
      - Switching languages dynamically installs or uninstalls `QTranslator` instances via `QCoreApplication::installTranslator()` / `removeTranslator()`.
      - Invokes `retranslateUi()`, which refreshes all menu titles (File, Edit, View, Analysis, Tools, Help), menu action labels, status bar indicators, dock titles (`tr("Diagnostics")`, `tr("Timeline")`), search prompts, and table header labels immediately without restarting the application.
-    - `MainWindow` exposes a `View > Language` submenu (`menuLanguage`) containing a mutually exclusive `QActionGroup`:
+   - `MainWindow` exposes a `View > Language` submenu (`menuLanguage`) containing a mutually exclusive `QActionGroup`:
      - `actionLanguageEnglish` (`tr("English")`)
      - `actionLanguageChinese` (`tr("Simplified Chinese (简体中文)")`)
 
