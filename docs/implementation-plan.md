@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 7
-Last Completed Step: Phase 6 里程碑门禁正式放行（Milestone Gate Passed；P0/P1/P2 整改项闭环与双语 ADR-0109 收敛）；Task P7a 规范启动（双语 ADR-0110 阶段 7 安全加固、模糊测试策略、性能基线与发布自动化，设固定独立评审门禁）
-Next Action: 编码实现 Task P7a（P1-1-R1 本地化跨行拼接正则守卫先红后绿闭环、P1-2-R1 同名兄弟消歧变异实证与计划表述限定）
-Last Verification: Hosted Run 34096773221（Windows 2022 / Qt 6.10.1 job 101662071808, macOS 15 / Qt 6.11.1 job 101662071979, Ubuntu 24.04 / Qt 6.11.1 job 101662071973）全绿；本地 dev/ci/sanitize 53/53 全部通过；SessionPersistenceRegressionTest 4 槽（QTest totals 6）通过；MainWindowTest 50 槽（QTest totals 52）通过；ThemeLocalizationTest 3 槽（QTest totals 5）通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
+Last Completed Step: Task P7a（阶段 7 规范启动、双语 ADR-0110、P1-1-R1 本地化跨行拼接先红后绿闭环与 P1-2-R1 同名兄弟消歧变异实证，设固定独立评审门禁）
+Next Action: 提请 Task P7a 独立评审门禁复审（待评审放行后启动 Task P7b 模糊测试框架）
+Last Verification: Hosted Run 34119278471（Windows 2022 / Qt 6.10.1 job 101733313576, macOS 15 / Qt 6.11.1 job 101733313475, Ubuntu 24.04 / Qt 6.11.1 job 101733313554）全绿；本地 dev/ci/sanitize 53/53 全部通过；SessionPersistenceRegressionTest 4 槽（QTest totals 6）通过；MainWindowTest 50 槽（QTest totals 52）通过；ThemeLocalizationTest 3 槽（QTest totals 5，148 词条强校验）通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
 Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -276,7 +276,7 @@ Blockers: 无
 ## 阶段 7：安全、性能与发布
 
 ### 阶段 7 任务切片与依赖关系
-- [ ] **Task P7a**（规范与前置守卫闭环）：编写双语 ADR-0110；闭环 P1-1-R1（本地化正则跨行拼接先红后绿修复）；闭环 P1-2-R1（同名兄弟消歧变异实证与表述限定）；确立阶段 7 WBS（设固定独立评审门禁）；
+- [x] **Task P7a**（规范与前置守卫闭环）：编写双语 ADR-0110；闭环 P1-1-R1（本地化正则跨行拼接先红后绿修复）；闭环 P1-2-R1（同名兄弟消歧变异实证与表述限定）；确立阶段 7 WBS（设固定独立评审门禁）；
 - [ ] **Task P7b**（模糊测试框架与核心目标）：实现 DSL parser、compiler、VM 的 fuzz 驱动，并将独立 fuzz 回放接入 CTest；
 - [ ] **Task P7c**（规则包与格式扫描器 Fuzzing）：实现 `RulePackageStore`（ZIP/manifest）、H.264、AAC 与 MP4 box/sample 提取器的 fuzz 驱动；
 - [ ] **Task P7d**（静态分析与警告级别提升）：配置 Clang-Tidy 检查规则并提升 dev/ci 的编译器告警门禁；
@@ -3504,3 +3504,26 @@ Blockers: 无
      - 本地 dev（53/53，60.04s）、ci（53/53，20.14s）、sanitize（53/53，193.58s，零 ASan/UBSan 告警）全部通过；
      - svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS；
      - Hosted CI Run `34096773221` 三平台全部绿灯（Windows `101662071808`, Ubuntu `101662071973`, macOS `101662071979`）。
+
+- 2026-09-07：完成 Task P7a（规范启动、P1-1-R1 与 P1-2-R1 闭环、变异实证与全量跨平台验证）。
+  1. 阶段 7 规范与架构体系确立：
+     - 编写双语 ADR-0110（`docs/adr/0110-phase-7-fuzzing-hardening-performance-and-release.md` 及 `docs/zh-CN/adr/0110-phase-7-fuzzing-hardening-performance-and-release.md`）；
+     - 明确阶段 7 WBS（Task P7a 至 P7l），在 P7a、P7h、P7l 设固定独立评审门禁；
+     - 规范提交：`ae963a7`（`docs: specify phase 7 security, fuzzing, performance baselines and release automation`）。
+  2. P1-1-R1 本地化跨行拼接字面量先红后绿闭环：
+     - 在 `tests/app/theme_localization_test.cpp` 中重构扫描算法为括号深度与引号感知的字符级状态机，正确解析包含换行拼接与内嵌括号的复合字面量；
+     - **反向暴露漏译实测（RED）**：运行即准确定位 2 处未翻译文本：`format_override_dialog.cpp`（`Notice: Multiple conflicting formats (container vs elementary stream) were detected. Choose your intended format to resolve the ambiguity.`）与 `rule_manager_dialog.cpp`（`Manage format rule packages. Bundled packages are read-only official assets. External packages (.svrule) can be installed into the local user repository.`）；
+     - 补齐词典：在 `src/app/localization_manager.cpp` 增补对应中文译文，字典条目从 146 扩充至 148，并暴露 `LocalizationManager::chineseDictionarySize()`；
+     - 强校验转绿（GREEN）：`tests/app/theme_localization_test.cpp` 升级为 `uniqueScannedLiterals.size() == chineseDictionarySize() == 148` 严格相等断言，totalCalls 221 处调用全覆盖。
+  3. P1-2-R1 同名兄弟消歧与异步批次恢复变异实证：
+     - 异步状态跟踪加固：在 `MainWindow` 引入 `pendingSelectedAnalysisPath_` 与 `pendingExpandedPaths_`，并在 `advanceAnalysis` 批次递进时动态应用，根治深层/跨批次节点在会话恢复时因异步批次未到达而丢失选择的缺陷；
+     - 真实同名兄弟端到端测试：在 `tests/app/main_window_test.cpp` 中针对 `tests/fixtures/mp4_p5j4_two_tracks.mp4` 构建用例（`moov_payload` 下 3 个兄弟节点全为纯文本 `"Box"`：row 0 `mvhd`、row 1 `trak 1`、row 2 `trak 2`），选中 row 1 保存并在全新窗口恢复，断言 `nodeIdAt` 与 `selectedBoxId` 精确一致；
+     - **变异实证验证（MUTATION SENSITIVITY）**：在 `main_window.cpp` 中移除 `#<row>` 路径序列化，复跑 `streamview_main_window_tests` 立即发生预期红灯（`FAIL! ... *restoredId != selectedBoxId`，精确捕获退化至 row 0 `mvhd` 节点），恢复后重归 100% 绿灯，实证同名消歧与恢复机制的有效性与敏感度；
+     - 实现提交：`6e8f9a0`（`feat(app): harden localization literal scanner and add genuine sibling disambiguation tests`）。
+  4. 全矩阵与 Hosted CI 验证：
+     - 本地 dev（53/53，66.62s）、ci（53/53，15.72s）、sanitize（53/53，195.93s，零 ASan/UBSan 告警）全部通过；
+     - svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS；
+     - Hosted CI Run `34119278471`（head_sha: `6e8f9a0b334212f06927b1786af74368fc28c3c5`）三平台全部 success：
+       * macOS 15 / Qt 6.11.1：Job `101733313475`（`success`）；
+       * Ubuntu 24.04 / Qt 6.11.1：Job `101733313554`（`success`）；
+       * Windows 2022 / Qt 6.10.1：Job `101733313576`（`success`）。
