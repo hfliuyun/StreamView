@@ -20,6 +20,12 @@ public:
     [[nodiscard]] Language currentLanguage() const noexcept { return currentLanguage_; }
     void setLanguage(Language lang);
 
+    /// Check whether a Chinese translation mapping exists for the given source text literal.
+    [[nodiscard]] static bool hasChineseTranslation(std::string_view sourceText);
+
+    /// Returns the Chinese translation for the given source text literal, or null QString if unmapped.
+    [[nodiscard]] static QString translateToChinese(std::string_view sourceText);
+
 signals:
     void languageChanged(Language lang);
 

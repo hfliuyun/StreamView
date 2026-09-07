@@ -2577,9 +2577,14 @@ private slots:
         QVERIFY(!session->formatSelection().ambiguous());
         QCOMPARE(session->ruleIdentity().packageIdentity(), mp4Package.package->identity());
 
-        const auto batch = session->analyzeBatch(100);
-        QVERIFY(batch.status == AnalysisBatchStatus::InProgress ||
-                batch.status == AnalysisBatchStatus::Complete);
+        AnalysisBatchResult batch{};
+        while (!session->finished()) {
+            batch = session->analyzeBatch(100);
+            QVERIFY(batch.status != AnalysisBatchStatus::SourceError &&
+                    batch.status != AnalysisBatchStatus::Cancelled &&
+                    batch.status != AnalysisBatchStatus::InvalidRule);
+        }
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
         QVERIFY(session->tree().nodeCount() > 0);
     }
 
@@ -2645,8 +2650,9 @@ private slots:
 
         // Run initial batch
         const auto firstBatch = session->analyzeBatch(100);
-        QVERIFY(firstBatch.status == AnalysisBatchStatus::InProgress ||
-                firstBatch.status == AnalysisBatchStatus::Complete);
+        QVERIFY(firstBatch.status != AnalysisBatchStatus::SourceError &&
+                firstBatch.status != AnalysisBatchStatus::Cancelled &&
+                firstBatch.status != AnalysisBatchStatus::InvalidRule);
         QVERIFY(session->tree().nodeCount() > 0);
 
         // Artificially populate user navigation/view state
@@ -2677,8 +2683,9 @@ private slots:
         QCOMPARE(session->ruleIdentity().packageIdentity(), h264Package.package->identity());
 
         const auto secondBatch = session->analyzeBatch(100);
-        QVERIFY(secondBatch.status == AnalysisBatchStatus::InProgress ||
-                secondBatch.status == AnalysisBatchStatus::Complete);
+        QVERIFY(secondBatch.status != AnalysisBatchStatus::SourceError &&
+                secondBatch.status != AnalysisBatchStatus::Cancelled &&
+                secondBatch.status != AnalysisBatchStatus::InvalidRule);
         QVERIFY(session->tree().nodeCount() > 0);
     }
 
@@ -2691,8 +2698,9 @@ private slots:
         QVERIFY2(session != nullptr, qPrintable(openError));
 
         const auto initialBatch = session->analyzeBatch(100);
-        QVERIFY(initialBatch.status == AnalysisBatchStatus::InProgress ||
-                initialBatch.status == AnalysisBatchStatus::Complete);
+        QVERIFY(initialBatch.status != AnalysisBatchStatus::SourceError &&
+                initialBatch.status != AnalysisBatchStatus::Cancelled &&
+                initialBatch.status != AnalysisBatchStatus::InvalidRule);
         const auto oldFormat = session->formatSelection().format;
         const auto oldRule = session->ruleIdentity().packageIdentity();
         const auto oldNodeCount = session->tree().nodeCount();

@@ -1,3 +1,4 @@
+#include "analysis_tree_model.h"
 #include "diagnostics_summary_dock.h"
 #include "format_override_dialog.h"
 #include "main_window.h"
@@ -5,6 +6,7 @@
 #include "raw_data_view.h"
 #include "timeline_table_model.h"
 
+#include <streamview/core/analysis_model.h>
 #include <streamview/rules/aac_adts_analyzer.h>
 #include <streamview/rules/h264_annex_b_analyzer.h>
 #include <streamview/rules/mp4_isobmff_analyzer.h>
@@ -40,6 +42,7 @@
 #include <optional>
 
 using streamview::app::AnalysisSessionCacheOptions;
+using streamview::app::AnalysisTreeModel;
 using streamview::app::DiagnosticsSummaryDock;
 using streamview::app::FormatOverrideDialog;
 using streamview::app::MainWindow;
@@ -2084,6 +2087,109 @@ private slots:
         QCOMPARE(dock->windowTitle(), QStringLiteral("Diagnostics"));
         QCOMPARE(cancelButton->text(), QStringLiteral("Cancel"));
         QCOMPARE(tableWidget->horizontalHeaderItem(0)->text(), QStringLiteral("Severity"));
+    }
+
+    void openSessionFileRestoresDisambiguatedSameNamedSiblingsByNodeId() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString fixturePath = writeFixture(
+            directory,
+            QStringLiteral("sps_poc_cycle.264"),
+            QByteArray::fromHex("000000016742001ed36140508944"));
+        QVERIFY(!fixturePath.isEmpty());
+        const QString sessionPath = directory.filePath(QStringLiteral("disambiguated.svsession"));
+
+        streamview::core::AnalysisNodeId selectedNodeId{0};
+
+        {
+            MainWindow window1;
+            QString errorMessage;
+            QVERIFY2(window1.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+
+            auto* treeView = window1.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+            QVERIFY(treeView != nullptr);
+            auto* treeModel = qobject_cast<AnalysisTreeModel*>(treeView->model());
+            QVERIFY(treeModel != nullptr);
+
+            // Wait until analysis finishes and NAL node is published
+            QModelIndex nalIndex;
+            QTRY_VERIFY((nalIndex = findIndexByName(*treeModel, QStringLiteral("nal_unit[0]"))).isValid());
+            treeView->expand(nalIndex);
+
+            // Find rbsp_payload child
+            QModelIndex rbspIndex;
+            const int nalRows = treeModel->rowCount(nalIndex);
+            for (int r = 0; r < nalRows; ++r) {
+                const QModelIndex child = treeModel->index(r, AnalysisTreeModel::Name, nalIndex);
+                if (treeModel->data(child, Qt::DisplayRole).toString() == QStringLiteral("rbsp_payload")) {
+                    rbspIndex = child;
+                    break;
+                }
+            }
+            QVERIFY(rbspIndex.isValid());
+            treeView->expand(rbspIndex);
+
+            // Inside rbsp_payload, locate SequenceParameterSetRbsp
+            QModelIndex spsIndex;
+            const int rbspRows = treeModel->rowCount(rbspIndex);
+            for (int r = 0; r < rbspRows; ++r) {
+                const QModelIndex child = treeModel->index(r, AnalysisTreeModel::Name, rbspIndex);
+                if (treeModel->data(child, Qt::DisplayRole).toString() == QStringLiteral("SequenceParameterSetRbsp")) {
+                    spsIndex = child;
+                    break;
+                }
+            }
+            const QModelIndex parentOfFields = spsIndex.isValid() ? spsIndex : rbspIndex;
+            treeView->expand(parentOfFields);
+
+            // Locate all siblings named offset_for_ref_frame
+            std::vector<QModelIndex> offsetIndices;
+            const int fieldRows = treeModel->rowCount(parentOfFields);
+            for (int r = 0; r < fieldRows; ++r) {
+                const QModelIndex child = treeModel->index(r, AnalysisTreeModel::Name, parentOfFields);
+                if (treeModel->data(child, Qt::DisplayRole).toString().startsWith(QStringLiteral("offset_for_ref_frame"))) {
+                    offsetIndices.push_back(child);
+                }
+            }
+            QCOMPARE(offsetIndices.size(), std::size_t{2});
+            const auto id0 = treeModel->nodeIdAt(offsetIndices[0]);
+            const auto id1 = treeModel->nodeIdAt(offsetIndices[1]);
+            QVERIFY(id0.has_value() && id1.has_value());
+            QVERIFY(*id0 != *id1);
+
+            // Select the second sibling with the identical display name prefix
+            selectedNodeId = *id1;
+            treeView->setCurrentIndex(offsetIndices[1]);
+            QCOMPARE(treeModel->nodeIdAt(treeView->currentIndex()),
+                     std::optional<streamview::core::AnalysisNodeId>(selectedNodeId));
+
+            window1.setSaveFileDialogHandlerForTesting([&](QWidget*, const QString&, const QString&) {
+                return sessionPath;
+            });
+            QVERIFY(window1.saveSession());
+            QVERIFY(QFile::exists(sessionPath));
+        }
+
+        // Open in a fresh second window and assert exact NodeId restoration
+        {
+            MainWindow window2;
+            QString errorMessage;
+            QVERIFY2(window2.openSessionFile(sessionPath, &errorMessage), qPrintable(errorMessage));
+
+            auto* treeView2 = window2.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+            QVERIFY(treeView2 != nullptr);
+            auto* treeModel2 = qobject_cast<AnalysisTreeModel*>(treeView2->model());
+            QVERIFY(treeModel2 != nullptr);
+
+            const QModelIndex restoredIndex = treeView2->currentIndex();
+            QVERIFY(restoredIndex.isValid());
+            QCOMPARE(treeModel2->data(restoredIndex, Qt::DisplayRole).toString(), QStringLiteral("offset_for_ref_frame[1]"));
+
+            // Exact AnalysisNodeId identity match (proving cursor did NOT misplace to sibling 0)
+            const auto restoredId = treeModel2->nodeIdAt(restoredIndex);
+            QVERIFY(restoredId.has_value());
+            QCOMPARE(*restoredId, selectedNodeId);
+        }
     }
 };
 
