@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QFile>
 #include <QRegularExpression>
+#include <QSet>
 #include <QSignalSpy>
 #include <QTest>
 
@@ -88,36 +89,86 @@ void ThemeLocalizationTest::testAllAppTrLiteralsHaveChineseTranslations() {
     const QStringList files = dir.entryList({QStringLiteral("*.cpp"), QStringLiteral("*.h")}, QDir::Files);
     QVERIFY(!files.isEmpty());
 
-    const QRegularExpression trRegex(QStringLiteral(R"raw(\btr\(\s*"((?:[^"\\]|\\.)*)"\s*\))raw"));
-
     QStringList missingLiterals;
-    int inspectedCount = 0;
+    QSet<QString> uniqueScannedLiterals;
+    int totalCalls = 0;
 
     for (const QString& fileName : files) {
         QFile file(dir.filePath(fileName));
         QVERIFY(file.open(QIODevice::ReadOnly | QIODevice::Text));
         const QString content = QString::fromUtf8(file.readAll());
-        auto matchIterator = trRegex.globalMatch(content);
-        while (matchIterator.hasNext()) {
-            const auto match = matchIterator.next();
-            QString rawLiteral = match.captured(1);
-            // Unescape C++ string escapes
-            rawLiteral.replace(QStringLiteral(R"(\n)"), QStringLiteral("\n"));
-            rawLiteral.replace(QStringLiteral(R"(\")"), QStringLiteral("\""));
-            rawLiteral.replace(QStringLiteral(R"(\\)"), QStringLiteral("\\"));
-            ++inspectedCount;
+        const qsizetype n = content.size();
+        qsizetype i = 0;
+        while (i < n) {
+            if (content.mid(i, 3) == QStringLiteral("tr(") &&
+                (i == 0 || (!content.at(i - 1).isLetterOrNumber() && content.at(i - 1) != u'_'))) {
+                i += 3;
+                QStringList literalsInCall;
+                QString curLit;
+                bool inQuote = false;
+                bool escaped = false;
+                int parenDepth = 1;
+                bool hasComma = false;
 
-            const std::string stdLiteral = rawLiteral.toStdString();
-            if (!LocalizationManager::hasChineseTranslation(stdLiteral)) {
-                missingLiterals.append(QStringLiteral("[%1] in %2").arg(rawLiteral, fileName));
+                while (i < n && parenDepth > 0) {
+                    const QChar ch = content.at(i);
+                    if (inQuote) {
+                        if (escaped) {
+                            if (ch == u'n') curLit.append(u'\n');
+                            else if (ch == u'"') curLit.append(u'"');
+                            else if (ch == u'\\') curLit.append(u'\\');
+                            else if (ch == u't') curLit.append(u'\t');
+                            else if (ch == u'r') curLit.append(u'\r');
+                            else { curLit.append(u'\\'); curLit.append(ch); }
+                            escaped = false;
+                        } else if (ch == u'\\') {
+                            escaped = true;
+                        } else if (ch == u'"') {
+                            inQuote = false;
+                            if (!hasComma) {
+                                literalsInCall.append(curLit);
+                            }
+                            curLit.clear();
+                        } else {
+                            curLit.append(ch);
+                        }
+                    } else {
+                        if (ch == u'"') {
+                            inQuote = true;
+                        } else if (ch == u',') {
+                            hasComma = true;
+                        } else if (ch == u'(') {
+                            ++parenDepth;
+                        } else if (ch == u')') {
+                            --parenDepth;
+                            if (parenDepth == 0) {
+                                break;
+                            }
+                        }
+                    }
+                    ++i;
+                }
+                if (!literalsInCall.isEmpty()) {
+                    const QString fullLiteral = literalsInCall.join(QString{});
+                    ++totalCalls;
+                    uniqueScannedLiterals.insert(fullLiteral);
+                    const std::string stdLit = fullLiteral.toStdString();
+                    if (!LocalizationManager::hasChineseTranslation(stdLit)) {
+                        missingLiterals.append(QStringLiteral("[%1] in %2").arg(fullLiteral, fileName));
+                    }
+                }
+            } else {
+                ++i;
             }
         }
     }
 
-    QVERIFY(inspectedCount >= 140);
     QVERIFY2(missingLiterals.isEmpty(),
              qPrintable(QStringLiteral("Missing Chinese translations for literals:\n%1")
                             .arg(missingLiterals.join(QStringLiteral("\n")))));
+    QCOMPARE(uniqueScannedLiterals.size(), static_cast<qsizetype>(LocalizationManager::chineseDictionarySize()));
+    QCOMPARE(uniqueScannedLiterals.size(), qsizetype{148});
+    QCOMPARE(totalCalls, 221);
 }
 
 QTEST_MAIN(ThemeLocalizationTest)

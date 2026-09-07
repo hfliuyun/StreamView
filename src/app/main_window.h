@@ -171,6 +171,7 @@ private:
     void updateActionStates();
     [[nodiscard]] QModelIndex findIndexByPath(const QString& path) const;
     void expandNodeByPath(const QString& path);
+    void applyPendingTreeState();
 
     QTreeView* analysisTreeView_ = nullptr;
     AnalysisTreeModel* analysisModel_ = nullptr;
@@ -212,6 +213,8 @@ private:
     std::optional<QString> currentSessionFilePath_;
     std::vector<SessionBookmark> bookmarks_;
     std::vector<SessionAnnotation> annotations_;
+    std::optional<QString> pendingSelectedAnalysisPath_;
+    QStringList pendingExpandedPaths_;
     QString ruleStorePath_;
     std::set<QString> bundledPackageIds_;
 
