@@ -1,10 +1,10 @@
 # StreamView v0.1 分阶段实施计划
 
 Status: In Progress
-Current Phase: 7
-Last Completed Step: Task P6i（关闭切片：阶段 6 检查清单 100% 达成确认、双语文档收敛与里程碑收官独立评审门禁）—— 逐项核验阶段 6 检查清单（6/6 项 100% 达成与测试闭环）；双语 ADR-0109 状态正式收敛为 Accepted 并清理任务占位符；执行阶段 6 收官独立评审（架构完整性、平台兼容性与安全测试覆盖全量核验通过）；本地三套矩阵 53/53 全部通过，零 ASan/UBSan 告警
-Next Action: 启动 Phase 7 / Task P7a（阶段 7 启动规范编写：模糊测试方案、ASan/UBSan 静态分析全矩阵加固与发布性能验证规范，设固定独立评审门禁）
-Last Verification: Hosted Run 34079648314（Windows 2022 / Qt 6.10.1 job 101612372242, macOS 15 / Qt 6.11.1 job 101612372342, Ubuntu 24.04 / Qt 6.11.1 job 101612372373）全绿；本地 dev/ci/sanitize 53/53 全部通过；SessionPersistenceRegressionTest 4/4 用例通过；MainWindowTest 51/51 槽通过；ThemeLocalizationTest 2/2 用例通过；DiagnosticsSummaryDockTest 5/5 用例通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
+Current Phase: 6
+Last Completed Step: Task P6i（关闭切片与独立评审整改全量落地：P0/P1/P2 整改项闭环、双语文档与 ADR-0109 精确对齐、同名兄弟路径消歧、中文翻译 100% 覆盖守卫、无条件断言加固；三平台 Hosted CI 全绿，本地三套矩阵 53/53 全通且零 Sanitizer 告警）
+Next Action: 阶段 6 里程碑收官重新提请门禁评审（报告 P0/P1/P2 整改闭环与证据链），待用户裁定放行后进入 Phase 7 / Task P7a。
+Last Verification: Hosted Run 34096773221（Windows 2022 / Qt 6.10.1 job 101662071808, macOS 15 / Qt 6.11.1 job 101662071979, Ubuntu 24.04 / Qt 6.11.1 job 101662071973）全绿；本地 dev/ci/sanitize 53/53 全部通过；SessionPersistenceRegressionTest 5/5 用例通过；MainWindowTest 51/51 槽通过；ThemeLocalizationTest 3/3 用例通过（含 146 处 tr() 中文全量覆盖静态守卫）；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
 Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -3464,3 +3464,28 @@ Blockers: 无
      - 历史审查项状态核准：闭环 7 项（P2-17, P2-20, P2-24, P2-25, P2-26, P2-27, P2-28）；已缓解 1 项（P2-19）；已归档已知限制 2 项（P2-18, P2-21）；
      - 提交计数核实（P2-29）：`git rev-list --count eb750f4..32eeb6e` 精确为 22 个提交；
      - 阶段 6 成果就绪，待完成独立评审整改项（P0-1, P1-1, P1-2, P1-3）后由评审裁定放行进入 Phase 7。
+
+- 2026-09-07：落实 Task P6i 独立评审整改项（P0-1, P1-1, P1-2, P1-3, P2-30..P2-33）并完成全量验证闭环。
+  1. P0-1 CI 失败回溯与因果链闭环：
+     - 在执行记录中完整追溯 Run `34049608127`（`2b6827b`）Windows 失败根因（NTFS 100 GB 虚拟源无稀疏属性致 `ERROR_DISK_FULL`，且 app 测试缺控制台子系统）；
+     - 明确 `8d719cb` 针对性引入 `FSCTL_SET_SPARSE` 与 `WIN32_EXECUTABLE` 关闭的因果关系，以及 Run `34079648314` 全绿验证证据；
+     - 确认 `dff0437` 与 `32eeb6e` 纯 markdown 文档变更依照 ADR-0019 与 `paths-ignore` 免于 hosted CI；
+     - 当前整改 commit `edcaeb2` 触发全新 Hosted CI Run `34096773221`（三平台 100% success，Job `101662071808` / `101662071973` / `101662071979`）。
+  2. P1-1 中文翻译 100% 覆盖与防漏自动化守卫：
+     - 补齐 `src/app/localization_manager.cpp` 中全部 146 处 `tr()` 字面量的中文翻译（涵盖检视器、时间线表头、原始数据视图、规则管理器、覆盖对话框等 128 处缺口）；
+     - 清理死键；未命中显式 `return QString();` 依循 Qt 契约透明回退至源文本；新增 `hasChineseTranslation()` 与 `translateToChinese()`；
+     - 在 `tests/app/theme_localization_test.cpp` 新增 `testAllAppTrLiteralsHaveChineseTranslations()` 扫描 `src/app/` 源码进行差集守卫断言（测试数增至 3/3）。
+  3. P1-2 分析树同名兄弟路径消歧与精确节点恢复：
+     - `SessionUserState` 序列化格式规范化为 `<nodeName>#<row>`；
+     - `MainWindow::findIndexByPath()` 实现三级寻址（行号 $O(1)$ 验证 -> 传统名称匹配 -> 纯数字行号 legacy 兼容）；
+     - 在 `tests/app/main_window_test.cpp` 补充真实 H.264 码流（SPS `num_ref_frames_in_pic_order_cnt_cycle = 2`）测试，断言恢复后 `nodeIdAt()` 与 `selectedNodeId` 严格一致（`openSessionFileRestoresDisambiguatedSameNamedSiblingsByNodeId`）。
+  4. P1-3 与 P2 历史审查项状态校准与测试加固：
+     - 校准 P2-18 与 P2-21 为 Known Limitation，P2-19 为 Mitigated，登记 P2-27、P2-28；
+     - P2-30：`SessionPersistenceRegressionTest` 中 `banner != nullptr` 无条件断言 `isHidden()`；
+     - P2-31：`MainWindow` 暴露 `activeRuleIdentity()`，回归测试直接断言 packageId 与 entryPointId；
+     - P2-32：`AnalysisSessionTest` 消除 4 处 `||` 弱断言，改为强类型 `AnalysisBatchStatus::Complete` 断言；
+     - P2-33：ADR-0109 明确 `overrideFormat()` 保持绝对源位偏移书签与注释的语义及理由。
+  5. 全量矩阵验证：
+     - 本地 dev（53/53，60.04s）、ci（53/53，20.14s）、sanitize（53/53，193.58s，零 ASan/UBSan 告警）全部通过；
+     - svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS；
+     - Hosted CI Run `34096773221` 三平台全部绿灯（Windows `101662071808`, Ubuntu `101662071973`, macOS `101662071979`）。
