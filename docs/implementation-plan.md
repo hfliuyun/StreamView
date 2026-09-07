@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 7
-Last Completed Step: Task P7a（阶段 7 规范启动、双语 ADR-0110、P1-1-R1 本地化跨行拼接先红后绿闭环与 P1-2-R1 同名兄弟消歧变异实证，设固定独立评审门禁）
-Next Action: 提请 Task P7a 独立评审门禁复审（待评审放行后启动 Task P7b 模糊测试框架）
-Last Verification: Hosted Run 34119278471（Windows 2022 / Qt 6.10.1 job 101733313576, macOS 15 / Qt 6.11.1 job 101733313475, Ubuntu 24.04 / Qt 6.11.1 job 101733313554）全绿；本地 dev/ci/sanitize 53/53 全部通过；SessionPersistenceRegressionTest 4 槽（QTest totals 6）通过；MainWindowTest 50 槽（QTest totals 52）通过；ThemeLocalizationTest 3 槽（QTest totals 5，148 词条强校验）通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
+Last Completed Step: Task P7a 独立评审门禁整改（P2-42 至 P2-46 闭环：终态 rootTreeIsActive 守卫、格式覆盖清理待恢复状态、用户主动点选抢占清空 pending 选择、格式覆盖对话框 tr() 补齐与 154 词条强校验、双语 ADR-0110 路径消歧语义规范）
+Next Action: 提请用户确认 Task P7a 整改闭环结果，待用户明确确认后启动 Task P7b（模糊测试框架与核心目标）
+Last Verification: Hosted Run 34126116782（Windows 2022 / Qt 6.10.1 job 101755067036, macOS 15 / Qt 6.11.1 job 101755067103, Ubuntu 24.04 / Qt 6.11.1 job 101755066821）全绿；本地 dev 53/53（71.62s）、ci 53/53（14.54s）、sanitize 53/53（203.31s，零 ASan/UBSan 告警）全部通过；MainWindowTest 53 槽（QTest totals 55）通过；ThemeLocalizationTest 3 槽（QTest totals 5，154 词条强校验 227 次调用）通过；SessionPersistenceRegressionTest 4 槽（QTest totals 6）通过；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
 Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -3527,3 +3527,28 @@ Blockers: 无
        * macOS 15 / Qt 6.11.1：Job `101733313475`（`success`）；
        * Ubuntu 24.04 / Qt 6.11.1：Job `101733313554`（`success`）；
        * Windows 2022 / Qt 6.10.1：Job `101733313576`（`success`）。
+
+- 2026-09-07：完成 Task P7a 独立评审门禁整改（P2-42 至 P2-46 闭环与全矩阵验证）。
+  1. 规范与语义对齐（P2-42, P2-40, P2-37）：
+     - 双语 ADR-0110 增补 §5「分析路径消歧与树状态恢复语义」，明确三级解析（同名兄弟 `#<row>` 消歧 -> 纯字面量兜底回退 -> 历史行号兜底），规范子会话导航隔离、格式覆盖清理与主动点选抢占；
+     - 双语 ADR-0110 §1.1/§1.2 明确将字段/节点名含 `#<数字>` 的合成语法树纳入 Task P7c 规则包与格式 fuzzing 语料目标；
+     - 双语 ADR-0110「Review Items Addressed」准确对齐有物理实物与测试覆盖的代码/用例行号，P2-41 移入延期说明；
+     - `docs/implementation-plan.md:253` 状态描述对齐为「彻底闭环 P2-17/P2-20，P2-19 缓解」；
+     - 规范提交：`c625fa7`（`docs: specify review gate remediations and path resolution semantics in adr-0110`）。
+  2. 生命周期守卫与交互抢占（P2-43, P2-44, P2-45）：
+     - P2-43：在 `src/app/main_window.cpp:1092-1096` 中为终态 `advanceAnalysis()` 恢复调用补充 `rootTreeIsActive` 守卫，杜绝子会话（sample/child tree）结束时用根路径污染子树；
+     - P2-44：在 `MainWindow::overrideFormat()`（`src/app/main_window.cpp:820-821`）中无条件重置 `pendingSelectedAnalysisPath_` 与 `pendingExpandedPaths_`，与 `openMediaSource` 保持生命周期对称；
+     - P2-45：在 `setupDocks()` 的 `currentChanged` 信号槽（`src/app/main_window.cpp:307-309`）中引入 `isApplyingPendingTreeState_` 状态隔离，用户主动点击树节点时立即清空待恢复选区，杜绝流式批次到达时夺走用户光标；
+     - 在 `tests/app/main_window_test.cpp:2283-2432` 补充 3 个独立测试槽（`overrideFormatResetsPendingTreeState`、`userManualSelectionPreemptsPendingRestoredPath`、`childFormatNavigationDoesNotApplyRootPendingPath`），`MainWindowTest` 增至 53 槽（QTest totals 55）。
+  3. 对话框国际化补齐与强校验升级（P2-46）：
+     - 在 `src/app/format_override_dialog.cpp:98-120` 中将 6 处内置格式选项及描述文本包裹 `tr(...)`；
+     - 在 `src/app/localization_manager.cpp:35-43` 补齐对应中文译文，词典总键数从 148 扩充至 154；
+     - 在 `tests/app/theme_localization_test.cpp:170-171` 将断言升级为严格相等 `uniqueScannedLiterals.size() == 154` 与 `totalCalls == 227`，实测 5/5 totals 全部 PASS。
+     - 实现提交：`490efb1`（`fix(app): guard pending tree restoration lifecycle and complete dialog localization`）。
+  4. 全矩阵与 Hosted CI 验证：
+     - 本地 dev（53/53，71.62s）、ci（53/53，14.54s）、sanitize（53/53，203.31s，零 ASan/UBSan 告警）全部通过；
+     - svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS；
+     - Hosted CI Run `34126116782`（head_sha: `490efb164c39ccac3f90b9f1b6ec2605d7bf2518`）三平台全部 success：
+       * macOS 15 / Qt 6.11.1：Job `101755067103`（`success`）；
+       * Ubuntu 24.04 / Qt 6.11.1：Job `101755066821`（`success`）；
+       * Windows 2022 / Qt 6.10.1：Job `101755067036`（`success`）。
