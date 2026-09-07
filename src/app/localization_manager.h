@@ -26,6 +26,9 @@ public:
     /// Returns the Chinese translation for the given source text literal, or null QString if unmapped.
     [[nodiscard]] static QString translateToChinese(std::string_view sourceText);
 
+    /// Returns the total number of keys in the Chinese translation dictionary.
+    [[nodiscard]] static std::size_t chineseDictionarySize() noexcept;
+
 signals:
     void languageChanged(Language lang);
 

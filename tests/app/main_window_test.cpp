@@ -2190,6 +2190,94 @@ private slots:
             QVERIFY(restoredId.has_value());
             QCOMPARE(*restoredId, selectedNodeId);
         }
+
+        // 2. Truly identical display names (multiple sibling "Box" nodes under moov_payload)
+        {
+            const QString mp4Path = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_two_tracks.mp4");
+            const QString mp4SessionPath = directory.filePath(QStringLiteral("disambiguated_mp4.svsession"));
+            streamview::core::AnalysisNodeId selectedBoxId{0};
+
+            {
+                MainWindow window1;
+                QString errorMessage;
+                QVERIFY2(window1.openMediaSource(mp4Path, &errorMessage), qPrintable(errorMessage));
+
+                auto* treeView = window1.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+                QVERIFY(treeView != nullptr);
+                auto* treeModel = qobject_cast<AnalysisTreeModel*>(treeView->model());
+                QVERIFY(treeModel != nullptr);
+
+                QModelIndex moovBoxIndex;
+                QTRY_VERIFY((moovBoxIndex = findIndexByName(*treeModel, QStringLiteral("box[1]"))).isValid());
+                treeView->expand(moovBoxIndex);
+
+                // Child of box[1] is Box (moov)
+                const QModelIndex outerBoxIndex = treeModel->index(0, AnalysisTreeModel::Name, moovBoxIndex);
+                QVERIFY(outerBoxIndex.isValid());
+                treeView->expand(outerBoxIndex);
+
+                // Find moov_payload under outerBoxIndex
+                QModelIndex moovPayloadIndex;
+                const int outerRows = treeModel->rowCount(outerBoxIndex);
+                for (int r = 0; r < outerRows; ++r) {
+                    const QModelIndex child = treeModel->index(r, AnalysisTreeModel::Name, outerBoxIndex);
+                    if (treeModel->data(child, Qt::DisplayRole).toString() == QStringLiteral("moov_payload")) {
+                        moovPayloadIndex = child;
+                        break;
+                    }
+                }
+                QVERIFY(moovPayloadIndex.isValid());
+                treeView->expand(moovPayloadIndex);
+
+                // moov_payload has 3 children, all named "Box"
+                const int payloadRows = treeModel->rowCount(moovPayloadIndex);
+                QCOMPARE(payloadRows, 3);
+                for (int r = 0; r < payloadRows; ++r) {
+                    const QModelIndex child = treeModel->index(r, AnalysisTreeModel::Name, moovPayloadIndex);
+                    QCOMPARE(treeModel->data(child, Qt::DisplayRole).toString(), QStringLiteral("Box"));
+                }
+
+                const auto id0 = treeModel->nodeIdAt(treeModel->index(0, AnalysisTreeModel::Name, moovPayloadIndex));
+                const auto id1 = treeModel->nodeIdAt(treeModel->index(1, AnalysisTreeModel::Name, moovPayloadIndex));
+                const auto id2 = treeModel->nodeIdAt(treeModel->index(2, AnalysisTreeModel::Name, moovPayloadIndex));
+                QVERIFY(id0.has_value() && id1.has_value() && id2.has_value());
+                QVERIFY(*id0 != *id1 && *id1 != *id2 && *id0 != *id2);
+
+                // Select row 1 (trak 1, which has identical display name "Box" as row 0 and row 2)
+                selectedBoxId = *id1;
+                const QModelIndex selectedIndex = treeModel->index(1, AnalysisTreeModel::Name, moovPayloadIndex);
+                treeView->setCurrentIndex(selectedIndex);
+                QCOMPARE(treeModel->nodeIdAt(treeView->currentIndex()),
+                         std::optional<streamview::core::AnalysisNodeId>(selectedBoxId));
+
+                window1.setSaveFileDialogHandlerForTesting([&](QWidget*, const QString&, const QString&) {
+                    return mp4SessionPath;
+                });
+                QVERIFY(window1.saveSession());
+                QVERIFY(QFile::exists(mp4SessionPath));
+            }
+
+            {
+                MainWindow window2;
+                QString errorMessage;
+                QVERIFY2(window2.openSessionFile(mp4SessionPath, &errorMessage), qPrintable(errorMessage));
+
+                auto* treeView2 = window2.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+                QVERIFY(treeView2 != nullptr);
+                auto* treeModel2 = qobject_cast<AnalysisTreeModel*>(treeView2->model());
+                QVERIFY(treeModel2 != nullptr);
+
+                QTRY_VERIFY(treeView2->currentIndex().isValid());
+                const QModelIndex restoredIndex = treeView2->currentIndex();
+                QCOMPARE(treeModel2->data(restoredIndex, Qt::DisplayRole).toString(), QStringLiteral("Box"));
+
+                // Exact AnalysisNodeId identity match proves cursor restored to row 1 (trak 1)
+                // and did NOT misplace to row 0 (mvhd)
+                const auto restoredId = treeModel2->nodeIdAt(restoredIndex);
+                QVERIFY(restoredId.has_value());
+                QCOMPARE(*restoredId, selectedBoxId);
+            }
+        }
     }
 };
 

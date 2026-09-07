@@ -29,6 +29,9 @@ const std::unordered_map<std::string_view, QString>& chineseTranslations() {
         {"Failed to override format:\n%1", QString::fromUtf8("覆盖格式失败：\n%1")},
         {"Warning: Ambiguous format (container vs elementary stream detected)",
          QString::fromUtf8("警告：检测到歧义格式（同时检测到容器与基本流）")},
+        {"Notice: Multiple conflicting formats (container vs elementary stream) were detected. "
+         "Choose your intended format to resolve the ambiguity.",
+         QString::fromUtf8("检测到多种冲突的格式（容器格式与基本码流）。请选择目标格式以解决歧义。")},
 
         // Main Menus & Actions
         {"&File", QString::fromUtf8("文件(&F)")},
@@ -154,6 +157,9 @@ const std::unordered_map<std::string_view, QString>& chineseTranslations() {
 
         // Rule Manager Dialog
         {"Rule Package Manager", QString::fromUtf8("规则包管理器")},
+        {"Manage format rule packages. Bundled packages are read-only official assets. "
+         "External packages (.svrule) can be installed into the local user repository.",
+         QString::fromUtf8("管理格式规则包。内置包为只读官方资产。外部规则包（.svrule）可安装至本地用户仓库。")},
         {"ID", QString::fromUtf8("ID")},
         {"Version", QString::fromUtf8("版本")},
         {"Origin", QString::fromUtf8("来源")},
@@ -249,6 +255,10 @@ QString LocalizationManager::translateToChinese(std::string_view sourceText) {
     const auto& table = chineseTranslations();
     const auto it = table.find(sourceText);
     return it != table.end() ? it->second : QString();
+}
+
+std::size_t LocalizationManager::chineseDictionarySize() noexcept {
+    return chineseTranslations().size();
 }
 
 void LocalizationManager::setLanguage(Language lang) {

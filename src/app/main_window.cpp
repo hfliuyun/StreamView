@@ -548,6 +548,32 @@ void MainWindow::expandNodeByPath(const QString& path) {
     }
 }
 
+void MainWindow::applyPendingTreeState() {
+    if (!analysisModel_ || !analysisTreeView_) {
+        return;
+    }
+    if (!pendingExpandedPaths_.isEmpty()) {
+        QStringList remaining;
+        for (const QString& p : pendingExpandedPaths_) {
+            const QModelIndex idx = findIndexByPath(p);
+            if (idx.isValid()) {
+                analysisTreeView_->setExpanded(idx, true);
+            } else {
+                remaining.append(p);
+            }
+        }
+        pendingExpandedPaths_ = std::move(remaining);
+    }
+    if (pendingSelectedAnalysisPath_.has_value()) {
+        const QModelIndex idx = findIndexByPath(*pendingSelectedAnalysisPath_);
+        if (idx.isValid()) {
+            analysisTreeView_->setCurrentIndex(idx);
+            selectAnalysisNode(idx);
+            pendingSelectedAnalysisPath_.reset();
+        }
+    }
+}
+
 SessionUserState MainWindow::currentUserState() const {
     SessionUserState state;
     state.bookmarks = bookmarks_;
@@ -873,11 +899,10 @@ bool MainWindow::openSessionFile(const QString& sessionPath, QString* errorMessa
     updateAmbiguityUI();
     loadTracks();
 
-    if (!savedUserState.expandedPaths.isEmpty()) {
-        for (const QString& p : savedUserState.expandedPaths) {
-            expandNodeByPath(p);
-        }
-    } else {
+    pendingSelectedAnalysisPath_ = savedUserState.view.selectedAnalysisPath;
+    pendingExpandedPaths_ = savedUserState.expandedPaths;
+
+    if (savedUserState.expandedPaths.isEmpty()) {
         analysisTreeView_->expandToDepth(1);
     }
 
@@ -894,13 +919,8 @@ bool MainWindow::openSessionFile(const QString& sessionPath, QString* errorMessa
     if (savedUserState.view.selectedSourceBitOffset.has_value()) {
         selectSourceBit(*savedUserState.view.selectedSourceBitOffset);
     }
-    if (savedUserState.view.selectedAnalysisPath.has_value()) {
-        const QModelIndex idx = findIndexByPath(*savedUserState.view.selectedAnalysisPath);
-        if (idx.isValid()) {
-            analysisTreeView_->setCurrentIndex(idx);
-            selectAnalysisNode(idx);
-        }
-    }
+
+    applyPendingTreeState();
 
     updateNavigationUI();
     setWindowModified(false);
@@ -951,6 +971,8 @@ bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
     bookmarks_.clear();
     annotations_.clear();
     currentSessionFilePath_.reset();
+    pendingSelectedAnalysisPath_.reset();
+    pendingExpandedPaths_.clear();
 
     rawError_.clear();
     rawLoaded_ = rawDataView_->setSource(
@@ -1001,6 +1023,7 @@ void MainWindow::advanceAnalysis(quint64 generation) {
             return;
         }
         analysisModel_->updateFromTree(session_->tree());
+        applyPendingTreeState();
     }
     if (session_->finished() && session_->cacheWritesPending()) {
         QTimer::singleShot(0, this, [this, generation] { pollAnalysisCache(generation); });
@@ -1059,6 +1082,9 @@ void MainWindow::advanceAnalysis(quint64 generation) {
 
     analysisProgressBar_->hide();
     cancelAnalysisButton_->hide();
+    applyPendingTreeState();
+    pendingSelectedAnalysisPath_.reset();
+    pendingExpandedPaths_.clear();
     publishAnalysisStatus(batch.status, batch.errorMessage);
     if (rootTreeIsActive) {
         loadTracks();
