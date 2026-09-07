@@ -34,10 +34,12 @@ StreamView 阶段 5 完整交付了非分片 ISO BMFF MP4/MOV 容器解析、元
    - 项目纪律 §4.3 同样规定：*「不把 capability 与第一个格式消费者塞进同一提交」*。
 2. **历史审查项清点**：
    - **P2-17**：`formatSelection.ambiguous()` 必须在 UI 表面作为格式手动覆盖的触发条件被消费。
-   - **P2-18**：检测仲裁中的 AAC 歧义分支为白盒构造覆盖，事实已明确。
-   - **P2-19**：模式流二元优先级与锚定检测判定脱节（`format_selection.cpp:145`），在手动格式覆盖机制确立后由用户显式选择终极解决。
-   - **P2-20**：测试中的交叉比对目前使用测试辅助函数 `openPinnedMp4Fixture()`；在阶段 6 中，固定规则构建正式成为受支持的公开功能路径（`openFileWithExplicitRule()`，将于 Task P6d-1 引入），将固定规则测试与端到端检测仲裁测试（`openFile()`）明确区分。
-   - **P2-21**：单一参考工具（`ffprobe`）的局限已如实记录并采纳。
+   - **P2-18**：检测仲裁中的 AAC 歧义分支为白盒构造覆盖，事实已作为已知测试特性记录并归档。
+   - **P2-19**：模式流二元优先级与锚定检测判定脱节（`format_selection.cpp:145`），通过用户交互式手动格式覆盖机制予以缓解；自动路径启发式仲裁优化待后续处理。
+   - **P2-20**：测试中的交叉比对淘汰测试专用辅助函数 `openPinnedMp4Fixture()`，由首等公开能力 `openFileWithExplicitRule()`（于 Task P6d-1 引入）替代，将固定规则测试与端到端检测仲裁测试（`openFile()`）明确区分。
+   - **P2-21**：单一参考工具（`ffprobe`）的局限已如实记录并作为已知限制归档。
+   - **P2-27**：`SessionSaveStatus` 强类型持久化结果的分层归属与枚举契约。
+   - **P2-28**：格式覆盖后用户书签与注释的坐标语义与产品决策记录。
 
 ---
 
@@ -88,7 +90,16 @@ StreamView 阶段 5 完整交付了非分片 ISO BMFF MP4/MOV 容器解析、元
    - **无双写复杂度**：在新的 schema 版本通过显式 ADR 批准前，StreamView 仅生成规范的版本 1 JSON。
    - **迁移政策**：新版本必须提供从版本 1 到版本 N 的显式映射转换规范。
 3. **Fixture 锁定的不可变性守护（P2-23）**：
-   Task P6h 必须在 `tests/fixtures/` 中提交一份只读固化的 Version 1 `.svsession` 测试夹具，并新增回归测试断言其在各平台上永远可正常解析与加载，无任何报错。
+   Task P6h 已在 `tests/fixtures/v1_golden.svsession` 提交只读固化的 Version 1 `.svsession` 测试夹具，并由回归测试断言其在各平台上永远可无损反序列化与双向幂等。
+4. **分析树同名兄弟路径消歧规范（P1-2）**：
+   在 `SessionUserState` 中，`expandedPaths` 与 `view.selectedAnalysisPath` 记录分析树中的分层节点路径。在媒体格式语法树中，同一父节点下的兄弟节点可能拥有完全相同的显示名称（例如重复字段或定界语法结构，如 `offset_for_ref_frame` 或 `trailing_zero_8bits`）。
+   为保证会话恢复时选区定位精确到位级别，杜绝光标因线性贪婪匹配错误跳转到首个同名兄弟：
+   - **序列化格式**：每个路径片段规范化编码为 `<nodeName>#<rowInParent>`（例如 `nal_unit[0]#0/SequenceParameterSetRbsp#1/offset_for_ref_frame#12`）。
+   - **反序列化寻址协议（`findIndexByPath`）**：
+     1. *行号提示核验*：若片段以 `#<row>` 结尾且 `<row>` 在父节点的子项行数范围内，核验该行子节点的显示名称是否与 `<nodeName>` 相等。若匹配，则以 $O(1)$ 复杂度直接命中并选中该节点；
+     2. *传统名称顺序匹配回退*：若行号核验失败或路径不含 `#<row>`，按传统顺序扫描子节点，匹配首个显示名相等的兄弟；
+     3. *纯数字行号回退*：若步骤 2 失败且片段为纯十进制数字（如 legacy `"/0/0"` 夹具），直接按该行索引解析。
+   本方案既彻底消除了同名兄弟错位缺陷，又 100% 保持了对既有 Version 1 会话文档的后向兼容性。
 
 ---
 
@@ -217,11 +228,20 @@ public:
 } // namespace streamview::app
 ```
 
-#### 4. P2-19 与 P2-20 状态
-- **P2-19 状态**：`format_selection.cpp:145` 中的启发式模式流优先级（如 `aacStrong && !h264Strong`）仅用于无人值守的自动仲裁 fallback；手动覆盖机制赋予用户最高决定权，彻底消除优先级认知妥协。
-- **P2-20 状态**：将于 Task P6d 交付后闭环。测试将严格划分为两条独立路径：
-  a) 端到端自动检测仲裁测试（`openFile()`），验证未加干预下的正确仲裁；
-  b) 显式规则覆盖测试（`openFileWithExplicitRule()`），以正规公开 API 替代先前的测试专用辅助函数 `openPinnedMp4Fixture()`。
+#### 4. 历史审查项清点与闭环状态
+- **P2-17（UI 歧义触发）**：**已闭环（CLOSED）**。主窗口实现 `formatAmbiguityBannerWidget_` 与「解决歧义...」交互按钮，点击直达 `FormatOverrideDialog`。
+- **P2-18（AAC 白盒候选覆盖）**：**已归档已知限制（ACKNOWLEDGED / KNOWN LIMITATION）**。明确归档为自动检测仲裁单元测试中的白盒构造覆盖特性。
+- **P2-19（模式流优先级与锚定仲裁）**：**已缓解（MITIGATED）**。交互式格式手动覆盖赋予用户最终决定权，彻底消除优先级认知妥协；自动路径中 `format_selection.cpp:145` 启发式 tie-breaker 留待后续仲裁算法进一步优化。
+- **P2-20（显式规则构建公共 API）**：**已闭环（CLOSED）**。彻底淘汰测试专用辅助函数 `openPinnedMp4Fixture()`，由首等公开 API `AnalysisSession::openFileWithExplicitRule()` 替代。
+- **P2-21（单一参考工具）**：**已归档已知限制（ACKNOWLEDGED / KNOWN LIMITATION）**。确认 `ffprobe` 作为开发交叉验证参考，运行时不引入任何 FFmpeg 依赖。
+- **P2-26（强类型保存状态）**：**已闭环（CLOSED）**。彻底淘汰布尔返回，引入 `SessionSaveStatus` 七态枚举与 `SessionSaveResult`。
+- **P2-27（保存状态分层归属）**：**已闭环（CLOSED）**。在 `session_document.h` 定义 `SessionSaveStatus`，由 `AnalysisSession::saveSession()` 原生返回。
+- **P2-28（格式覆盖后书签与注释语义）**：**已闭环并规范化（CLOSED / SPECIFIED）**。详见下文 §4.5。
+
+#### 5. 格式覆盖后书签与注释坐标保持语义（P2-28, P2-33）
+当用户执行 `AnalysisSession::overrideFormat()` 或通过 UI 覆盖格式时：
+- `bookmarks_` 与 `annotations_`：**完整保留不变**。书签与注释记录的是物理媒体源的绝对位坐标（`SourceBitAddress` 与位长度），反映用户对实际码流字节区间的关注锚点，独立于高层 AST 语法树解释；
+- `navigationStack_`、`expandedPaths` 与 `selectedAnalysisPath`：**清空重置**。由于节点路径与语法树深度强依赖于特定格式规则的 AST 模式，换用新规则后原有 AST 节点标识符失效，必须重置以保障一致性。
 
 ---
 
@@ -278,12 +298,14 @@ public:
      - `actionThemeLight`（`tr("Light")`）
      - `actionThemeDark`（`tr("Dark")`）
 
-2. **双语动态本地化与零重启热重载（Hot-Reload）**：
+2. **双语动态本地化与零重启热重载（Hot-Reload，P1-1）**：
    - StreamView 支持两套基线语言：
      - `en`：英语（基准物料与代码词条）；
      - `zh_CN`：简体中文。
    - 所有面向用户的界面文本严格使用 Qt `tr(...)` 包装。
-   - 中文翻译预先编译为二进制 `.qm` 资源，并内嵌于应用资源系统（`:/translations/streamview_zh_CN.qm`）。
+   - 内置 `ChineseTranslator` 提供对 `src/app/` 中全部 146 条 `tr(...)` 字面量的 100% 完整词典覆盖（涵盖菜单、状态栏、进度提示、规则管理器、覆盖对话框、字段检视器与时间线表头）。
+   - `ChineseTranslator::translate()` 对未映射文本显式返回空 `QString()` 并注释标明，依循 Qt 翻译器契约透明触发向原文字面量的回退。
+   - 新增自动化 CTest 守卫测试 `testAllAppTrLiteralsHaveChineseTranslations`（位于 `theme_localization_test.cpp`），全面扫描 `src/app/*.cpp` 中的 `tr(...)` 并在未入表时立即报警，实现构建期与测试期的词条防漏守护。
    - `MainWindow` 在 `changeEvent(QEvent*)` 中监听 `QEvent::LanguageChange` 事件：
      - 切换语言时通过 `QCoreApplication::installTranslator()` / `removeTranslator()` 动态挂载或卸载 `QTranslator`；
      - 调用 `retranslateUi()`，即时刷新所有菜单标题（File、Edit、View、Analysis、Tools、Help）、菜单项文案、状态栏提示、Dock 标题（`tr("Diagnostics")`、`tr("Timeline")`）、搜索与占位提示以及表头，完全无需重启应用程序。

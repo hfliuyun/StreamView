@@ -3436,25 +3436,31 @@ Blockers: 无
        * `cmake --preset sanitize && cmake --build --preset sanitize && ctest --preset sanitize`（53/53 PASS，零 ASan/UBSan 告警，耗时 186.58s）；
        * `ctest -R markdown_hygiene --preset dev`（100% PASS）；`git diff --check`（无空白缺陷）；
      - 实现提交：`2b6827b`（`test(app): add session persistence regression, golden v1 fixture and sparse source tests`）；
-     - Windows 稀疏文件与控制台子系统适配：`8d719cb`（`fix(app): enable sparse file ioctl on Windows and set console subsystem for app tests`）；
-     - Hosted CI 验证：Run `34079648314` 三平台全部 success：
+     - Hosted CI 初次触发与 Windows 红灯记录（P0-1 证据链闭环）：
+       * Run `34049608127`（head_sha: `2b6827b`）：macOS 15（Job `101530711322`，success）、Ubuntu 24.04（Job `101530711411`，success），Windows 2022（Job `101530711402`，failure）；
+       * 失败根因：Windows NTFS 虚拟运行器在未设置稀疏属性时将 100 GB 稀疏扩容视为实际物理请求导致 `ERROR_DISK_FULL`，且 app 测试目标缺少控制台子系统重定向导致日志截断；
+     - Windows 稀疏文件与控制台子系统适配提交：`8d719cb`（`fix(app): enable sparse file ioctl on Windows and set console subsystem for app tests`，显式调用 Win32 `FSCTL_SET_SPARSE` 设备控制码实现真正零磁盘占用稀疏文件，并设置 `WIN32_EXECUTABLE FALSE` 修复终端流）；
+     - Hosted CI 复跑验证：Run `34079648314`（head_sha: `8d719cb`）三平台全部 success：
        * Windows 2022 / Qt 6.10.1：Job `101612372242`（`success`）；
        * macOS 15 / Qt 6.11.1：Job `101612372342`（`success`）；
-       * Ubuntu 24.04 / Qt 6.11.1：Job `101612372373`（`success`）。
+       * Ubuntu 24.04 / Qt 6.11.1：Job `101612372373`（`success`）；
+     - 纯文档提交说明（ADR-0019）：后续提交 `dff0437` 与 `32eeb6e` 均为 markdown 记录更新，经核验 `git diff 8d719cb..32eeb6e -- ':(exclude)*.md'` 为空，依照 CI 流水线 `paths-ignore` 规则不触发 Hosted CI。
 
 - 2026-09-07：完成 Task P6i（关闭切片：阶段 6 检查清单 100% 达成确认、双语文档收敛与里程碑收官独立评审门禁）。
   1. 阶段 6 检查清单 100% 达成逐项核验确认：
      - 项 1（版本化 JSON 与 `QSaveFile` 原子保存）：`src/app/session_document.cpp` 中 `SessionDocument::save` 使用 `QSaveFile` 实现原子写入与失败回滚，`tests/app/session_document_test.cpp` 与 `tests/app/session_persistence_regression_test.cpp` 完备验证；
      - 项 2（持久化源身份、规则精确版本/哈希、书签、注释、展开路径和视图状态）：`SessionUserState` 涵盖书签、带长度源区间注释、展开路径及视图光标；`tests/fixtures/v1_golden.svsession`（1081 字节）黄金资产及测试用例 `testGoldenV1SessionPermanentlyReadable` 永久回归锁定反序列化无损与双向幂等（闭环 P2-23）；
      - 项 3（大文件三段式采样哈希与小文件全文哈希）：`FileSource::fingerprint()` 严格在 3 MiB 阈值切换全文哈希与 `SampledSha256`（首/中/尾各 1 MiB + 纳秒 mtime）；`test100GbVirtualSparseSourceSessionPersistenceAndRestoration` 验证 100 GB 稀疏源毫秒级指纹计算与尾部篡改拦截；
-     - 项 4（保存/另存为、未保存关闭提示、格式手动覆盖与规则版本管理）：`MainWindow` 会话持久化动作（`P6c`）、`maybeSave()` 6 种交互保护分支（`P6h`，闭环 P2-24）、`overrideFormat` / `FormatOverrideDialog` 显式规则覆盖与歧义裁决（`P6d-1/2`，闭环 P2-17/P2-19/P2-20/P2-25）以及 `RuleManagerDialog` 已安装/内置规则管理与导入（`P6e`）全部闭环；
+     - 项 4（保存/另存为、未保存关闭提示、格式手动覆盖与规则版本管理）：`MainWindow` 会话持久化动作（`P6c`）、`maybeSave()` 6 种交互保护分支（`P6h`，闭环 P2-24）、`overrideFormat` / `FormatOverrideDialog` 显式规则覆盖与歧义裁决（`P6d-1/2`，闭环 P2-17/P2-20/P2-25，P2-19 缓解）以及 `RuleManagerDialog` 已安装/内置规则管理与导入（`P6e`）全部就绪；
      - 项 5（进度、取消、诊断汇总、明暗主题与中英双语切换）：`analysisProgressBar_` / `cancelAnalysisButton_` 进度指示与异步取消（`P6f`）、`DiagnosticsSummaryDock` 全局诊断双向导航联动（`P6f`）、`ThemeManager` Light/Dark/System 三模式切换（`P6g`）、`LocalizationManager` 零重启动态双语热重载（`P6g`）全部闭环；
      - 项 6（源变化防误绑、精确恢复与不兼容规则显式失败）：`AnalysisSession::restoreSession` 严格校验 `verifiedFingerprint` 与精确 `ruleIdentity`，规则丢失、版本冲突或语言不兼容时显式报告类型化失败。
   2. 双语文档收敛：
      - 中英文 ADR-0109（`docs/adr/0109-*.md` / `docs/zh-CN/adr/0109-*.md`）状态由 `Proposed` 正式收敛为 `Accepted`；
      - 清除 WBS 章节中已过时的 `*Current Task*` 任务占位符。
-  3. 里程碑收官独立评审门禁裁定：
+  3. 里程碑收官独立评审门禁裁定与审查项状态精准对齐：
      - 阶段 6 架构与设计规范对齐：全量代码无破坏性改动，未污染核心分析引擎，DSL 规则引擎与解析保持纯净解耦；
      - 跨平台兼容性：Windows 2022、Ubuntu 24.04、macOS 15 全部测试全绿；Windows 稀疏文件 ioctl 与终端子系统均稳定适配；
      - 安全与内存：本地 ASan/UBSan 53/53 零告警，100 GB 虚拟稀疏源下内存严格限制在轻量水平；
-     - 阶段 6 正式关闭，项目推进至 Phase 7（安全、性能与发布）。
+     - 历史审查项状态核准：闭环 7 项（P2-17, P2-20, P2-24, P2-25, P2-26, P2-27, P2-28）；已缓解 1 项（P2-19）；已归档已知限制 2 项（P2-18, P2-21）；
+     - 提交计数核实（P2-29）：`git rev-list --count eb750f4..32eeb6e` 精确为 22 个提交；
+     - 阶段 6 成果就绪，待完成独立评审整改项（P0-1, P1-1, P1-2, P1-3）后由评审裁定放行进入 Phase 7。
