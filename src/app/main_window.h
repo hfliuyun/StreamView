@@ -119,6 +119,13 @@ public:
         return std::nullopt;
     }
 
+    [[nodiscard]] std::optional<QString> pendingSelectedAnalysisPathForTesting() const noexcept {
+        return pendingSelectedAnalysisPath_;
+    }
+    [[nodiscard]] const QStringList& pendingExpandedPathsForTesting() const noexcept {
+        return pendingExpandedPaths_;
+    }
+
     void retranslateUi();
 
 public slots:
@@ -215,6 +222,7 @@ private:
     std::vector<SessionAnnotation> annotations_;
     std::optional<QString> pendingSelectedAnalysisPath_;
     QStringList pendingExpandedPaths_;
+    bool isApplyingPendingTreeState_ = false;
     QString ruleStorePath_;
     std::set<QString> bundledPackageIds_;
 

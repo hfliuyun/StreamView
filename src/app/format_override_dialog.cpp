@@ -95,8 +95,8 @@ void FormatOverrideDialog::populateOptions(
 
     if (auto mp4 = rules::loadMp4IsobmffRulePackage(); mp4.succeeded() && mp4.package.has_value()) {
         specs.push_back({
-            QStringLiteral("MP4 (ISOBMFF)"),
-            QStringLiteral("ISO Base Media File Format (ISO/IEC 14496-12) container with box structures."),
+            tr("MP4 (ISOBMFF)"),
+            tr("ISO Base Media File Format (ISO/IEC 14496-12) container with box structures."),
             mp4.package->identity(),
             QStringLiteral("main"),
             rules::DetectedFormat::Mp4Isobmff
@@ -105,8 +105,8 @@ void FormatOverrideDialog::populateOptions(
 
     if (auto h264 = rules::loadH264AnnexBRulePackage(); h264.succeeded() && h264.package.has_value()) {
         specs.push_back({
-            QStringLiteral("H.264 (Annex B)"),
-            QStringLiteral("H.264 / AVC byte stream with Annex B start codes (0x000001)."),
+            tr("H.264 (Annex B)"),
+            tr("H.264 / AVC byte stream with Annex B start codes (0x000001)."),
             h264.package->identity(),
             QStringLiteral("annex-b"),
             rules::DetectedFormat::H264AnnexB
@@ -115,8 +115,8 @@ void FormatOverrideDialog::populateOptions(
 
     if (auto aac = rules::loadAacAdtsRulePackage(); aac.succeeded() && aac.package.has_value()) {
         specs.push_back({
-            QStringLiteral("AAC (ADTS)"),
-            QStringLiteral("Advanced Audio Coding (AAC) in Audio Data Transport Stream (ADTS) frames."),
+            tr("AAC (ADTS)"),
+            tr("Advanced Audio Coding (AAC) in Audio Data Transport Stream (ADTS) frames."),
             aac.package->identity(),
             QStringLiteral("adts"),
             rules::DetectedFormat::AacAdts

@@ -2279,6 +2279,157 @@ private slots:
             }
         }
     }
+
+    void overrideFormatResetsPendingTreeState() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mp4Path = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_two_tracks.mp4");
+        const QString sessionPath = directory.filePath(QStringLiteral("pending_override.svsession"));
+
+        {
+            MainWindow window1;
+            QString errorMessage;
+            QVERIFY2(window1.openMediaSource(mp4Path, &errorMessage), qPrintable(errorMessage));
+            auto* treeView = window1.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+            QVERIFY(treeView != nullptr);
+            auto* treeModel = qobject_cast<AnalysisTreeModel*>(treeView->model());
+            QVERIFY(treeModel != nullptr);
+            QModelIndex moovBoxIndex;
+            QTRY_VERIFY((moovBoxIndex = findIndexByName(*treeModel, QStringLiteral("box[1]"))).isValid());
+            treeView->setCurrentIndex(moovBoxIndex);
+
+            window1.setSaveFileDialogHandlerForTesting([&](QWidget*, const QString&, const QString&) {
+                return sessionPath;
+            });
+            QVERIFY(window1.saveSession());
+            QVERIFY(QFile::exists(sessionPath));
+        }
+
+        {
+            MainWindow window2;
+            QString errorMessage;
+            QVERIFY2(window2.openSessionFile(sessionPath, &errorMessage), qPrintable(errorMessage));
+
+            auto h264Pkg = streamview::rules::loadH264AnnexBRulePackage();
+            QVERIFY(h264Pkg.succeeded() && h264Pkg.package.has_value());
+            auto h264Entry = streamview::rules::RuleEntryPointIdentity::create(
+                h264Pkg.package->identity(), QStringLiteral("annex-b"));
+            QVERIFY(h264Entry.has_value());
+
+            window2.setFormatOverrideDialogHandlerForTesting(
+                [&](QWidget*,
+                    const streamview::rules::RulePackageCatalog&,
+                    const streamview::rules::FormatSelection&,
+                    const streamview::rules::RuleEntryPointIdentity&)
+                    -> std::optional<streamview::rules::RuleEntryPointIdentity> {
+                    return *h264Entry;
+                });
+            window2.overrideFormat();
+            QVERIFY(!window2.pendingSelectedAnalysisPathForTesting().has_value());
+            QVERIFY(window2.pendingExpandedPathsForTesting().isEmpty());
+        }
+    }
+
+    void userManualSelectionPreemptsPendingRestoredPath() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mp4Path = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_two_tracks.mp4");
+        const QString sessionPath = directory.filePath(QStringLiteral("pending_preempt.svsession"));
+
+        {
+            MainWindow window1;
+            QString errorMessage;
+            QVERIFY2(window1.openMediaSource(mp4Path, &errorMessage), qPrintable(errorMessage));
+            auto* treeView = window1.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+            QVERIFY(treeView != nullptr);
+            auto* treeModel = qobject_cast<AnalysisTreeModel*>(treeView->model());
+            QVERIFY(treeModel != nullptr);
+            QModelIndex moovBoxIndex;
+            QTRY_VERIFY((moovBoxIndex = findIndexByName(*treeModel, QStringLiteral("box[1]"))).isValid());
+            treeView->setCurrentIndex(moovBoxIndex);
+
+            window1.setSaveFileDialogHandlerForTesting([&](QWidget*, const QString&, const QString&) {
+                return sessionPath;
+            });
+            QVERIFY(window1.saveSession());
+            QVERIFY(QFile::exists(sessionPath));
+        }
+
+        {
+            MainWindow window2;
+            QString errorMessage;
+            QVERIFY2(window2.openSessionFile(sessionPath, &errorMessage), qPrintable(errorMessage));
+            auto* treeView2 = window2.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+            QVERIFY(treeView2 != nullptr);
+            auto* treeModel2 = qobject_cast<AnalysisTreeModel*>(treeView2->model());
+            QVERIFY(treeModel2 != nullptr);
+
+            // User immediately manually selects box[0] before batch 1 finishes
+            QModelIndex box0Index = findIndexByName(*treeModel2, QStringLiteral("box[0]"));
+            QVERIFY(box0Index.isValid());
+            treeView2->setCurrentIndex(box0Index);
+
+            // Manual user selection must have cleared the pending restored path (P2-45)
+            QVERIFY(!window2.pendingSelectedAnalysisPathForTesting().has_value());
+
+            // Wait for all batches to finish
+            QTRY_VERIFY(treeModel2->rowCount() >= 2);
+            // Current index must NOT have been stolen by the pending path
+            QCOMPARE(treeModel2->data(treeView2->currentIndex(), Qt::DisplayRole).toString(), QStringLiteral("box[0]"));
+        }
+    }
+
+    void childFormatNavigationDoesNotApplyRootPendingPath() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mp4Path = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_two_tracks.mp4");
+        const QString sessionPath = directory.filePath(QStringLiteral("pending_child.svsession"));
+
+        {
+            MainWindow window1;
+            QString errorMessage;
+            QVERIFY2(window1.openMediaSource(mp4Path, &errorMessage), qPrintable(errorMessage));
+            auto* treeView = window1.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+            QVERIFY(treeView != nullptr);
+            auto* treeModel = qobject_cast<AnalysisTreeModel*>(treeView->model());
+            QVERIFY(treeModel != nullptr);
+            QModelIndex moovBoxIndex;
+            QTRY_VERIFY((moovBoxIndex = findIndexByName(*treeModel, QStringLiteral("box[1]"))).isValid());
+            treeView->setCurrentIndex(moovBoxIndex);
+
+            window1.setSaveFileDialogHandlerForTesting([&](QWidget*, const QString&, const QString&) {
+                return sessionPath;
+            });
+            QVERIFY(window1.saveSession());
+            QVERIFY(QFile::exists(sessionPath));
+        }
+
+        {
+            MainWindow window2;
+            QString errorMessage;
+            QVERIFY2(window2.openSessionFile(sessionPath, &errorMessage), qPrintable(errorMessage));
+            auto* tableView = window2.findChild<QTableView*>(QStringLiteral("timelineTableView"));
+            QVERIFY(tableView != nullptr);
+            QTRY_VERIFY(tableView->model()->rowCount() > 0);
+
+            // Double click sample row 0 to navigate into child format
+            const QModelIndex sample0Index = tableView->model()->index(0, 0);
+            Q_EMIT tableView->doubleClicked(sample0Index);
+
+            auto* backButton = window2.findChild<QToolButton*>(QStringLiteral("navigationBackButton"));
+            QVERIFY(backButton != nullptr);
+            QTRY_VERIFY(backButton->isEnabled());
+
+            // Root pending path must NOT be applied to the child tree (P2-43)
+            auto* treeView2 = window2.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+            QVERIFY(treeView2 != nullptr);
+            auto* treeModel2 = qobject_cast<AnalysisTreeModel*>(treeView2->model());
+            QVERIFY(treeModel2 != nullptr);
+            if (treeView2->currentIndex().isValid()) {
+                QVERIFY(treeModel2->data(treeView2->currentIndex(), Qt::DisplayRole).toString() != QStringLiteral("box[1]"));
+            }
+        }
+    }
 };
 
 QTEST_MAIN(MainWindowTest)
