@@ -39,7 +39,7 @@
 **决策**：构建覆盖全部非信任数据输入边界的模块化、多目标模糊测试框架。
 
 #### 1.1 模糊测试目标矩阵
-StreamView 在五个关键边界直接接触非信任或畸变的二进制输入：
+StreamView 在六个关键边界直接接触非信任或畸变的二进制输入：
 
 | 目标名称 | 被测核心组件 | 输入接口 | 威胁模型与不变式 |
 | :--- | :--- | :--- | :--- |
@@ -54,6 +54,7 @@ StreamView 在五个关键边界直接接触非信任或畸变的二进制输入
 - **引擎集成**：在 Clang 环境下支持 LLVM `libFuzzer`（`-fsanitize=fuzzer,address,undefined`）；
 - **独立回放模式**：为每个 fuzz 目标内置独立执行驱动（`main()` 入口），使测试用例语料库（Corpus）可在 Ubuntu、macOS、Windows 三平台的常规 CTest 流水线中作为确定性回归测试无缝运行，无需依赖外部 fuzzer 库；
 - **语料库管理**：以现有测试夹具（`tests/fixtures/`）作为初始种子，补充极限边界样本（零长流、极大整数头、截断 NAL、环状 box 树）。
+- **路径消歧语料目标（Task P7c）**：在 Task P7c 中，规则包与格式扫描器 fuzz 语料库将显式纳入字段与节点名包含 `#<数字>`（例如 `tag#1`、`entry#0`）的合成语法树，验证路径寻址鲁棒性并实证其不与 `#<row>` 同名兄弟消歧语法发生冲突。
 
 ---
 
@@ -125,6 +126,20 @@ StreamView 在五个关键边界直接接触非信任或畸变的二进制输入
 
 ---
 
+### 5. 分析路径消歧与树状态恢复语义
+
+**决策**：正式规范并实施 `MainWindow::findIndexByPath(const QString& path)` 的三级节点解析语义：
+1. **第一级（同名兄弟行号消歧）**：若路径分段在 `lastIndexOf('#') > 0` 处包含 `#<row>`（`<row>` 为一至多位数字），尝试匹配行号为 `<row>` 且名称与 `#` 前缀严格一致的子节点；
+2. **第二级（纯字面量兜底回退）**：若第一级未能匹配（例如该节点不在 `<row>` 行、`<row>` 越界，或节点原本的字面名称即为 `prefix#<digits>`），则回退遍历全部子节点执行 `data(Qt::DisplayRole).toString() == part` 纯字面量匹配。这确保字面名称合法包含 `#<digits>` 的节点依然完全可寻址；
+3. **第三级（历史行号兜底）**：若第二级未命中且该分段为纯整数字符串，则视为行号索引以保持与历史测试夹具的向后兼容。
+
+同时对会话恢复生命周期提供以下硬性保证：
+- **子会话导航隔离**：在 `session_->navigationDepth() != 0` 时严禁执行 `applyPendingTreeState()`，杜绝根路径污染 sample/child 子树（P2-43）；
+- **格式覆盖清理**：在 `MainWindow::overrideFormat()` 切换格式时，无条件重置待恢复选区与待展开路径，杜绝跨格式脏路径匹配（P2-44）；
+- **用户主动点选抢占**：流式分析进行中，用户在 `analysisTreeView` 中的任何主动点选均立即清空 `pendingSelectedAnalysisPath_`，防止后续解析批次到达时强行夺走用户光标（P2-45）。
+
+---
+
 ## 阶段 7 任务分解（WBS）
 
 - [ ] **Task P7a**（规范与前置守卫闭环）：编写双语 ADR-0110；闭环 P1-1-R1（本地化正则跨行拼接先红后绿修复）；闭环 P1-2-R1（同名兄弟消歧变异实证与表述限定）；确立阶段 7 WBS（固定独立评审门禁）。
@@ -144,11 +159,18 @@ StreamView 在五个关键边界直接接触非信任或畸变的二进制输入
 
 ## 历史与整改审查项对应
 
-- **P1-1-R1**：跨行拼接字符串字面量本地化守卫与严格词典映射；
-- **P1-2-R1**：同名兄弟消歧变异实证与表述限定；
+- **P1-1-R1**：跨行拼接字符串字面量本地化守卫与严格词典映射（在 `tests/app/theme_localization_test.cpp:140-164` 经先红后绿验证，commit `6e8f9a0`）；
+- **P1-2-R1**：同名兄弟消歧变异实证与表述限定（在 `tests/app/main_window_test.cpp:2248-2281` 经删除 `#<row>` 反向变异转红验证，commit `6e8f9a0`）；
 - **P2-36**：报告与仓库文档定性完全对齐；
-- **P2-37**：同步历史任务在 `implementation-plan.md` 中的状态为 Mitigated；
-- **P2-38**：统一测试用例计数格式为「N 槽（QTest totals N+2）」；
+- **P2-37**：同步历史任务在 `docs/implementation-plan.md:253` 中的状态为「P2-19 缓解」；
+- **P2-38**：统一测试用例计数格式为「N 槽（QTest totals M）」；
 - **P2-39**：修正文档引用文件名为 `docs/adr/0019-skip-ci-for-markdown-only-changes.md`；
-- **P2-40**：记录节点路径中 `#` 字符分界语义；
-- **P2-41**：记录 CI Release 构建时间基线。
+- **P2-40**：记录节点路径中 `#<row>` 分界解析语义，并将 `#<digits>` 节点名纳入 Task P7c 模糊测试语料；
+- **P2-43**：在 `advanceAnalysis()` 终态完成逻辑中补充 `rootTreeIsActive` 守卫（`src/app/main_window.cpp:1092-1096`）；
+- **P2-44**：在 `MainWindow::overrideFormat()` 中彻底重置待恢复路径与展开状态（`src/app/main_window.cpp:820-821`）；
+- **P2-45**：流式解析期间用户主动点选立即抢占并清空待恢复选区（`src/app/main_window.cpp:307-309`）；
+- **P2-46**：`FormatOverrideDialog` 内置格式文案全部包裹 `tr()`，词典扩容至 154 键，并将 `ThemeLocalizationTest` 提升为 154 键与 227 次调用严格断言（`src/app/localization_manager.cpp:35-43`、`tests/app/theme_localization_test.cpp:170-171`）。
+
+## 延期审查项说明
+
+- **P2-41**：正式 Release 构建耗时基准与性能回归测试延期至 Task P7e（性能基线与基准测试体系）专项建立，不以波动的 CI runner 墙钟耗时作为基线依据。
