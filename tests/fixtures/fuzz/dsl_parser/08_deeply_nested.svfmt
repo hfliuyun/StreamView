@@ -1,0 +1,4 @@
+struct Nested {
+    computed u64 c = ((((((((((((((((1 + 1))))))))))))))));
+}
+entry Nested;

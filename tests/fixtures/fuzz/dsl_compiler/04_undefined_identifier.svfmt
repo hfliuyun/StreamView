@@ -1,0 +1,4 @@
+struct Undef {
+    computed u64 result = undefined_var + 1;
+}
+entry Undef;

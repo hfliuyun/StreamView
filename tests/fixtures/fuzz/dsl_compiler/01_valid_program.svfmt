@@ -1,0 +1,6 @@
+struct Valid {
+    bits<8> id;
+    ue count;
+    se delta;
+}
+entry Valid;

@@ -1,0 +1,7 @@
+struct MsgHeader {
+    bits<8> type;
+}
+struct MsgPayload {
+    bits<16> body;
+}
+entry MsgHeader;

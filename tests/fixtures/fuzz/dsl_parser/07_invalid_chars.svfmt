@@ -1,0 +1,4 @@
+struct Corrupt {
+    @#$?`~
+    bits<8> x;
+}

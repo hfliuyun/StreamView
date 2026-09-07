@@ -1,0 +1,5 @@
+struct TypeMismatch {
+    bits<8> f;
+    computed bool b = f + 1;
+}
+entry TypeMismatch;

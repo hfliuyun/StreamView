@@ -1,0 +1,5 @@
+struct UnsupportedItem {
+    bits<8> x;
+    @unsupported("reason") bits<8> y;
+}
+entry UnsupportedItem;
