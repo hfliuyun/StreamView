@@ -305,3 +305,21 @@ streamview_add_fuzz_target(
     "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fuzz/dsl_vm"
 )
 
+streamview_add_fuzz_target(
+    streamview_fuzz_rule_package_store
+    fuzz/fuzz_rule_package_store.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fuzz/rule_package"
+)
+
+streamview_add_fuzz_target(
+    streamview_fuzz_format_detectors
+    fuzz/fuzz_format_detectors.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fuzz/format_detectors"
+)
+
+streamview_add_fuzz_target(
+    streamview_fuzz_mp4_sample_extractor
+    fuzz/fuzz_mp4_sample_extractor.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fuzz/mp4_sample_extractor"
+)
+
