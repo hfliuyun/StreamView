@@ -2,9 +2,9 @@
 
 Status: In Progress
 Current Phase: 6
-Last Completed Step: Task P6g（UI切片：明暗主题切换支持、基于 `QTranslator` 的中英双语动态切换与 UI 测试）—— 实现 `ThemeManager` 统一调度 System、Light、Dark 三种模式高对比度与深色调色板，监听系统外观切换事件；实现 `LocalizationManager` 与嵌入式原生中文翻译器，覆盖全量 UI 词条；`MainWindow` 挂载 Theme 与 Language 单选动作组，主窗口与 `DiagnosticsSummaryDock` 重写 `changeEvent(QEvent::LanguageChange)` 驱动 `retranslateUi()` 实现零重启即时双语热重载；编写独立测试套件 `ThemeLocalizationTest`（2/2 用例通过）与扩充 `MainWindowTest`（51/51 槽全绿）；三套本地矩阵全量 52/52 全部通过，Hosted CI 三平台全绿
-Next Action: 启动 Task P6h（验证切片：全生命周期端到端回放、手动覆盖持久化恢复、修改保护交互分支、100 GB 虚拟稀疏源会话恢复验证，以及固化 Version 1 `.svsession` fixture 永久向后兼容守护测试）
-Last Verification: Hosted Run 34047972121（Ubuntu 24.04 / Qt 6.11.1 job 101526340069, Windows 2022 / Qt 6.10.1 job 101526339986, macOS 15 / Qt 6.11.1 job 101526340054）全绿；本地 dev/ci/sanitize 52/52 全部通过；MainWindowTest 51/51 槽通过；ThemeLocalizationTest 2/2 用例通过；DiagnosticsSummaryDockTest 5/5 用例通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
+Last Completed Step: Task P6h（验证切片：全生命周期端到端回放、手动覆盖持久化恢复、修改保护交互分支、100 GB 虚拟稀疏源会话恢复验证，以及固化 Version 1 `.svsession` fixture 永久向后兼容守护测试）—— 固化永久黄金会话 fixture `v1_golden.svsession`（封闭 Schema 7 大核心字段全覆盖、反序列化无损与再次序列化幂等验证，彻底闭环 P2-23）；构建 100 GB 虚拟稀疏源，在 Windows（NTFS FSCTL_SET_SPARSE ioctl）/macOS/Linux 上验证毫秒级三段式 SampledSha256 指纹计算与篡改检测；验证歧义源手动覆盖规则全生命周期持久化与恢复，恢复后自动绑定覆盖规则且歧义横幅保持隐藏；自动化穷举 `maybeSave()` 全部 6 种交互保护分支；独立测试套件 4/4 用例全绿，三套本地矩阵全量 53/53 全部通过，Hosted CI 三平台全绿
+Next Action: 启动 Task P6i（关闭切片：阶段 6 检查清单 100% 达成确认、双语文档收敛与里程碑收官独立评审门禁）
+Last Verification: Hosted Run 34079648314（Windows 2022 / Qt 6.10.1 job 101612372242, macOS 15 / Qt 6.11.1 job 101612372342, Ubuntu 24.04 / Qt 6.11.1 job 101612372373）全绿；本地 dev/ci/sanitize 53/53 全部通过；SessionPersistenceRegressionTest 4/4 用例通过；MainWindowTest 51/51 槽通过；ThemeLocalizationTest 2/2 用例通过；DiagnosticsSummaryDockTest 5/5 用例通过；零 ASan/UBSan 告警；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
 Blockers: 无
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
@@ -261,7 +261,7 @@ Blockers: 无
 - [x] **Task P6e**（UI与规则管理切片）：`RuleManagerDialog` 界面、规则包列表与版本展示、`.svrule` 导入安装与测试；
 - [x] **Task P6f**（UI切片）：分析进度条展示、异步取消按钮与响应、`DiagnosticsSummaryDock` 全局诊断面板与双向跳转；
 - [x] **Task P6g**（UI切片）：明暗主题切换支持、基于 `QTranslator` 的中英双语动态切换与 UI 测试；
-- **Task P6h**（验证切片）：全生命周期端到端回放、手动覆盖持久化恢复、修改保护交互分支、100 GB 虚拟稀疏源会话恢复验证，以及固化 Version 1 `.svsession` fixture 永久向后兼容守护测试（P2-23）；
+- [x] **Task P6h**（验证切片）：全生命周期端到端回放、手动覆盖持久化恢复、修改保护交互分支、100 GB 虚拟稀疏源会话恢复验证，以及固化 Version 1 `.svsession` fixture 永久向后兼容守护测试（P2-23）；
 - **Task P6i**（关闭切片）：阶段 6 检查清单 100% 达成确认、双语文档收敛与里程碑收官独立评审门禁。
 
 ### 阶段 6 检查清单
@@ -3398,3 +3398,46 @@ Blockers: 无
        * Windows 2022 / Qt 6.10.1：Job `101526339986`（`success`）；
        * Ubuntu 24.04 / Qt 6.11.1：Job `101526340069`（`success`）；
        * macOS 15 / Qt 6.11.1：Job `101526340054`（`success`）。
+
+- 2026-09-07：完成 Task P6h（验证切片：全生命周期端到端回放、手动覆盖持久化恢复、修改保护交互分支、100 GB 虚拟稀疏源会话恢复验证，以及固化 Version 1 `.svsession` fixture 永久向后兼容守护测试）。
+  1. 架构与规范对齐：
+     - 严格遵循双语 ADR-0109 §8 会话持久化回归、黄金 Version 1 兼容性与稀疏源恢复验证规范；
+     - 提交双语规范文档：`1ef1ba1`（`docs: specify session persistence regression, golden v1 fixture and sparse source restoration`）；
+     - 设计原则：Schema Version 1 永久向后兼容、大文件内存与性能绝对安全（RSS 预算限制）、歧义手动覆盖持久化闭环以及 `maybeSave` 交互保护路径完备性。
+  2. 固化 Version 1 黄金会话 Fixture 守护（P2-23）：
+     - 编写独立装配脚本 `tests/fixtures/generate_v1_golden_fixture.py` 并永久沉淀黄金资产 `tests/fixtures/v1_golden.svsession`（1081 字节）；
+     - 完整覆盖 Schema Version 1 规范中全部 7 大封闭顶层字段：`schemaVersion: 1`、`source`（`path`、`identity`、`fingerprint` 包含模式、尺寸、SHA-256 全文哈希）、`rule`（`packageId`、`packageVersion`、`entryPointId`、`contentSha256`）、`bookmarks`、`annotations`（含源 bit 偏移与 bit 长度）、`expandedPaths` 以及 `view`（显示模式、主光标 bit 偏移、选中分析路径）；
+     - 测试用例 `testGoldenV1SessionPermanentlyReadable` 验证 `SessionDocument::load` 永久逐字段无损反序列化，并验证 re-serialized JSON 经重新 parse 后与原文档完全恒等（反序列化与再次序列化双向幂等）。
+  3. 100 GB 虚拟稀疏源会话持久化与恢复：
+     - 利用 OS 稀疏文件特性（Windows 平台调用 `FSCTL_SET_SPARSE` 设备控制码，macOS APFS / Linux ext4 原生稀疏扩展）创建尺寸为 $100 \times 1024^3$ 字节的虚拟源；
+     - 实测验证 `FileSource::fingerprint()` 自动启用 `SampledSha256` 三段式采样哈希（首/中/尾各 1 MiB），无需加载 100 GB 稀疏空白数据进内存，计算耗时仅几十毫秒且内存无波动；
+     - 成功装配、保存 `.svsession` 并重新加载恢复；篡改尾部 2 字节后，`FileSource::fingerprint()` 验证哈希立即改变，实证指纹防伪安全校验有效性。
+  4. 格式手动覆盖全生命周期持久化与回放：
+     - 测试用例 `testFormatOverrideFullLifecyclePersistenceAndReplay` 构造歧义码流（MP4 与 H.264 Annex B 双重识别），UI 打开时触发歧义横幅；
+     - 模拟用户通过覆盖对话框手动强制绑定 H.264 Annex B 规则，窗口标记为 modified 脏状态，添加用户书签并保存为会话文件；
+     - 销毁旧窗口，在全新 `MainWindow` 实例中通过 `openSessionFile` 打开保存的会话，验证：
+       * 窗口恢复后处于 clean 未修改状态；
+       * 用户书签完整恢复；
+       * 激活的解析规则直接为用户手动指定的 H.264 规则（无重新歧义仲裁弹窗，歧义横幅保持隐藏）；
+       * 分析树节点由 MP4 Box 切换为 NAL 单元树。
+  5. 未保存修改交互保护分支全覆盖（P2-24）：
+     - 测试用例 `testUnsavedModificationsInteractiveGuardrailBranches` 穷举 `maybeSave()` 的 6 条决策路径：
+       * Branch 1：Clean 状态下直接放行，零弹窗确认；
+       * Branch 2：Dirty 状态下用户选择 Save，成功保存并自动清除 modified 脏状态；
+       * Branch 3：Dirty 状态下用户选择 Discard，直接放行且不写入磁盘；
+       * Branch 4：Dirty 状态下用户选择 Cancel，安全中断当前操作，保持 modified 脏状态；
+       * Branch 5：Dirty 状态下用户选择 Save 但在文件保存对话框中取消，安全中断操作并维持 modified 状态；
+       * Branch 6：Dirty 状态下用户选择 Save 但底层 I/O 报错，捕获弹窗提示并安全中断操作，维持 modified 脏状态保护数据。
+  6. 验证与全平台 Hosted CI 闭环：
+     - 规则静态校验：`svtool rule check` 对 4 个官方规则包源码全部 `Rule OK`；
+     - 本地三套全量构建与测试矩阵：
+       * `cmake --preset dev && cmake --build --preset dev && ctest --preset dev`（53/53 PASS，耗时 59.74s）；
+       * `cmake --preset ci && cmake --build --preset ci && ctest --preset ci`（53/53 PASS，耗时 10.63s）；
+       * `cmake --preset sanitize && cmake --build --preset sanitize && ctest --preset sanitize`（53/53 PASS，零 ASan/UBSan 告警，耗时 186.58s）；
+       * `ctest -R markdown_hygiene --preset dev`（100% PASS）；`git diff --check`（无空白缺陷）；
+     - 实现提交：`2b6827b`（`test(app): add session persistence regression, golden v1 fixture and sparse source tests`）；
+     - Windows 稀疏文件与控制台子系统适配：`8d719cb`（`fix(app): enable sparse file ioctl on Windows and set console subsystem for app tests`）；
+     - Hosted CI 验证：Run `34079648314` 三平台全部 success：
+       * Windows 2022 / Qt 6.10.1：Job `101612372242`（`success`）；
+       * macOS 15 / Qt 6.11.1：Job `101612372342`（`success`）；
+       * Ubuntu 24.04 / Qt 6.11.1：Job `101612372373`（`success`）。
