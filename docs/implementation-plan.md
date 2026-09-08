@@ -1,11 +1,15 @@
 # StreamView v0.1 分阶段实施计划
 
 Status: In Progress
-Current Phase: 7
-Last Completed Step: Task P7c（规则包与格式扫描器 Fuzzing：RulePackageStore、H.264/AAC/MP4 扫描器与 MP4 Sample 提取器，双语 ADR-0112，30 种子语料全矩阵验证）
-Next Action: 启动 Task P7d（静态分析与警告级别提升：Clang-Tidy 配置与编译器告警门禁）
-Last Verification: Hosted Run 34131133295（Ubuntu job 101771262705, macOS job 101771263055, Windows job 101771263139 全绿）；本地 dev 59/59（62.84s）、ci 59/59（12.37s）、sanitize 59/59（198.39s，零 ASan/UBSan 告警）全过；fuzz_rule_package_store/fuzz_format_detectors/fuzz_mp4_sample_extractor 30 语料独立回放全部 PASS；svtool 4/4 官方规则全部 Rule OK；markdown_hygiene 100% PASS
-Blockers: 无
+Current Phase: Phase 5/6 审计整改；Phase 7 暂停，不启动 P7d
+Last Completed Step: 历史开发记录至 Task P7c；本轮核心修复已按模块提交至本地代码基线 2ed9dffa395976c6f551e8e32ce8458b708021c0，三项定向独立只读复核未发现可确认的阻塞缺陷，未 push
+Next Action: 用户将 docs/audit-ui-remediation-task.md 交给快速模型执行 A06-A09；主代理复核后完成三平台门禁，再重新裁定 Phase 5/6 验收，不启动 P7d
+Last Verification: 2026-09-08 核心修复组合 dev 59/59（44.68s）、ci 59/59（22.76s）、sanitize 59/59（112.29s，无 ASan/UBSan 报告）；定向上下文/重绑定/预算与三类回滚测试通过；4 份官方规则全部 Rule OK；git diff --check 与 Markdown hygiene 通过。提交过程未改变上述代码/测试内容；历史 Hosted Run 34131133295 不覆盖本轮修复
+Blockers: A06-A09 UI 问题未修复，等待用户手动交接；本轮没有新的 Hosted CI，ADR-0113 保持 Proposed。此前自动启动 Gemini 的审批超时保留为历史事实，不阻止用户通过自己的模型执行交接文档
+
+2026-09-08 审计修订：下面已勾选的 Phase 5/6 项保留为历史交付记录，不表示本轮
+缺陷已经关闭或当前版本可发布。本地分步指导手册仍停在旧 Phase 5 状态，不能覆盖本状态区。
+整改事实与未关闭门禁见尾部执行记录；不删除既有 SHA、CI 或历史验收证据。
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -3598,3 +3602,103 @@ Blockers: 无
        * Ubuntu 24.04 / Qt 6.11.1：Job `101771262705`（`success`）；
        * macOS 15 / Qt 6.11.1：Job `101771263055`（`success`）；
        * Windows 2022 / Qt 6.10.1：Job `101771263139`（`success`）。
+
+- 2026-09-08：Phase 5/6 审计整改检查点，暂停 Phase 7 新开发。
+  1. 授权与基线：
+     - 用户批准混合修复：主代理修核心，Gemini 修有界 UI 问题，主代理负责复核；
+     - `git rev-parse HEAD origin/main` 两行原始结果均为
+       `de6f8f4d988c58ee44d56b74d8123d0cfbdc13c3`。`origin/main` 是本地 tracking ref，
+       本轮没有 fetch，不将其描述为已实时核验的远端状态；
+     - 核心代码、回归测试、双语 ADR-0113 与文档仍在工作树，未 commit、push 或创建 PR；
+       `.omo/`、`scratch/` 是既有未跟踪资产，未读取、修改、删除或提交。
+  2. 已实现的核心整改：
+     - `SessionDocument::save` 在打开与提交前拒绝覆盖源路径及其规范化路径、硬链接、
+       符号链接和符号链接父目录别名；序列化后、打开目标前检查 1 MiB 上限，避免覆盖
+       已有可读会话后生成自身无法重开的文件。回归：
+       `saveSessionRejectsSourceAliases`、`rejectsOversizedSerializedDocumentBeforeReplacingFile`；
+     - `RuleManagerDialog::installPackage` 先暂存 catalog 注册，再安装已接受的内容，成功后
+       才发布 catalog；冲突不落盘，存储失败不注册。回归：
+       `rejectedConflictPreservesExactIdentityAfterRestart`、`failedStoreWriteDoesNotRegisterPackage`；
+     - `WindowDecoder::readWindow` 使用临时树、独立 memoization 和请求预算；MP4 表值提取
+       不再累积容器展示节点或消耗其生命周期预算；交互 `decodeWindow` 的节点复用及
+       部分成功合同保留。回归：`transientPagesPreserveContainerTreeAndBudget`、
+       `samplePagesDoNotConsumeContainerBudget`、失败页重试及
+       `pagesManySamplesWithoutRetainingContainerNodes`；
+     - 样本绑定收集所有配置载荷，按精确 rule entrypoint、track、sample description
+       隔离 session；配置作为 baseline 参与上下文解析，物理坐标不变；覆盖 `moov`
+       在 `mdat` 前后、多 SPS/PPS、同 codec 不同 track/description；
+     - 样本导航使用独立操作预算与跨 sample owner 的 100,000 节点保留上限。
+       缓存仅在 context publication count 未变时复用，避免重复进入不断追加相同树；
+       终止性的 source/cancel/resource 失败回滚上下文、payload、binding、计数与应用层树；
+     - 乱序发现更早的 SPS 后，允许同源 PPS 重新执行并替换失效依赖，分配新 ID，
+       保留旧 snapshot，禁止一般重叠或退役 ID 再替换。回归
+       `revisitsSampleWithAStaleConfigurationDependency` 的实际 RED 为 unit `Invalid (5)`，
+       预期 `Materialized (6)`；修复后访问顺序 `1, 0, 1, 2, 1, 2` 全部通过。
+  3. 本地验证：
+     - 三套 `cmake --preset dev/ci/sanitize` 分别重新配置，三套
+       `cmake --build --preset <preset> -j3` 均完整构建通过；
+     - `ctest --preset dev --parallel 3`：`100% tests passed, 0 tests failed out of 59`，
+       `Total Test time (real) = 44.68 sec`；
+     - `ctest --preset ci --parallel 3`：`100% tests passed, 0 tests failed out of 59`，
+       `Total Test time (real) = 22.76 sec`；
+     - `ctest --preset sanitize --parallel 3`：
+       `100% tests passed, 0 tests failed out of 59`，
+       `Total Test time (real) = 112.29 sec`；没有 ASan/UBSan 报告；
+     - 三套 CTest 都包含 `markdown_hygiene` 并通过；记录完成后另跑文档检查与
+       `git diff --check`。由于现有 hygiene 脚本仅扫描 tracked Markdown，另对三份
+       新 Markdown 文件检查结尾换行与 tab，全部通过；
+     - 最新定向结果：`streamview_context_directory_tests` 19/19；
+       `revisitsSampleWithAStaleConfigurationDependency` 与
+       `configurationAndSampleShareAnExactNodeBudget` 同次执行 4/4；
+       `terminalSampleFailureRollsBackStaleReplacement` 的 source-error、cancelled、
+       resource-limit 三行数据同次执行 5/5。上述 QtTest totals 包含 init/cleanup；
+       组合回滚用例属于 coverage-only，不虚构修复前 RED；
+     - `svtool rule check` 分别对官方 H.264 Annex B、AAC ADTS、AAC ASC、MP4 ISOBMFF
+       四份 `.svfmt` 运行，全部 `Rule OK`。CTest 中的 fuzz 检查是确定性语料回放，
+       不是持续 coverage-guided fuzzing 或长跑证明；
+     - 生成脚本 `tests/fixtures/generate_audit_regression_fixtures.py` 提供七个合成 MP4
+       回归资产，包括两轨合计 65,536 个变长 sample。它们用于语法/索引验收，不声称
+       是可完整播放的视频或覆盖全部真实媒体。
+  4. 复核与剩余风险：
+     - `Review Gate: Required`，原因是公共 API、配置可见性、资源边界及事务语义发生变化；
+     - 早期只读代理遇到 429/overload，不能当作通过；随后 `review_stale_rebinding`、
+       `review_sample_owner`、`review_storage_paging` 三项限定范围独立静态复核均返回
+       未发现可确认的 P0/P1/P2 阻塞缺陷。它们未运行测试，最终执行验证由主代理负责；
+     - 未覆盖多 owner 累积逼近 100,000 节点后的完整压力序列，以及超大 window 请求、
+       临时/交互页交错与页内取消的全部组合；不将局部通过外推为发布级安全或性能结论；
+     - 本轮没有新的 Hosted run/job/SHA。历史 Run `34131133295` 只证明旧提交，
+       当前本机 dev/ci/sanitize 也不等于 Windows/macOS/Linux 三平台 CI；
+     - ADR-0113 保持 Proposed，等待剩余交付门禁；本轮未手工验收完整桌面流程、
+       性能阈值、真实分发包或发布产物。
+  5. UI 交接与下一步：
+     - A06 已安装规则未完整出现在手动覆盖列表；A07 诊断完整/不连续选区被后续单 bit
+       定位覆盖；A08 既有控件及打开的对话框热切换语言不完整；A09 子格式/sample 中保存
+       使用 child 路径而非 root view 快照。四项尚未实现；
+     - 详细提示词、所有权、禁止范围、真实 RED 要求和验收命令在
+       [UI 整改交接](audit-ui-remediation-task.md)，不允许 Gemini 修改主代理核心差异；
+     - Gemini 两次启动均在创建进程前返回：
+       `The automatic permission approval review did not finish before its deadline.`
+       没有 job ID、后台实现或 Gemini 修改，未绕过权限、切换启动方式或继续重试；
+     - 权限审批恢复后接续 UI 修复，由主代理复核并重跑完整矩阵；提交后的本轮三平台
+       验证完成前不关闭整改。不开始 P7d，也不声称 Phase 5/6 已重新验收或项目可发布。
+
+- 2026-09-08：按用户要求提交核心整改，并改为由用户手动交接快速模型。
+  1. 用户本次只要求提交及制作交接文档，没有授权 push；没有再次启动 Gemini。
+  2. 本地提交按规范、通用能力、格式读取和应用层分开，完整 SHA 来自 Git 原始输出：
+     - `2b7d7a9eec6a507d63f313253d469df96f5c492a`
+       `docs: define audit remediation resource and context contracts`
+     - `789bb39285ade74628530d40decff17d7eb660db`
+       `fix(runtime): isolate transient budgets and roll back sample contexts`
+     - `9c1e3593d1d58f4eb4583908fbd35cc542e8f47e`
+       `fix(mp4): read sample tables transiently and retain configuration bindings`
+     - `2ed9dffa395976c6f551e8e32ce8458b708021c0`
+       `fix(app): protect session writes and isolate cached sample navigation`
+  3. 提交没有改变上一条记录中已经验证的代码、测试和 fixture 内容，复用该组合的
+     dev/ci/sanitize 59/59 证据，不声称四个中间提交分别重跑了完整矩阵。
+     本次只更新交接文档和计划记录；暂存差异均执行 `git diff --cached --check`。
+  4. [UI 整改任务书](audit-ui-remediation-task.md) 锁定上述应用提交为代码基线，
+     允许其后仅 Markdown 变更的后代 HEAD；包含现场核验、修改白名单、A06-A09 复现
+     与验收、真实 RED/GREEN、现有测试挂载位置、验证命令和最终报告要求。
+     快速模型只留下未提交 diff，主代理复核后再决定后续交付。
+  5. 本次文档提交在上述代码基线之后，不修改核心实现、不推进 Phase 7、不触发
+     新的 Hosted CI；`.omo/` 和 `scratch/` 仍为未触碰的用户资产。
