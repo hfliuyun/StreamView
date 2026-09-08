@@ -153,10 +153,8 @@ constexpr quint64 kBoxTypeCtts = 0x63747473;
     return std::min(window.entryCount, regionBytes / entryBytes);
 }
 
-/// Decodes exactly one window entry. Entries already decoded come back from the
-/// analyzer's memoized per-node window state, so repeated single-entry reads cost
-/// a map lookup rather than a source read.
-[[nodiscard]] std::optional<core::AnalysisNodeId> decodeWindowEntry(
+/// Reads one entry without retaining presentation nodes in the container.
+[[nodiscard]] std::optional<std::vector<quint64>> decodeWindowEntry(
     const Mp4IsobmffAnalyzer& analyzer,
     core::AnalysisNodeId windowNodeId,
     quint64 entryIndex) {
@@ -164,17 +162,32 @@ constexpr quint64 kBoxTypeCtts = 0x63747473;
     if (!decoder.has_value()) {
         return std::nullopt;
     }
-    const auto result = decoder->decodeWindow({entryIndex, 1});
+    const auto page = decoder->readWindow({entryIndex, 1});
+    const auto& result = page.decoding;
     // A final page that stops short of a declared count reports TruncatedSource
     // while still returning the entries it did decode.
     if (result.status != DslExecutionStatus::Materialized &&
         result.status != DslExecutionStatus::TruncatedSource) {
         return std::nullopt;
     }
-    if (result.entryNodes.size() != 1) {
+    if (!page.tree || result.entryNodes.size() != 1) {
         return std::nullopt;
     }
-    return result.entryNodes.front();
+    const auto entry = page.tree->node(result.entryNodes.front());
+    if (!entry) {
+        return std::nullopt;
+    }
+    std::vector<quint64> values;
+    for (const auto childId : entry->children()) {
+        const auto field = page.tree->node(childId);
+        bool ok = false;
+        const auto value = field ? field->value().toULongLong(&ok) : 0;
+        if (!ok) {
+            return std::nullopt;
+        }
+        values.push_back(value);
+    }
+    return values;
 }
 
 [[nodiscard]] std::optional<quint64> entryFieldValue(const core::AnalysisTree& tree,
@@ -229,7 +242,10 @@ template <typename RowSink>
         if (!decoder.has_value()) {
             return RowCollectStatus::SourceError;
         }
-        const auto page = decoder->decodeWindow({pageIndex, pageSize});
+        DslExecutionOptions options;
+        options.cancellation = request.cancellation;
+        const auto read = decoder->readWindow({pageIndex, pageSize}, options);
+        const auto& page = read.decoding;
         if (page.status == DslExecutionStatus::Cancelled) {
             return RowCollectStatus::Cancelled;
         }
@@ -243,14 +259,14 @@ template <typename RowSink>
         // A table that declares more rows than its box carries runs out of pages
         // before `declaredCount` is reached; that is a source defect, not an
         // empty table.
-        if (page.entryNodes.empty()) {
+        if (!read.tree || page.entryNodes.empty()) {
             return RowCollectStatus::SourceError;
         }
         for (const auto entryNodeId : page.entryNodes) {
             if (collected >= declaredCount) {
                 break;
             }
-            if (!sink(entryNodeId)) {
+            if (!sink(*read.tree, entryNodeId)) {
                 return RowCollectStatus::SourceError;
             }
             ++collected;
@@ -282,11 +298,11 @@ template <typename RowSink>
     core::AnalysisNodeId windowNodeId) {
     const auto* analyzerPtr = &analyzer;
     return [analyzerPtr, windowNodeId](quint64 index) -> std::optional<quint64> {
-        const auto entryNodeId = decodeWindowEntry(*analyzerPtr, windowNodeId, index);
-        if (!entryNodeId.has_value()) {
+        const auto values = decodeWindowEntry(*analyzerPtr, windowNodeId, index);
+        if (!values || values->empty()) {
             return std::nullopt;
         }
-        return entryFieldValue(analyzerPtr->tree(), *entryNodeId, 0);
+        return values->front();
     };
 }
 
@@ -299,14 +315,13 @@ template <typename RowSink>
     core::AnalysisNodeId windowNodeId) {
     const auto* analyzerPtr = &analyzer;
     return [analyzerPtr, windowNodeId](quint64 sampleIndex) -> std::optional<quint64> {
-        const auto entryNodeId =
+        const auto values =
             decodeWindowEntry(*analyzerPtr, windowNodeId, sampleIndex / 2U);
-        if (!entryNodeId.has_value()) {
+        const auto ordinal = static_cast<std::size_t>(sampleIndex % 2U);
+        if (!values || values->size() <= ordinal) {
             return std::nullopt;
         }
-        return entryFieldValue(analyzerPtr->tree(),
-                               *entryNodeId,
-                               static_cast<std::size_t>(sampleIndex % 2U));
+        return values->at(ordinal);
     };
 }
 
@@ -331,18 +346,14 @@ template <typename RowSink>
         quint64 high = entryCount;  // exclusive
         while (low < high) {
             const quint64 mid = low + (high - low) / 2U;
-            const auto entryNodeId = decodeWindowEntry(*analyzerPtr, windowNodeId, mid);
-            if (!entryNodeId.has_value()) {
+            const auto values = decodeWindowEntry(*analyzerPtr, windowNodeId, mid);
+            if (!values || values->empty()) {
                 return std::nullopt;
             }
-            const auto value = entryFieldValue(analyzerPtr->tree(), *entryNodeId, 0);
-            if (!value.has_value()) {
-                return std::nullopt;
-            }
-            if (*value == sampleNumber) {
+            if (values->front() == sampleNumber) {
                 return true;
             }
-            if (*value < sampleNumber) {
+            if (values->front() < sampleNumber) {
                 low = mid + 1U;
             } else {
                 high = mid;
@@ -357,6 +368,7 @@ struct SampleEntryDeclaration final {
     QString targetFormat;
     std::optional<core::AnalysisNodeId> configurationNode;
     std::optional<quint32> prefixLengthBytes;
+    std::vector<core::AnalysisNodeId> configurationNodes;
 };
 
 /// Payload declarations found under a sample description entry.
@@ -369,7 +381,7 @@ struct SampleEntryDeclaration final {
 ///
 /// The walk does not stop at the target format, because the prefix size is a
 /// sibling field whose position within the configuration is no more fixed than
-/// the configuration's own depth; it stops once both are known. Reading the
+/// the configuration's own depth. All target payloads are collected. Reading the
 /// prefix size by field name matches how the rest of this file reads named rule
 /// fields, and `lengthSizeMinusOne` is declared by exactly one structure in the
 /// rule package, so a name match under a single entry is unambiguous.
@@ -405,6 +417,9 @@ struct SampleEntryDeclaration final {
             declaration.targetFormat = *targetFormat;
             declaration.configurationNode = nodeId;
         }
+        if (targetFormat && *targetFormat == declaration.targetFormat) {
+            declaration.configurationNodes.push_back(nodeId);
+        }
         if (!declaration.prefixLengthBytes.has_value()
             && node->name() == QStringLiteral("lengthSizeMinusOne")) {
             bool ok = false;
@@ -412,9 +427,6 @@ struct SampleEntryDeclaration final {
             if (ok && decoded < std::numeric_limits<quint32>::max()) {
                 declaration.prefixLengthBytes = decoded + 1U;
             }
-        }
-        if (!declaration.targetFormat.isEmpty() && declaration.prefixLengthBytes.has_value()) {
-            return declaration;
         }
         const auto& children = node->children();
         for (auto it = children.crbegin(); it != children.crend(); ++it) {
@@ -479,6 +491,7 @@ enum class TrackOutcome : quint8 {
         binding.targetFormat = std::move(declaration.targetFormat);
         binding.configurationNode = declaration.configurationNode;
         binding.prefixLengthBytes = declaration.prefixLengthBytes;
+        binding.configurationNodes = std::move(declaration.configurationNodes);
         out->push_back(std::move(binding));
     }
     return true;
@@ -629,9 +642,9 @@ enum class TrackOutcome : quint8 {
             if (*entryCount != 0) {
                 const auto status = collectWindowRows(
                     analyzer, *windowNodeId, *entryCount, request,
-                    [&](core::AnalysisNodeId entryNodeId) {
-                        const auto sampleCount = entryFieldValue(tree, entryNodeId, 0);
-                        const auto sampleDelta = entryFieldValue(tree, entryNodeId, 1);
+                    [&](const core::AnalysisTree& pageTree, core::AnalysisNodeId entryNodeId) {
+                        const auto sampleCount = entryFieldValue(pageTree, entryNodeId, 0);
+                        const auto sampleDelta = entryFieldValue(pageTree, entryNodeId, 1);
                         if (!sampleCount.has_value() || !sampleDelta.has_value()) {
                             return false;
                         }
@@ -668,10 +681,10 @@ enum class TrackOutcome : quint8 {
             if (*entryCount != 0) {
                 const auto status = collectWindowRows(
                     analyzer, *windowNodeId, *entryCount, request,
-                    [&](core::AnalysisNodeId entryNodeId) {
-                        const auto firstChunk = entryFieldValue(tree, entryNodeId, 0);
-                        const auto samplesPerChunk = entryFieldValue(tree, entryNodeId, 1);
-                        const auto descriptionIndex = entryFieldValue(tree, entryNodeId, 2);
+                    [&](const core::AnalysisTree& pageTree, core::AnalysisNodeId entryNodeId) {
+                        const auto firstChunk = entryFieldValue(pageTree, entryNodeId, 0);
+                        const auto samplesPerChunk = entryFieldValue(pageTree, entryNodeId, 1);
+                        const auto descriptionIndex = entryFieldValue(pageTree, entryNodeId, 2);
                         if (!firstChunk.has_value() || !samplesPerChunk.has_value() ||
                             !descriptionIndex.has_value()) {
                             return false;
@@ -717,9 +730,9 @@ enum class TrackOutcome : quint8 {
             if (*entryCount != 0) {
                 const auto status = collectWindowRows(
                     analyzer, *windowNodeId, *entryCount, request,
-                    [&](core::AnalysisNodeId entryNodeId) {
-                        const auto sampleCount = entryFieldValue(tree, entryNodeId, 0);
-                        const auto rawOffset = entryFieldValue(tree, entryNodeId, 1);
+                    [&](const core::AnalysisTree& pageTree, core::AnalysisNodeId entryNodeId) {
+                        const auto sampleCount = entryFieldValue(pageTree, entryNodeId, 0);
+                        const auto rawOffset = entryFieldValue(pageTree, entryNodeId, 1);
                         if (!sampleCount.has_value() || !rawOffset.has_value()) {
                             return false;
                         }

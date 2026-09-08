@@ -483,8 +483,7 @@ private slots:
         QVERIFY(small.tableReadCount > 0);
         QVERIFY(large.tableReadCount > small.tableReadCount);
 
-        // Repeating a page is idempotent and costs the same, because entries the
-        // window decoder already produced are memoized rather than re-decoded.
+        // Repeating a page is idempotent and has the same bounded read cost.
         const auto repeated = build.index->descriptorPage(smallRequest);
         QVERIFY2(repeated.built(), qUtf8Printable(repeated.errorMessage));
         QCOMPARE(repeated.tableReadCount, small.tableReadCount);
@@ -506,8 +505,7 @@ private slots:
                                                extraction.tracks.front().readers);
         QVERIFY2(build.succeeded(), qUtf8Printable(build.errorMessage));
 
-        // Read the first page while the source is healthy, so its window entries
-        // are memoized and stay answerable afterwards.
+        // Read one healthy page before injecting the fault.
         streamview::rules::Mp4SamplePageRequest firstPage;
         firstPage.pageSize = 2;
         firstPage.pageIndex = 0;
@@ -517,8 +515,7 @@ private slots:
 
         const auto nodeCountBefore = analyzer_->tree().nodeCount();
 
-        // Fail every read past the moov so the not-yet-decoded stsz entries
-        // become unavailable.
+        // Fail table reads while keeping the already analyzed container.
         source_->failReadsFrom(1);
 
         streamview::rules::Mp4SamplePageRequest laterPage;
@@ -538,6 +535,11 @@ private slots:
         QCOMPARE(healthyAgain.descriptors.size(), std::size_t{2});
         QCOMPARE(healthyAgain.descriptors.front().sourceSpans.front().start().byteOffset(),
                  healthy.descriptors.front().sourceSpans.front().start().byteOffset());
+        QCOMPARE(analyzer_->tree().nodeCount(), nodeCountBefore);
+        const auto retried = build.index->descriptorPage(laterPage);
+        QVERIFY2(retried.built(), qUtf8Printable(retried.errorMessage));
+        QCOMPARE(retried.descriptors.size(), std::size_t{2});
+        QCOMPARE(retried.descriptors.front().sampleIndex, quint64{4});
         QCOMPARE(analyzer_->tree().nodeCount(), nodeCountBefore);
     }
 
@@ -691,6 +693,36 @@ private slots:
         QVERIFY(bindings.front().targetFormat.isEmpty());
         QVERIFY(!bindings.front().configurationNode.has_value());
         QVERIFY(!bindings.front().prefixLengthBytes.has_value());
+    }
+    void samplePagesDoNotConsumeContainerBudget() {
+        analyzeFixture(QStringLiteral("mp4_p5j3b_co64_multichunk.mp4"));
+        const auto nodes = analyzer_->tree().nodeCount();
+        const auto budget = analyzer_->budget();
+        const auto instructions = budget->remainingInstructions;
+        const auto remainingNodes = budget->remainingNodes;
+        const auto extraction =
+            Mp4SampleTableExtractor::extract(*analyzer_, batch_, defaultRequest());
+        QVERIFY2(extraction.extracted(), qUtf8Printable(extraction.errorMessage));
+        QCOMPARE(analyzer_->tree().nodeCount(), nodes);
+        QCOMPARE(budget->remainingNodes, remainingNodes);
+        QCOMPARE(budget->remainingInstructions, instructions);
+        auto build = Mp4SampleTableIndex::build(extraction.tracks.front().tables,
+                                               extraction.tracks.front().readers);
+        QVERIFY(build.succeeded());
+        budget->remainingNodes = 0;
+        budget->remainingInstructions = 0;
+        for (quint64 sample : {4U, 0U, 2U, 5U, 1U, 3U, 4U}) {
+            streamview::rules::Mp4SamplePageRequest request;
+            request.pageSize = 1;
+            request.pageIndex = sample;
+            const auto page = build.index->descriptorPage(request);
+            QVERIFY2(page.built(), qUtf8Printable(page.errorMessage));
+            QCOMPARE(page.descriptors.size(), std::size_t{1});
+            QCOMPARE(page.descriptors.front().sampleIndex, sample);
+            QCOMPARE(analyzer_->tree().nodeCount(), nodes);
+            QCOMPARE(budget->remainingNodes, quint64{0});
+            QCOMPARE(budget->remainingInstructions, quint64{0});
+        }
     }
 };
 

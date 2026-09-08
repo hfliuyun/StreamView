@@ -103,6 +103,9 @@ struct Mp4SampleDescriptionBinding final {
     /// accepts only 1, 2, and 4 and rejects 3 with `UnsupportedFraming`; this
     /// binding does not substitute a legal value for an illegal one.
     std::optional<quint32> prefixLengthBytes;
+    /// All configuration payloads in declaration order; the first remains the
+    /// opaque envelope's configuration reference.
+    std::vector<core::AnalysisNodeId> configurationNodes;
 };
 
 /// On-demand accessors for the tables that carry one entry per sample or chunk.
