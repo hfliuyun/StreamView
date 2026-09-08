@@ -127,6 +127,17 @@ Save uses `QSaveFile` with direct-write fallback disabled. StreamView writes a
 sibling temporary file and replaces the destination only when `commit()`
 succeeds; inability to provide that atomic replacement is an error.
 
+Before opening the destination, the writer serializes the document and rejects
+output larger than the same 1 MiB limit used by the reader. Individually valid
+bookmarks or annotations must not produce a saved document that cannot be reopened.
+
+The writer rejects a destination that aliases `source.path`, including normalized
+paths, symbolic links (also in parent directories), and existing hard links.
+This check belongs to the document writer, not only the Save As dialog, and is
+repeated before commit. Rejection leaves both media and any previous session
+document unchanged. This protects normal local saving; it is not a guarantee
+against another process concurrently replacing filesystem paths.
+
 Restore is ordered and transactional with respect to the active application
 session:
 

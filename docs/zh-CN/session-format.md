@@ -109,6 +109,14 @@ selected analysis path 若存在，必须非空且最多 16 KiB UTF-8。selectio
 保存使用关闭 direct-write fallback 的 `QSaveFile`。StreamView 写 sibling temporary file，只有
 `commit()` 成功才替换 destination；无法提供这种原子替换时必须失败。
 
+打开目标前，写入器先序列化并检查与读取器一致的 1 MiB 上限。即使书签或注释逐项
+合法，也不能保存出应用自身无法重新打开的超大会话文件。
+
+写入器拒绝与 `source.path` 指向同一文件的目标，包括规范化路径、符号链接（含父目录）
+以及已有硬链接。检查必须位于文档写入层，而不只是另存为对话框，并在提交前再次执行。
+拒绝保存时媒体与已有会话文件均保持不变。此保护针对正常本地保存，不承诺防御其他进程
+并发替换文件系统路径。
+
 恢复相对于 active application session 按如下顺序事务式执行：
 
 1. 解析并验证完整 session document；

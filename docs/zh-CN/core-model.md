@@ -42,13 +42,17 @@ sample description。key 由 kind、host 分配的数字 scope 和由 kind 解�
 scope 零是独立 elementary stream 的自然 scope；container 为 context ID 可能冲突的
 不同 track 使用不同稳定 scope。
 
+container 配置可显式标记为 baseline：保留真实 source spans，但在这些区间前后都可见。
+同 key 的可见带内 definition 优先于 baseline。sample owner 按精确 entrypoint、track 和
+sample-description binding 隔离定义。这一显式例外不改变独立码流按源顺序的上下文语义。
+
 每个 definition 包含非空绝对 source span、analysis-node ID、单调 definition ID 和精确
-dependency-generation ID。给定 key 和查询 source position，目录选择 exclusive
+dependency-generation ID。给定 key 和查询 source position，普通源顺序查询选择 exclusive
 source-span end 不晚于查询位置、且结束位置最大的 definition。查询仍位于
 definition 内部时它不可见；到达排他结束位置时恰好可见，也永远不会影响
 更早位置。
 
-同一 key 的 definition 不能重叠，但注册不必遵循 source 顺序，因此 lazy 与
+同一 key 的普通 definition 不能重叠，但注册不必遵循 source 顺序，因此 lazy 与
 known-offset 分析仍能保持确定的位置查询。ID 按追加顺序分配、永不复用；
 lookup 返回的 snapshot 在后续注册之后仍有效。
 
@@ -57,6 +61,12 @@ consumer 位置重新检查每个绑定 dependency 是否仍是当前 generation
 时，stale dependent context 会报告 `dependency-unavailable`，不会回退或猜测。
 resolution 最多访问 64 个 definition；后续交叉重定义形成的 dependency cycle 与
 超过该上限的 chain 都报告 unavailable。
+
+显式重新执行且依赖已失效的 definition，可替换相同 key 与精确 source spans 处的活动
+候选。替换必须保持 baseline 可见性、改变 dependency ID，并在 definition 开始位置
+验证新依赖。新定义获得新 ID，旧定义快照保留，所以依赖旧 generation 的消费者仍会
+因精确依赖检查而失效。普通重叠继续作为注册错误拒绝。参见
+[ADR-0113](adr/0113-audit-remediation-resource-and-context-boundaries.md)。
 
 malformed definition 不会注册，也不会遮蔽此前的有效 generation。被拒绝的注册
 不改变可见目录状态。目录不保存格式专用 payload、不读取 source，并沿用

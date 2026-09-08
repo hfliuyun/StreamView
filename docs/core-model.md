@@ -48,14 +48,20 @@ with a host-assigned numeric scope and kind-specific value. Scope zero is the
 natural standalone-stream scope; a container uses distinct stable scopes for
 tracks whose context IDs may otherwise collide.
 
+Container configuration may be explicitly marked as a baseline: its real
+source spans remain unchanged, but it is visible before or after those spans.
+A visible in-band definition of the same key takes precedence. Definitions are
+isolated by exact entrypoint, track and sample-description binding in the sample
+owner. This opt-in exception does not affect standalone source-ordered context.
+
 Each definition has a non-empty absolute source span, an analysis-node ID, a
 monotonic definition ID, and exact dependency-generation IDs. For a key and
-query source position, the directory selects the definition whose exclusive
+query source position, ordinary source-ordered lookup selects the definition whose exclusive
 source-span end is the greatest end not after the query. A definition is not
 visible while the query is inside that definition, becomes visible exactly at
 its exclusive end, and never affects earlier positions.
 
-Definitions for one key cannot overlap, but registration need not follow source
+Ordinary definitions for one key cannot overlap, but registration need not follow source
 order. This permits lazy and known-offset analysis while preserving deterministic
 position lookup. IDs follow append order, are never reused, and lookup returns
 snapshots that remain valid after later registration.
@@ -67,6 +73,14 @@ current generation at the consumer position. Redefinition therefore reports
 guessing. Resolution visits at most 64 definitions. Dependency cycles produced
 by later cross-redefinitions and chains beyond that limit are reported
 unavailable.
+
+An explicitly re-executed definition with stale dependencies may replace the
+active candidate at the same exact source spans and key. Replacement must keep
+baseline visibility, change the dependency IDs, and validate them at the
+definition start. It assigns a new ID and retains the old definition snapshot,
+so consumers of an old generation still fail exact-dependency validation.
+Ordinary overlap remains a registration error. See
+[ADR-0113](adr/0113-audit-remediation-resource-and-context-boundaries.md).
 
 Malformed definitions are not registered and do not shadow the preceding valid
 generation. Rejected registration changes no visible directory state. The
