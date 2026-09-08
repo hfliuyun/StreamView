@@ -1,6 +1,7 @@
 #include "session_document.h"
 
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -9,6 +10,7 @@
 #include <QSet>
 
 #include <algorithm>
+#include <filesystem>
 #include <limits>
 #include <utility>
 
@@ -46,6 +48,22 @@ void setError(QString* errorMessage, const QString& message) {
     if (errorMessage != nullptr) {
         *errorMessage = message;
     }
+}
+
+[[nodiscard]] bool aliasesSource(const QString& destination, const QString& source) {
+    const QFileInfo sourceInfo(source);
+    const QFileInfo destinationInfo(destination);
+    if (sourceInfo.absoluteFilePath() == destinationInfo.absoluteFilePath()) {
+        return true;
+    }
+    const QString canonicalSource = sourceInfo.canonicalFilePath();
+    if (!canonicalSource.isEmpty() &&
+        canonicalSource == destinationInfo.canonicalFilePath()) {
+        return true;
+    }
+    std::error_code error;
+    return std::filesystem::equivalent(sourceInfo.filesystemFilePath(),
+                                       destinationInfo.filesystemFilePath(), error);
 }
 
 [[nodiscard]] bool validText(const QString& text, qsizetype maximumBytes,
@@ -380,6 +398,15 @@ QByteArray SessionDocument::toJson() const {
 }
 
 bool SessionDocument::save(const QString& path, QString* errorMessage) const {
+    if (aliasesSource(path, sourcePath_)) {
+        setError(errorMessage, QStringLiteral("Session destination aliases the read-only media source"));
+        return false;
+    }
+    const QByteArray bytes = toJson();
+    if (bytes.size() > maximumDocumentBytes()) {
+        setError(errorMessage, QStringLiteral("Session exceeds the 1 MiB limit"));
+        return false;
+    }
     QSaveFile file(path);
     file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly)) {
@@ -387,10 +414,14 @@ bool SessionDocument::save(const QString& path, QString* errorMessage) const {
                                    .arg(file.errorString()));
         return false;
     }
-    const QByteArray bytes = toJson();
     if (file.write(bytes) != bytes.size()) {
         setError(errorMessage,
                  QStringLiteral("Unable to write session: %1").arg(file.errorString()));
+        file.cancelWriting();
+        return false;
+    }
+    if (aliasesSource(path, sourcePath_)) {
+        setError(errorMessage, QStringLiteral("Session destination aliases the read-only media source"));
         file.cancelWriting();
         return false;
     }

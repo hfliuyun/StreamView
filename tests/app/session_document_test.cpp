@@ -210,6 +210,35 @@ private slots:
                  SessionDocumentLoadStatus::TooLarge);
     }
 
+    void rejectsOversizedSerializedDocumentBeforeReplacingFile() {
+        SessionUserState oversizedState;
+        oversizedState.view.rawDisplayMode = RawDisplayMode::Hex;
+        oversizedState.bookmarks.reserve(17);
+        for (int index = 0; index < 17; ++index) {
+            oversizedState.bookmarks.push_back(
+                SessionBookmark{QString(64 * 1024, u'x'), 0});
+        }
+        QString errorMessage;
+        auto oversized = SessionDocument::create(
+            QStringLiteral("/media/fixture.264"), QStringLiteral("/media/fixture.264"),
+            fingerprint(), ruleIdentity(), std::move(oversizedState), &errorMessage);
+        QVERIFY2(oversized.has_value(), qPrintable(errorMessage));
+        QVERIFY(oversized->toJson().size() > SessionDocument::maximumDocumentBytes());
+
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("analysis.svsession"));
+        QFile existing(path);
+        const QByteArray original = document().toJson();
+        QVERIFY(document().save(path, &errorMessage));
+
+        QVERIFY(!oversized->save(path, &errorMessage));
+        QVERIFY(errorMessage.contains(QStringLiteral("1 MiB")));
+        QVERIFY(existing.open(QIODevice::ReadOnly));
+        QCOMPARE(existing.readAll(), original);
+        QVERIFY(SessionDocument::load(path).succeeded());
+    }
+
     void validatesSessionSaveResultContract() {
         SessionSaveResult defaultResult;
         QCOMPARE(defaultResult.status, SessionSaveStatus::Saved);

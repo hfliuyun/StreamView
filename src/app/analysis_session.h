@@ -416,8 +416,15 @@ private:
     void publishCachePages(const rules::H264AnnexBAnalysisBatch& batch);
 
     struct SubFormatSession final {
+        struct SampleResult final {
+            core::AnalysisNodeId node;
+            std::vector<core::AnalysisNodeId> units;
+            std::size_t contextGeneration = 0;
+        };
         std::shared_ptr<core::AnalysisTree> tree;
         std::unique_ptr<rules::RuleExecutionSession> ruleSession;
+        bool configurationPrimed = false;
+        std::unordered_map<quint64, SampleResult> samples;
     };
 
     /// Builds the per-track indices once, on first use.
@@ -457,9 +464,7 @@ private:
     // the analyzer they read through is still alive.
     std::vector<rules::Mp4SampleTableIndex> trackIndices_;
     bool sampleIndicesBuilt_ = false;
-    /// Rule sessions for sample execution, keyed by the resolved entrypoint
-    /// identity so parameter sets published by one sample stay visible to the
-    /// next sample of the same track.
+    /// Keyed by exact entrypoint, track, and sample-description identity.
     std::unordered_map<QString, SubFormatSession> sampleSessions_;
     std::optional<core::SourceFingerprint> initialFingerprint_;
     std::shared_ptr<core::CancellationSource> cancellationSource_;

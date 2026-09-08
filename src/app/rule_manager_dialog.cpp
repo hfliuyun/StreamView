@@ -199,7 +199,25 @@ void RuleManagerDialog::installPackage() {
         return;
     }
 
-    // If storeRoot is specified, install content-addressed files
+    // Stage registration before writing; publish only once atomic storage succeeds.
+    auto stagedCatalog = catalog_;
+    auto pkgCopy = *imported.package;
+    const auto regResult = stagedCatalog.registerPackage(std::move(pkgCopy));
+    if (!regResult.succeeded()) {
+        if (messageDialogHandler_) {
+            messageDialogHandler_(
+                this,
+                tr("Registration Conflict"),
+                tr("Failed to register package:\n%1").arg(regResult.errorMessage));
+        } else {
+            QMessageBox::warning(
+                this,
+                tr("Registration Conflict"),
+                tr("Failed to register package:\n%1").arg(regResult.errorMessage));
+        }
+        return;
+    }
+
     if (!storeRoot_.isEmpty()) {
         const auto installResult = rules::RulePackageStore::install(*imported.package, storeRoot_);
         if (!installResult.succeeded()) {
@@ -217,25 +235,7 @@ void RuleManagerDialog::installPackage() {
             return;
         }
     }
-
-    // Register into catalog
-    auto pkgCopy = *imported.package;
-    const auto regResult = catalog_.registerPackage(std::move(pkgCopy));
-    if (!regResult.succeeded()) {
-        if (messageDialogHandler_) {
-            messageDialogHandler_(
-                this,
-                tr("Registration Conflict"),
-                tr("Failed to register package:\n%1").arg(regResult.errorMessage));
-        } else {
-            QMessageBox::warning(
-                this,
-                tr("Registration Conflict"),
-                tr("Failed to register package:\n%1").arg(regResult.errorMessage));
-        }
-        return;
-    }
-
+    catalog_ = std::move(stagedCatalog);
     refreshPackages();
 
     if (messageDialogHandler_) {

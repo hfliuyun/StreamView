@@ -350,6 +350,82 @@ private slots:
         QCOMPARE(capturedTitle, QStringLiteral("Registration Conflict"));
         QCOMPARE(dlg.packages().size(), std::size_t{1});
     }
+
+    void rejectedConflictPreservesExactIdentityAfterRestart() {
+        RulePackageCatalog catalog;
+        QTemporaryDir storeDir;
+        QTemporaryDir workDir;
+        QVERIFY(storeDir.isValid());
+        QVERIFY(workDir.isValid());
+        QString firstPath = createSvruleArchive(
+            workDir.path(), QStringLiteral("a.svrule"), QStringLiteral("org.example.custom"),
+            QStringLiteral("0.1.0"), QByteArrayLiteral("struct A { bits<8> a; }\nentry A;\n"));
+        QString secondPath = createSvruleArchive(
+            workDir.path(), QStringLiteral("b.svrule"), QStringLiteral("org.example.custom"),
+            QStringLiteral("0.1.0"), QByteArrayLiteral("struct B { bits<8> b; }\nentry B;\n"));
+        auto first = RulePackageStore::importArchive(firstPath);
+        auto second = RulePackageStore::importArchive(secondPath);
+        QVERIFY(first.succeeded() && first.package);
+        QVERIFY(second.succeeded() && second.package);
+        // Discovery is hash-sorted: the rejected package must not win after restart.
+        if (first.package->identity().contentHash() < second.package->identity().contentHash()) {
+            std::swap(firstPath, secondPath);
+            std::swap(first, second);
+        }
+        const auto originalIdentity = first.package->identity();
+        const auto rejectedIdentity = second.package->identity();
+        RuleManagerDialog dialog(nullptr, catalog, realPath(storeDir));
+        QString nextPath = firstPath;
+        QString title;
+        dialog.setFileDialogHandlerForTesting(
+            [&](QWidget*, const QString&, const QString&) { return nextPath; });
+        dialog.setMessageDialogHandlerForTesting(
+            [&](QWidget*, const QString& value, const QString&) { title = value; });
+        dialog.installPackage();
+        QCOMPARE(title, QStringLiteral("Package Installed"));
+        nextPath = secondPath;
+        dialog.installPackage();
+        QCOMPARE(title, QStringLiteral("Registration Conflict"));
+        QCOMPARE(catalog.packageCount(), 1);
+        QVERIFY(catalog.resolve(originalIdentity, u"main", u"0.1", u"0.1.0").succeeded());
+
+        auto installed = RulePackageStore::discoverInstalled(realPath(storeDir));
+        QCOMPARE(installed.size(), std::size_t{1});
+        RulePackageCatalog restarted;
+        for (auto& package : installed) {
+            QVERIFY(restarted.registerPackage(std::move(package)).succeeded());
+        }
+        QVERIFY(restarted.resolve(originalIdentity, u"main", u"0.1", u"0.1.0").succeeded());
+        QCOMPARE(restarted.resolve(rejectedIdentity, u"main", u"0.1", u"0.1.0").status,
+                 streamview::rules::RuleCatalogLookupStatus::VersionConflict);
+    }
+
+    void failedStoreWriteDoesNotRegisterPackage() {
+        RulePackageCatalog catalog;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto archive = createSvruleArchive(
+            directory.path(), QStringLiteral("custom.svrule"),
+            QStringLiteral("org.example.custom"), QStringLiteral("0.1.0"));
+        QVERIFY(!archive.isEmpty());
+        const auto storePath = directory.filePath(QStringLiteral("not-a-directory"));
+        QFile blocker(storePath);
+        QVERIFY(blocker.open(QIODevice::WriteOnly));
+        QCOMPARE(blocker.write("unchanged"), qint64{9});
+        blocker.close();
+        RuleManagerDialog dialog(nullptr, catalog, storePath);
+        QString title;
+        dialog.setFileDialogHandlerForTesting(
+            [&](QWidget*, const QString&, const QString&) { return archive; });
+        dialog.setMessageDialogHandlerForTesting(
+            [&](QWidget*, const QString& value, const QString&) { title = value; });
+        dialog.installPackage();
+        QCOMPARE(title, QStringLiteral("Installation Failed"));
+        QCOMPARE(catalog.packageCount(), 0);
+        QVERIFY(dialog.packages().empty());
+        QVERIFY(blocker.open(QIODevice::ReadOnly));
+        QCOMPARE(blocker.readAll(), QByteArrayLiteral("unchanged"));
+    }
 };
 
 QTEST_MAIN(RuleManagerDialogTest)

@@ -29,6 +29,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <span>
@@ -2724,6 +2725,294 @@ private slots:
         QCOMPARE(session->formatSelection().format, oldFormat);
         QCOMPARE(session->ruleIdentity().packageIdentity(), oldRule);
         QCOMPARE(session->tree().nodeCount(), oldNodeCount);
+    }
+
+    void saveSessionRejectsSourceAliases_data() {
+        QTest::addColumn<QString>("alias");
+        QTest::newRow("same-path") << QStringLiteral("same");
+        QTest::newRow("normalized-path") << QStringLiteral("normalized");
+        QTest::newRow("hard-link") << QStringLiteral("hard");
+#ifdef Q_OS_UNIX
+        QTest::newRow("symbolic-link") << QStringLiteral("symbolic");
+        QTest::newRow("symbolic-parent") << QStringLiteral("parent");
+#endif
+    }
+
+    void saveSessionRejectsSourceAliases() {
+        QFETCH(QString, alias);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto mediaPath = directory.filePath(QStringLiteral("fixture.264"));
+        const auto sessionPath = directory.filePath(QStringLiteral("existing.svsession"));
+        const auto originalBytes = validAnnexBBytes();
+        QVERIFY(writeFile(mediaPath, originalBytes));
+        QString error;
+        auto session = AnalysisSession::openFile(mediaPath, &error);
+        QVERIFY2(session, qPrintable(error));
+        QVERIFY(session->saveSession(sessionPath, {}).succeeded());
+        QFile previousSession(sessionPath);
+        QVERIFY(previousSession.open(QIODevice::ReadOnly));
+        const auto previousBytes = previousSession.readAll();
+        previousSession.close();
+
+        QString destination = mediaPath;
+        std::error_code linkError;
+        if (alias == QStringLiteral("normalized")) {
+            QVERIFY(QDir(directory.path()).mkdir(QStringLiteral("child")));
+            destination = directory.filePath(QStringLiteral("child/../fixture.264"));
+        } else if (alias == QStringLiteral("hard")) {
+            destination = directory.filePath(QStringLiteral("alias.svsession"));
+            std::filesystem::create_hard_link(QFileInfo(mediaPath).filesystemFilePath(),
+                                             QFileInfo(destination).filesystemFilePath(),
+                                             linkError);
+        } else if (alias == QStringLiteral("symbolic")) {
+            destination = directory.filePath(QStringLiteral("alias.svsession"));
+            std::filesystem::create_symlink(QFileInfo(mediaPath).filesystemFilePath(),
+                                           QFileInfo(destination).filesystemFilePath(),
+                                           linkError);
+        } else if (alias == QStringLiteral("parent")) {
+            const auto parentAlias = directory.filePath(QStringLiteral("alias"));
+            std::filesystem::create_directory_symlink(
+                QFileInfo(directory.path()).filesystemFilePath(),
+                QFileInfo(parentAlias).filesystemFilePath(), linkError);
+            destination = QDir(parentAlias).filePath(QStringLiteral("fixture.264"));
+        }
+        QVERIFY2(!linkError, linkError.message().c_str());
+
+        const auto result = session->saveSession(destination, {});
+        QCOMPARE(result.status, SessionSaveStatus::FileIoError);
+        QVERIFY(!result.errorMessage.isEmpty());
+        QFile media(mediaPath);
+        QVERIFY(media.open(QIODevice::ReadOnly));
+        QCOMPARE(media.readAll(), originalBytes);
+        QFile aliasFile(destination);
+        QVERIFY(aliasFile.open(QIODevice::ReadOnly));
+        QCOMPARE(aliasFile.readAll(), originalBytes);
+        QVERIFY(previousSession.open(QIODevice::ReadOnly));
+        QCOMPARE(previousSession.readAll(), previousBytes);
+    }
+
+    void sampleUsesAllConfigurationParameterSets_data() {
+        QTest::addColumn<QString>("fixture");
+        QTest::newRow("moov-before-mdat") << QStringLiteral("audit_avcc_only_before.mp4");
+        QTest::newRow("moov-after-mdat") << QStringLiteral("audit_avcc_only_after.mp4");
+    }
+
+    void sampleUsesAllConfigurationParameterSets() {
+        QFETCH(QString, fixture);
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto session = openPinnedMp4Fixture(
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/") + fixture, catalog);
+        QVERIFY(session);
+        QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+        for (quint64 sampleIndex : {1U, 0U, 1U}) {
+            const auto entered = session->enterSample(1, sampleIndex, catalog);
+            QVERIFY2(entered.entered(), qPrintable(entered.errorMessage));
+            QCOMPARE(entered.unitNodeIds.size(), std::size_t{1});
+            const auto header = findChildNamed(*entered.tree, entered.unitNodeIds.front(),
+                                               QStringLiteral("NalUnitHeader"));
+            QVERIFY(header);
+            const auto slice = findChildNamed(*entered.tree, header->id(),
+                                              QStringLiteral("IdrSliceLayerWithoutPartitioningRbsp"));
+            QVERIFY(slice);
+            QCOMPARE(slice->state(), MaterializationState::Materialized);
+            const auto pps = findChildNamed(*entered.tree, slice->id(),
+                                            QStringLiteral("pic_parameter_set_id"));
+            QVERIFY(pps);
+            QCOMPARE(pps->value().toULongLong(), quint64{1});
+            const auto frame = findChildNamed(*entered.tree, slice->id(), QStringLiteral("frame_num"));
+            QVERIFY(frame && frame->location());
+            QCOMPARE(frame->location()->logicalRange().bitLength(), quint64{4});
+            QVERIFY(frame->location()->sourceSpans().front().start() >=
+                    entered.sample.sourceSpans.front().start());
+            QCOMPARE(session->returnToParent().status, AnalysisSessionReturnStatus::Returned);
+        }
+    }
+
+    void repeatedSampleNavigationReusesItsTree_data() {
+        QTest::addColumn<QString>("fixture");
+        QTest::newRow("opaque") << QStringLiteral("mp4_p5j4_aac_opaque.mp4");
+        QTest::newRow("length-prefixed") << QStringLiteral("audit_avcc_only_after.mp4");
+    }
+
+    void repeatedSampleNavigationReusesItsTree() {
+        QFETCH(QString, fixture);
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto session = openPinnedMp4Fixture(
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/") + fixture, catalog);
+        QVERIFY(session);
+        QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+        const auto first = session->enterSample(1, 0, catalog);
+        QVERIFY2(first.entered(), qPrintable(first.errorMessage));
+        const auto nodes = first.tree->nodeCount();
+        QCOMPARE(session->returnToParent().status, AnalysisSessionReturnStatus::Returned);
+        for (int i = 0; i < 20; ++i) {
+            const auto repeated = session->enterSample(1, 0, catalog);
+            QVERIFY2(repeated.entered(), qPrintable(repeated.errorMessage));
+            QCOMPARE(repeated.tree.get(), first.tree.get());
+            QCOMPARE(repeated.tree->nodeCount(), nodes);
+            QCOMPARE(repeated.sampleNodeId, first.sampleNodeId);
+            QCOMPARE(repeated.unitNodeIds, first.unitNodeIds);
+            QCOMPARE(session->returnToParent().status, AnalysisSessionReturnStatus::Returned);
+        }
+    }
+
+    void isolatesSampleContexts_data() {
+        QTest::addColumn<bool>("twoTracks");
+        QTest::addColumn<bool>("reverse");
+        QTest::newRow("tracks-forward") << true << false;
+        QTest::newRow("tracks-reverse") << true << true;
+        QTest::newRow("descriptions-forward") << false << false;
+        QTest::newRow("descriptions-reverse") << false << true;
+    }
+
+    void isolatesSampleContexts() {
+        QFETCH(bool, twoTracks);
+        QFETCH(bool, reverse);
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto session = openPinnedMp4Fixture(
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/") +
+                (twoTracks ? QStringLiteral("audit_avc_two_tracks.mp4")
+                           : QStringLiteral("audit_avc_two_descriptions.mp4")), catalog);
+        QVERIFY(session);
+        QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+        for (quint32 iteration = 0; iteration < 4; ++iteration) {
+            const quint32 variant = (iteration + (reverse ? 1U : 0U)) % 2;
+            const auto entered = session->enterSample(twoTracks ? variant + 1 : 1,
+                                                       twoTracks ? iteration / 2 : variant, catalog);
+            QVERIFY2(entered.entered(), qPrintable(entered.errorMessage));
+            QCOMPARE(entered.unitNodeIds.size(), std::size_t{1});
+            const auto header = findChildNamed(*entered.tree, entered.unitNodeIds.front(),
+                                               QStringLiteral("NalUnitHeader"));
+            QVERIFY(header);
+            const auto slice = findChildNamed(*entered.tree, header->id(),
+                QStringLiteral("IdrSliceLayerWithoutPartitioningRbsp"));
+            QVERIFY(slice);
+            QCOMPARE(slice->state(), MaterializationState::Materialized);
+            const auto frame = findChildNamed(*entered.tree, slice->id(), QStringLiteral("frame_num"));
+            QVERIFY(frame && frame->location());
+            QCOMPARE(frame->location()->logicalRange().bitLength(), variant == 0 ? 4U : 8U);
+            QCOMPARE(session->returnToParent().status, AnalysisSessionReturnStatus::Returned);
+        }
+    }
+
+    void revisitsWaitingSampleAfterInbandContextIsPublished() {
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto session = openPinnedMp4Fixture(
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/audit_avc_inband.mp4"), catalog);
+        QVERIFY(session);
+        QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+        const auto waiting = session->enterSample(1, 1, catalog);
+        QVERIFY(waiting.entered());
+        const auto unit = waiting.tree->node(waiting.unitNodeIds.front());
+        QVERIFY(unit);
+        QCOMPARE(unit->state(), MaterializationState::WaitingDependency);
+        QCOMPARE(session->returnToParent().status, AnalysisSessionReturnStatus::Returned);
+        const auto producer = session->enterSample(1, 0, catalog);
+        QVERIFY(producer.entered());
+        QCOMPARE(producer.unitNodeIds.size(), std::size_t{3});
+        for (const auto id : producer.unitNodeIds) {
+            QCOMPARE(producer.tree->node(id)->state(), MaterializationState::Materialized);
+        }
+        QCOMPARE(session->returnToParent().status, AnalysisSessionReturnStatus::Returned);
+        const auto retry = session->enterSample(1, 1, catalog);
+        QVERIFY(retry.entered());
+        QCOMPARE(retry.tree->node(retry.unitNodeIds.front())->state(), MaterializationState::Materialized);
+    }
+
+    void pagesManySamplesWithoutRetainingContainerNodes() {
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto session = openPinnedMp4Fixture(
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/audit_many_samples.mp4"), catalog);
+        QVERIFY(session);
+        QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+        const auto nodes = session->tree().nodeCount();
+        constexpr quint64 trackBytes = 65535;
+        const auto dataStart = session->sizeBytes() - 2 * trackBytes;
+        for (quint32 track = 1; track <= 2; ++track) {
+            for (quint64 iteration = 0; iteration < 130; ++iteration) {
+                AnalysisSessionSamplePageRequest request;
+                request.trackId = track;
+                request.pageSize = 256;
+                request.pageIndex = (iteration * 73) % 128;
+                const auto page = session->samplesForTrack(request);
+                QVERIFY2(page.available(), qPrintable(page.errorMessage));
+                QCOMPARE(page.sampleCount, quint64{32768});
+                QCOMPARE(page.descriptors.size(), std::size_t{256});
+                for (std::size_t i = 0; i < page.descriptors.size(); ++i) {
+                    const auto index = request.pageIndex * 256 + i;
+                    const auto& sample = page.descriptors[i];
+                    QCOMPARE(sample.sampleIndex, index);
+                    QCOMPARE(sample.trackId, track);
+                    QCOMPARE(sample.dts, static_cast<qint64>(index * 1024));
+                    QCOMPARE(sample.sourceSpans.size(), std::size_t{1});
+                    QCOMPARE(sample.sourceSpans.front().bitLength(), (1 + index % 3) * 8);
+                    const auto prefixBytes = (index / 3) * 6 + (index % 3) * (index % 3 + 1) / 2;
+                    QCOMPARE(sample.sourceSpans.front().start().byteOffset(),
+                             dataStart + (track - 1) * trackBytes + prefixBytes);
+                }
+                QCOMPARE(session->tree().nodeCount(), nodes);
+            }
+        }
+    }
+
+    void revisitsSampleWithAStaleConfigurationDependency() {
+        const auto catalog = makeCatalogWithOfficialPackages();
+        auto session = openPinnedMp4Fixture(
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/audit_avc_rebound_pps.mp4"),
+            catalog);
+        QVERIFY(session);
+        QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+        for (quint64 sampleIndex : {1U, 0U, 1U, 2U, 1U, 2U}) {
+            const auto entered = session->enterSample(1, sampleIndex, catalog);
+            QVERIFY2(entered.entered(), qPrintable(entered.errorMessage));
+            QCOMPARE(entered.unitNodeIds.size(), std::size_t{1});
+            QCOMPARE(entered.tree->node(entered.unitNodeIds.front())->state(),
+                     MaterializationState::Materialized);
+            if (sampleIndex == 2) {
+                const auto header = findChildNamed(*entered.tree, entered.unitNodeIds.front(),
+                                                  QStringLiteral("NalUnitHeader"));
+                QVERIFY(header);
+                const auto slice = findChildNamed(*entered.tree, header->id(),
+                    QStringLiteral("IdrSliceLayerWithoutPartitioningRbsp"));
+                QVERIFY(slice);
+                const auto frame = findChildNamed(*entered.tree, slice->id(),
+                                                  QStringLiteral("frame_num"));
+                QVERIFY(frame && frame->location());
+                QCOMPARE(frame->location()->logicalRange().bitLength(), quint64{8});
+            }
+            QCOMPARE(session->returnToParent().status, AnalysisSessionReturnStatus::Returned);
+        }
+    }
+
+    void configurationAndSampleShareAnExactNodeBudget() {
+        const auto catalog = makeCatalogWithOfficialPackages();
+        const QString fixture =
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/audit_avcc_only_after.mp4");
+        auto reference = openPinnedMp4Fixture(fixture, catalog);
+        QVERIFY(reference);
+        QCOMPARE(reference->analyzeBatch().status, AnalysisBatchStatus::Complete);
+        const auto complete = reference->enterSample(1, 0, catalog);
+        QVERIFY2(complete.entered(), qPrintable(complete.errorMessage));
+        const quint64 requiredNodes = complete.tree->nodeCount();
+        QVERIFY(requiredNodes > 1);
+
+        auto session = openPinnedMp4Fixture(fixture, catalog);
+        QVERIFY(session);
+        QCOMPARE(session->analyzeBatch().status, AnalysisBatchStatus::Complete);
+        const auto containerNodes = session->tree().nodeCount();
+        streamview::rules::StructuralExecutionOptions options;
+        options.limits.maximumMaterializedNodes = requiredNodes - 1;
+        const auto limited = session->enterSample(1, 0, catalog, options);
+        QCOMPARE(limited.status, AnalysisSessionSampleStatus::ResourceLimit);
+        QCOMPARE(session->navigationDepth(), std::size_t{0});
+        QCOMPARE(session->tree().nodeCount(), containerNodes);
+        options.limits.maximumMaterializedNodes = requiredNodes;
+        const auto exact = session->enterSample(1, 0, catalog, options);
+        QVERIFY2(exact.entered(), qPrintable(exact.errorMessage));
+        QCOMPARE(exact.tree->nodeCount(), requiredNodes);
+        QCOMPARE(exact.tree->node(exact.unitNodeIds.front())->state(),
+                 MaterializationState::Materialized);
     }
 
 };

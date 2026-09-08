@@ -1219,7 +1219,60 @@ AnalysisSessionEnterSampleResult AnalysisSession::enterSample(
         result.errorMessage = QStringLiteral("Resolved entrypoint identity is invalid");
         return result;
     }
-    const QString sessionKey = entryIdentity->toString();
+    const QString sessionKey = QStringLiteral("%1/track=%2/description=%3")
+                                   .arg(entryIdentity->toString()).arg(trackId)
+                                   .arg(sample.sampleDescriptionIndex);
+
+    const auto present = [&](const std::shared_ptr<core::AnalysisTree>& sampleTree,
+                              core::AnalysisNodeId sampleNode,
+                              const std::vector<core::AnalysisNodeId>& units) {
+        NavigationFrame frame{
+            .parentTargetNodeId = sampleNode,
+            .targetFormat = targetFormat,
+            .package = package,
+            .entryPoint = entryPoint,
+            .sourceMapping = *sampleMapping,
+            .tree = sampleTree,
+            .childRootStructureNodeId = sampleNode,
+            .sample = SampleNavigationFrame{.trackId = trackId,
+                                            .sampleIndex = sampleIndex,
+                                            .sample = sample,
+                                            .targetFormat = targetFormat},
+        };
+        navigationStack_.push_back(std::move(frame));
+        result.status = AnalysisSessionSampleStatus::Available;
+        result.sampleNodeId = sampleNode;
+        result.tree = sampleTree;
+        result.sample = sample;
+        result.unitNodeIds = units;
+        result.errorMessage.clear();
+        return result;
+    };
+    auto sessionIterator = sampleSessions_.find(sessionKey);
+    if (sessionIterator != sampleSessions_.end()) {
+        const auto& existing = sessionIterator->second;
+        const auto cached = existing.samples.find(sampleIndex);
+        const auto generation = existing.ruleSession
+                                    ? existing.ruleSession->publishedDefinitionCount() : 0;
+        if (cached != existing.samples.end() && cached->second.contextGeneration == generation) {
+            return present(existing.tree, cached->second.node, cached->second.units);
+        }
+    }
+    quint64 retainedNodes = 0;
+    for (const auto& [key, cached] : sampleSessions_) {
+        Q_UNUSED(key);
+        retainedNodes += cached.tree->nodeCount();
+    }
+    constexpr auto retentionLimit =
+        rules::DslExecutionLimits::defaultMaximumMaterializedNodes();
+    if (retainedNodes >= retentionLimit) {
+        result.status = AnalysisSessionSampleStatus::ResourceLimit;
+        result.errorMessage = QStringLiteral("Retained sample node budget is exhausted");
+        return result;
+    }
+    auto workingLimits = options.limits;
+    workingLimits.maximumMaterializedNodes =
+        std::min(workingLimits.maximumMaterializedNodes, retentionLimit - retainedNodes);
 
     // Presence of a length prefix decides framing, so no codec name is consulted
     // here (ADR-0105 section 4 and the P5j-3b binding contract).
@@ -1294,10 +1347,14 @@ AnalysisSessionEnterSampleResult AnalysisSession::enterSample(
         return result;
     }
 
-    // Sessions are cached per entrypoint identity so parameter sets published by
-    // one sample stay visible to the next sample of the same track.
-    auto sessionIterator = sampleSessions_.find(sessionKey);
-    if (sessionIterator == sampleSessions_.end()) {
+    // Each track and description owns its configuration and in-band definitions.
+    const bool createdSession = sessionIterator == sampleSessions_.end();
+    if (createdSession) {
+        if (workingLimits.maximumMaterializedNodes == 0) {
+            result.status = AnalysisSessionSampleStatus::ResourceLimit;
+            return result;
+        }
+        --workingLimits.maximumMaterializedNodes;
         auto treeOpt = core::AnalysisTree::create(sessionKey);
         if (!treeOpt) {
             result.status = AnalysisSessionSampleStatus::InvalidDefinition;
@@ -1307,11 +1364,66 @@ AnalysisSessionEnterSampleResult AnalysisSession::enterSample(
         SubFormatSession created;
         created.tree = std::make_shared<core::AnalysisTree>(std::move(*treeOpt));
         if (lengthPrefixed) {
-            created.ruleSession = std::make_unique<rules::RuleExecutionSession>(program, 1);
+            created.ruleSession =
+                std::make_unique<rules::RuleExecutionSession>(program, 1, workingLimits);
         }
         sessionIterator = sampleSessions_.emplace(sessionKey, std::move(created)).first;
     }
     auto& sampleSession = sessionIterator->second;
+
+    if (lengthPrefixed && !sampleSession.configurationPrimed) {
+        for (const auto nodeId : binding->configurationNodes) {
+            const auto config = tree().node(nodeId);
+            const auto mapping = config && config->location()
+                                     ? core::SourceMapping::create(
+                                           core::LogicalViewId(1), config->location()->sourceSpans())
+                                     : std::nullopt;
+            if (!mapping) {
+                sampleSessions_.erase(sessionIterator);
+                result.status = AnalysisSessionSampleStatus::DependencyUnavailable;
+                result.errorMessage = QStringLiteral("Configuration has no readable source mapping");
+                return result;
+            }
+            rules::CompoundRuleExecutionRequest request;
+            request.source = source_.get();
+            request.headerMapping = &*mapping;
+            request.payloadMapping = &*mapping;
+            request.headerStructureIndex = program.entry.targetIndex;
+            request.transformRegistry = &rules::bundledPayloadTransformRegistry();
+            request.tree = sampleSession.tree.get();
+            request.parentId = sampleSession.tree->rootId();
+            request.enclosingSourceSpans = config->location()->sourceSpans();
+            request.autoDispatchPayload = true;
+            request.baselineContext = true;
+            request.options.limits = workingLimits;
+            request.options.cancellation = options.cancellation;
+            const auto execution = sampleSession.ruleSession->runCompound(request);
+            if (!execution.materialized()) {
+                sampleSessions_.erase(sessionIterator);
+                result.status = execution.status == rules::RuleExecutionStatus::ResourceLimit
+                                    ? AnalysisSessionSampleStatus::ResourceLimit
+                                    : execution.status == rules::RuleExecutionStatus::Cancelled
+                                          ? AnalysisSessionSampleStatus::Cancelled
+                                          : execution.status == rules::RuleExecutionStatus::SourceError
+                                                ? AnalysisSessionSampleStatus::SourceError
+                                                : AnalysisSessionSampleStatus::DependencyUnavailable;
+                result.errorMessage = execution.errorMessage;
+                return result;
+            }
+            workingLimits.maximumMaterializedNodes -= execution.execution.nodesCreated;
+            workingLimits.maximumInstructions -= execution.execution.instructionsExecuted;
+            if (workingLimits.maximumInspectedBytes != 0) {
+                if (execution.execution.inspectedByteCount >= workingLimits.maximumInspectedBytes) {
+                    sampleSessions_.erase(sessionIterator);
+                    result.status = AnalysisSessionSampleStatus::ResourceLimit;
+                    result.errorMessage = QStringLiteral("Configuration inspection budget is exhausted");
+                    return result;
+                }
+                workingLimits.maximumInspectedBytes -= execution.execution.inspectedByteCount;
+            }
+        }
+        sampleSession.configurationPrimed = true;
+    }
 
     // Snapshot before executing: a failed sample must leave the sample tree, the
     // navigation stack, and the cached index exactly as they were.
@@ -1333,12 +1445,15 @@ AnalysisSessionEnterSampleResult AnalysisSession::enterSample(
     runRequest.configurationNode = configurationNode;
     runRequest.configurationSummary = configurationSummary;
     runRequest.sampleNodeName = QStringLiteral("Sample %1").arg(sampleIndex);
-    runRequest.options.limits = options.limits;
+    runRequest.options.limits = workingLimits;
     runRequest.options.cancellation = options.cancellation;
 
     auto run = rules::SamplePayloadRunner::run(runRequest);
     if (!run.executed() || !run.sampleNode.has_value()) {
         (void)sampleSession.tree->restore(std::move(treeSnapshot));
+        if (createdSession) {
+            sampleSessions_.erase(sessionIterator);
+        }
         result.status = sampleStatus(run.status);
         result.errorMessage = std::move(run.errorMessage);
         return result;
@@ -1352,28 +1467,10 @@ AnalysisSessionEnterSampleResult AnalysisSession::enterSample(
         }
     }
 
-    NavigationFrame frame{
-        .parentTargetNodeId = *run.sampleNode,
-        .targetFormat = targetFormat,
-        .package = package,
-        .entryPoint = entryPoint,
-        .sourceMapping = *sampleMapping,
-        .tree = sampleSession.tree,
-        .childRootStructureNodeId = *run.sampleNode,
-        .sample = SampleNavigationFrame{.trackId = trackId,
-                                        .sampleIndex = sampleIndex,
-                                        .sample = sample,
-                                        .targetFormat = targetFormat},
-    };
-    navigationStack_.push_back(std::move(frame));
-
-    result.status = AnalysisSessionSampleStatus::Available;
-    result.sampleNodeId = run.sampleNode;
-    result.tree = sampleSession.tree;
-    result.sample = sample;
-    result.unitNodeIds = std::move(unitNodeIds);
-    result.errorMessage.clear();
-    return result;
+    sampleSession.samples.insert_or_assign(sampleIndex, SubFormatSession::SampleResult{
+        *run.sampleNode, unitNodeIds,
+        sampleSession.ruleSession ? sampleSession.ruleSession->publishedDefinitionCount() : 0});
+    return present(sampleSession.tree, *run.sampleNode, unitNodeIds);
 }
 
 AnalysisSessionReturnResult AnalysisSession::returnToParent() {
