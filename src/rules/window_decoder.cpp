@@ -83,6 +83,49 @@ WindowDecoder::WindowDecoder(
     }
 }
 
+WindowReadResult WindowDecoder::readWindow(const WindowDecodeRequest& request,
+                                           const DslExecutionOptions& options) const {
+    WindowReadResult result;
+    const auto window = tree_ ? tree_->node(windowNodeId_) : std::nullopt;
+    if (!window || !program_ || !source_) {
+        result.decoding.status = DslExecutionStatus::InvalidDefinition;
+        result.decoding.errorMessage = QStringLiteral("Window source or metadata is unavailable");
+        return result;
+    }
+    if (options.cancellation && options.cancellation->isCancellationRequested()) {
+        result.decoding.status = DslExecutionStatus::Cancelled;
+        return result;
+    }
+    if (options.limits.maximumMaterializedNodes < 2) {
+        result.decoding.status = DslExecutionStatus::ResourceLimit;
+        return result;
+    }
+    auto temporary = core::AnalysisTree::create(QStringLiteral("Window page"));
+    auto pageTree = std::make_shared<core::AnalysisTree>(std::move(*temporary));
+    const auto pageWindow = pageTree->appendChild(pageTree->rootId(), {
+        .kind = window->kind(),
+        .name = window->name(),
+        .state = core::MaterializationState::Lazy,
+        .value = window->value(),
+        .location = window->location(),
+        .metadata = window->metadata(),
+    });
+    if (!pageWindow) {
+        result.decoding.status = DslExecutionStatus::InvalidDefinition;
+        result.decoding.errorMessage = QStringLiteral("Unable to create temporary window");
+        return result;
+    }
+    auto pageBudget = std::make_shared<RunnerExecutionBudget>();
+    pageBudget->remainingNodes = options.limits.maximumMaterializedNodes - 2;
+    pageBudget->remainingInstructions = options.limits.maximumInstructions;
+    pageBudget->cancellation = options.cancellation;
+    WindowDecoder decoder(*program_, *source_, sourceMapping_, pageTree, *pageWindow, pageBudget);
+    decoder.readLimits_ = options.limits;
+    result.decoding = decoder.decodeWindow(request);
+    result.tree = std::move(pageTree);
+    return result;
+}
+
 WindowDecodeResult WindowDecoder::decodeWindow(const WindowDecodeRequest& request) {
     WindowDecodeResult result;
 
@@ -163,7 +206,7 @@ WindowDecodeResult WindowDecoder::decodeWindow(const WindowDecodeRequest& reques
         return result;
     }
 
-    result.entryNodes.reserve(static_cast<std::size_t>(pageCount));
+    result.entryNodes.reserve(static_cast<std::size_t>(std::min(pageCount, quint64{256})));
 
     bool needsMaterialization = false;
     for (quint64 entryIndex = startIndex; entryIndex < pageEndIndex; ++entryIndex) {
@@ -249,6 +292,9 @@ WindowDecodeResult WindowDecoder::decodeWindow(const WindowDecodeRequest& reques
         core::BitReader entryReader(*source_, *entryMapping);
 
         DslExecutionOptions options;
+        if (readLimits_) {
+            options.limits = *readLimits_;
+        }
         if (budget_) {
             options.limits.maximumMaterializedNodes = budget_->remainingNodes;
             options.limits.maximumInstructions = budget_->remainingInstructions;

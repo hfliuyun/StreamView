@@ -59,6 +59,16 @@ ContextDirectory::definition(ContextDefinitionId id) const {
 
 ContextRegistrationResult
 ContextDirectory::registerDefinition(ContextDefinitionSpec spec) {
+    return registerDefinition(std::move(spec), std::nullopt);
+}
+
+ContextRegistrationResult ContextDirectory::replaceStaleDefinition(
+    ContextDefinitionId previous, ContextDefinitionSpec spec) {
+    return registerDefinition(std::move(spec), previous);
+}
+
+ContextRegistrationResult ContextDirectory::registerDefinition(
+    ContextDefinitionSpec spec, std::optional<ContextDefinitionId> previous) {
     auto normalizedLocation = SourceMapping::create(LogicalViewId(1), spec.sourceSpans);
     if (!isKnownKind(spec.key.kind) || !normalizedLocation ||
         normalizedLocation->logicalBitLength() == 0 || spec.analysisNodeId.value() == 0) {
@@ -67,6 +77,24 @@ ContextDirectory::registerDefinition(ContextDefinitionSpec spec) {
                 QStringLiteral("Context definition metadata is invalid")};
     }
     spec.sourceSpans = normalizedLocation->sourceSpans();
+    if (previous) {
+        const auto old = definition(*previous);
+        const auto found = definitionsByKey_.find(spec.key);
+        const bool sameSpans = old && std::ranges::equal(
+            old->sourceSpans, spec.sourceSpans,
+            [](const SourceSpan& left, const SourceSpan& right) {
+                return left.start() == right.start() && left.bitLength() == right.bitLength();
+            });
+        if (!old || old->key != spec.key || !sameSpans ||
+            old->baseline != spec.baseline || old->dependencies == spec.dependencies ||
+            found == definitionsByKey_.end() ||
+            visibleCandidate(found->second, sourceEnd(spec.sourceSpans)) != previous ||
+            resolveBefore(spec.key, sourceEnd(spec.sourceSpans)).status !=
+                ContextLookupStatus::DependencyUnavailable) {
+            return {ContextRegistrationStatus::InvalidDefinition, std::nullopt,
+                    QStringLiteral("Only a stale definition at the same source spans can be replaced")};
+        }
+    }
     std::vector<ContextDefinitionId> checkedDependencies;
     checkedDependencies.reserve(spec.dependencies.size());
     for (const auto dependencyId : spec.dependencies) {
@@ -105,16 +133,17 @@ ContextDirectory::registerDefinition(ContextDefinitionSpec spec) {
         }
         throw;
     }
-    const bool overlapsExisting = std::any_of(
-        keyDefinitions.begin(), keyDefinitions.end(), [this, &spec](ContextDefinitionId id) {
-            return spansOverlap(
+    const auto overlap = std::find_if(
+        keyDefinitions.begin(), keyDefinitions.end(), [this, &spec, previous](ContextDefinitionId id) {
+            return id != previous && spansOverlap(
                 definitions_.at(static_cast<std::size_t>(id.value() - 1)).sourceSpans,
                 spec.sourceSpans);
         });
-    if (overlapsExisting) {
+    if (overlap != keyDefinitions.end()) {
         return {ContextRegistrationStatus::DuplicateDefinition,
                 std::nullopt,
-                QStringLiteral("Context definitions for one key cannot overlap")};
+                QStringLiteral("Context definitions for one key cannot overlap"),
+                *overlap};
     }
     const auto insertion = std::lower_bound(
         keyDefinitions.begin(),
@@ -131,14 +160,19 @@ ContextDirectory::registerDefinition(ContextDefinitionSpec spec) {
                                                  spec.key,
                                                  std::move(spec.sourceSpans),
                                                  spec.analysisNodeId,
-                                                 std::move(spec.dependencies)});
+                                                 std::move(spec.dependencies),
+                                                 spec.baseline});
     } catch (...) {
         if (insertedKey) {
             definitionsByKey_.erase(keyEntry);
         }
         throw;
     }
-    keyDefinitions.insert(insertion, id);
+    if (previous) {
+        *std::find(keyDefinitions.begin(), keyDefinitions.end(), *previous) = id;
+    } else {
+        keyDefinitions.insert(insertion, id);
+    }
     return {ContextRegistrationStatus::Registered, id, {}};
 }
 
@@ -146,6 +180,28 @@ ContextLookupResult
 ContextDirectory::resolveBefore(const ContextKey& key, SourceBitAddress sourcePosition) const {
     std::vector<ContextDefinitionId> resolutionStack;
     return resolveBefore(key, sourcePosition, resolutionStack);
+}
+
+std::optional<ContextDefinitionId> ContextDirectory::visibleCandidate(
+    const std::vector<ContextDefinitionId>& ids, SourceBitAddress sourcePosition) const {
+    auto after = std::upper_bound(
+        ids.begin(), ids.end(), sourcePosition,
+        [this](SourceBitAddress position, ContextDefinitionId id) {
+            return position < definitions_.at(static_cast<std::size_t>(id.value() - 1))
+                                  .sourceSpans.back().endExclusive();
+        });
+    while (after != ids.begin()) {
+        const auto id = *--after;
+        if (!definitions_.at(static_cast<std::size_t>(id.value() - 1)).baseline) {
+            return id;
+        }
+    }
+    for (auto it = ids.crbegin(); it != ids.crend(); ++it) {
+        if (definitions_.at(static_cast<std::size_t>(it->value() - 1)).baseline) {
+            return *it;
+        }
+    }
+    return std::nullopt;
 }
 
 ContextLookupResult ContextDirectory::resolveBefore(
@@ -157,21 +213,13 @@ ContextLookupResult ContextDirectory::resolveBefore(
         return {};
     }
 
-    const auto firstAfterPosition = std::upper_bound(
-        found->second.begin(),
-        found->second.end(),
-        sourcePosition,
-        [this](SourceBitAddress position, ContextDefinitionId definitionId) {
-            return position < definitions_.at(static_cast<std::size_t>(definitionId.value() - 1))
-                                  .sourceSpans.back().endExclusive();
-        });
-    if (firstAfterPosition == found->second.begin()) {
+    const auto candidateId = visibleCandidate(found->second, sourcePosition);
+    if (!candidateId) {
         return {};
     }
 
-    const auto candidateId = *std::prev(firstAfterPosition);
     const auto& candidate =
-        definitions_.at(static_cast<std::size_t>(candidateId.value() - 1));
+        definitions_.at(static_cast<std::size_t>(candidateId->value() - 1));
     if (std::find(resolutionStack.begin(), resolutionStack.end(), candidate.id) !=
         resolutionStack.end()) {
         return {ContextLookupStatus::DependencyUnavailable, std::nullopt, candidate.id};
@@ -231,26 +279,22 @@ ContextLookupResult ContextDirectory::resolveLatestBefore(
 
     std::optional<ContextDefinitionId> latestCandidateId;
     SourceBitAddress latestEndPosition(0);
+    bool latestIsBaseline = true;
 
     for (auto it = lower; it != upper; ++it) {
-        const auto firstAfterPosition = std::upper_bound(
-            it->second.begin(),
-            it->second.end(),
-            sourcePosition,
-            [this](SourceBitAddress position, ContextDefinitionId definitionId) {
-                return position < definitions_.at(static_cast<std::size_t>(definitionId.value() - 1))
-                                      .sourceSpans.back().endExclusive();
-            });
-        if (firstAfterPosition == it->second.begin()) {
+        const auto candidateId = visibleCandidate(it->second, sourcePosition);
+        if (!candidateId) {
             continue;
         }
-        const auto candidateId = *std::prev(firstAfterPosition);
         const auto& candidate =
-            definitions_.at(static_cast<std::size_t>(candidateId.value() - 1));
+            definitions_.at(static_cast<std::size_t>(candidateId->value() - 1));
         if (!latestCandidateId.has_value() ||
-            candidate.sourceSpans.back().endExclusive() > latestEndPosition) {
+            (latestIsBaseline && !candidate.baseline) ||
+            (latestIsBaseline == candidate.baseline &&
+             candidate.sourceSpans.back().endExclusive() > latestEndPosition)) {
             latestCandidateId = candidateId;
             latestEndPosition = candidate.sourceSpans.back().endExclusive();
+            latestIsBaseline = candidate.baseline;
         }
     }
 

@@ -140,6 +140,7 @@ private slots:
     void returnsSourceErrorOnSourceReadFailure();
     void decodesMultiplePagesAndReusesEntryNodes();
     void rollsBackFailedWindowEntry();
+    void transientPagesPreserveContainerTreeAndBudget();
 };
 
 void WindowDecoderTest::decodesCompletePageSuccessfully() {
@@ -688,6 +689,79 @@ void WindowDecoderTest::rollsBackFailedWindowEntry() {
     QVERIFY(windowNode.has_value());
     QCOMPARE(windowNode->children().size(), std::size_t{1});
     QCOMPARE(tree->nodeCount(), nodeCountBeforeEntries + 3);
+}
+
+void WindowDecoderTest::transientPagesPreserveContainerTreeAndBudget() {
+    using namespace streamview;
+    const auto program = compileProgram(QStringLiteral(
+        "struct Item { bits<32> value; }\n"
+        "struct Table { bits<32> count; computed<u64> bytes_count = count * 4;\n"
+        "@lazy(bytes_count) bytes items @window(Item, count); }\nentry Table;\n"));
+    std::vector<std::byte> bytes(44, std::byte{0});
+    bytes[13] = std::byte{2};
+    bytes[23] = std::byte{111};
+    bytes[43] = std::byte{222};
+    MemorySource source(bytes);
+    const auto span = [](quint64 start, quint64 length) {
+        return *core::SourceSpan::create(core::SourceBitAddress(start * 8U), length * 8U);
+    };
+    const auto mapping = *core::SourceMapping::create(
+        core::LogicalViewId(1), {span(10, 4), span(20, 4), span(40, 4)});
+    auto tree = makeTestTree();
+    core::BitReader reader(source, mapping);
+    const auto table = rules::DslExecutor::decodeStruct(
+        program, 1, reader, mapping, 0, *tree, tree->rootId());
+    QCOMPARE(table.status, rules::DslExecutionStatus::Materialized);
+    QVERIFY(table.structureNode);
+    const auto windowId = tree->node(*table.structureNode)->children().back();
+    const auto nodeCount = tree->nodeCount();
+    auto budget = std::make_shared<rules::RunnerExecutionBudget>();
+    budget->remainingNodes = 0;
+    budget->remainingInstructions = 0;
+    rules::WindowDecoder decoder(program, source, mapping, tree, windowId, budget);
+
+    rules::DslExecutionOptions low;
+    low.limits.maximumMaterializedNodes = 1;
+    QCOMPARE(decoder.readWindow({0, 2}, low).decoding.status,
+             rules::DslExecutionStatus::ResourceLimit);
+    low.limits.maximumMaterializedNodes = 5;
+    const auto limited = decoder.readWindow({0, 2}, low);
+    QCOMPARE(limited.decoding.status, rules::DslExecutionStatus::ResourceLimit);
+    QCOMPARE(limited.decoding.decodedEntryCount, quint64{1});
+    QVERIFY(limited.tree);
+    QVERIFY(limited.tree->nodeCount() <= std::size_t{5});
+    low.limits.maximumMaterializedNodes = 6;
+    const auto exact = decoder.readWindow({0, 2}, low);
+    QCOMPARE(exact.decoding.status, rules::DslExecutionStatus::Materialized);
+    QCOMPARE(exact.decoding.decodedEntryCount, quint64{2});
+    QCOMPARE(exact.tree->nodeCount(), std::size_t{6});
+    core::CancellationSource cancellation;
+    QVERIFY(cancellation.requestCancellation());
+    rules::DslExecutionOptions cancelled;
+    cancelled.cancellation = cancellation.token();
+    QCOMPARE(decoder.readWindow({0, 2}, cancelled).decoding.status,
+             rules::DslExecutionStatus::Cancelled);
+    for (int iteration = 0; iteration < 3; ++iteration) {
+        const auto page = decoder.readWindow({0, 2});
+        QCOMPARE(page.decoding.status, rules::DslExecutionStatus::Materialized);
+        QCOMPARE(page.decoding.entryNodes.size(), std::size_t{2});
+        QVERIFY(page.tree);
+        for (std::size_t i = 0; i < 2; ++i) {
+            const auto entry = page.tree->node(page.decoding.entryNodes[i]);
+            QVERIFY(entry);
+            const auto field = page.tree->node(entry->children().front());
+            QVERIFY(field && field->location());
+            QCOMPARE(field->value().toULongLong(), i == 0 ? quint64{111} : quint64{222});
+            QCOMPARE(field->location()->sourceSpans().size(), std::size_t{1});
+            QCOMPARE(field->location()->sourceSpans().front().start().byteOffset(),
+                     i == 0 ? quint64{20} : quint64{40});
+            QCOMPARE(field->location()->sourceSpans().front().bitLength(), quint64{32});
+        }
+        QCOMPARE(tree->nodeCount(), nodeCount);
+        QCOMPARE(budget->remainingNodes, quint64{0});
+        QCOMPARE(budget->remainingInstructions, quint64{0});
+        QCOMPARE(tree->node(windowId)->state(), core::MaterializationState::Lazy);
+    }
 }
 
 QTEST_MAIN(WindowDecoderTest)

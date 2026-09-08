@@ -11,6 +11,7 @@
 #include <QtGlobal>
 
 #include <optional>
+#include <functional>
 #include <utility>
 #include <vector>
 
@@ -39,6 +40,7 @@ struct RuleExecutionRequest final {
     std::vector<core::SourceSpan> enclosingSourceSpans;
     bool requireExactConsumption = true;
     DslExecutionOptions options;
+    bool baselineContext = false;
 };
 
 struct RuleImportedContextDefinition final {
@@ -90,6 +92,7 @@ struct CompoundRuleExecutionRequest final {
     bool requireExactConsumption = true;
     CompoundTransactionHooks transactionHooks;
     bool autoDispatchPayload = false;
+    bool baselineContext = false;
 };
 
 struct CompoundRuleExecutionResult final {
@@ -106,6 +109,22 @@ struct CompoundRuleExecutionResult final {
 
 class RuleExecutionSession final {
   public:
+    class Transaction final {
+      public:
+        Transaction(const Transaction&) = delete;
+        Transaction& operator=(const Transaction&) = delete;
+        Transaction(Transaction&& other) noexcept
+            : rollback_(std::exchange(other.rollback_, {})) {}
+        Transaction& operator=(Transaction&&) = delete;
+        ~Transaction() { if (rollback_) { rollback_(); } }
+        void commit() noexcept { rollback_ = {}; }
+
+      private:
+        friend class RuleExecutionSession;
+        explicit Transaction(std::function<void()> rollback) : rollback_(std::move(rollback)) {}
+        std::function<void()> rollback_;
+    };
+
     explicit RuleExecutionSession(DslTypedProgram program, quint64 contextScopeId = 0,
                                   DslExecutionLimits compoundLimits = {}) noexcept
         : program_(std::move(program)), contextScopeId_(contextScopeId),
@@ -116,6 +135,10 @@ class RuleExecutionSession final {
     RuleExecutionSession& operator=(RuleExecutionSession&&) noexcept = default;
 
     void reset(quint64 contextScopeId = 0) noexcept;
+    /// The session must outlive the transaction. Destruction without commit
+    /// restores context, binding and counters; supplied limits start a fresh operation.
+    [[nodiscard]] Transaction beginTransaction(
+        std::optional<DslExecutionLimits> operationLimits = std::nullopt);
     [[nodiscard]] RuleExecutionResult run(const RuleExecutionRequest& request);
     [[nodiscard]] CompoundRuleExecutionResult
     runCompound(const CompoundRuleExecutionRequest& request);

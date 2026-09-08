@@ -42,6 +42,11 @@ struct WindowDecodeResult final {
     }
 };
 
+struct WindowReadResult final {
+    WindowDecodeResult decoding;
+    std::shared_ptr<const core::AnalysisTree> tree;
+};
+
 class WindowDecoder final {
 public:
     explicit WindowDecoder(
@@ -54,6 +59,8 @@ public:
         std::optional<core::CancellationToken> cancellation = std::nullopt);
 
     [[nodiscard]] WindowDecodeResult decodeWindow(const WindowDecodeRequest& request);
+    [[nodiscard]] WindowReadResult readWindow(
+        const WindowDecodeRequest& request, const DslExecutionOptions& options = {}) const;
 
     [[nodiscard]] const DslTypedProgram& program() const noexcept { return *program_; }
     [[nodiscard]] const core::RandomAccessSource& source() const noexcept { return *source_; }
@@ -85,6 +92,7 @@ private:
     std::shared_ptr<RunnerExecutionBudget> budget_;
     std::shared_ptr<State> state_;
     std::optional<core::CancellationToken> cancellation_;
+    std::optional<DslExecutionLimits> readLimits_;
 };
 
 } // namespace streamview::rules

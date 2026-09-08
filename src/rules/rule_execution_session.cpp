@@ -86,6 +86,31 @@ RuleExecutionSession::contextPayload(core::ContextDefinitionId id) const noexcep
     return payload.definitionId == id ? &payload : nullptr;
 }
 
+RuleExecutionSession::Transaction RuleExecutionSession::beginTransaction(
+    std::optional<DslExecutionLimits> operationLimits) {
+    Transaction transaction([this, directory = contextDirectory_, payloads = contextPayloads_,
+                             source = source_, tree = treeIdentity_, scope = contextScopeId_,
+                             limits = compoundLimits_, instructions = compoundInstructionsExecuted_,
+                             nodes = compoundNodesCreated_, bytes = compoundBytesInspected_]() mutable {
+        contextDirectory_ = std::move(directory);
+        contextPayloads_ = std::move(payloads);
+        source_ = source;
+        treeIdentity_ = tree;
+        contextScopeId_ = scope;
+        compoundLimits_ = limits;
+        compoundInstructionsExecuted_ = instructions;
+        compoundNodesCreated_ = nodes;
+        compoundBytesInspected_ = bytes;
+    });
+    if (operationLimits) {
+        compoundLimits_ = *operationLimits;
+        compoundInstructionsExecuted_ = 0;
+        compoundNodesCreated_ = 0;
+        compoundBytesInspected_ = 0;
+    }
+    return transaction;
+}
+
 RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& request) {
     RuleExecutionResult result;
     if (request.source == nullptr || request.mapping == nullptr || request.tree == nullptr ||
@@ -398,6 +423,7 @@ RuleExecutionResult RuleExecutionSession::run(const RuleExecutionRequest& reques
         *enclosingSpans,
         *result.execution.structureNode,
         std::move(dependencies),
+        request.baselineContext,
     };
     const core::ContextRegistrationResult registration =
         contextDirectory_.registerDefinition(std::move(specification));
@@ -801,8 +827,32 @@ RuleExecutionSession::runCompound(const CompoundRuleExecutionRequest& request) {
                     *enclosingSpans,
                     *nodeId,
                     std::move(dependencies),
+                    request.baselineContext,
                 };
-                const auto registration = nextDirectory.registerDefinition(std::move(spec));
+                auto registration = nextDirectory.registerDefinition(spec);
+                if (registration.status == core::ContextRegistrationStatus::DuplicateDefinition &&
+                    registration.conflictingDefinitionId) {
+                    const auto id = *registration.conflictingDefinitionId;
+                    const auto existing = nextDirectory.definition(id);
+                    const auto& existingPayload = nextPayloads.at(
+                        static_cast<std::size_t>(id.value() - 1));
+                    const bool sameSpans = existing && std::ranges::equal(
+                        existing->sourceSpans, spec.sourceSpans,
+                        [](const core::SourceSpan& left, const core::SourceSpan& right) {
+                            return left.start() == right.start() &&
+                                   left.bitLength() == right.bitLength();
+                        });
+                    if (sameSpans && existing->key == spec.key &&
+                        existing->baseline == spec.baseline &&
+                        existingPayload.structureIndex == payload.structureIndex) {
+                        if (existing->dependencies == spec.dependencies &&
+                            existingPayload.values == payload.values) {
+                            nextPublishedDefinitionId = id;
+                            return;
+                        }
+                        registration = nextDirectory.replaceStaleDefinition(id, spec);
+                    }
+                }
                 if (!registration.succeeded()) {
                     failTransaction(registration.status ==
                                             core::ContextRegistrationStatus::DependencyUnavailable

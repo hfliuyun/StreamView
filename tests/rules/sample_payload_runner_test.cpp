@@ -239,6 +239,12 @@ public:
         return static_cast<quint64>(data_.size());
     }
     [[nodiscard]] QString identity() const override { return QStringLiteral("faulty-source"); }
+    void clearFailure() { failAtOffset_ = std::numeric_limits<quint64>::max(); }
+    void failAt(quint64 offset) { failAtOffset_ = offset; }
+    void cancelAt(quint64 offset, CancellationSource* cancellation) {
+        cancelAtOffset_ = offset;
+        cancellation_ = cancellation;
+    }
 
     [[nodiscard]] SourceReadResult
     readAt(quint64 byteOffset, std::span<std::byte> destination) const override {
@@ -254,6 +260,9 @@ public:
         if (byteOffset + static_cast<quint64>(count) > failAtOffset_) {
             return {SourceReadStatus::Error, 0, QStringLiteral("Injected I/O failure")};
         }
+        if (cancellation_ && byteOffset + static_cast<quint64>(count) > cancelAtOffset_) {
+            (void)cancellation_->requestCancellation();
+        }
         for (std::size_t i = 0; i < count; ++i) {
             destination[i] = data_[static_cast<std::size_t>(byteOffset + i)];
         }
@@ -266,6 +275,8 @@ public:
 private:
     std::vector<std::byte> data_;
     quint64 failAtOffset_ = 0;
+    quint64 cancelAtOffset_ = 0;
+    CancellationSource* cancellation_ = nullptr;
 };
 
 [[nodiscard]] std::optional<SourceSpan> byteSpan(quint64 startByte, quint64 byteLength) {
@@ -378,6 +389,11 @@ private slots:
     void buildsAccessUnitEnvelopeWithConfigurationReference();
     void reportsDependencyUnavailableWithoutConfiguration();
     void mapsAccessUnitSpansOntoDiscontiguousSample();
+    void opaqueEnvelopeRespectsNodeBudget();
+    void lengthPrefixedRunSharesNodeBudgetAcrossUnits();
+    void terminalSampleFailureRollsBackContextAndCanRetry();
+    void terminalSampleFailureRollsBackStaleReplacement_data();
+    void terminalSampleFailureRollsBackStaleReplacement();
 };
 
 void SamplePayloadRunnerTest::framesSingleUnitWithFourBytePrefix() {
@@ -1204,6 +1220,231 @@ void SamplePayloadRunnerTest::mapsAccessUnitSpansOntoDiscontiguousSample() {
     const auto lengthField = findNamedChild(*tree, *result.sampleNode, QStringLiteral("byte_length"));
     QVERIFY(lengthField.has_value());
     QCOMPARE(lengthField->value().toULongLong(), quint64{8});
+}
+
+void SamplePayloadRunnerTest::opaqueEnvelopeRespectsNodeBudget() {
+    MemorySource source(std::vector<std::byte>(16, std::byte{0x42}));
+    const auto sample = sampleFor({*byteSpan(0, 16)});
+    for (const bool withSummary : {false, true}) {
+        const quint64 requiredNodes = withSummary ? 11 : 10;
+        for (const auto budget : {quint64{1}, requiredNodes - 1, requiredNodes}) {
+            auto tree = AnalysisTree::create(QStringLiteral("budget"));
+            QVERIFY(tree);
+            SamplePayloadRunRequest request;
+            request.source = &source;
+            request.sample = &sample;
+            request.framing = SamplePayloadFraming::OpaqueAccessUnit;
+            request.tree = &*tree;
+            request.parentId = tree->rootId();
+            request.configurationNode = AnalysisNodeId(1);
+            if (withSummary) {
+                request.configurationSummary = QStringLiteral("Configured");
+            }
+            request.options.limits.maximumMaterializedNodes = budget;
+            const auto result = SamplePayloadRunner::run(request);
+            if (budget < requiredNodes) {
+                QCOMPARE(result.status, SamplePayloadRunStatus::ResourceLimit);
+                QCOMPARE(tree->nodeCount(), std::size_t{1});
+            } else {
+                QVERIFY2(result.executed(), qPrintable(result.errorMessage));
+                QCOMPARE(tree->nodeCount(), static_cast<std::size_t>(requiredNodes + 1));
+            }
+        }
+    }
+}
+
+void SamplePayloadRunnerTest::lengthPrefixedRunSharesNodeBudgetAcrossUnits() {
+    const auto fixture = loadH264NalProgram();
+    QVERIFY(fixture.program);
+    const auto bytes = lengthPrefixedSample({standaloneSpsNal(), standalonePpsNal()}, 4);
+    MemorySource source(bytes);
+    const auto sample = sampleFor({*byteSpan(0, bytes.size())});
+    PayloadTransformRegistry registry;
+    QVERIFY(registry.registerProvider(std::make_shared<H264RbspPayloadTransformProvider>()));
+    quint64 requiredNodes = 0;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        auto tree = AnalysisTree::create(QStringLiteral("sample-budget"));
+        QVERIFY(tree);
+        RuleExecutionSession session(*fixture.program, 1);
+        SamplePayloadRunRequest request;
+        request.source = &source;
+        request.sample = &sample;
+        request.tree = &*tree;
+        request.parentId = tree->rootId();
+        request.executionSession = &session;
+        request.unitStructureIndex = fixture.headerIndex;
+        request.transformRegistry = &registry;
+        if (attempt != 0) {
+            request.options.limits.maximumMaterializedNodes =
+                attempt == 1 ? requiredNodes - 1 : requiredNodes;
+        }
+        const auto result = SamplePayloadRunner::run(request);
+        const auto createdNodes = tree->nodeCount() - 1;
+        if (attempt == 1) {
+            QCOMPARE(result.status, SamplePayloadRunStatus::ResourceLimit);
+            QVERIFY(createdNodes <= request.options.limits.maximumMaterializedNodes);
+            QCOMPARE(session.publishedDefinitionCount(), std::size_t{0});
+            QVERIFY(session.boundSource() == nullptr);
+        } else {
+            QVERIFY2(result.executed(), qPrintable(result.errorMessage));
+            QCOMPARE(result.executedUnitCount(), quint64{2});
+            QCOMPARE(session.publishedDefinitionCount(), std::size_t{2});
+            if (attempt == 0) {
+                requiredNodes = createdNodes;
+                QVERIFY(requiredNodes > 1);
+            } else {
+                QCOMPARE(createdNodes, requiredNodes);
+            }
+        }
+    }
+}
+
+void SamplePayloadRunnerTest::terminalSampleFailureRollsBackContextAndCanRetry() {
+    const auto fixture = loadH264NalProgram();
+    QVERIFY(fixture.program);
+    const auto bytes = lengthPrefixedSample({standaloneSpsNal(), standalonePpsNal()}, 4);
+    FaultySource source(bytes, bytes.size() - 1);
+    const auto sample = sampleFor({*byteSpan(0, bytes.size())});
+    auto tree = AnalysisTree::create(QStringLiteral("rollback"));
+    QVERIFY(tree);
+    auto snapshot = tree->snapshot();
+    RuleExecutionSession session(*fixture.program, 1);
+    PayloadTransformRegistry registry;
+    QVERIFY(registry.registerProvider(std::make_shared<H264RbspPayloadTransformProvider>()));
+    SamplePayloadRunRequest request;
+    request.source = &source;
+    request.sample = &sample;
+    request.tree = &*tree;
+    request.parentId = tree->rootId();
+    request.executionSession = &session;
+    request.unitStructureIndex = fixture.headerIndex;
+    request.transformRegistry = &registry;
+    const auto failed = SamplePayloadRunner::run(request);
+    QCOMPARE(failed.status, SamplePayloadRunStatus::SourceError);
+    QCOMPARE(failed.units.size(), std::size_t{2});
+    QVERIFY(failed.units.front().executed());
+    QCOMPARE(session.publishedDefinitionCount(), std::size_t{0});
+    QCOMPARE(session.contextDirectory().definitionCount(), std::size_t{0});
+    QVERIFY(session.boundSource() == nullptr);
+    QCOMPARE(session.boundTreeIdentity(), quint64{0});
+    source.clearFailure();
+    QVERIFY(tree->restore(std::move(snapshot)));
+    const auto retry = SamplePayloadRunner::run(request);
+    QVERIFY2(retry.executed(), qPrintable(retry.errorMessage));
+    QCOMPARE(retry.executedUnitCount(), quint64{2});
+    QCOMPARE(session.publishedDefinitionCount(), std::size_t{2});
+}
+
+void SamplePayloadRunnerTest::terminalSampleFailureRollsBackStaleReplacement_data() {
+    QTest::addColumn<SamplePayloadRunStatus>("failureStatus");
+    QTest::newRow("source-error") << SamplePayloadRunStatus::SourceError;
+    QTest::newRow("cancelled") << SamplePayloadRunStatus::Cancelled;
+    QTest::newRow("resource-limit") << SamplePayloadRunStatus::ResourceLimit;
+}
+
+void SamplePayloadRunnerTest::terminalSampleFailureRollsBackStaleReplacement() {
+    QFETCH(SamplePayloadRunStatus, failureStatus);
+    const auto fixture = loadH264NalProgram();
+    QVERIFY(fixture.program);
+    const auto baseline = standaloneSpsNal();
+    const auto earlierBytes = lengthPrefixedSample({standaloneSpsNal()}, 4);
+    const auto pps = standalonePpsNal();
+    const auto laterBytes = lengthPrefixedSample({pps, standaloneSpsNal(1)}, 4);
+    auto bytes = baseline;
+    bytes.insert(bytes.end(), earlierBytes.begin(), earlierBytes.end());
+    bytes.insert(bytes.end(), laterBytes.begin(), laterBytes.end());
+    FaultySource source(bytes, std::numeric_limits<quint64>::max());
+    const auto earlier = sampleFor({*byteSpan(baseline.size(), earlierBytes.size())});
+    const quint64 laterOffset = baseline.size() + earlierBytes.size();
+    const auto later = sampleFor({*byteSpan(laterOffset, laterBytes.size())});
+    const auto baselineMapping = SourceMapping::create(
+        LogicalViewId(1), {*byteSpan(0, baseline.size())});
+    QVERIFY(baselineMapping);
+    auto tree = AnalysisTree::create(QStringLiteral("replacement-rollback"));
+    QVERIFY(tree);
+    RuleExecutionSession session(*fixture.program, 1);
+    PayloadTransformRegistry registry;
+    QVERIFY(registry.registerProvider(std::make_shared<H264RbspPayloadTransformProvider>()));
+
+    CompoundRuleExecutionRequest prime;
+    prime.source = &source;
+    prime.headerMapping = &*baselineMapping;
+    prime.payloadMapping = &*baselineMapping;
+    prime.headerStructureIndex = fixture.headerIndex;
+    prime.tree = &*tree;
+    prime.parentId = tree->rootId();
+    prime.transformRegistry = &registry;
+    prime.enclosingSourceSpans = baselineMapping->sourceSpans();
+    prime.autoDispatchPayload = true;
+    prime.baselineContext = true;
+    QVERIFY(session.runCompound(prime).materialized());
+
+    SamplePayloadRunRequest request;
+    request.source = &source;
+    request.sample = &later;
+    request.tree = &*tree;
+    request.parentId = tree->rootId();
+    request.executionSession = &session;
+    request.unitStructureIndex = fixture.headerIndex;
+    request.transformRegistry = &registry;
+    const auto beforeLater = tree->nodeCount();
+    const auto original = SamplePayloadRunner::run(request);
+    QVERIFY2(original.executed(), qPrintable(original.errorMessage));
+    QCOMPARE(original.executedUnitCount(), quint64{2});
+    const auto laterNodes = tree->nodeCount() - beforeLater;
+    const ContextKey ppsKey{ContextDefinitionKind::H264PictureParameterSet, 1, 0};
+    const SourceBitAddress consumerPosition(source.sizeBytes() * 8);
+    const auto originalPps = session.contextDirectory().resolveBefore(ppsKey, consumerPosition);
+    QVERIFY(originalPps.found());
+    const auto originalId = originalPps.definition->id;
+
+    request.sample = &earlier;
+    const auto discovered = SamplePayloadRunner::run(request);
+    QVERIFY2(discovered.executed(), qPrintable(discovered.errorMessage));
+    QCOMPARE(discovered.executedUnitCount(), quint64{1});
+    QCOMPARE(session.contextDirectory().resolveBefore(ppsKey, consumerPosition).status,
+             ContextLookupStatus::DependencyUnavailable);
+    const auto definitions = session.publishedDefinitionCount();
+    auto snapshot = tree->snapshot();
+
+    request.sample = &later;
+    CancellationSource cancellation;
+    const quint64 lastPayloadOffset = laterOffset + 4 + pps.size() + 4;
+    if (failureStatus == SamplePayloadRunStatus::SourceError) {
+        source.failAt(lastPayloadOffset);
+    } else if (failureStatus == SamplePayloadRunStatus::Cancelled) {
+        source.cancelAt(lastPayloadOffset, &cancellation);
+        request.options.cancellation = cancellation.token();
+    } else {
+        request.options.limits.maximumMaterializedNodes = laterNodes - 1;
+    }
+    const auto failed = SamplePayloadRunner::run(request);
+    QCOMPARE(failed.status, failureStatus);
+    QCOMPARE(failed.units.size(), std::size_t{2});
+    QVERIFY(failed.units.front().executed());
+    QCOMPARE(session.publishedDefinitionCount(), definitions);
+    QCOMPARE(session.contextDirectory().definitionCount(), definitions);
+    QCOMPARE(session.contextDirectory().resolveBefore(ppsKey, consumerPosition).status,
+             ContextLookupStatus::DependencyUnavailable);
+    QCOMPARE(session.contextDirectory().definition(originalId)->dependencies,
+             originalPps.definition->dependencies);
+    QVERIFY(!session.contextDirectory().definition(ContextDefinitionId(definitions + 1)));
+    QCOMPARE(session.boundSource(), &source);
+    QCOMPARE(session.boundTreeIdentity(), tree->instanceIdentity());
+
+    source.clearFailure();
+    source.cancelAt(0, nullptr);
+    request.options = {};
+    QVERIFY(tree->restore(std::move(snapshot)));
+    const auto retry = SamplePayloadRunner::run(request);
+    QVERIFY2(retry.executed(), qPrintable(retry.errorMessage));
+    QCOMPARE(retry.executedUnitCount(), quint64{2});
+    QCOMPARE(session.publishedDefinitionCount(), definitions + 1);
+    const auto rebound = session.contextDirectory().resolveBefore(ppsKey, consumerPosition);
+    QVERIFY(rebound.found());
+    QVERIFY(rebound.definition->id.value() > originalId.value());
+    QCOMPARE(session.contextDirectory().definition(originalId)->dependencies,
+             originalPps.definition->dependencies);
 }
 
 QTEST_MAIN(SamplePayloadRunnerTest)

@@ -380,6 +380,19 @@ SamplePayloadRunResult SamplePayloadRunner::run(const SamplePayloadRunRequest& r
             QStringLiteral("Access unit envelope requires a bound configuration node"));
     }
 
+    const auto initialNodeCount = request.tree->nodeCount();
+    const quint64 envelopeNodes = request.framing == SamplePayloadFraming::OpaqueAccessUnit
+                                      ? (request.configurationSummary.isEmpty() ? 10U : 11U)
+                                      : 8U;
+    if (request.options.limits.maximumMaterializedNodes < envelopeNodes) {
+        return runFailure(SamplePayloadRunStatus::ResourceLimit,
+                          QStringLiteral("Sample envelope exceeds the node budget"));
+    }
+    std::optional<RuleExecutionSession::Transaction> transaction;
+    if (request.framing == SamplePayloadFraming::LengthPrefixed) {
+        transaction.emplace(request.executionSession->beginTransaction(request.options.limits));
+    }
+
     SamplePayloadFramingOptions framingOptions;
     framingOptions.framing = request.framing;
     framingOptions.prefixLengthBytes = request.prefixLengthBytes;
@@ -531,6 +544,12 @@ SamplePayloadRunResult SamplePayloadRunner::run(const SamplePayloadRunRequest& r
             return failSample(SamplePayloadRunStatus::Cancelled,
                               QStringLiteral("Sample execution was cancelled"));
         }
+        const quint64 usedNodes = request.tree->nodeCount() - initialNodeCount;
+        if (usedNodes >= request.options.limits.maximumMaterializedNodes ||
+            request.options.limits.maximumMaterializedNodes - usedNodes < 2) {
+            return failSample(SamplePayloadRunStatus::ResourceLimit,
+                              QStringLiteral("Sample units exceed the node budget"));
+        }
 
         const auto prefixLocation = locateUnit(unitRange.prefixByteOffset,
                                                unitRange.prefixByteLength);
@@ -606,6 +625,8 @@ SamplePayloadRunResult SamplePayloadRunner::run(const SamplePayloadRunRequest& r
             unitRequest.parentId = *unitNodeId;
             unitRequest.enclosingSourceSpans = payloadLocation->sourceSpans();
             unitRequest.options = request.options;
+            unitRequest.options.limits.maximumMaterializedNodes -=
+                request.tree->nodeCount() - initialNodeCount;
             unitRequest.requireExactConsumption = true;
             unitRequest.autoDispatchPayload = true;
 
@@ -652,6 +673,9 @@ SamplePayloadRunResult SamplePayloadRunner::run(const SamplePayloadRunRequest& r
     }
 
     result.status = SamplePayloadRunStatus::Executed;
+    if (transaction) {
+        transaction->commit();
+    }
     return result;
 }
 

@@ -468,6 +468,99 @@ private slots:
             ContextDefinitionKind::AacAudioSpecificConfig, 0, SourceBitAddress(40));
         QCOMPARE(resolvedAac.status, ContextLookupStatus::NotFound);
     }
+    void baselineConfigurationPreservesPhysicalSpansAndDependencyGenerations() {
+        ContextDirectory directory;
+        const ContextKey spsKey{ContextDefinitionKind::H264SequenceParameterSet, 1, 0};
+        const ContextKey ppsKey{ContextDefinitionKind::H264PictureParameterSet, 1, 0};
+        auto sps = definition(spsKey, 1000, 32, 2);
+        sps.baseline = true;
+        const auto initialSps = directory.registerDefinition(std::move(sps));
+        QVERIFY(initialSps.succeeded());
+        auto pps = definition(ppsKey, 1100, 32, 3, {*initialSps.definitionId});
+        pps.baseline = true;
+        QVERIFY(directory.registerDefinition(std::move(pps)).succeeded());
+        for (quint64 position : {0U, 800U, 1200U}) {
+            const auto lookup = directory.resolveBefore(ppsKey, SourceBitAddress(position));
+            QVERIFY(lookup.found());
+            QCOMPARE(lookup.definition->sourceSpans.front().start().absoluteBitOffset(), quint64{1100});
+            const auto ambient = directory.resolveLatestBefore(
+                ContextDefinitionKind::H264PictureParameterSet, 1, SourceBitAddress(position));
+            QVERIFY(ambient.found());
+            QCOMPARE(ambient.definition->id, lookup.definition->id);
+        }
+        const auto inband = directory.registerDefinition(definition(spsKey, 100, 32, 4));
+        QVERIFY(inband.succeeded());
+        QCOMPARE(directory.resolveBefore(spsKey, SourceBitAddress(132)).definition->id,
+                 *inband.definitionId);
+        QCOMPARE(directory.resolveBefore(spsKey, SourceBitAddress(1200)).definition->id,
+                 *inband.definitionId);
+        QCOMPARE(directory.resolveBefore(ppsKey, SourceBitAddress(132)).status,
+                 ContextLookupStatus::DependencyUnavailable);
+        QVERIFY(directory.resolveBefore(ppsKey, SourceBitAddress(99)).found());
+        QCOMPARE(directory.resolveBefore(
+                     {ContextDefinitionKind::H264SequenceParameterSet, 2, 0},
+                     SourceBitAddress(1200)).status, ContextLookupStatus::NotFound);
+    }
+
+    void replacesOnlyStaleDefinitionsAtTheSameSourceSpans() {
+        ContextDirectory directory;
+        const ContextKey spsKey{ContextDefinitionKind::H264SequenceParameterSet, 1, 0};
+        const ContextKey ppsKey{ContextDefinitionKind::H264PictureParameterSet, 1, 0};
+        auto baseline = definition(spsKey, 1000, 32, 2);
+        baseline.baseline = true;
+        const auto initialSps = directory.registerDefinition(std::move(baseline));
+        QVERIFY(initialSps.succeeded());
+        const auto pps = directory.registerDefinition(
+            definition(ppsKey, 200, 32, 3, {*initialSps.definitionId}));
+        QVERIFY(pps.succeeded());
+        const auto snapshot = directory.definition(*pps.definitionId);
+        QVERIFY(snapshot);
+
+        const auto inband = directory.registerDefinition(definition(spsKey, 100, 32, 4));
+        QVERIFY(inband.succeeded());
+        QCOMPARE(directory.resolveBefore(ppsKey, SourceBitAddress(232)).status,
+                 ContextLookupStatus::DependencyUnavailable);
+        const auto duplicate = directory.registerDefinition(
+            definition(ppsKey, 200, 32, 5, {*inband.definitionId}));
+        QCOMPARE(duplicate.status, ContextRegistrationStatus::DuplicateDefinition);
+        QCOMPARE(duplicate.conflictingDefinitionId, pps.definitionId);
+        const auto count = directory.definitionCount();
+
+        auto changedBaseline = definition(ppsKey, 200, 32, 5, {*inband.definitionId});
+        changedBaseline.baseline = true;
+        for (auto invalid : {definition(ppsKey, 201, 31, 5, {*inband.definitionId}),
+                             definition(ppsKey, 200, 32, 5, {*initialSps.definitionId}),
+                             changedBaseline}) {
+            QVERIFY(!directory.replaceStaleDefinition(*pps.definitionId,
+                                                      std::move(invalid)).succeeded());
+            QCOMPARE(directory.definitionCount(), count);
+        }
+        auto copied = directory;
+        const auto replacement = directory.replaceStaleDefinition(
+            *pps.definitionId, definition(ppsKey, 200, 32, 5, {*inband.definitionId}));
+        QVERIFY(replacement.succeeded());
+        QVERIFY(replacement.definitionId->value() > pps.definitionId->value());
+        QCOMPARE(directory.definitionCount(), count + 1);
+        const auto resolved = directory.resolveBefore(ppsKey, SourceBitAddress(232));
+        QVERIFY(resolved.found());
+        QCOMPARE(resolved.definition->id, *replacement.definitionId);
+        QCOMPARE(resolved.definition->analysisNodeId, AnalysisNodeId(5));
+        QCOMPARE(directory.definition(*pps.definitionId)->dependencies, snapshot->dependencies);
+        QCOMPARE(copied.resolveBefore(ppsKey, SourceBitAddress(232)).status,
+                 ContextLookupStatus::DependencyUnavailable);
+
+        const auto newerSps = directory.registerDefinition(definition(spsKey, 150, 32, 6));
+        QVERIFY(newerSps.succeeded());
+        QVERIFY(!directory.replaceStaleDefinition(
+            *pps.definitionId, definition(ppsKey, 200, 32, 7, {*newerSps.definitionId})).succeeded());
+        const auto refreshed = directory.replaceStaleDefinition(
+            *replacement.definitionId,
+            definition(ppsKey, 200, 32, 7, {*newerSps.definitionId}));
+        QVERIFY(refreshed.succeeded());
+        QVERIFY(!directory.replaceStaleDefinition(
+            *refreshed.definitionId,
+            definition(ppsKey, 200, 32, 8, {*newerSps.definitionId})).succeeded());
+    }
 };
 
 QTEST_GUILESS_MAIN(ContextDirectoryTest)

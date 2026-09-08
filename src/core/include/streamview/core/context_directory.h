@@ -46,6 +46,8 @@ struct ContextDefinitionSpec final {
     std::vector<SourceSpan> sourceSpans;
     AnalysisNodeId analysisNodeId;
     std::vector<ContextDefinitionId> dependencies;
+    /// Configuration is visible independent of physical position, behind in-band definitions.
+    bool baseline = false;
 };
 
 struct ContextDefinition final {
@@ -54,6 +56,7 @@ struct ContextDefinition final {
     std::vector<SourceSpan> sourceSpans;
     AnalysisNodeId analysisNodeId;
     std::vector<ContextDefinitionId> dependencies;
+    bool baseline = false;
 };
 
 enum class ContextRegistrationStatus : quint8 {
@@ -67,6 +70,8 @@ struct ContextRegistrationResult final {
     ContextRegistrationStatus status = ContextRegistrationStatus::InvalidDefinition;
     std::optional<ContextDefinitionId> definitionId;
     QString errorMessage;
+    /// The active overlapping definition when registration reports a duplicate.
+    std::optional<ContextDefinitionId> conflictingDefinitionId = std::nullopt;
 
     [[nodiscard]] bool succeeded() const noexcept {
         return status == ContextRegistrationStatus::Registered;
@@ -96,6 +101,10 @@ public:
     definition(ContextDefinitionId id) const;
 
     [[nodiscard]] ContextRegistrationResult registerDefinition(ContextDefinitionSpec spec);
+    /// Re-executed syntax may replace a stale definition at the same exact spans.
+    /// Old IDs remain valid snapshots but cease to be lookup candidates.
+    [[nodiscard]] ContextRegistrationResult replaceStaleDefinition(
+        ContextDefinitionId previous, ContextDefinitionSpec spec);
     [[nodiscard]] ContextLookupResult resolveBefore(const ContextKey& key,
                                                     SourceBitAddress sourcePosition) const;
     [[nodiscard]] ContextLookupResult resolveLatestBefore(ContextDefinitionKind kind,
@@ -103,6 +112,13 @@ public:
                                                           SourceBitAddress sourcePosition) const;
 
 private:
+    [[nodiscard]] ContextRegistrationResult registerDefinition(
+        ContextDefinitionSpec spec, std::optional<ContextDefinitionId> previous);
+
+    [[nodiscard]] std::optional<ContextDefinitionId> visibleCandidate(
+        const std::vector<ContextDefinitionId>& definitions,
+        SourceBitAddress sourcePosition) const;
+
     [[nodiscard]] ContextLookupResult
     resolveBefore(const ContextKey& key,
                   SourceBitAddress sourcePosition,
