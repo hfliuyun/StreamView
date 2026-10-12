@@ -303,6 +303,9 @@ bool RawDataView::loadPage(quint64 pageIndex, QString* errorMessage) {
 }
 
 void RawDataView::updateControls() {
+    if (!model_ || !pageLabel_ || !previousPageButton_ || !nextPageButton_) {
+        return;
+    }
     const quint64 pageCount = model_->pageCount();
     if (pageCount == 0) {
         pageLabel_->setText(tr("No data"));

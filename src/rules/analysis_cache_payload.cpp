@@ -248,7 +248,7 @@ makeIndexRecord(quint64 startCodeOffset, quint32 startCodeLength, quint64 nalUni
     }
     quint64 end = 0;
     return validateIndexRecord(record, indexedThroughByteOffset, previousEnd, &end)
-               ? std::optional<H264StartCodeRecord>(std::move(record))
+               ? std::optional<H264StartCodeRecord>(record)
                : std::nullopt;
 }
 
@@ -620,7 +620,7 @@ H264ProgressiveIndexCacheDecodeResult AnalysisCachePageBodyCodec::decodeProgress
                 QStringLiteral("Progressive-index cache record is invalid"));
         }
         previousEnd = record->trailingZero8BitsOffset + record->trailingZero8BitsLength;
-        page.records.push_back(std::move(*record));
+        page.records.push_back(*record);
     }
     if (!reader.atEnd()) {
         return invalidProgressiveDecode(

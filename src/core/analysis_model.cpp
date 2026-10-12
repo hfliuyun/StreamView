@@ -234,14 +234,14 @@ AnalysisNode* AnalysisTree::nodeForMutation(AnalysisNodeId id) noexcept {
     if (id.value() == 0 || id.value() > nodes_.size()) {
         return nullptr;
     }
-    return &nodes_.at(static_cast<std::size_t>(id.value() - 1));
+    return &nodes_[static_cast<std::size_t>(id.value() - 1)];
 }
 
 const AnalysisNode* AnalysisTree::nodeForRead(AnalysisNodeId id) const noexcept {
     if (id.value() == 0 || id.value() > nodes_.size()) {
         return nullptr;
     }
-    return &nodes_.at(static_cast<std::size_t>(id.value() - 1));
+    return &nodes_[static_cast<std::size_t>(id.value() - 1)];
 }
 
 bool AnalysisTree::canTransition(MaterializationState from,

@@ -99,9 +99,9 @@ struct AnalysisNodeSpec final {
     AnalysisNodeKind kind = AnalysisNodeKind::Structure;
     QString name;
     MaterializationState state = MaterializationState::Materialized;
-    QVariant value;
-    std::optional<FieldLocation> location;
-    AnalysisNodeMetadata metadata;
+    QVariant value{};
+    std::optional<FieldLocation> location = std::nullopt;
+    AnalysisNodeMetadata metadata{};
 };
 
 class AnalysisNode final {

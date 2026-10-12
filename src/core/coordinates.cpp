@@ -58,11 +58,11 @@ FieldLocation::create(LogicalRange logicalRange, std::vector<SourceSpan> sourceS
         (logicalRange.bitLength() == 0 && !sourceSpans.empty())) {
         return std::nullopt;
     }
-    return FieldLocation(std::move(logicalRange), std::move(sourceSpans));
+    return FieldLocation(logicalRange, std::move(sourceSpans));
 }
 
 std::optional<SourceMapping>
-SourceMapping::create(LogicalViewId viewId, std::vector<SourceSpan> sourceSpans) {
+SourceMapping::create(LogicalViewId viewId, const std::vector<SourceSpan>& sourceSpans) {
     quint64 logicalBitLength = 0;
     std::vector<SourceSpan> normalized;
     normalized.reserve(sourceSpans.size());

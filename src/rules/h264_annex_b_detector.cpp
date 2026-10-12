@@ -68,7 +68,7 @@ detectH264AnnexBCandidate(std::span<const std::byte> sourcePrefix,
             *evidence.nalUnitType <= 23U) {
             ++validHeaderCount;
         }
-        candidate.evidence.push_back(std::move(evidence));
+        candidate.evidence.push_back(evidence);
         offset += static_cast<std::size_t>(startCodeLength) - 1U;
     }
 

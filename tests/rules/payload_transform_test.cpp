@@ -182,7 +182,7 @@ private:
         const auto span = SourceSpan::create(*start, length * 8U);
         spans.push_back(*span);
     }
-    auto mapping = SourceMapping::create(LogicalViewId(1), std::move(spans));
+    auto mapping = SourceMapping::create(LogicalViewId(1), spans);
     return *mapping;
 }
 
@@ -278,7 +278,7 @@ public:
         }
 
         auto mappingOpt = SourceMapping::create(
-            request.inputMapping->viewId(), std::move(forwardedSpans));
+            request.inputMapping->viewId(), forwardedSpans);
         if (!mappingOpt) {
             result.status = DslExecutionStatus::InvalidDefinition;
             result.errorMessage = QStringLiteral("Failed to build forwarded mapping");

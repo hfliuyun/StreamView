@@ -87,7 +87,8 @@ struct TableFixture final {
                                     .entryNode = streamview::core::AnalysisNodeId{7},
                                     .targetFormat = QStringLiteral("video.h264.nal"),
                                     .configurationNode = streamview::core::AnalysisNodeId{8},
-                                    .prefixLengthBytes = 4});
+                                    .prefixLengthBytes = 4,
+                                    .configurationNodes = {}});
     return tables;
 }
 
@@ -145,13 +146,15 @@ struct MixedRunTrack final {
                                     .entryNode = streamview::core::AnalysisNodeId{11},
                                     .targetFormat = QStringLiteral("video.h264.nal"),
                                     .configurationNode = streamview::core::AnalysisNodeId{13},
-                                    .prefixLengthBytes = 4});
+                                    .prefixLengthBytes = 4,
+                                    .configurationNodes = {}});
     tables.sampleDescriptions.push_back(
         Mp4SampleDescriptionBinding{.sampleDescriptionIndex = 2,
                                     .entryNode = streamview::core::AnalysisNodeId{12},
                                     .targetFormat = QStringLiteral("audio.aac.asc"),
                                     .configurationNode = streamview::core::AnalysisNodeId{14},
-                                    .prefixLengthBytes = std::nullopt});
+                                    .prefixLengthBytes = std::nullopt,
+                                    .configurationNodes = {}});
     return track;
 }
 

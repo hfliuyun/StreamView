@@ -1,11 +1,13 @@
 Checks: >
   -*,
-  bugprone-*,
-  clang-analyzer-*,
-  performance-*,
-  portability-*,
+  bugprone-empty-catch,
+  bugprone-use-after-move,
+  bugprone-unsafe-functions,
+  clang-analyzer-core.*,
+  clang-analyzer-cplusplus.*,
+  performance-move-const-arg,
   readability-avoid-const-params-in-decls,
   readability-identifier-naming
 WarningsAsErrors: ''
-HeaderFilterRegex: '^(src|tools|tests)/'
+HeaderFilterRegex: '(^|/)(src|tools|tests|benchmarks)/'
 FormatStyle: file

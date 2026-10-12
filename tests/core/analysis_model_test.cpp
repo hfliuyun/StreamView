@@ -34,7 +34,7 @@ std::optional<streamview::core::FieldLocation> testLocationFromSpans(
         }
         spans.push_back(*span);
     }
-    const auto mapping = SourceMapping::create(LogicalViewId(1), std::move(spans));
+    const auto mapping = SourceMapping::create(LogicalViewId(1), spans);
     if (!mapping) {
         return std::nullopt;
     }
@@ -79,6 +79,8 @@ private slots:
         QVERIFY(moveAssigned.has_value());
         *moveAssigned = std::move(moved);
         QCOMPARE(moveAssigned->instanceIdentity(), originalIdentity);
+        // Moving deliberately resets the source identity; this tests that contract.
+        // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
         QVERIFY(moved.instanceIdentity() != originalIdentity);
     }
 

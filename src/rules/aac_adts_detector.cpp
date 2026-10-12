@@ -107,7 +107,7 @@ detectAacAdtsCandidate(std::span<const std::byte> sourcePrefix,
             evidence.profile = chainHeader->profile;
             evidence.samplingFrequencyIndex = chainHeader->samplingFrequencyIndex;
             evidence.channelConfiguration = chainHeader->channelConfiguration;
-            candidate.evidence.push_back(std::move(evidence));
+            candidate.evidence.push_back(evidence);
 
             if (chainOffset + chainHeader->frameLength >= inspectedSize) {
                 // Next frame is beyond inspected range

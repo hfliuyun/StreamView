@@ -32,8 +32,8 @@ bool spansOverlap(const std::vector<SourceSpan>& left,
     std::size_t leftIndex = 0;
     std::size_t rightIndex = 0;
     while (leftIndex < left.size() && rightIndex < right.size()) {
-        const SourceSpan& leftSpan = left.at(leftIndex);
-        const SourceSpan& rightSpan = right.at(rightIndex);
+        const SourceSpan& leftSpan = left[leftIndex];
+        const SourceSpan& rightSpan = right[rightIndex];
         if (leftSpan.start() < rightSpan.endExclusive() &&
             rightSpan.start() < leftSpan.endExclusive()) {
             return true;
@@ -108,8 +108,8 @@ ContextRegistrationResult ContextDirectory::registerDefinition(
         }
         const auto currentDependency = resolveBefore(dependency->key,
                                                      sourceStart(spec.sourceSpans));
-        if (!currentDependency.found() ||
-            currentDependency.definition->id != dependencyId) {
+        if (!currentDependency.found() || !currentDependency.definition.has_value() ||
+            currentDependency.definition.value().id != dependencyId) {
             return {ContextRegistrationStatus::DependencyUnavailable,
                     std::nullopt,
                     QStringLiteral("Context definition dependency is unavailable")};
@@ -245,7 +245,8 @@ ContextLookupResult ContextDirectory::resolveBefore(
                     std::nullopt,
                     currentDependency.unavailableDependency.value_or(dependencyId)};
         }
-        if (currentDependency.definition->id != dependencyId) {
+        if (!currentDependency.definition.has_value() ||
+            currentDependency.definition.value().id != dependencyId) {
             resolutionStack.pop_back();
             return {ContextLookupStatus::DependencyUnavailable,
                     std::nullopt,

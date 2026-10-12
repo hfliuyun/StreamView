@@ -163,9 +163,9 @@ H264EbspRbspMapBatch H264EbspRbspMapper::mapBatch(quint64 maximumInspectedBytes)
         std::optional<H264EbspRbspIssue> secondIssue;
         const auto planIssue = [&firstIssue, &secondIssue](H264EbspRbspIssue issue) {
             if (!firstIssue) {
-                firstIssue = std::move(issue);
+                firstIssue = issue;
             } else {
-                secondIssue = std::move(issue);
+                secondIssue = issue;
             }
         };
 
@@ -265,9 +265,7 @@ H264EbspRbspMapBatch H264EbspRbspMapper::mapBatch(quint64 maximumInspectedBytes)
 
         pendingEscapeStartByte_ =
             excludesByte ? std::optional<quint64>(currentByte - 2U) : std::nullopt;
-        if (excludesByte) {
-            zeroRun_ = 0;
-        } else if (value == 0x00U) {
+        if (!excludesByte && value == 0x00U) {
             zeroRun_ = static_cast<quint8>(std::min<unsigned int>(2U, zeroRun_ + 1U));
         } else {
             zeroRun_ = 0;

@@ -186,7 +186,7 @@ mappingForBytes(quint64 byteCount) {
         spans.push_back(*span);
     }
     return streamview::core::SourceMapping::create(
-        streamview::core::LogicalViewId(1), std::move(spans));
+        streamview::core::LogicalViewId(1), spans);
 }
 
 } // namespace

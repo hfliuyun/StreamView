@@ -222,7 +222,7 @@ AnalysisSession::AnalysisSession(std::unique_ptr<core::RandomAccessSource> sourc
       initialPage_(std::move(initialPage)), formatDetection_(std::move(formatDetection)),
       aacFormatDetection_(std::move(aacFormatDetection)),
       mp4FormatDetection_(std::move(mp4FormatDetection)),
-      formatSelection_(std::move(formatSelection)),
+      formatSelection_(formatSelection),
       analyzer_(std::move(analyzer)), userState_(std::move(userState)),
       cacheOwner_(std::move(cacheOwner)), cacheStatus_(cacheStatus),
       cacheErrorMessage_(std::move(cacheErrorMessage)),
@@ -343,7 +343,7 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
         if (!setup.has_value()) {
             return nullptr;
         }
-        formatSelection = std::move(setup->formatSelection);
+        formatSelection = setup->formatSelection;
         formatDetection = std::move(setup->formatDetection);
         aacFormatDetection = std::move(setup->aacFormatDetection);
         mp4FormatDetection = std::move(setup->mp4FormatDetection);
@@ -426,7 +426,7 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
     return std::unique_ptr<AnalysisSession>(
         new AnalysisSession(std::move(source), std::move(sourcePath), std::move(initialPage),
                             std::move(formatDetection), std::move(aacFormatDetection),
-                            std::move(mp4FormatDetection), std::move(formatSelection),
+                            std::move(mp4FormatDetection), formatSelection,
                             std::move(*analyzerVariant), std::move(userState),
                             std::move(cacheSetup.owner), cacheSetup.status,
                             std::move(cacheSetup.errorMessage),
@@ -608,7 +608,7 @@ bool AnalysisSession::overrideFormat(const rules::RulePackageCatalog& catalog,
     analysisStarted_ = false;
     lastBatchStatus_ = AnalysisBatchStatus::InProgress;
 
-    formatSelection_ = std::move(setup->formatSelection);
+    formatSelection_ = setup->formatSelection;
     formatDetection_ = std::move(setup->formatDetection);
     aacFormatDetection_ = std::move(setup->aacFormatDetection);
     mp4FormatDetection_ = std::move(setup->mp4FormatDetection);

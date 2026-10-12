@@ -1687,6 +1687,9 @@ void MainWindow::loadSamplePage(quint32 trackId, quint64 pageIndex) {
 }
 
 void MainWindow::updateTimelinePageControls() {
+    if (!timelinePrevPageButton_ || !timelineNextPageButton_ || !timelinePageLabel_) {
+        return;
+    }
     const quint64 totalPages = (currentTotalSamples_ == 0)
                                    ? 1
                                    : ((currentTotalSamples_ + kSamplePageSize - 1) / kSamplePageSize);
@@ -1708,6 +1711,9 @@ void MainWindow::updateTimelinePageControls() {
 }
 
 void MainWindow::updateAmbiguityUI() {
+    if (!formatAmbiguityLabel_) {
+        return;
+    }
     if (!session_) {
         formatAmbiguityLabel_->clear();
         formatAmbiguityLabel_->hide();

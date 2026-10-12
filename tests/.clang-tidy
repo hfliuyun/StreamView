@@ -1,0 +1,4 @@
+InheritParentConfig: true
+# LLVM 18 cannot model QTest::qVerify returning false after a failed assertion.
+# Product code retains this check; tests retain all other configured checks.
+Checks: '-clang-analyzer-core.CallAndMessage'

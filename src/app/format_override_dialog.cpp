@@ -192,6 +192,9 @@ void FormatOverrideDialog::populateOptions(
     const rules::RulePackageCatalog& catalog,
     const rules::FormatSelection& formatSelection,
     const rules::RuleEntryPointIdentity& currentRule) {
+    if (!optionsListWidget_) {
+        return;
+    }
     options_.clear();
     optionsListWidget_->clear();
 
@@ -330,7 +333,8 @@ void FormatOverrideDialog::populateOptions(
             itemText += tr(" [Candidate]");
         }
 
-        auto* item = new QListWidgetItem(itemText, optionsListWidget_);
+        auto* item = new QListWidgetItem(itemText);
+        optionsListWidget_->addItem(item);
         if (opt.isConflictCandidate) {
             QFont font = item->font();
             font.setBold(true);

@@ -245,7 +245,7 @@ public:
         }
 
         auto mappingOpt = SourceMapping::create(
-            request.inputMapping->viewId(), std::move(forwardedSpans));
+            request.inputMapping->viewId(), forwardedSpans);
         if (!mappingOpt) {
             result.status = DslExecutionStatus::InvalidDefinition;
             result.errorMessage = QStringLiteral("Failed to build forwarded mapping");

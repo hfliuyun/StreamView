@@ -166,7 +166,7 @@ struct Mp4SamplePageRequest final {
     /// Upper bound on table-reader calls for one page request. Bounds the
     /// mid-chunk catch-up a page starting inside a large chunk has to perform.
     quint64 maximumTableReadsPerPage = 1U << 20U;
-    std::optional<core::CancellationToken> cancellation;
+    std::optional<core::CancellationToken> cancellation = std::nullopt;
 };
 
 struct Mp4SamplePageResult final {

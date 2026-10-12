@@ -409,7 +409,7 @@ H264AnnexBAnalyzer::makeLocation(std::vector<core::SourceSpan> sourceSpans) {
     const core::LogicalViewId viewId(nextViewId_);
     nextViewId_ = nextViewId_ == std::numeric_limits<quint64>::max() ? 0 : nextViewId_ + 1;
 
-    const auto mapping = core::SourceMapping::create(viewId, std::move(sourceSpans));
+    const auto mapping = core::SourceMapping::create(viewId, sourceSpans);
     if (!mapping) {
         return std::nullopt;
     }
@@ -508,7 +508,7 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
     if (headerSpan->bitLength() != 0) {
         headerSpans.push_back(*headerSpan);
     }
-    const auto mapping = core::SourceMapping::create(headerViewId, std::move(headerSpans));
+    const auto mapping = core::SourceMapping::create(headerViewId, headerSpans);
     if (!mapping) {
         return failPublishedNal(QStringLiteral("Unable to create direct NAL header mapping"));
     }
@@ -688,7 +688,7 @@ bool H264AnnexBAnalyzer::publishRecord(const H264StartCodeRecord& record,
             nalUnitIndex,
             H264EbspRbspMapper(
                 *source_, rbspViewId, *payloadSpan, mapperLimits_, cancellation_),
-            std::move(payloadCase),
+            payloadCase,
             allowExecutionCancellation,
             std::move(elementValues),
         });
@@ -1211,7 +1211,7 @@ H264AnnexBAnalysisBatch H264AnnexBAnalyzer::analyzeBatch(
             result.status = H264AnnexBAnalysisStatus::InProgress;
             return result;
         }
-        QueuedRecord queued = std::move(queuedRecords_.front());
+        QueuedRecord queued = queuedRecords_.front();
         queuedRecords_.pop_front();
         QString publishError;
         H264AnnexBAnalysisStatus failureStatus = H264AnnexBAnalysisStatus::InvalidRule;

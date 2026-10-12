@@ -2567,7 +2567,6 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
     quint32 nextWhileRepeatIndex = 0;
     quint32 nextAssertionIndex = 0;
     quint32 nextUnsupportedIndex = 0;
-    bool ended = false;
     struct WhileRepeatRuntimeState {
         quint32 currentIteration = std::numeric_limits<quint32>::max();
         bool active = false;
@@ -4117,8 +4116,7 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
             result.contextValues = std::move(stagedContextValues);
             result.contextImports = std::move(stagedContextImports);
             result.status = DslExecutionStatus::Materialized;
-            ended = true;
-            break;
+            return result;
         }
         default:
             markFailure(DslExecutionStatus::InvalidDefinition,
@@ -4126,16 +4124,11 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
                         nullptr);
             return result;
         }
-        if (ended) {
-            break;
-        }
     }
 
-    if (!ended) {
-        markFailure(DslExecutionStatus::InvalidDefinition,
-                    QStringLiteral("Typed IR did not terminate a structure"),
-                    nullptr);
-    }
+    markFailure(DslExecutionStatus::InvalidDefinition,
+                QStringLiteral("Typed IR did not terminate a structure"),
+                nullptr);
     return result;
 }
 

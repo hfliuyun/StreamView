@@ -286,7 +286,7 @@ Mp4IsobmffAnalyzer::makeLocation(std::vector<core::SourceSpan> sourceSpans) {
     const core::LogicalViewId viewId(nextViewId_);
     nextViewId_ = nextViewId_ == std::numeric_limits<quint64>::max() ? 0 : nextViewId_ + 1;
 
-    const auto mapping = core::SourceMapping::create(viewId, std::move(sourceSpans));
+    const auto mapping = core::SourceMapping::create(viewId, sourceSpans);
     if (!mapping) {
         return std::nullopt;
     }

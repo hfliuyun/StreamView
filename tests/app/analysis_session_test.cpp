@@ -2215,7 +2215,8 @@ private slots:
             QCOMPARE(tracks.status, AnalysisSessionSampleStatus::Available);
             QCOMPARE(tracks.tracks.size(), std::size_t{2});
 
-            AnalysisSessionSamplePageRequest vReq{.trackId = 1, .pageSize = 10};
+            AnalysisSessionSamplePageRequest vReq{
+                .trackId = 1, .pageSize = 10, .cancellation = std::nullopt};
             const auto vPage = session->samplesForTrack(vReq);
             QCOMPARE(vPage.status, AnalysisSessionSampleStatus::Available);
             QCOMPARE(vPage.descriptors.size(), std::size_t{2});
@@ -2235,7 +2236,8 @@ private slots:
             QCOMPARE(vPage.descriptors[1].pts, 1000LL);
             QCOMPARE(vPage.descriptors[1].duration, 1000ULL);
 
-            AnalysisSessionSamplePageRequest aReq{.trackId = 2, .pageSize = 10};
+            AnalysisSessionSamplePageRequest aReq{
+                .trackId = 2, .pageSize = 10, .cancellation = std::nullopt};
             const auto aPage = session->samplesForTrack(aReq);
             QCOMPARE(aPage.status, AnalysisSessionSampleStatus::Available);
             QCOMPARE(aPage.descriptors.size(), std::size_t{2});
@@ -2352,7 +2354,8 @@ private slots:
             QCOMPARE(tracks.status, AnalysisSessionSampleStatus::Available);
             QCOMPARE(tracks.tracks.size(), std::size_t{1});
 
-            AnalysisSessionSamplePageRequest req{.trackId = 1, .pageSize = 10};
+            AnalysisSessionSamplePageRequest req{
+                .trackId = 1, .pageSize = 10, .cancellation = std::nullopt};
             const auto page = session->samplesForTrack(req);
             QCOMPARE(page.status, AnalysisSessionSampleStatus::Available);
             QCOMPARE(page.descriptors.size(), std::size_t{4});

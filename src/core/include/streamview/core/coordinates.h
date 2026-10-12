@@ -123,7 +123,7 @@ private:
 class SourceMapping final {
 public:
     [[nodiscard]] static std::optional<SourceMapping>
-    create(LogicalViewId viewId, std::vector<SourceSpan> sourceSpans);
+    create(LogicalViewId viewId, const std::vector<SourceSpan>& sourceSpans);
 
     [[nodiscard]] LogicalViewId viewId() const noexcept { return viewId_; }
     [[nodiscard]] quint64 logicalBitLength() const noexcept { return logicalBitLength_; }

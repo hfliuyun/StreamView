@@ -547,7 +547,7 @@ PagedCacheReadResult PagedCache::readPage(const PagedCachePageKey& key) const {
         return result;
     }
     query.addBindValue(impl_->namespaceName);
-    query.addBindValue(*kind);
+    query.addBindValue(kind.value());
     query.addBindValue(static_cast<qlonglong>(key.streamId));
     query.addBindValue(static_cast<qlonglong>(key.pageIndex));
     if (!query.exec()) {
@@ -655,7 +655,7 @@ PagedCacheCommitResult PagedCache::commitBatch(std::span<const PagedCachePageWri
         const QByteArray payload(reinterpret_cast<const char*>(page.bytes.data()),
                                  static_cast<qsizetype>(page.bytes.size()));
         write.bindValue(0, impl_->namespaceName);
-        write.bindValue(1, *kind);
+        write.bindValue(1, kind.value());
         write.bindValue(2, static_cast<qlonglong>(page.key.streamId));
         write.bindValue(3, static_cast<qlonglong>(page.key.pageIndex));
         write.bindValue(4, payload);

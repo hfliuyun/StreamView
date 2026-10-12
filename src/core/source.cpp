@@ -165,7 +165,7 @@ captureSnapshot(const QFile& file, SourceFingerprintStatus* failureStatus, QStri
 
 [[nodiscard]] bool addFileRange(QFile* file, quint64 offset, quint64 length,
                                 QCryptographicHash* hash, QString* errorMessage) {
-    constexpr qsizetype bufferSize = 64 * 1024;
+    constexpr qsizetype bufferSize = qsizetype{64} * 1024;
     std::array<char, static_cast<std::size_t>(bufferSize)> buffer{};
     if (offset > static_cast<quint64>(std::numeric_limits<qint64>::max()) ||
         !file->seek(static_cast<qint64>(offset))) {

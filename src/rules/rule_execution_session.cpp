@@ -45,7 +45,7 @@ namespace {
         requested.push_back(*legacySpan);
     }
     const auto normalized =
-        core::SourceMapping::create(core::LogicalViewId(1), std::move(requested));
+        core::SourceMapping::create(core::LogicalViewId(1), requested);
     if (!normalized || normalized->logicalBitLength() == 0) {
         return std::nullopt;
     }
