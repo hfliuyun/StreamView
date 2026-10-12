@@ -199,8 +199,8 @@ const std::unordered_map<std::string_view, QString>& chineseTranslations() {
 
         // File & Session Dialogs
         {"Open Media File", QString::fromUtf8("打开媒体文件")},
-        {"H.264 Annex B (*.264 *.h264 *.bin);;All Files (*)",
-         QString::fromUtf8("H.264 Annex B (*.264 *.h264 *.bin);;所有文件 (*)")},
+        {"Media Files (*.264 *.h264 *.bin *.mp4 *.mov *.m4v *.aac *.adts);;All Files (*)",
+         QString::fromUtf8("媒体文件 (*.264 *.h264 *.bin *.mp4 *.mov *.m4v *.aac *.adts);;所有文件 (*)")},
         {"Cannot Open File", QString::fromUtf8("无法打开文件")},
         {"Could not open %1:\n%2", QString::fromUtf8("无法打开 %1：\n%2")},
         {"Opened %1, but raw data could not be read: %2",

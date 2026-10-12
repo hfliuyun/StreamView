@@ -730,11 +730,11 @@ void MainWindow::openFile() {
     QString path;
     if (openFileDialogHandler_) {
         path = openFileDialogHandler_(this, tr("Open Media File"),
-                                      tr("H.264 Annex B (*.264 *.h264 *.bin);;All Files (*)"));
+                                      tr("Media Files (*.264 *.h264 *.bin *.mp4 *.mov *.m4v *.aac *.adts);;All Files (*)"));
     } else {
         path = QFileDialog::getOpenFileName(
             this, tr("Open Media File"), QString(),
-            tr("H.264 Annex B (*.264 *.h264 *.bin);;All Files (*)"));
+            tr("Media Files (*.264 *.h264 *.bin *.mp4 *.mov *.m4v *.aac *.adts);;All Files (*)"));
     }
 
     if (path.isEmpty()) {
