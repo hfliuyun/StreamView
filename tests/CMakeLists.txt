@@ -1,5 +1,6 @@
 qt_add_executable(streamview_core_tests core/version_test.cpp)
 target_link_libraries(streamview_core_tests PRIVATE StreamView::Core StreamView::Rules Qt6::Test)
+target_compile_definitions(streamview_core_tests PRIVATE STREAMVIEW_EXPECTED_VERSION="${PROJECT_VERSION}")
 streamview_set_warnings(streamview_core_tests)
 
 add_test(NAME streamview_core_tests COMMAND streamview_core_tests)
@@ -248,7 +249,9 @@ add_dependencies(streamview_svtool_tests svtool)
 add_test(NAME streamview_svtool_tests COMMAND streamview_svtool_tests)
 
 add_test(NAME svtool_version COMMAND svtool --version)
-set_tests_properties(svtool_version PROPERTIES PASS_REGULAR_EXPRESSION "svtool 0[.]1[.]0 [(]DSL 0[.]1[)]")
+string(REPLACE "." "[.]" streamview_version_regex "${PROJECT_VERSION}")
+set_tests_properties(svtool_version PROPERTIES
+    PASS_REGULAR_EXPRESSION "svtool ${streamview_version_regex} [(]DSL 0[.]1[)]")
 
 if(TARGET streamview)
     add_test(NAME streamview_version COMMAND streamview --version)
@@ -256,8 +259,12 @@ if(TARGET streamview)
         streamview_version
         PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-            PASS_REGULAR_EXPRESSION "StreamView 0[.]1[.]0"
+            PASS_REGULAR_EXPRESSION "StreamView ${streamview_version_regex}"
     )
+    add_test(NAME streamview_runtime COMMAND streamview --check-runtime)
+    set_tests_properties(streamview_runtime PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        PASS_REGULAR_EXPRESSION "StreamView runtime OK")
 endif()
 
 add_test(

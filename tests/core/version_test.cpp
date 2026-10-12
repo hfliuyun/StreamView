@@ -8,7 +8,7 @@ class VersionTest final : public QObject {
 
 private slots:
     void exposesIndependentVersions() {
-        QCOMPARE(streamview::core::version(), QStringLiteral("0.1.0"));
+        QCOMPARE(streamview::core::version(), QStringLiteral(STREAMVIEW_EXPECTED_VERSION));
         QCOMPARE(streamview::rules::languageVersion(), QStringLiteral("0.1"));
     }
 };

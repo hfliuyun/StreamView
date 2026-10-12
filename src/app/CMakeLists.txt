@@ -43,7 +43,7 @@ target_include_directories(streamview_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 streamview_set_warnings(streamview_app)
 
 qt_add_executable(streamview main.cpp)
-target_link_libraries(streamview PRIVATE StreamView::App)
+target_link_libraries(streamview PRIVATE StreamView::App Qt6::Sql)
 
 set_target_properties(
     streamview

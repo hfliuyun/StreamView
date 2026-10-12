@@ -45,5 +45,17 @@ diagnostics/partial results, and `2` means invalid usage or an input could not
 be opened. The CLI is an internal development tool, not the deferred public CLI
 contract.
 
+## Release packages
+
+Stable version tags matching the CMake project version build Windows x64 ZIP,
+macOS ARM64 `.app.zip`, and Linux x86_64 AppImage packages and upload them to
+GitHub Release. The Linux compatibility floor is glibc 2.35 (Ubuntu 22.04).
+Packages include license material and a deployment SBOM; Release assets also
+include platform SPDX inventories and archive checksums. Signing and macOS
+notarization remain deferred. There is no alpha/beta/rc prerequisite.
+
+Release implementation and current verification status are tracked in the
+[packaging contract](docs/p7f-h-release-task.md) and implementation plan.
+
 StreamView is licensed under the [MIT License](LICENSE). Qt and other bundled
 dependencies retain their respective licenses.

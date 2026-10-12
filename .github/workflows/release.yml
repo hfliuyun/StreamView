@@ -1,0 +1,291 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  QT_VERSION: 6.11.1
+  LINUXDEPLOYQT_SHA256: 974a87457ed26241b793bed7841978fcdf84158d13220e53833a06515f173b0b
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      epoch: ${{ steps.version.outputs.epoch }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          project_version="$(sed -n 's/^    VERSION \([0-9.]*\)$/\1/p' CMakeLists.txt | head -n1)"
+          version="$project_version"
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            tag="${GITHUB_REF_NAME}"
+            [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            version="${tag#v}"
+            [[ "$version" == "$project_version" ]]
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "epoch=$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+
+  package:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows-x64
+          - os: macos-15
+            platform: macos-arm64
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 2
+      APPIMAGE_EXTRACT_AND_RUN: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.ref }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Install FFmpeg and packaging tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg patchelf p7zip-full
+      - name: Install FFmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: Install FFmpeg and 7-Zip (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install ffmpeg 7zip --no-progress
+      - name: Install Qt (Unix)
+        if: runner.os != 'Windows'
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730
+        with:
+          version: ${{ env.QT_VERSION }}
+          cache: true
+      - name: Install Qt (Windows, approved baseline only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --disable-pip-version-check --quiet `
+            'https://github.com/miurahr/aqtinstall/archive/076e1659807d0b362a3ed684d54c2e9c775eb9c7.zip' `
+            'py7zr==1.1.4'
+          $root = "$env:GITHUB_WORKSPACE/Qt"
+          python -m aqt install-qt windows desktop "${env:QT_VERSION}" win64_msvc2022_64 --autodesktop --outputdir "$root"
+          $prefix = "$root/$env:QT_VERSION/msvc2022_64"
+          if (-not (Test-Path "$prefix/lib/cmake/Qt6/Qt6Config.cmake")) { throw "Approved Qt is unavailable" }
+          "CMAKE_PREFIX_PATH=$prefix" >> $env:GITHUB_ENV
+          "Qt6_DIR=$prefix/lib/cmake/Qt6" >> $env:GITHUB_ENV
+          "QT_ROOT_DIR=$prefix" >> $env:GITHUB_ENV
+          "$prefix/bin" >> $env:GITHUB_PATH
+      - name: Enable MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        with:
+          arch: x64
+          vsversion: 2022
+      - name: Configure
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --preset ci
+      - name: Configure macOS ARM64
+        if: runner.os == 'macOS'
+        run: cmake --preset ci -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+      - name: Configure Windows with approved Qt baseline
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cmake --preset ci "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" "-DQt6_DIR=$env:Qt6_DIR"
+      - name: Build and test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build --preset ci --parallel 2
+          ctest --preset ci --output-on-failure --parallel 2
+      - name: Install deployment tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf release
+          cmake --install build/ci --prefix "$PWD/release/stage"
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            test -f release/stage/streamview.app/Contents/MacOS/streamview
+          else
+            test -f release/stage/bin/streamview${{ runner.os == 'Windows' && '.exe' || '' }}
+          fi
+          test -f release/stage/bin/svtool${{ runner.os == 'Windows' && '.exe' || '' }}
+      - name: Fetch and verify Qt source archives
+        shell: bash
+        run: python3 packaging/fetch_qt_sources.py --version "$QT_VERSION" --output release/qt-source
+      - name: Deploy Windows CLI runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          windeployqt --release --compiler-runtime --no-translations "$PWD/release/stage/bin/streamview.exe"
+          if ($LASTEXITCODE -ne 0) { throw "GUI deployment failed" }
+          windeployqt --release --compiler-runtime --no-translations "$PWD/release/stage/bin/svtool.exe"
+          if ($LASTEXITCODE -ne 0) { throw "CLI deployment failed" }
+      - name: Prepare macOS bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv release/stage/streamview.app release/stage/StreamView.app
+          codesign --verify --deep --strict release/stage/StreamView.app
+      - name: Prepare and deploy Linux AppDir
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release/AppDir/usr/share/applications release/AppDir/usr/share/icons/hicolor/scalable/apps
+          cp -a release/stage/. release/AppDir/usr/
+          cp packaging/streamview.desktop release/AppDir/usr/share/applications/streamview.desktop
+          cp packaging/streamview.svg release/AppDir/usr/share/icons/hicolor/scalable/apps/streamview.svg
+          curl -L --fail --retry 3 -o linuxdeployqt.AppImage \
+            https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
+          printf '%s  %s\n' "$LINUXDEPLOYQT_SHA256" linuxdeployqt.AppImage | sha256sum -c -
+          chmod +x linuxdeployqt.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 ./linuxdeployqt.AppImage \
+            release/AppDir/usr/share/applications/streamview.desktop \
+            "-qmake=$(command -v qmake)" \
+            "-executable=$PWD/release/AppDir/usr/bin/svtool" \
+            -extra-plugins=platforms/libqoffscreen.so,sqldrivers/libqsqlite.so \
+            -bundle-non-qt-libs -no-translations
+          ./linuxdeployqt.AppImage --appimage-extract > /dev/null
+          test -x squashfs-root/usr/bin/appimagetool
+      - name: Generate compliance material from the deployed tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$PWD/release/stage"
+          if [[ "${{ runner.os }}" == "macOS" ]]; then root="$root/StreamView.app"; fi
+          if [[ "${{ runner.os }}" == "Linux" ]]; then root="$PWD/release/AppDir/usr"; fi
+          python3 packaging/generate_release_materials.py \
+            --stage "$root" --version "${{ needs.validate.outputs.version }}" \
+            --platform "${{ matrix.platform }}" --qt-version "$QT_VERSION" \
+            --qt-prefix "$(qmake -query QT_INSTALL_PREFIX)" --qt-source "$PWD/release/qt-source" \
+            --epoch "${{ needs.validate.outputs.epoch }}" --output release/materials
+          python3 -m pip install --disable-pip-version-check --quiet 'spdx-tools==0.8.3'
+          pyspdxtools -i release/materials/SBOM.json
+          destination="$PWD/release/stage"
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            destination="$destination/StreamView-materials"
+          fi
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            destination="$PWD/release/AppDir/usr/share/streamview"
+          fi
+          mkdir -p "$destination"
+          cp -a release/materials/. "$destination/"
+      - name: Smoke test deployed tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$PWD/release/stage"
+          if [[ "${{ runner.os }}" == "Linux" ]]; then root="$PWD/release/AppDir/usr"; fi
+          python3 packaging/smoke_package.py --root "$root" \
+            --platform "${{ matrix.platform }}" --version "${{ needs.validate.outputs.version }}"
+      - name: Assemble archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release/dist
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            mkdir -p release/mac-package
+            cp -a release/stage/StreamView.app release/stage/StreamView-materials release/mac-package/
+            ditto -c -k --sequesterRsrc release/mac-package \
+              "release/dist/StreamView-${{ needs.validate.outputs.version }}-${{ matrix.platform }}.app.zip"
+          elif [[ "${{ runner.os }}" == "Linux" ]]; then
+            (
+              cd release
+              PATH="$GITHUB_WORKSPACE/squashfs-root/usr/bin:$PATH" \
+                ARCH=x86_64 VERSION="${{ needs.validate.outputs.version }}" \
+                ../squashfs-root/usr/bin/appimagetool AppDir \
+                "dist/StreamView-${{ needs.validate.outputs.version }}-${{ matrix.platform }}.AppImage"
+            )
+          else
+            STREAMVIEW_DEPLOYED_DIR="$PWD/release/stage" \
+              STREAMVIEW_PACKAGE_VERSION="${{ needs.validate.outputs.version }}" \
+              cpack --config packaging/CPackStage.cmake -G ZIP -B release/dist
+          fi
+          cp release/materials/SBOM.json \
+            "release/dist/StreamView-${{ needs.validate.outputs.version }}-${{ matrix.platform }}.spdx.json"
+      - name: Verify the extracted release package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release/verify
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            ditto -x -k release/dist/*.app.zip release/verify
+            root="$PWD/release/verify"
+            codesign --verify --deep --strict "$root/StreamView.app"
+          elif [[ "${{ runner.os }}" == "Linux" ]]; then
+            (
+              cd release/verify
+              ../dist/*.AppImage --appimage-extract > /dev/null
+            )
+            root="$PWD/release/verify/squashfs-root/usr"
+            QT_QPA_PLATFORM=offscreen release/dist/*.AppImage --appimage-extract-and-run --version
+          else
+            7z x release/dist/*.zip -orelease/verify
+            root="$PWD/release/verify"
+          fi
+          python3 packaging/smoke_package.py --root "$root" \
+            --platform "${{ matrix.platform }}" --version "${{ needs.validate.outputs.version }}"
+      - name: Upload package archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: release/dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    if: github.event_name == 'push'
+    needs: [validate, package]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release
+          find . -maxdepth 1 -type f \( -name '*.zip' -o -name '*.AppImage' \) -print0 |
+            sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          test "$(wc -l < SHA256SUMS.txt)" -eq 3
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(find release -maxdepth 1 -type f \
+            \( -name '*.zip' -o -name '*.AppImage' -o -name '*.spdx.json' -o -name 'SHA256SUMS.txt' \) | sort)
+          gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
+            --verify-tag --title "${GITHUB_REF_NAME}" --generate-notes

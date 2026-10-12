@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=StreamView
+Exec=streamview
+Icon=streamview
+Categories=Development;
+Terminal=false
