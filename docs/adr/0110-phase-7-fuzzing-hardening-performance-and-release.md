@@ -117,10 +117,29 @@ Every release bundle must include:
 4. `LICENSES/`: Granular license texts for Qt (LGPLv3), SQLite (Public Domain), and bundled assets.
 5. `README_QT_SOURCE.txt`: Explicit written offer and instructions for obtaining source code of LGPLv3-licensed Qt libraries used in binary distributions.
 
-#### 4.3 Staged Release Pipeline
-The original staged proposal below is retained for historical context. The
-October 12 amendment holds its scheduling pending a personal-use release
-decision; these tags are not current implementation prerequisites.
+#### 4.3 Release Trigger and Artifact Ownership
+The original staged proposal below is retained for historical context. It is
+not a current implementation prerequisite and does not require alpha, beta, or
+release-candidate tags.
+
+The future release contract is intentionally smaller:
+
+- ordinary push and pull-request CI builds and tests the three-platform matrix
+  without uploading deployment artifacts;
+- a separate release workflow runs only for an approved version tag such as
+  `v0.1.0`;
+- that workflow builds the Windows, macOS, and Linux packages from the tagged
+  source revision, generates the required integrity and compliance files, and
+  uploads all release assets to the corresponding GitHub Release;
+- the release workflow must not use the temporary Windows Qt 6.10.1 CI fallback;
+  release packaging requires the product's approved Qt baseline.
+
+The release workflow is deferred until P7f-P7h freeze the package, licensing,
+SBOM, and platform-tool contracts.
+
+The following staged tags are retained for historical traceability only and
+must not be treated as active release requirements:
+
 1. `v0.1.0-alpha`: Fuzzing and static analysis completed; packaging workflows verified.
 2. `v0.1.0-beta`: Performance baselines verified; community preview.
 3. `v0.1.0-rc`: Release candidate; final documentation and licensing audit.
@@ -152,10 +171,7 @@ Furthermore, state restoration lifecycle guarantees are hardened:
 - [ ] **Task P7f** (Windows Packaging Automation): Configure CPack and `windeployqt` for Windows x64 standalone ZIP.
 - [ ] **Task P7g** (macOS Packaging Automation): Configure `macdeployqt` for macOS ARM64 `.app.zip`.
 - [ ] **Task P7h** (Linux Packaging Automation & Packaging Gate): Configure AppImage generation for Linux x86_64; complete licensing/SBOM audit (Fixed Independent Review Gate).
-- [ ] **Task P7i** (Pre-Release Staging & `v0.1.0-alpha`): Tag and generate alpha release assets.
-- [ ] **Task P7j** (Validation & `v0.1.0-beta`): Validate beta candidate across target OS environments.
-- [ ] **Task P7k** (Release Candidate & `v0.1.0-rc`): Final sanity checks, documentation freeze, and RC tagging.
-- [ ] **Task P7l** (Final Release Gate & `v0.1.0` GA): Comprehensive release signoff and general availability release (Fixed Independent Review Gate).
+- [ ] **Task P7i-P7l (Deferred Historical WBS)**: The former alpha/beta/rc/GA staged release sequence is not dispatched or executed.
 
 ---
 
@@ -219,13 +235,11 @@ their implementations. Slice one adds neither feature.
 ### Release Scheduling
 
 On October 12 the user identified personal use as the likely deployment
-scenario and prefers new version tags to build artifacts automatically and
-attach them to GitHub Releases. The user deferred the release discussion until
-the earlier engineering tasks are nearly complete.
+scenario and selected a tag-triggered release workflow: an approved version
+tag builds the three platform packages and uploads them to the matching GitHub
+Release. The alpha/beta/rc/GA sequence is no longer required.
 
-Consequently, P7i-P7l and the alpha/beta/rc/GA sequence are held for
-reconsideration. Keep the original WBS as history rather than declaring these
-tasks complete or creating prerelease tags. P7d-P7h continue under their
-engineering and packaging contracts. The later decision will define the
-version trigger, package matrix and Release upload behavior; this amendment
-does not implement publication or claim release readiness.
+Consequently, P7i-P7l remain historical WBS labels and are explicitly
+deferred. P7d-P7h continue under their engineering and packaging contracts.
+This amendment records the release direction and removes ordinary CI artifact
+retention; it does not implement publication or claim release readiness.

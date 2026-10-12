@@ -1,11 +1,11 @@
 # StreamView v0.1 分阶段实施计划
 
 Status: In Progress
-Current Phase: Phase 5/6 审计整改已提交，等待本轮提交的 ci/sanitize 与三平台 Hosted CI；P7d 尚未开始
+Current Phase: Phase 5/6 审计整改已提交；P7d-1 已完成本地门禁实现但 Hosted CI 暴露跨平台告警修复项，发布流程已收敛为版本 tag 触发 GitHub Release
 Last Completed Step: UI 整改 A06-A09 与时间线轨道下拉框 P2 已提交为 `f42f54e`；媒体打开过滤器已提交为 `5a9f7a5`；阶段文档、P7d-1 任务书和本地验证回写已提交为 `c15eda2`
-Next Action: 为 `f42f54e..5a9f7a5` 完成三平台 Hosted CI；验证通过后回写整改验收，再按 `docs/p7d-1-warning-gate-task.md` 派发 P7d-1
+Next Action: 修复并复核 P7d-1 的 Ubuntu/Windows Hosted CI 告警；随后继续 P7d-2。普通 push/PR CI 只保留构建与测试，版本 tag 发布 workflow 待 P7f-P7h 打包合同完成后实现
 Last Verification: Any CLI 报告 dev/UI 定向集合 10/10、dev 全量 59/59（51.40s）；主代理随后重新配置并完成 ci 构建与 CTest 59/59（15.61s），sanitize 构建与 CTest 59/59（166.52s、无 ASan/UBSan 报告），git diff --check 通过；本轮尚未完成新的三平台 Hosted CI
-Blockers: 本轮整改提交尚无对应 Hosted CI，ADR-0113 保持 Proposed。P7d 实现等待 Hosted CI 门禁；P7i-P7l 发布节奏待后续按个人使用需求重新讨论
+Blockers: P7d-1 Hosted CI 尚未全绿；Windows Qt 6.10.1 fallback 不可用于发布产物。P7i-P7l alpha/beta/rc/GA 流程暂缓，未来仅由版本 tag 触发三平台构建并上传 GitHub Release
 
 2026-09-08 审计修订：下面已勾选的 Phase 5/6 项保留为历史交付记录，不表示本轮
 缺陷已经关闭或当前版本可发布。本地分步指导手册仍停在旧 Phase 5 状态，不能覆盖本状态区。
@@ -157,7 +157,7 @@ alpha/beta/rc/GA 排程暂缓，待 P7d-P7h 接近完成时裁定，详见 ADR-0
 
 - [ ] fuzz lexer/parser/VM、映射、规则包和官方规则；三平台静态检查，Linux/macOS ASan/UBSan。
 - [ ] 验证约两秒初始视图、100 GB RSS 不超过 512 MiB、已知 offset p95 小于 100 ms。
-- [ ] 生成并校验 Windows ZIP、macOS `.app.zip`、Linux AppImage、SHA-256、SBOM 和许可证材料，再按 alpha/beta/rc/v0.1.0 发布。
+- [ ] 生成并校验 Windows ZIP、macOS `.app.zip`、Linux AppImage、SHA-256、SBOM 和许可证材料，供未来版本 tag 的 Release workflow 上传。
 
 ## 阶段 0：持久化计划与工程基线
 
@@ -293,13 +293,13 @@ alpha/beta/rc/GA 排程暂缓，待 P7d-P7h 接近完成时裁定，详见 ADR-0
 - [ ] **Task P7f**（Windows 打包自动化）：配置 CPack 与 `windeployqt` 自动化生成 Windows x64 独立 ZIP；
 - [ ] **Task P7g**（macOS 打包自动化）：配置 `macdeployqt` 自动化生成 macOS ARM64 `.app.zip`；
 - [ ] **Task P7h**（Linux 打包与打包门禁）：配置 Linux x86_64 AppImage 生成流水线；完成 SBOM 与合规许可证清单（设固定独立评审门禁）；
-- [ ] **Task P7i**（预发布试跑与 `v0.1.0-alpha`）：打标签并生成 alpha 阶段分发资产；
-- [ ] **Task P7j**（跨环境验证与 `v0.1.0-beta`）：在目标环境中全量验证 beta 候选包；
-- [ ] **Task P7k**（发布候选与 `v0.1.0-rc`）：最终完整性核验、双语文档冻结与 RC 打标；
-- [ ] **Task P7l**（最终发布门禁与 `v0.1.0` GA）：全量清单 100% 验收、发布签字并发布 GA（设固定独立评审门禁）。
+- [ ] **Task P7i-P7l（暂缓，历史 WBS）**：原 alpha/beta/rc/GA 梯次发布条目不再派发、不再执行。
 
-P7i-P7l 上述名称保留为原始规划，当前不派发、不要求依次打出预发布标签；
-最终发布流程按 2026-10-12 用户方向另行讨论。P7d-P7h 的工程验证继续执行。
+P7i-P7l 上述名称保留为历史规划，当前不派发，也不要求 alpha/beta/rc/GA
+预发布标签。未来发布目标收敛为：创建符合约定的版本 tag 后，由独立 release
+workflow 构建 Windows、macOS、Linux 三平台产物并上传同一 GitHub Release。
+普通 push/PR CI 只负责构建与测试，不保存 deployment artifact；P7f-P7h 完成各平台
+打包、许可证、SBOM 和 Qt 版本合同后再实现该 release workflow。
 
 P7d 按以下顺序交给快速模型，每次只实施一个切片：
 
@@ -317,9 +317,8 @@ P7d 按以下顺序交给快速模型，每次只实施一个切片：
 - [ ] fuzz DSL lexer/parser/VM、规则包、映射和官方规则。
 - [ ] Linux/macOS 运行 ASan/UBSan；三平台运行静态检查与完整测试。
 - [ ] 验证初始视图约两秒可用、100 GB 测试源 RSS 不超过 512 MiB、已知 offset 页面读取 p95 小于 100 ms。
-- [ ] tag 自动生成 Windows x64 ZIP、macOS ARM64 `.app.zip` 和 Linux x86_64 AppImage。
+- [ ] 创建版本 tag 后自动生成 Windows x64 ZIP、macOS ARM64 `.app.zip` 和 Linux x86_64 AppImage，并上传对应 GitHub Release。
 - [ ] 发布包附带 SHA-256、SBOM、MIT/Qt/第三方许可证和 Qt 源码获取说明。
-- [ ] 依次发布 `v0.1.0-alpha`、`beta`、`rc`，最终发布 `v0.1.0`。
 
 ## 测试与阶段门禁
 

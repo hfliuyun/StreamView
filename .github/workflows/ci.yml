@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 jobs:
-  build-test-package:
+  build-test:
     strategy:
       fail-fast: false
       matrix:
@@ -186,13 +186,3 @@ jobs:
             Write-Output "::error title=CTest $testName::$message"
           }
           exit 0
-
-      - name: Install deployable tree
-        run: cmake --install build/ci --prefix "${{ github.workspace }}/dist"
-
-      - name: Upload package tree
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: streamview-${{ matrix.os }}
-          path: dist
-          if-no-files-found: error

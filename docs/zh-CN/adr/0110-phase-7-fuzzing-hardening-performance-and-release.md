@@ -117,9 +117,23 @@ StreamView 在六个关键边界直接接触非信任或畸变的二进制输入
 4. `LICENSES/`：Qt（LGPLv3）、SQLite（Public Domain）及内置规则资产的细粒度许可证文本；
 5. `README_QT_SOURCE.txt`：遵循 LGPLv3 规范，提供获取分发二进制中所链接 Qt 源码的明确书面指引。
 
-#### 4.3 梯次发布管道
-以下最初的梯次方案保留为历史背景。10 月 12 日修订暂缓其排程，等待个人使用场景的
-发布决策；这些标签不再是当前实施的前置条件。
+#### 4.3 发布触发方式与产物归属
+以下最初的梯次方案保留为历史背景，不再作为当前实施前置条件，也不要求
+alpha、beta 或 release candidate 标签。
+
+未来发布合同收敛为：
+
+- 普通 push 和 pull request CI 只运行三平台构建与测试，不上传部署产物；
+- 独立 release workflow 仅在批准的版本 tag（例如 `v0.1.0`）上运行；
+- 该 workflow 从 tag 对应源码构建 Windows、macOS、Linux 产物，生成完整性与合规文件，
+  并将全部发布资产上传到对应的 GitHub Release；
+- release workflow 不得使用临时 Windows Qt 6.10.1 CI fallback；发布构建必须使用产品
+  批准的 Qt 基线。
+
+待 P7f-P7h 冻结打包、许可证、SBOM 与平台工具合同后，再实现 release workflow。
+
+以下梯次标签仅为历史追溯保留，不得视为当前发布要求：
+
 1. `v0.1.0-alpha`：Fuzzing 与静态分析完成；打包工作流初跑验证；
 2. `v0.1.0-beta`：性能基线全绿；社区预览体验；
 3. `v0.1.0-rc`：发布候选版本；双语文档封版与法律合规审查；
@@ -151,10 +165,7 @@ StreamView 在六个关键边界直接接触非信任或畸变的二进制输入
 - [ ] **Task P7f**（Windows 打包自动化）：配置 CPack 与 `windeployqt` 自动化生成 Windows x64 独立 ZIP。
 - [ ] **Task P7g**（macOS 打包自动化）：配置 `macdeployqt` 自动化生成 macOS ARM64 `.app.zip`。
 - [ ] **Task P7h**（Linux 打包与打包门禁）：配置 Linux x86_64 AppImage 生成流水线；完成 SBOM 与合规许可证清单（固定独立评审门禁）。
-- [ ] **Task P7i**（预发布试跑与 `v0.1.0-alpha`）：打标签并生成 alpha 阶段分发资产。
-- [ ] **Task P7j**（跨环境验证与 `v0.1.0-beta`）：在目标环境中全量验证 beta 候选包。
-- [ ] **Task P7k**（发布候选与 `v0.1.0-rc`）：最终完整性核验、双语文档冻结与 RC 打标。
-- [ ] **Task P7l**（最终发布门禁与 `v0.1.0` GA）：全量清单 100% 验收、发布签字并发布 GA（固定独立评审门禁）。
+- [ ] **Task P7i-P7l（暂缓的历史 WBS）**：原 alpha/beta/rc/GA 梯次发布序列不再派发或执行。
 
 ---
 
@@ -207,10 +218,9 @@ Clang-Tidy 的工具版本与检查集，以及 Hosted sanitizer 的环境、失
 
 ### 发布排程
 
-10 月 12 日，用户说明软件大概率仅供个人使用，倾向新版本 tag 自动构建产物并上传
-GitHub Release；待前面工程任务接近完成后再讨论发布。
+10 月 12 日，用户说明软件大概率仅供个人使用，并确定采用 tag 触发的发布 workflow：
+批准的版本 tag 构建三平台产物并上传到对应 GitHub Release；不再要求
+alpha/beta/rc/GA 序列。
 
-因此 P7i-P7l 和 alpha/beta/rc/GA 序列暂缓、等待重新裁定。保留原 WBS 作为历史，
-不将这些任务标为完成或创建预发布标签。P7d-P7h 继续按工程与打包合同执行。
-后续决策再定义版本触发方式、打包矩阵和 Release 上传行为；本次修订不实现发布，
-不声明发布就绪。
+因此 P7i-P7l 保留为历史 WBS 名称并明确暂缓。P7d-P7h 继续按工程与打包合同执行。
+本修订记录发布方向并移除普通 CI 产物留存；尚未实现发布，也不声明已具备发布条件。
