@@ -1,5 +1,6 @@
 #include "analysis_tree_model.h"
 #include "diagnostics_summary_dock.h"
+#include "field_inspector.h"
 #include "format_override_dialog.h"
 #include "main_window.h"
 #include "raw_data_model.h"
@@ -977,6 +978,7 @@ private slots:
         QVERIFY(!prevBtn->isEnabled());
         QVERIFY(!nextBtn->isEnabled());
         QCOMPARE(trackCombo->count(), 0);
+        QVERIFY(!trackCombo->isEnabled());
         QCOMPARE(tableView->model()->rowCount(), 0);
 
         // Ambiguity label is hidden for clean elementary stream
@@ -1097,6 +1099,7 @@ private slots:
         QVERIFY(pageLabel != nullptr);
 
         QTRY_COMPARE(trackCombo->count(), 1);
+        QVERIFY(trackCombo->isEnabled());
         QVERIFY(trackCombo->currentText().contains(QStringLiteral("Track 1")));
         QVERIFY(trackCombo->currentText().contains(QStringLiteral("3 samples")));
 
@@ -2429,6 +2432,816 @@ private slots:
                 QVERIFY(treeModel2->data(treeView2->currentIndex(), Qt::DisplayRole).toString() != QStringLiteral("box[1]"));
             }
         }
+    }
+
+    void diagnosticSpanSelectionPreservesMultiBitAndDiscontinuousSpans() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = writeFixture(
+            directory, QStringLiteral("sample.264"), QByteArray::fromHex("00000165"));
+        QVERIFY(!path.isEmpty());
+
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(path, &errorMessage), qPrintable(errorMessage));
+
+        auto* dock = window.findChild<DiagnosticsSummaryDock*>(QStringLiteral("diagnosticsSummaryDock"));
+        QVERIFY(dock != nullptr);
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        QVERIFY(treeView != nullptr);
+        auto* inspector = window.findChild<streamview::app::FieldInspector*>(QStringLiteral("fieldInspector"));
+        QVERIFY(inspector != nullptr);
+        auto* inspectorName = inspector->findChild<QLabel*>(QStringLiteral("fieldInspectorName"));
+        QVERIFY(inspectorName != nullptr);
+        auto* rawView = window.findChild<RawDataView*>(QStringLiteral("rawDataView"));
+        QVERIFY(rawView != nullptr);
+
+        const QModelIndex headerIndex =
+            findIndexByName(*treeView->model(), QStringLiteral("NalUnitHeader"));
+        QVERIFY(headerIndex.isValid());
+        auto* treeModel = qobject_cast<AnalysisTreeModel*>(treeView->model());
+        QVERIFY(treeModel != nullptr);
+        const auto headerNodeId = treeModel->nodeIdAt(headerIndex);
+        QVERIFY(headerNodeId.has_value());
+
+        // Construct a diagnostic location with two discontinuous spans:
+        // Span 0: Byte 0 (bits 0..7, length 8)
+        // Span 1: Byte 2 (bits 16..23, length 8)
+        // Gap: Byte 1 (bits 8..15) is NOT in any span.
+        const auto span0 = streamview::core::SourceSpan::create(streamview::core::SourceBitAddress(0), 8);
+        const auto span1 = streamview::core::SourceSpan::create(streamview::core::SourceBitAddress(16), 8);
+        QVERIFY(span0.has_value());
+        QVERIFY(span1.has_value());
+
+        const auto logicalRange = streamview::core::LogicalRange::create(
+            streamview::core::LogicalBitAddress(streamview::core::LogicalViewId(0), 0), 16);
+        QVERIFY(logicalRange.has_value());
+        const auto loc = streamview::core::FieldLocation::create(*logicalRange, {*span0, *span1});
+        QVERIFY(loc.has_value());
+
+        // Emit diagnosticSelected signal with headerNodeId and loc
+        emit dock->diagnosticSelected(*headerNodeId, loc);
+
+        // 1. Tree selection must be headerNodeId
+        QCOMPARE(treeModel->nodeIdAt(treeView->currentIndex()), headerNodeId);
+        // 2. Field inspector must display NalUnitHeader
+        QCOMPARE(inspectorName->text(), QStringLiteral("NalUnitHeader"));
+
+        // 3. Selection in window must retain both spans exactly (not collapsed to 1 bit)
+        const auto& selection = window.sourceSelectionForTesting();
+        QCOMPARE(selection.sourceSpans.size(), 2U);
+        QCOMPARE(selection.sourceSpans[0].start().absoluteBitOffset(), 0U);
+        QCOMPARE(selection.sourceSpans[0].bitLength(), 8U);
+        QCOMPARE(selection.sourceSpans[1].start().absoluteBitOffset(), 16U);
+        QCOMPARE(selection.sourceSpans[1].bitLength(), 8U);
+
+        // 4. RawDataView model bits:
+        // Byte 0: all 8 bits selected (0xFF)
+        const QModelIndex byte0 = rawView->model()->index(0, RawDataModel::FirstByte + 0);
+        QCOMPARE(rawView->model()->data(byte0, RawDataModel::SelectedBitsRole).toUInt(), 0xFFU);
+        // Byte 1: gap, 0 bits selected (0x00)
+        const QModelIndex byte1 = rawView->model()->index(0, RawDataModel::FirstByte + 1);
+        QCOMPARE(rawView->model()->data(byte1, RawDataModel::SelectedBitsRole).toUInt(), 0x00U);
+        // Byte 2: all 8 bits selected (0xFF)
+        const QModelIndex byte2 = rawView->model()->index(0, RawDataModel::FirstByte + 2);
+        QCOMPARE(rawView->model()->data(byte2, RawDataModel::SelectedBitsRole).toUInt(), 0xFFU);
+
+        // 5. Test fallback: missing location (std::nullopt) should fall back to node's full location
+        const QModelIndex typeIndex =
+            findIndexByName(*treeView->model(), QStringLiteral("nal_unit_type"));
+        QVERIFY(typeIndex.isValid());
+        const auto typeNodeId = treeModel->nodeIdAt(typeIndex);
+        QVERIFY(typeNodeId.has_value());
+
+        emit dock->diagnosticSelected(*typeNodeId, std::nullopt);
+        QCOMPARE(treeModel->nodeIdAt(treeView->currentIndex()), typeNodeId);
+        QCOMPARE(inspectorName->text(), QStringLiteral("nal_unit_type"));
+
+        // nal_unit_type is at byte 3 (bit 27..31, length 5)
+        QCOMPARE(window.sourceSelectionForTesting().sourceSpans.size(), 1U);
+        QCOMPARE(window.sourceSelectionForTesting().sourceSpans[0].start().absoluteBitOffset(), 27U);
+        QCOMPARE(window.sourceSelectionForTesting().sourceSpans[0].bitLength(), 5U);
+        const QModelIndex byte3 = rawView->model()->index(0, RawDataModel::FirstByte + 3);
+        QCOMPARE(rawView->model()->data(byte3, RawDataModel::SelectedBitsRole).toUInt(), 0x1FU);
+    }
+
+    void saveSessionFromChildAscRetainsRootViewStateAndRestoresCorrectly() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+        const QString sessionPath = directory.filePath(QStringLiteral("asc_child_save.svsession"));
+
+        quint64 rootExpectedBit = 0;
+
+        {
+            MainWindow window1;
+            QString errorMessage;
+            QVERIFY2(window1.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
+
+            auto* treeView = window1.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+            QVERIFY(treeView != nullptr);
+            auto* treeModel = qobject_cast<AnalysisTreeModel*>(treeView->model());
+            QVERIFY(treeModel != nullptr);
+
+            QModelIndex ascIndex;
+            QTRY_VERIFY((ascIndex = findIndexByName(*treeModel, QStringLiteral("asc_bytes1"))).isValid());
+            treeView->setCurrentIndex(ascIndex);
+
+            // 1. In root: expand parent boxes, set raw view mode to Binary
+            if (ascIndex.parent().isValid()) {
+                treeView->expand(ascIndex.parent());
+            }
+            auto* binBtn1 = window1.findChild<QToolButton*>(QStringLiteral("binaryModeButton"));
+            QVERIFY(binBtn1 != nullptr);
+            binBtn1->click();
+            auto* rawView1 = window1.findChild<RawDataView*>();
+            QVERIFY(rawView1 != nullptr);
+            QCOMPARE(rawView1->model()->displayMode(), RawDisplayMode::Binary);
+
+            QVERIFY(!window1.sourceSelectionForTesting().sourceSpans.empty());
+            rootExpectedBit = window1.sourceSelectionForTesting().sourceSpans.front().start().absoluteBitOffset();
+            QVERIFY(rootExpectedBit > 0);
+
+            // 2. Double click on asc_bytes1 to enter ASC sub-format
+            Q_EMIT treeView->doubleClicked(ascIndex);
+
+            auto* backButton = window1.findChild<QToolButton*>(QStringLiteral("navigationBackButton"));
+            QVERIFY(backButton != nullptr);
+            QTRY_VERIFY(backButton->isEnabled());
+
+            // 3. In child format: change raw view mode to Combined, select child node, add bookmark
+            auto* combBtn1 = window1.findChild<QToolButton*>(QStringLiteral("combinedModeButton"));
+            QVERIFY(combBtn1 != nullptr);
+            combBtn1->click();
+            QCOMPARE(rawView1->model()->displayMode(), RawDisplayMode::Combined);
+
+            const QModelIndex aotIndex = findIndexByName(*treeView->model(), QStringLiteral("audio_object_type"));
+            QVERIFY(aotIndex.isValid());
+            treeView->setCurrentIndex(aotIndex);
+
+            window1.addBookmark({.label = QStringLiteral("BM_CHILD"), .sourceBitOffset = 64ULL});
+
+            window1.setSaveFileDialogHandlerForTesting([&](QWidget*, const QString&, const QString&) {
+                return sessionPath;
+            });
+            QVERIFY(window1.saveSession());
+            QVERIFY(QFile::exists(sessionPath));
+
+            // 4. Verify document JSON content: root's view, expanded paths, and mode must be saved
+            QFile file(sessionPath);
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            const auto doc = QJsonDocument::fromJson(file.readAll());
+            const auto root = doc.object();
+            const auto view = root.value(QStringLiteral("view")).toObject();
+            const QString selectedPath = view.value(QStringLiteral("selectedAnalysisPath")).toString();
+            // Saved path MUST be the root path (containing asc_bytes1), NOT the child path (audio_object_type)
+            QVERIFY(selectedPath.contains(QStringLiteral("asc_bytes1")));
+            QVERIFY(!selectedPath.contains(QStringLiteral("audio_object_type")));
+
+            // Saved raw view mode must be root's "binary", not child's "combined"
+            QCOMPARE(view.value(QStringLiteral("rawDisplayMode")).toString(), QStringLiteral("binary"));
+            QCOMPARE(view.value(QStringLiteral("selectedSourceBitOffset")).toString().toULongLong(), rootExpectedBit);
+
+            const auto expandedArray = root.value(QStringLiteral("expandedPaths")).toArray();
+            QVERIFY(!expandedArray.isEmpty());
+
+            const auto bookmarksArray = root.value(QStringLiteral("bookmarks")).toArray();
+            QCOMPARE(bookmarksArray.size(), 1);
+            QCOMPARE(bookmarksArray[0].toObject().value(QStringLiteral("label")).toString(), QStringLiteral("BM_CHILD"));
+        }
+
+        {
+            // Restore in window2
+            MainWindow window2;
+            QString errorMessage;
+            QVERIFY2(window2.openSessionFile(sessionPath, &errorMessage), qPrintable(errorMessage));
+
+            auto* backButton2 = window2.findChild<QToolButton*>(QStringLiteral("navigationBackButton"));
+            QVERIFY(backButton2 != nullptr);
+            // Must restore at root (navigationDepth == 0, backButton disabled)
+            QVERIFY(!backButton2->isEnabled());
+
+            auto* treeView2 = window2.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+            QVERIFY(treeView2 != nullptr);
+            auto* treeModel2 = qobject_cast<AnalysisTreeModel*>(treeView2->model());
+            QVERIFY(treeModel2 != nullptr);
+
+            QTRY_VERIFY(treeView2->currentIndex().isValid());
+            const QString selectedName = treeModel2->data(treeView2->currentIndex(), Qt::DisplayRole).toString();
+            QCOMPARE(selectedName, QStringLiteral("asc_bytes1"));
+
+            // Verify root expanded state was restored
+            if (treeView2->currentIndex().parent().isValid()) {
+                QVERIFY(treeView2->isExpanded(treeView2->currentIndex().parent()));
+            }
+
+            // Verify raw view mode was restored to Binary
+            auto* rawView2 = window2.findChild<RawDataView*>();
+            QVERIFY(rawView2 != nullptr);
+            QCOMPARE(rawView2->model()->displayMode(), RawDisplayMode::Binary);
+            QVERIFY(!window2.sourceSelectionForTesting().sourceSpans.empty());
+            QCOMPARE(window2.sourceSelectionForTesting().sourceSpans.front().start().absoluteBitOffset(), rootExpectedBit);
+
+            const auto bookmarks2 = window2.bookmarks();
+            QCOMPARE(bookmarks2.size(), 1);
+            QCOMPARE(bookmarks2[0].label, QStringLiteral("BM_CHILD"));
+        }
+    }
+
+    void saveSessionFromSampleRetainsRootViewStateAndRestoresCorrectly() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString mp4Path = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_two_tracks.mp4");
+        const QString sessionPath = directory.filePath(QStringLiteral("sample_child_save.svsession"));
+
+        {
+            MainWindow window1;
+            QString errorMessage;
+            QVERIFY2(window1.openMediaSource(mp4Path, &errorMessage), qPrintable(errorMessage));
+
+            auto* treeView = window1.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+            QVERIFY(treeView != nullptr);
+            auto* treeModel = qobject_cast<AnalysisTreeModel*>(treeView->model());
+            QVERIFY(treeModel != nullptr);
+
+            QModelIndex moovBoxIndex;
+            QTRY_VERIFY((moovBoxIndex = findIndexByName(*treeModel, QStringLiteral("box[1]"))).isValid());
+            treeView->setCurrentIndex(moovBoxIndex);
+            treeView->expand(moovBoxIndex);
+
+            // Set root raw view state: Binary mode
+            auto* binBtn1 = window1.findChild<QToolButton*>(QStringLiteral("binaryModeButton"));
+            QVERIFY(binBtn1 != nullptr);
+            binBtn1->click();
+            auto* rawView1 = window1.findChild<RawDataView*>();
+            QVERIFY(rawView1 != nullptr);
+            QCOMPARE(rawView1->model()->displayMode(), RawDisplayMode::Binary);
+            QVERIFY(binBtn1->isChecked());
+
+            auto* tableView = window1.findChild<QTableView*>(QStringLiteral("timelineTableView"));
+            QVERIFY(tableView != nullptr);
+            QTRY_VERIFY(tableView->model()->rowCount() > 0);
+
+            // Double click sample row 0 to navigate into sample child
+            const QModelIndex sample0Index = tableView->model()->index(0, 0);
+            Q_EMIT tableView->doubleClicked(sample0Index);
+
+            auto* backButton = window1.findChild<QToolButton*>(QStringLiteral("navigationBackButton"));
+            QVERIFY(backButton != nullptr);
+            QTRY_VERIFY(backButton->isEnabled());
+
+            // In sample child, change raw mode to Combined and add bookmark
+            auto* combBtn1 = window1.findChild<QToolButton*>(QStringLiteral("combinedModeButton"));
+            QVERIFY(combBtn1 != nullptr);
+            combBtn1->click();
+            QCOMPARE(rawView1->model()->displayMode(), RawDisplayMode::Combined);
+
+            window1.addBookmark({.label = QStringLiteral("BM_SAMPLE"), .sourceBitOffset = 128ULL});
+
+            window1.setSaveFileDialogHandlerForTesting([&](QWidget*, const QString&, const QString&) {
+                return sessionPath;
+            });
+            QVERIFY(window1.saveSession());
+            QVERIFY(QFile::exists(sessionPath));
+
+            // Verify document JSON content: must retain root's view state
+            QFile file(sessionPath);
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            const auto doc = QJsonDocument::fromJson(file.readAll());
+            const auto root = doc.object();
+            const auto view = root.value(QStringLiteral("view")).toObject();
+            const QString selectedPath = view.value(QStringLiteral("selectedAnalysisPath")).toString();
+            // Saved path MUST be the root path (box[1])
+            QVERIFY(selectedPath.contains(QStringLiteral("box[1]")));
+            QCOMPARE(view.value(QStringLiteral("rawDisplayMode")).toString(), QStringLiteral("binary"));
+
+            const auto bookmarksArray = root.value(QStringLiteral("bookmarks")).toArray();
+            QCOMPARE(bookmarksArray.size(), 1);
+            QCOMPARE(bookmarksArray[0].toObject().value(QStringLiteral("label")).toString(), QStringLiteral("BM_SAMPLE"));
+        }
+
+        {
+            // Restore in window2
+            MainWindow window2;
+            QString errorMessage;
+            QVERIFY2(window2.openSessionFile(sessionPath, &errorMessage), qPrintable(errorMessage));
+
+            auto* backButton2 = window2.findChild<QToolButton*>(QStringLiteral("navigationBackButton"));
+            QVERIFY(backButton2 != nullptr);
+            // Must restore at root (navigationDepth == 0, backButton disabled)
+            QVERIFY(!backButton2->isEnabled());
+
+            auto* treeView2 = window2.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+            QVERIFY(treeView2 != nullptr);
+            auto* treeModel2 = qobject_cast<AnalysisTreeModel*>(treeView2->model());
+            QVERIFY(treeModel2 != nullptr);
+
+            QTRY_VERIFY(treeView2->currentIndex().isValid());
+            const QString selectedName = treeModel2->data(treeView2->currentIndex(), Qt::DisplayRole).toString();
+            QCOMPARE(selectedName, QStringLiteral("box[1]"));
+
+            // Verify raw display mode and buttons restored to root Binary
+            auto* rawView2 = window2.findChild<RawDataView*>();
+            QVERIFY(rawView2 != nullptr);
+            auto* binBtn2 = window2.findChild<QToolButton*>(QStringLiteral("binaryModeButton"));
+            auto* hexBtn2 = window2.findChild<QToolButton*>(QStringLiteral("hexModeButton"));
+            QVERIFY(binBtn2 != nullptr && hexBtn2 != nullptr);
+            QCOMPARE(rawView2->model()->displayMode(), RawDisplayMode::Binary);
+            QVERIFY(binBtn2->isChecked());
+            QVERIFY(!hexBtn2->isChecked());
+
+            const auto bookmarks2 = window2.bookmarks();
+            QCOMPARE(bookmarks2.size(), 1);
+            QCOMPARE(bookmarks2[0].label, QStringLiteral("BM_SAMPLE"));
+        }
+    }
+
+    void saveSessionAtRootRetainsRawPageAndBitSelectionAndRestoresCorrectly() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+
+        // Construct multi-page MP4 fixture by expanding mdat of mp4_p5j4_two_tracks.mp4
+        QFile sourceFile(QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_two_tracks.mp4"));
+        QVERIFY(sourceFile.open(QIODevice::ReadOnly));
+        QByteArray paddedMp4 = sourceFile.readAll();
+        // mdat header is at byte offset 1010; expand mdat size to 70000 (> 64KB page size)
+        constexpr quint32 newMdatSize = 70000;
+        paddedMp4[1010] = static_cast<char>((newMdatSize >> 24) & 0xFF);
+        paddedMp4[1011] = static_cast<char>((newMdatSize >> 16) & 0xFF);
+        paddedMp4[1012] = static_cast<char>((newMdatSize >> 8) & 0xFF);
+        paddedMp4[1013] = static_cast<char>(newMdatSize & 0xFF);
+        paddedMp4.append(QByteArray(static_cast<int>(newMdatSize - 216), '\0'));
+        const QString mp4Path = writeFixture(directory, QStringLiteral("padded_two_tracks.mp4"), paddedMp4);
+        const QString sessionPath = directory.filePath(QStringLiteral("raw_state_root_save.svsession"));
+
+        {
+            MainWindow window1;
+            QString errorMessage;
+            QVERIFY2(window1.openMediaSource(mp4Path, &errorMessage), qPrintable(errorMessage));
+
+            auto* treeView = window1.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+            QVERIFY(treeView != nullptr);
+            auto* treeModel = qobject_cast<AnalysisTreeModel*>(treeView->model());
+            QVERIFY(treeModel != nullptr);
+
+            QModelIndex moovBoxIndex;
+            QTRY_VERIFY((moovBoxIndex = findIndexByName(*treeModel, QStringLiteral("box[1]"))).isValid());
+            treeView->setCurrentIndex(moovBoxIndex);
+            treeView->expand(moovBoxIndex);
+
+            // Set raw view mode: Binary mode
+            auto* binBtn1 = window1.findChild<QToolButton*>(QStringLiteral("binaryModeButton"));
+            QVERIFY(binBtn1 != nullptr);
+            binBtn1->click();
+            auto* rawView1 = window1.findChild<RawDataView*>();
+            QVERIFY(rawView1 != nullptr);
+            QCOMPARE(rawView1->model()->displayMode(), RawDisplayMode::Binary);
+            QVERIFY(binBtn1->isChecked());
+
+            // Select bit 8144 via raw data view signal
+            Q_EMIT rawView1->sourceBitSelected(8144ULL);
+
+            // Navigate raw view to page 1
+            QVERIFY(rawView1->loadPage(1));
+            QCOMPARE(rawView1->model()->pageIndex(), 1ULL);
+            QCOMPARE(window1.sourceSelectionForTesting().sourceSpans.front().start().absoluteBitOffset(), 8144ULL);
+
+            window1.setSaveFileDialogHandlerForTesting([&](QWidget*, const QString&, const QString&) {
+                return sessionPath;
+            });
+            QVERIFY(window1.saveSession());
+            QVERIFY(QFile::exists(sessionPath));
+
+            // Verify document JSON content matches independent repro: mode=binary, page=1, bit=8144
+            QFile file(sessionPath);
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            const auto doc = QJsonDocument::fromJson(file.readAll());
+            const auto root = doc.object();
+            const auto view = root.value(QStringLiteral("view")).toObject();
+            QCOMPARE(view.value(QStringLiteral("rawDisplayMode")).toString(), QStringLiteral("binary"));
+            QCOMPARE(view.value(QStringLiteral("rawPageIndex")).toString().toULongLong(), 1ULL);
+            QCOMPARE(view.value(QStringLiteral("selectedSourceBitOffset")).toString().toULongLong(), 8144ULL);
+        }
+
+        {
+            // Restore in window2: verify raw mode, buttons, page index, and source bit restored without reset
+            MainWindow window2;
+            QString errorMessage;
+            QVERIFY2(window2.openSessionFile(sessionPath, &errorMessage), qPrintable(errorMessage));
+
+            auto* backButton2 = window2.findChild<QToolButton*>(QStringLiteral("navigationBackButton"));
+            QVERIFY(backButton2 != nullptr);
+            QVERIFY(!backButton2->isEnabled());
+
+            // Verify raw display mode and buttons: Binary checked, Hex unchecked
+            auto* rawView2 = window2.findChild<RawDataView*>();
+            QVERIFY(rawView2 != nullptr);
+            auto* binBtn2 = window2.findChild<QToolButton*>(QStringLiteral("binaryModeButton"));
+            auto* hexBtn2 = window2.findChild<QToolButton*>(QStringLiteral("hexModeButton"));
+            QVERIFY(binBtn2 != nullptr && hexBtn2 != nullptr);
+            QCOMPARE(rawView2->model()->displayMode(), RawDisplayMode::Binary);
+            QVERIFY(binBtn2->isChecked());
+            QVERIFY(!hexBtn2->isChecked());
+
+            // Verify raw page index remained 1 (NOT reset to 0 by applyPendingTreeState)
+            QCOMPARE(rawView2->model()->pageIndex(), 1ULL);
+
+            // Verify source bit remained 8144 (NOT overwritten to 160 by tree selection)
+            QVERIFY(!window2.sourceSelectionForTesting().sourceSpans.empty());
+            QCOMPARE(window2.sourceSelectionForTesting().sourceSpans.front().start().absoluteBitOffset(), 8144ULL);
+        }
+    }
+
+    void rootViewStateSnapshotLifecycleAndIsolation() {
+        const QString mp4Path = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
+
+        MainWindow window;
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(mp4Path, &errorMessage), qPrintable(errorMessage));
+
+        // 1. Initial state at root has no snapshot
+        QVERIFY(!window.hasRootViewStateSnapshotForTesting());
+
+        auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
+        QVERIFY(treeView != nullptr);
+        auto* treeModel = qobject_cast<AnalysisTreeModel*>(treeView->model());
+        QVERIFY(treeModel != nullptr);
+        auto* backButton = window.findChild<QToolButton*>(QStringLiteral("navigationBackButton"));
+        QVERIFY(backButton != nullptr);
+
+        QModelIndex ascIndex;
+        QTRY_VERIFY((ascIndex = findIndexByName(*treeModel, QStringLiteral("asc_bytes1"))).isValid());
+        treeView->setCurrentIndex(ascIndex);
+
+        // 2. Double-click enters child format, snapshot is retained
+        Q_EMIT treeView->doubleClicked(ascIndex);
+        QTRY_VERIFY(backButton->isEnabled());
+        QVERIFY(window.hasRootViewStateSnapshotForTesting());
+
+        // 3. Failed sub-navigation attempt from child must NOT overwrite or corrupt existing root snapshot
+        const QModelIndex childNode = findIndexByName(*treeView->model(), QStringLiteral("audio_object_type"));
+        QVERIFY(childNode.isValid());
+        treeView->setCurrentIndex(childNode);
+        Q_EMIT treeView->doubleClicked(childNode);
+        QVERIFY(window.hasRootViewStateSnapshotForTesting());
+
+        // 4. Return to root via backButton, snapshot is cleared
+        backButton->click();
+        QTRY_VERIFY(!backButton->isEnabled());
+        QVERIFY(!window.hasRootViewStateSnapshotForTesting());
+
+        // 5. Re-enter child format
+        QTRY_VERIFY((ascIndex = findIndexByName(*treeModel, QStringLiteral("asc_bytes1"))).isValid());
+        treeView->setCurrentIndex(ascIndex);
+        Q_EMIT treeView->doubleClicked(ascIndex);
+        QTRY_VERIFY(backButton->isEnabled());
+        QVERIFY(window.hasRootViewStateSnapshotForTesting());
+
+        // 6. Open new media source clears snapshot and does not leak it
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString newPath = writeFixture(directory, QStringLiteral("new.264"), QByteArray::fromHex("00000165"));
+        QVERIFY(window.openMediaSource(newPath, &errorMessage));
+        QVERIFY(!window.hasRootViewStateSnapshotForTesting());
+        QVERIFY(!backButton->isEnabled());
+
+        // 7. Open session file also clears any snapshot
+        QVERIFY(window.openMediaSource(mp4Path, &errorMessage));
+        QTRY_VERIFY((ascIndex = findIndexByName(*treeModel, QStringLiteral("asc_bytes1"))).isValid());
+        treeView->setCurrentIndex(ascIndex);
+        Q_EMIT treeView->doubleClicked(ascIndex);
+        QTRY_VERIFY(backButton->isEnabled());
+        QVERIFY(window.hasRootViewStateSnapshotForTesting());
+
+        const QString dummySessionPath = directory.filePath(QStringLiteral("test.svsession"));
+        window.setSaveFileDialogHandlerForTesting([&](QWidget*, const QString&, const QString&) {
+            return dummySessionPath;
+        });
+        QVERIFY(window.saveSession());
+
+        QVERIFY(window.openSessionFile(dummySessionPath, &errorMessage));
+        QVERIFY(!window.hasRootViewStateSnapshotForTesting());
+        QVERIFY(!backButton->isEnabled());
+    }
+
+    void formatOverrideDialogPopulatesInstalledThirdPartyPackagesAndValidatesRootEntry() {
+        streamview::rules::RulePackageCatalog catalog;
+        auto mp4Pkg = streamview::rules::loadMp4IsobmffRulePackage();
+        auto h264Pkg = streamview::rules::loadH264AnnexBRulePackage();
+        auto aacPkg = streamview::rules::loadAacAdtsRulePackage();
+        QVERIFY(mp4Pkg.succeeded() && mp4Pkg.package.has_value());
+        QVERIFY(h264Pkg.succeeded() && h264Pkg.package.has_value());
+        QVERIFY(aacPkg.succeeded() && aacPkg.package.has_value());
+
+        const auto mp4Identity = mp4Pkg.package->identity();
+        const auto aacIdentity = aacPkg.package->identity();
+
+        const QByteArray adtsSource = *aacPkg.package->fileContents(QStringLiteral("src/aac_adts.svfmt"));
+        const QByteArray ascSource = *aacPkg.package->fileContents(QStringLiteral("src/aac_asc.svfmt"));
+        QVERIFY(!adtsSource.isEmpty());
+        QVERIFY(!ascSource.isEmpty());
+
+        static_cast<void>(catalog.registerPackage(std::move(*mp4Pkg.package)));
+        static_cast<void>(catalog.registerPackage(std::move(*h264Pkg.package)));
+        static_cast<void>(catalog.registerPackage(std::move(*aacPkg.package)));
+
+        // 1. Create runnable third-party package v1.0.0 with root entrypoint "adts" and structural sub-entry "asc"
+        const QByteArray manifestV1 = QByteArrayLiteral(
+            "manifest-version = 1\n\n"
+            "[package]\n"
+            "id = \"org.custom.adts\"\n"
+            "version = \"1.0.0\"\n"
+            "authors = [\"Custom Authors\"]\n"
+            "license = \"MIT\"\n"
+            "dependencies = []\n\n"
+            "[compatibility]\n"
+            "language = \"0.1\"\n"
+            "engine = \">=0.1.0 <0.2.0\"\n\n"
+            "[[entrypoints]]\n"
+            "id = \"adts\"\n"
+            "format = \"audio.aac.adts\"\n"
+            "source = \"src/adts.svfmt\"\n"
+            "profiles = [\"lc\"]\n"
+            "depth = \"adts-frame\"\n"
+            "detector = \"aac-adts\"\n\n"
+            "[[entrypoints]]\n"
+            "id = \"asc\"\n"
+            "format = \"audio.aac.asc\"\n"
+            "source = \"src/asc.svfmt\"\n"
+            "profiles = [\"lc\"]\n"
+            "depth = \"structural\"\n");
+        auto pkgV1 = streamview::rules::RulePackage::fromFiles({
+            {QStringLiteral("rule.toml"), manifestV1},
+            {QStringLiteral("src/adts.svfmt"), adtsSource},
+            {QStringLiteral("src/asc.svfmt"), ascSource},
+        });
+        QVERIFY(pkgV1.succeeded() && pkgV1.package.has_value());
+        const auto pkgV1Identity = pkgV1.package->identity();
+        static_cast<void>(catalog.registerPackage(std::move(*pkgV1.package)));
+
+        // 2. Create runnable third-party package v2.0.0 (different version and content hash)
+        const QByteArray manifestV2 = QByteArrayLiteral(
+            "manifest-version = 1\n\n"
+            "[package]\n"
+            "id = \"org.custom.adts\"\n"
+            "version = \"2.0.0\"\n"
+            "authors = [\"Custom Authors\"]\n"
+            "license = \"MIT\"\n"
+            "dependencies = []\n\n"
+            "[compatibility]\n"
+            "language = \"0.1\"\n"
+            "engine = \">=0.1.0 <0.2.0\"\n\n"
+            "[[entrypoints]]\n"
+            "id = \"adts\"\n"
+            "format = \"audio.aac.adts\"\n"
+            "source = \"src/adts.svfmt\"\n"
+            "profiles = [\"lc\"]\n"
+            "depth = \"adts-frame\"\n"
+            "detector = \"aac-adts\"\n");
+        auto pkgV2 = streamview::rules::RulePackage::fromFiles({
+            {QStringLiteral("rule.toml"), manifestV2},
+            {QStringLiteral("src/adts.svfmt"), adtsSource + "\n// v2 distinct hash\n"},
+        });
+        QVERIFY(pkgV2.succeeded() && pkgV2.package.has_value());
+        const auto pkgV2Identity = pkgV2.package->identity();
+        static_cast<void>(catalog.registerPackage(std::move(*pkgV2.package)));
+
+        // 3. Third-party package with custom non-standard format "audio.custom.adts":
+        // Must be rejected by canConstructRootAnalyzer because setupResolvedAnalyzer only falls back to H.264 Annex B!
+        const QByteArray manifestCustomFmt = QByteArrayLiteral(
+            "manifest-version = 1\n\n"
+            "[package]\n"
+            "id = \"org.custom.unsupported\"\n"
+            "version = \"1.0.0\"\n"
+            "authors = [\"Custom Unsupported\"]\n"
+            "license = \"MIT\"\n"
+            "dependencies = []\n\n"
+            "[compatibility]\n"
+            "language = \"0.1\"\n"
+            "engine = \">=0.1.0 <0.2.0\"\n\n"
+            "[[entrypoints]]\n"
+            "id = \"custom\"\n"
+            "format = \"audio.custom.adts\"\n"
+            "source = \"src/adts.svfmt\"\n"
+            "profiles = [\"lc\"]\n"
+            "depth = \"adts-frame\"\n"
+            "detector = \"aac-adts\"\n");
+        auto pkgCustomFmt = streamview::rules::RulePackage::fromFiles({
+            {QStringLiteral("rule.toml"), manifestCustomFmt},
+            {QStringLiteral("src/adts.svfmt"), adtsSource},
+        });
+        QVERIFY(pkgCustomFmt.succeeded() && pkgCustomFmt.package.has_value());
+        static_cast<void>(catalog.registerPackage(std::move(*pkgCustomFmt.package)));
+
+        // 4. Incompatible language package (should be rejected)
+        const QByteArray manifestIncompatible = QByteArrayLiteral(
+            "manifest-version = 1\n\n"
+            "[package]\n"
+            "id = \"org.incompatible.rule\"\n"
+            "version = \"1.0.0\"\n"
+            "authors = [\"Incompatible\"]\n"
+            "license = \"MIT\"\n"
+            "dependencies = []\n\n"
+            "[compatibility]\n"
+            "language = \"99.0\"\n"
+            "engine = \">=0.1.0 <0.2.0\"\n\n"
+            "[[entrypoints]]\n"
+            "id = \"adts\"\n"
+            "format = \"audio.aac.adts\"\n"
+            "source = \"src/adts.svfmt\"\n"
+            "profiles = [\"lc\"]\n"
+            "depth = \"adts-frame\"\n");
+        auto pkgIncompat = streamview::rules::RulePackage::fromFiles({
+            {QStringLiteral("rule.toml"), manifestIncompatible},
+            {QStringLiteral("src/adts.svfmt"), adtsSource},
+        });
+        QVERIFY(pkgIncompat.succeeded() && pkgIncompat.package.has_value());
+        static_cast<void>(catalog.registerPackage(std::move(*pkgIncompat.package)));
+
+        // 5. Invalid rule syntax package (should be rejected by compilation check)
+        const QByteArray manifestInvalidDsl = QByteArrayLiteral(
+            "manifest-version = 1\n\n"
+            "[package]\n"
+            "id = \"org.invalid.syntax\"\n"
+            "version = \"1.0.0\"\n"
+            "authors = [\"Invalid\"]\n"
+            "license = \"MIT\"\n"
+            "dependencies = []\n\n"
+            "[compatibility]\n"
+            "language = \"0.1\"\n"
+            "engine = \">=0.1.0 <0.2.0\"\n\n"
+            "[[entrypoints]]\n"
+            "id = \"adts\"\n"
+            "format = \"audio.aac.adts\"\n"
+            "source = \"src/adts.svfmt\"\n"
+            "profiles = [\"lc\"]\n"
+            "depth = \"adts-frame\"\n");
+        auto pkgInvalidDsl = streamview::rules::RulePackage::fromFiles({
+            {QStringLiteral("rule.toml"), manifestInvalidDsl},
+            {QStringLiteral("src/adts.svfmt"), QByteArrayLiteral("syntax error !!! not a rule")},
+        });
+        QVERIFY(pkgInvalidDsl.succeeded() && pkgInvalidDsl.package.has_value());
+        static_cast<void>(catalog.registerPackage(std::move(*pkgInvalidDsl.package)));
+
+        auto mp4Entry = streamview::rules::RuleEntryPointIdentity::create(
+            mp4Identity, QStringLiteral("main"));
+        QVERIFY(mp4Entry.has_value());
+
+        streamview::rules::FormatSelection formatSelection;
+        formatSelection.format = streamview::rules::DetectedFormat::Mp4Isobmff;
+        formatSelection.reason = streamview::rules::DetectedFormatReason::Mp4StructuralTiling;
+
+        FormatOverrideDialog dlg(nullptr, catalog, formatSelection, *mp4Entry);
+        auto* listWidget = dlg.findChild<QListWidget*>(QStringLiteral("optionsListWidget"));
+        QVERIFY(listWidget != nullptr);
+
+        // Options count MUST be exactly 5: 3 official + 2 runnable third-party (v1.0.0 and v2.0.0)
+        // Structural sub-entry "asc", incompatible package, invalid syntax package, AND custom format package MUST NOT be listed.
+        QCOMPARE(listWidget->count(), 5);
+
+        // Find v1 and v2 third-party options
+        int rowV1 = -1;
+        int rowV2 = -1;
+        for (int i = 0; i < listWidget->count(); ++i) {
+            const QString text = listWidget->item(i)->text();
+            QVERIFY(!text.contains(QStringLiteral("asc")));
+            QVERIFY(!text.contains(QStringLiteral("org.incompatible.rule")));
+            QVERIFY(!text.contains(QStringLiteral("org.invalid.syntax")));
+            QVERIFY(!text.contains(QStringLiteral("org.custom.unsupported")));
+            if (text.contains(QStringLiteral("org.custom.adts")) && text.contains(QStringLiteral("1.0.0"))) {
+                rowV1 = i;
+            }
+            if (text.contains(QStringLiteral("org.custom.adts")) && text.contains(QStringLiteral("2.0.0"))) {
+                rowV2 = i;
+            }
+        }
+        QVERIFY(rowV1 >= 0);
+        QVERIFY(rowV2 >= 0);
+        QVERIFY(rowV1 != rowV2);
+
+        // Select v1 option and verify exact identity with content hash
+        listWidget->setCurrentRow(rowV1);
+        auto selectedV1 = dlg.selectedRuleEntryPoint();
+        QVERIFY(selectedV1.has_value());
+        QCOMPARE(selectedV1->packageIdentity().packageId(), QStringLiteral("org.custom.adts"));
+        QCOMPARE(selectedV1->packageIdentity().packageVersion(), QStringLiteral("1.0.0"));
+        QCOMPARE(selectedV1->packageIdentity().contentHash(), pkgV1Identity.contentHash());
+        QCOMPARE(selectedV1->entryPointId(), QStringLiteral("adts"));
+
+        // Select v2 option and verify exact identity with content hash
+        listWidget->setCurrentRow(rowV2);
+        auto selectedV2 = dlg.selectedRuleEntryPoint();
+        QVERIFY(selectedV2.has_value());
+        QCOMPARE(selectedV2->packageIdentity().packageId(), QStringLiteral("org.custom.adts"));
+        QCOMPARE(selectedV2->packageIdentity().packageVersion(), QStringLiteral("2.0.0"));
+        QCOMPARE(selectedV2->packageIdentity().contentHash(), pkgV2Identity.contentHash());
+        QCOMPARE(selectedV2->entryPointId(), QStringLiteral("adts"));
+
+        // Verify that the selected third-party rule actually overrides the format in MainWindow
+        QTemporaryDir testDir;
+        QVERIFY(testDir.isValid());
+        auto makeFrame = [](int frameLength) {
+            QByteArray frame(frameLength, '\x55');
+            frame[0] = static_cast<char>(0xFF);
+            frame[1] = static_cast<char>(0xF1);
+            frame[2] = static_cast<char>(0x50);
+            frame[3] = static_cast<char>(0x80 | ((frameLength >> 11) & 0x03));
+            frame[4] = static_cast<char>((frameLength >> 3) & 0xFF);
+            frame[5] = static_cast<char>(((frameLength & 0x07) << 5) | 0x1F);
+            frame[6] = static_cast<char>(0xFC);
+            return frame;
+        };
+        QByteArray aacBytes;
+        aacBytes.append(makeFrame(150));
+        aacBytes.append(makeFrame(200));
+        aacBytes.append(makeFrame(180));
+        const QString dummyAacPath = writeFixture(testDir, QStringLiteral("test.aac"), aacBytes);
+        MainWindow testWindow;
+
+        auto testPkg = streamview::rules::RulePackage::fromFiles({
+            {QStringLiteral("rule.toml"), manifestV1},
+            {QStringLiteral("src/adts.svfmt"), adtsSource},
+            {QStringLiteral("src/asc.svfmt"), ascSource},
+        });
+        QVERIFY(testPkg.succeeded() && testPkg.package.has_value());
+        static_cast<void>(testWindow.catalogForTesting().registerPackage(std::move(*testPkg.package)));
+
+        QString openErr;
+        QVERIFY2(testWindow.openMediaSource(dummyAacPath, &openErr), qPrintable(openErr));
+        QVERIFY(testWindow.activeRuleIdentity().has_value());
+        // Initially, the session activeRule is the built-in org.streamview.aac
+        QCOMPARE(testWindow.activeRuleIdentity()->packageIdentity().packageId(), QStringLiteral("org.streamview.aac"));
+
+        // Now explicitly override format with the selected third-party rule identity selectedV1 using dialog handler
+        testWindow.setFormatOverrideDialogHandlerForTesting([&](QWidget*, const streamview::rules::RulePackageCatalog&, const streamview::rules::FormatSelection&, const streamview::rules::RuleEntryPointIdentity&) {
+            return selectedV1;
+        });
+        testWindow.overrideFormat();
+        // Verify that the active rule is now the exact third-party rule
+        QVERIFY(testWindow.activeRuleIdentity().has_value());
+        QCOMPARE(*testWindow.activeRuleIdentity(), *selectedV1);
+        QCOMPARE(testWindow.activeRuleIdentity()->packageIdentity().contentHash(), pkgV1Identity.contentHash());
+
+        // Test empty catalog: OK button must be disabled
+        streamview::rules::RulePackageCatalog emptyCatalog;
+        FormatOverrideDialog emptyDlg(nullptr, emptyCatalog, formatSelection, *mp4Entry);
+        auto* emptyButtonBox = emptyDlg.findChild<QDialogButtonBox*>(QStringLiteral("buttonBox"));
+        QVERIFY(emptyButtonBox != nullptr);
+        QVERIFY(!emptyButtonBox->button(QDialogButtonBox::Ok)->isEnabled());
+    }
+
+    void timelineTrackComboBoxEnabledStateSynchronizedAcrossFormatTransitions() {
+        auto& loc = LocalizationManager::instance();
+        loc.setLanguage(Language::English);
+
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString h264Path = writeFixture(
+            directory, QStringLiteral("valid.264"), QByteArray::fromHex("00000165"));
+        QVERIFY(!h264Path.isEmpty());
+        const QString mp4Path =
+            QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5j4_two_tracks.mp4");
+
+        MainWindow window;
+        auto* trackCombo = window.findChild<QComboBox*>(QStringLiteral("timelineTrackComboBox"));
+        auto* statusLabel = window.findChild<QLabel*>(QStringLiteral("timelineStatusLabel"));
+        QVERIFY(trackCombo != nullptr);
+        QVERIFY(statusLabel != nullptr);
+
+        // 1. Initially without file: empty and disabled
+        QCOMPARE(trackCombo->count(), 0);
+        QVERIFY(!trackCombo->isEnabled());
+
+        // 2. Open H.264 elementary stream: disabled
+        QString errorMessage;
+        QVERIFY2(window.openMediaSource(h264Path, &errorMessage), qPrintable(errorMessage));
+        QTRY_VERIFY(!statusLabel->isHidden());
+        QCOMPARE(trackCombo->count(), 0);
+        QVERIFY(!trackCombo->isEnabled());
+
+        // 3. Switch language to Chinese while elementary stream is open: remains disabled
+        loc.setLanguage(Language::SimplifiedChinese);
+        QCOMPARE(trackCombo->count(), 0);
+        QVERIFY(!trackCombo->isEnabled());
+
+        // 4. Open MP4 container with multiple tracks: populated and enabled
+        QVERIFY2(window.openMediaSource(mp4Path, &errorMessage), qPrintable(errorMessage));
+        QTRY_COMPARE(trackCombo->count(), 2);
+        QVERIFY(trackCombo->isEnabled());
+
+        // 5. Switch language back to English while MP4 is open: remains enabled
+        loc.setLanguage(Language::English);
+        QCOMPARE(trackCombo->count(), 2);
+        QVERIFY(trackCombo->isEnabled());
+
+        // 6. Switch back to H.264 elementary stream: cleared and disabled
+        QVERIFY2(window.openMediaSource(h264Path, &errorMessage), qPrintable(errorMessage));
+        QTRY_VERIFY(!statusLabel->isHidden());
+        QCOMPARE(trackCombo->count(), 0);
+        QVERIFY(!trackCombo->isEnabled());
+
+        // 7. Cleanup
+        loc.setLanguage(Language::English);
     }
 };
 

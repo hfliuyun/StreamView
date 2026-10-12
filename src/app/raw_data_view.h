@@ -29,6 +29,9 @@ public:
                                  QString* errorMessage = nullptr);
     void setSourceSelection(std::vector<core::SourceSpan> sourceSpans);
     void clear();
+    void retranslateUi();
+    void setDisplayMode(RawDisplayMode mode);
+    [[nodiscard]] bool loadPage(quint64 pageIndex, QString* errorMessage = nullptr);
     [[nodiscard]] RawDataModel* model() const noexcept { return model_; }
 
 signals:
@@ -37,6 +40,7 @@ signals:
 
 protected:
     [[nodiscard]] bool eventFilter(QObject* watched, QEvent* event) override;
+    void changeEvent(QEvent* event) override;
 
 private:
     void loadPreviousPage();
@@ -50,6 +54,9 @@ private:
     QToolButton* previousPageButton_ = nullptr;
     QToolButton* nextPageButton_ = nullptr;
     QLabel* pageLabel_ = nullptr;
+    QToolButton* hexButton_ = nullptr;
+    QToolButton* binaryButton_ = nullptr;
+    QToolButton* combinedButton_ = nullptr;
 };
 
 } // namespace streamview::app

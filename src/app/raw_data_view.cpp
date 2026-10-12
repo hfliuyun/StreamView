@@ -1,4 +1,5 @@
 #include "raw_data_view.h"
+#include "localization_manager.h"
 
 #include <QButtonGroup>
 #include <QFontDatabase>
@@ -101,12 +102,12 @@ RawDataView::RawDataView(QWidget* parent) : QWidget(parent) {
         toolbarLayout->addWidget(button);
         return button;
     };
-    auto* hexButton = addModeButton(tr("Hex"), QStringLiteral("hexModeButton"),
-                                    RawDisplayMode::Hex);
-    addModeButton(tr("Binary"), QStringLiteral("binaryModeButton"), RawDisplayMode::Binary);
-    addModeButton(tr("Combined"), QStringLiteral("combinedModeButton"),
-                  RawDisplayMode::Combined);
-    hexButton->setChecked(true);
+    hexButton_ = addModeButton(tr("Hex"), QStringLiteral("hexModeButton"),
+                               RawDisplayMode::Hex);
+    binaryButton_ = addModeButton(tr("Binary"), QStringLiteral("binaryModeButton"), RawDisplayMode::Binary);
+    combinedButton_ = addModeButton(tr("Combined"), QStringLiteral("combinedModeButton"),
+                                    RawDisplayMode::Combined);
+    hexButton_->setChecked(true);
     layout->addWidget(toolbar);
 
     model_ = new RawDataModel(this);
@@ -130,9 +131,40 @@ RawDataView::RawDataView(QWidget* parent) : QWidget(parent) {
     connect(modeGroup, &QButtonGroup::idClicked, this, [this](int id) {
         setMode(static_cast<RawDisplayMode>(id));
     });
+    connect(&LocalizationManager::instance(), &LocalizationManager::languageChanged,
+            this, &RawDataView::retranslateUi);
 
     updateCellSizes();
     updateControls();
+}
+
+void RawDataView::changeEvent(QEvent* event) {
+    if (event != nullptr && event->type() == QEvent::LanguageChange) {
+        retranslateUi();
+    }
+    QWidget::changeEvent(event);
+}
+
+void RawDataView::retranslateUi() {
+    if (previousPageButton_ != nullptr) {
+        previousPageButton_->setToolTip(tr("Previous source page"));
+    }
+    if (nextPageButton_ != nullptr) {
+        nextPageButton_->setToolTip(tr("Next source page"));
+    }
+    if (hexButton_ != nullptr) {
+        hexButton_->setText(tr("Hex"));
+    }
+    if (binaryButton_ != nullptr) {
+        binaryButton_->setText(tr("Binary"));
+    }
+    if (combinedButton_ != nullptr) {
+        combinedButton_->setText(tr("Combined"));
+    }
+    updateControls();
+    if (model_ != nullptr) {
+        model_->retranslate();
+    }
 }
 
 bool RawDataView::setSource(const core::RandomAccessSource* source, QString* errorMessage) {
@@ -243,9 +275,31 @@ void RawDataView::loadNextPage() {
     updateControls();
 }
 
-void RawDataView::setMode(RawDisplayMode mode) {
+void RawDataView::setDisplayMode(RawDisplayMode mode) {
+    if (hexButton_ != nullptr) {
+        hexButton_->setChecked(mode == RawDisplayMode::Hex);
+    }
+    if (binaryButton_ != nullptr) {
+        binaryButton_->setChecked(mode == RawDisplayMode::Binary);
+    }
+    if (combinedButton_ != nullptr) {
+        combinedButton_->setChecked(mode == RawDisplayMode::Combined);
+    }
     model_->setDisplayMode(mode);
     updateCellSizes();
+}
+
+void RawDataView::setMode(RawDisplayMode mode) {
+    setDisplayMode(mode);
+}
+
+bool RawDataView::loadPage(quint64 pageIndex, QString* errorMessage) {
+    const bool loaded = model_->loadPage(pageIndex, errorMessage);
+    updateControls();
+    if (!loaded && errorMessage != nullptr) {
+        emit sourceReadFailed(*errorMessage);
+    }
+    return loaded;
 }
 
 void RawDataView::updateControls() {

@@ -1,9 +1,20 @@
 #include "timeline_table_model.h"
+#include "localization_manager.h"
 
 namespace streamview::app {
 
 TimelineTableModel::TimelineTableModel(QObject* parent)
-    : QAbstractTableModel(parent) {}
+    : QAbstractTableModel(parent) {
+    connect(&LocalizationManager::instance(), &LocalizationManager::languageChanged,
+            this, &TimelineTableModel::retranslate);
+}
+
+void TimelineTableModel::retranslate() {
+    emit headerDataChanged(Qt::Horizontal, 0, ColumnCount - 1);
+    if (!samples_.empty()) {
+        emit dataChanged(index(0, 0), index(static_cast<int>(samples_.size()) - 1, ColumnCount - 1));
+    }
+}
 
 int TimelineTableModel::rowCount(const QModelIndex& parent) const {
     if (parent.isValid()) {

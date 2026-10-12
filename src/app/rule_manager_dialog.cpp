@@ -1,6 +1,8 @@
 #include "rule_manager_dialog.h"
+#include "localization_manager.h"
 
 #include <QDialogButtonBox>
+#include <QEvent>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -81,8 +83,45 @@ RuleManagerDialog::RuleManagerDialog(
 
     connect(installButton_, &QPushButton::clicked, this, &RuleManagerDialog::installPackage);
     connect(buttonBox_, &QDialogButtonBox::rejected, this, &QDialog::accept);
+    connect(&LocalizationManager::instance(), &LocalizationManager::languageChanged,
+            this, &RuleManagerDialog::retranslateUi);
 
     refreshPackages();
+}
+
+void RuleManagerDialog::changeEvent(QEvent* event) {
+    if (event != nullptr && event->type() == QEvent::LanguageChange) {
+        retranslateUi();
+    }
+    QDialog::changeEvent(event);
+}
+
+void RuleManagerDialog::retranslateUi() {
+    setWindowTitle(tr("Rule Package Manager"));
+    if (headerLabel_ != nullptr) {
+        headerLabel_->setText(
+            tr("Manage format rule packages. Bundled packages are read-only official assets. "
+               "External packages (.svrule) can be installed into the local user repository."));
+    }
+    if (tableWidget_ != nullptr) {
+        tableWidget_->setHorizontalHeaderLabels({
+            tr("ID"),
+            tr("Version"),
+            tr("Origin"),
+            tr("Content Hash"),
+            tr("Entry Points"),
+            tr("Description")
+        });
+        for (int row = 0; row < tableWidget_->rowCount() && row < static_cast<int>(packages_.size()); ++row) {
+            auto* item = tableWidget_->item(row, 2);
+            if (item != nullptr) {
+                item->setText(packages_[static_cast<std::size_t>(row)].isBundled ? tr("[Bundled]") : tr("[Installed]"));
+            }
+        }
+    }
+    if (installButton_ != nullptr) {
+        installButton_->setText(tr("Install Package (.svrule)..."));
+    }
 }
 
 void RuleManagerDialog::refreshPackages() {

@@ -1,5 +1,7 @@
 #include "field_inspector.h"
+#include "localization_manager.h"
 
+#include <QEvent>
 #include <QFormLayout>
 #include <QLabel>
 #include <QSizePolicy>
@@ -45,9 +47,58 @@ FieldInspector::FieldInspector(QWidget* parent) : QWidget(parent) {
     form->addRow(tr("Specification"), specification_);
     form->addRow(tr("Diagnostics"), diagnostics_);
     clear();
+
+    connect(&LocalizationManager::instance(), &LocalizationManager::languageChanged,
+            this, &FieldInspector::retranslateUi);
+}
+
+void FieldInspector::changeEvent(QEvent* event) {
+    if (event != nullptr && event->type() == QEvent::LanguageChange) {
+        retranslateUi();
+    }
+    QWidget::changeEvent(event);
+}
+
+void FieldInspector::retranslateUi() {
+    auto* form = qobject_cast<QFormLayout*>(layout());
+    if (form != nullptr) {
+        if (auto* lbl = qobject_cast<QLabel*>(form->labelForField(name_))) {
+            lbl->setText(tr("Field"));
+        }
+        if (auto* lbl = qobject_cast<QLabel*>(form->labelForField(value_))) {
+            lbl->setText(tr("Value"));
+        }
+        if (auto* lbl = qobject_cast<QLabel*>(form->labelForField(type_))) {
+            lbl->setText(tr("Type"));
+        }
+        if (auto* lbl = qobject_cast<QLabel*>(form->labelForField(width_))) {
+            lbl->setText(tr("Width"));
+        }
+        if (auto* lbl = qobject_cast<QLabel*>(form->labelForField(sourceSpans_))) {
+            lbl->setText(tr("Source spans"));
+        }
+        if (auto* lbl = qobject_cast<QLabel*>(form->labelForField(logicalRange_))) {
+            lbl->setText(tr("Logical range"));
+        }
+        if (auto* lbl = qobject_cast<QLabel*>(form->labelForField(description_))) {
+            lbl->setText(tr("Description"));
+        }
+        if (auto* lbl = qobject_cast<QLabel*>(form->labelForField(specification_))) {
+            lbl->setText(tr("Specification"));
+        }
+        if (auto* lbl = qobject_cast<QLabel*>(form->labelForField(diagnostics_))) {
+            lbl->setText(tr("Diagnostics"));
+        }
+    }
+    if (currentNode_.has_value()) {
+        setNode(*currentNode_);
+    } else {
+        clear();
+    }
 }
 
 void FieldInspector::clear() {
+    currentNode_.reset();
     name_->setText(tr("No field selected."));
     value_->setText(QStringLiteral("-"));
     type_->setText(QStringLiteral("-"));
@@ -60,6 +111,7 @@ void FieldInspector::clear() {
 }
 
 void FieldInspector::setNode(const core::AnalysisNode& node) {
+    currentNode_ = node;
     name_->setText(node.name());
     value_->setText(node.value().isValid() ? node.value().toString() : QStringLiteral("-"));
     type_->setText(node.metadata().typeName.isEmpty() ? kindName(node.kind())

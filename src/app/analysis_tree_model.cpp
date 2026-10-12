@@ -1,4 +1,5 @@
 #include "analysis_tree_model.h"
+#include "localization_manager.h"
 
 #include <QColor>
 
@@ -68,7 +69,14 @@ bool sameDiagnostics(const std::vector<streamview::core::ParseDiagnostic>& left,
 
 namespace streamview::app {
 
-AnalysisTreeModel::AnalysisTreeModel(QObject* parent) : QAbstractItemModel(parent) {}
+AnalysisTreeModel::AnalysisTreeModel(QObject* parent) : QAbstractItemModel(parent) {
+    connect(&LocalizationManager::instance(), &LocalizationManager::languageChanged,
+            this, &AnalysisTreeModel::retranslate);
+}
+
+void AnalysisTreeModel::retranslate() {
+    emit headerDataChanged(Qt::Horizontal, 0, ColumnCount - 1);
+}
 
 void AnalysisTreeModel::resetFromTree(const core::AnalysisTree& tree) {
     beginResetModel();

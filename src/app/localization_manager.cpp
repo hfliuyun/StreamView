@@ -41,6 +41,8 @@ const std::unordered_map<std::string_view, QString>& chineseTranslations() {
         {"AAC (ADTS)", QString::fromUtf8("AAC (ADTS)")},
         {"Advanced Audio Coding (AAC) in Audio Data Transport Stream (ADTS) frames.",
          QString::fromUtf8("音频数据传输流 (ADTS) 帧结构的进阶音频编码 (AAC)。")},
+        {"Package: %1\nVersion: %2\nEntry Point: %3\nFormat: %4\nHash: %5",
+         QString::fromUtf8("规则包: %1\n版本: %2\n入口点: %3\n格式: %4\n哈希: %5")},
 
         // Main Menus & Actions
         {"&File", QString::fromUtf8("文件(&F)")},

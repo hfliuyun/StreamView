@@ -17,6 +17,10 @@ public:
 
     void clear();
     void setNode(const core::AnalysisNode& node);
+    void retranslateUi();
+
+protected:
+    void changeEvent(QEvent* event) override;
 
 private:
     static QString formatSourceSpans(const core::AnalysisNode& node);
@@ -36,6 +40,8 @@ private:
     QLabel* description_ = nullptr;
     QLabel* specification_ = nullptr;
     QLabel* diagnostics_ = nullptr;
+
+    std::optional<core::AnalysisNode> currentNode_;
 };
 
 } // namespace streamview::app

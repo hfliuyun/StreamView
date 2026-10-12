@@ -125,6 +125,18 @@ public:
     [[nodiscard]] const QStringList& pendingExpandedPathsForTesting() const noexcept {
         return pendingExpandedPaths_;
     }
+    [[nodiscard]] const SourceSelection& sourceSelectionForTesting() const noexcept {
+        return sourceSelection_;
+    }
+    [[nodiscard]] bool hasRootViewStateSnapshotForTesting() const noexcept {
+        return rootViewStateSnapshot_.has_value();
+    }
+    [[nodiscard]] rules::RulePackageCatalog& catalogForTesting() noexcept {
+        return catalog_;
+    }
+    [[nodiscard]] const rules::RulePackageCatalog& catalogForTesting() const noexcept {
+        return catalog_;
+    }
 
     void retranslateUi();
 
@@ -169,7 +181,7 @@ private:
     [[nodiscard]] bool enterChildFormatOnCurrentNode();
     [[nodiscard]] bool enterSampleOnCurrentRow();
     void updateNavigationUI();
-    void loadTracks();
+    void loadTracks(bool preserveSelection = false);
     void loadSamplePage(quint32 trackId, quint64 pageIndex);
     void updateTimelinePageControls();
     void updateAmbiguityUI();
@@ -180,6 +192,12 @@ private:
     void expandNodeByPath(const QString& path);
     void applyPendingTreeState();
 
+    struct RootViewSnapshot {
+        QStringList expandedPaths;
+        SessionViewState view;
+    };
+    [[nodiscard]] RootViewSnapshot captureRootViewSnapshot() const;
+
     QTreeView* analysisTreeView_ = nullptr;
     AnalysisTreeModel* analysisModel_ = nullptr;
     QToolButton* navigationBackButton_ = nullptr;
@@ -188,6 +206,7 @@ private:
     RawDataView* rawDataView_ = nullptr;
 
     QDockWidget* timelineDock_ = nullptr;
+    QLabel* timelineTrackLabel_ = nullptr;
     QComboBox* timelineTrackComboBox_ = nullptr;
     QLabel* timelineStatusLabel_ = nullptr;
     QToolButton* timelinePrevPageButton_ = nullptr;
@@ -211,6 +230,8 @@ private:
     quint64 analysisGeneration_ = 0;
     bool rawLoaded_ = true;
     QString rawError_;
+    std::optional<AnalysisBatchStatus> lastAnalysisStatus_;
+    QString lastAnalysisErrorMessage_;
 
     quint32 currentTrackId_ = 0;
     quint64 currentPageIndex_ = 0;
@@ -222,6 +243,7 @@ private:
     std::vector<SessionAnnotation> annotations_;
     std::optional<QString> pendingSelectedAnalysisPath_;
     QStringList pendingExpandedPaths_;
+    std::optional<RootViewSnapshot> rootViewStateSnapshot_;
     bool isApplyingPendingTreeState_ = false;
     QString ruleStorePath_;
     std::set<QString> bundledPackageIds_;

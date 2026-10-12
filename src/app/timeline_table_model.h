@@ -40,6 +40,7 @@ public:
 
     void setSamples(std::vector<core::SampleDescriptor> samples, quint32 timescale);
     void clear();
+    void retranslate();
 
     [[nodiscard]] const core::SampleDescriptor* sampleAt(int row) const noexcept;
     [[nodiscard]] const std::vector<core::SampleDescriptor>& samples() const noexcept {

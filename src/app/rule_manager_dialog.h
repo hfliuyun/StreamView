@@ -60,9 +60,13 @@ public:
     }
 
     void refreshPackages();
+    void retranslateUi();
 
 public slots:
     void installPackage();
+
+protected:
+    void changeEvent(QEvent* event) override;
 
 private:
     rules::RulePackageCatalog& catalog_;

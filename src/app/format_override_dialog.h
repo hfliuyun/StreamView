@@ -34,13 +34,22 @@ public:
 
     [[nodiscard]] std::optional<rules::RuleEntryPointIdentity> selectedRuleEntryPoint() const;
 
+protected:
+    void changeEvent(QEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 private slots:
     void onItemSelectionChanged();
 
 private:
+    void retranslateUi();
     void populateOptions(const rules::RulePackageCatalog& catalog,
                          const rules::FormatSelection& formatSelection,
                          const rules::RuleEntryPointIdentity& currentRule);
+
+    const rules::RulePackageCatalog* catalog_ = nullptr;
+    rules::FormatSelection formatSelection_;
+    rules::RuleEntryPointIdentity currentRule_;
 
     QLabel* headerLabel_ = nullptr;
     QLabel* ambiguityBannerLabel_ = nullptr;

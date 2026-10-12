@@ -339,12 +339,14 @@ void MainWindow::setupDocks() {
     controlsLayout->setContentsMargins(0, 0, 0, 0);
     controlsLayout->setSpacing(6);
 
-    auto* trackLabel = new QLabel(tr("Track:"), controlsBar);
-    controlsLayout->addWidget(trackLabel);
+    timelineTrackLabel_ = new QLabel(tr("Track:"), controlsBar);
+    timelineTrackLabel_->setObjectName(QStringLiteral("timelineTrackLabel"));
+    controlsLayout->addWidget(timelineTrackLabel_);
 
     timelineTrackComboBox_ = new QComboBox(controlsBar);
     timelineTrackComboBox_->setObjectName(QStringLiteral("timelineTrackComboBox"));
     timelineTrackComboBox_->setMinimumWidth(200);
+    timelineTrackComboBox_->setEnabled(false);
     connect(timelineTrackComboBox_, &QComboBox::currentIndexChanged,
             this, &MainWindow::onTrackSelectionChanged);
     controlsLayout->addWidget(timelineTrackComboBox_);
@@ -410,6 +412,8 @@ void MainWindow::setupDocks() {
     tabifyDockWidget(timelineDock_, diagnosticsSummaryDock_);
     connect(diagnosticsSummaryDock_, &DiagnosticsSummaryDock::diagnosticSelected,
             this, &MainWindow::onDiagnosticSelected);
+    connect(&LocalizationManager::instance(), &LocalizationManager::languageChanged,
+            this, &MainWindow::retranslateUi);
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
@@ -579,11 +583,8 @@ void MainWindow::applyPendingTreeState() {
     isApplyingPendingTreeState_ = false;
 }
 
-SessionUserState MainWindow::currentUserState() const {
-    SessionUserState state;
-    state.bookmarks = bookmarks_;
-    state.annotations = annotations_;
-
+MainWindow::RootViewSnapshot MainWindow::captureRootViewSnapshot() const {
+    RootViewSnapshot snapshot;
     if (analysisTreeView_ != nullptr && analysisModel_ != nullptr) {
         std::function<void(const QModelIndex&, const QString&)> collectExpanded;
         collectExpanded = [&](const QModelIndex& parentIndex, const QString& parentPath) {
@@ -597,7 +598,7 @@ SessionUserState MainWindow::currentUserState() const {
                 const QString segment = QStringLiteral("%1#%2").arg(nodeName).arg(r);
                 const QString currentPath = parentPath.isEmpty() ? segment : parentPath + u'/' + segment;
                 if (analysisTreeView_->isExpanded(idx)) {
-                    state.expandedPaths.append(currentPath);
+                    snapshot.expandedPaths.append(currentPath);
                 }
                 collectExpanded(idx, currentPath);
             }
@@ -606,11 +607,11 @@ SessionUserState MainWindow::currentUserState() const {
     }
 
     if (rawDataView_ != nullptr && rawDataView_->model() != nullptr) {
-        state.view.rawPageIndex = rawDataView_->model()->pageIndex();
-        state.view.rawDisplayMode = rawDataView_->model()->displayMode();
+        snapshot.view.rawPageIndex = rawDataView_->model()->pageIndex();
+        snapshot.view.rawDisplayMode = rawDataView_->model()->displayMode();
     }
     if (!sourceSelection_.sourceSpans.empty()) {
-        state.view.selectedSourceBitOffset = sourceSelection_.sourceSpans.front().start().absoluteBitOffset();
+        snapshot.view.selectedSourceBitOffset = sourceSelection_.sourceSpans.front().start().absoluteBitOffset();
     }
     if (analysisTreeView_ != nullptr && analysisModel_ != nullptr) {
         const QModelIndex currentIdx = analysisTreeView_->currentIndex();
@@ -621,9 +622,26 @@ SessionUserState MainWindow::currentUserState() const {
                 const QString nodeName = analysisModel_->data(nameIdx, Qt::DisplayRole).toString();
                 pathComponents.prepend(QStringLiteral("%1#%2").arg(nodeName).arg(it.row()));
             }
-            state.view.selectedAnalysisPath = pathComponents.join(u'/');
+            snapshot.view.selectedAnalysisPath = pathComponents.join(u'/');
         }
     }
+    return snapshot;
+}
+
+SessionUserState MainWindow::currentUserState() const {
+    SessionUserState state;
+    state.bookmarks = bookmarks_;
+    state.annotations = annotations_;
+
+    if (session_ && session_->navigationDepth() > 0 && rootViewStateSnapshot_.has_value()) {
+        state.expandedPaths = rootViewStateSnapshot_->expandedPaths;
+        state.view = rootViewStateSnapshot_->view;
+        return state;
+    }
+
+    const auto rootSnapshot = captureRootViewSnapshot();
+    state.expandedPaths = rootSnapshot.expandedPaths;
+    state.view = rootSnapshot.view;
     return state;
 }
 
@@ -813,12 +831,16 @@ void MainWindow::overrideFormat() {
     analysisModel_->clear();
     timelineModel_->clear();
     timelineTrackComboBox_->clear();
+    timelineTrackComboBox_->setEnabled(false);
     if (diagnosticsSummaryDock_ != nullptr) {
         diagnosticsSummaryDock_->clear();
     }
     navigationBreadcrumbFormats_.clear();
     pendingSelectedAnalysisPath_.reset();
     pendingExpandedPaths_.clear();
+    rootViewStateSnapshot_.reset();
+    lastAnalysisStatus_.reset();
+    lastAnalysisErrorMessage_.clear();
 
     analysisModel_->resetFromTree(session_->tree());
 
@@ -885,16 +907,20 @@ bool MainWindow::openSessionFile(const QString& sessionPath, QString* errorMessa
     analysisModel_->clear();
     timelineModel_->clear();
     timelineTrackComboBox_->clear();
+    timelineTrackComboBox_->setEnabled(false);
     if (diagnosticsSummaryDock_ != nullptr) {
         diagnosticsSummaryDock_->clear();
     }
     session_.reset();
     navigationBreadcrumbFormats_.clear();
+    rootViewStateSnapshot_.reset();
 
     session_ = std::move(candidate);
     bookmarks_ = savedUserState.bookmarks;
     annotations_ = savedUserState.annotations;
     currentSessionFilePath_ = sessionPath;
+    lastAnalysisStatus_.reset();
+    lastAnalysisErrorMessage_.clear();
 
     rawError_.clear();
     rawLoaded_ = rawDataView_->setSource(
@@ -917,17 +943,24 @@ bool MainWindow::openSessionFile(const QString& sessionPath, QString* errorMessa
         analysisTreeView_->resizeColumnToContents(i);
     }
 
-    if (savedUserState.view.rawPageIndex > 0 && rawDataView_->model() != nullptr) {
-        static_cast<void>(rawDataView_->model()->loadPage(savedUserState.view.rawPageIndex));
-    }
-    if (rawDataView_->model() != nullptr) {
-        rawDataView_->model()->setDisplayMode(savedUserState.view.rawDisplayMode);
+    applyPendingTreeState();
+
+    if (rawDataView_ != nullptr) {
+        rawDataView_->setDisplayMode(savedUserState.view.rawDisplayMode);
     }
     if (savedUserState.view.selectedSourceBitOffset.has_value()) {
-        selectSourceBit(*savedUserState.view.selectedSourceBitOffset);
+        const auto selectedSpan = core::SourceSpan::create(
+            core::SourceBitAddress(*savedUserState.view.selectedSourceBitOffset), 1);
+        if (selectedSpan) {
+            SourceSelection selection;
+            selection.sourceIdentity = session_->identity();
+            selection.sourceSpans = {*selectedSpan};
+            setSourceSelection(std::move(selection));
+        }
     }
-
-    applyPendingTreeState();
+    if (savedUserState.view.rawPageIndex > 0 && rawDataView_ != nullptr) {
+        static_cast<void>(rawDataView_->loadPage(savedUserState.view.rawPageIndex));
+    }
 
     updateNavigationUI();
     setWindowModified(false);
@@ -968,6 +1001,7 @@ bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
     analysisModel_->clear();
     timelineModel_->clear();
     timelineTrackComboBox_->clear();
+    timelineTrackComboBox_->setEnabled(false);
     if (diagnosticsSummaryDock_ != nullptr) {
         diagnosticsSummaryDock_->clear();
     }
@@ -980,6 +1014,9 @@ bool MainWindow::openMediaSource(const QString& path, QString* errorMessage) {
     currentSessionFilePath_.reset();
     pendingSelectedAnalysisPath_.reset();
     pendingExpandedPaths_.clear();
+    rootViewStateSnapshot_.reset();
+    lastAnalysisStatus_.reset();
+    lastAnalysisErrorMessage_.clear();
 
     rawError_.clear();
     rawLoaded_ = rawDataView_->setSource(
@@ -1114,6 +1151,8 @@ void MainWindow::publishAnalysisStatus(AnalysisBatchStatus status,
                                        const QString& errorMessage) {
     analysisProgressBar_->hide();
     cancelAnalysisButton_->hide();
+    lastAnalysisStatus_ = status;
+    lastAnalysisErrorMessage_ = errorMessage;
     if (!session_) {
         if (diagnosticsSummaryDock_ != nullptr) {
             diagnosticsSummaryDock_->clear();
@@ -1195,6 +1234,10 @@ bool MainWindow::enterChildFormatOnCurrentNode() {
     }
     const QString targetFormat = *node->metadata().targetFormat;
 
+    const auto candidateSnapshot = (session_->navigationDepth() == 0)
+                                        ? std::optional<RootViewSnapshot>(captureRootViewSnapshot())
+                                        : std::nullopt;
+
     const auto navResult = session_->enterChildFormat(*nodeId, catalog_);
     if (!navResult.succeeded()) {
         statusBar()->showMessage(tr("Cannot enter sub-format: %1").arg(navResult.errorMessage));
@@ -1231,6 +1274,9 @@ bool MainWindow::enterChildFormatOnCurrentNode() {
         return true;
     }
 
+    if (candidateSnapshot.has_value()) {
+        rootViewStateSnapshot_ = candidateSnapshot;
+    }
     navigationBreadcrumbFormats_.append(targetFormat);
     analysisTreeView_->setCurrentIndex(childRootIndex);
     selectAnalysisNode(childRootIndex);
@@ -1248,6 +1294,9 @@ void MainWindow::returnToParentFormat() {
     if (retResult.status == AnalysisSessionReturnStatus::Returned) {
         if (!navigationBreadcrumbFormats_.isEmpty()) {
             navigationBreadcrumbFormats_.removeLast();
+        }
+        if (session_->navigationDepth() == 0) {
+            rootViewStateSnapshot_.reset();
         }
         analysisModel_->resetFromTree(session_->activeTree());
         analysisModel_->updateFromTree(session_->activeTree());
@@ -1417,6 +1466,10 @@ bool MainWindow::enterSampleOnCurrentRow() {
         return false;
     }
 
+    const auto candidateSnapshot = (session_->navigationDepth() == 0)
+                                        ? std::optional<RootViewSnapshot>(captureRootViewSnapshot())
+                                        : std::nullopt;
+
     const quint32 trackId = currentTrackId_;
     const quint64 sampleIndex = sample->sampleIndex;
     const auto navResult = session_->enterSample(trackId, sampleIndex, catalog_);
@@ -1443,6 +1496,9 @@ bool MainWindow::enterSampleOnCurrentRow() {
         return true;
     }
 
+    if (candidateSnapshot.has_value()) {
+        rootViewStateSnapshot_ = candidateSnapshot;
+    }
     analysisTreeView_->setCurrentIndex(childRootIndex);
     selectAnalysisNode(childRootIndex);
     analysisTreeView_->expandToDepth(1);
@@ -1450,8 +1506,82 @@ bool MainWindow::enterSampleOnCurrentRow() {
     return true;
 }
 
-void MainWindow::loadTracks() {
+void MainWindow::loadTracks(bool preserveSelection) {
+    if (preserveSelection) {
+        if (!session_) {
+            timelineTrackComboBox_->setEnabled(false);
+            return;
+        }
+        bool isTruncated = false;
+        for (quint64 i = 1; i <= session_->tree().nodeCount(); ++i) {
+            const auto n = session_->tree().node(core::AnalysisNodeId(i));
+            if (n) {
+                for (const auto& diag : n->diagnostics()) {
+                    if (diag.code == core::DiagnosticCode::TruncatedSource) {
+                        isTruncated = true;
+                        break;
+                    }
+                }
+                if (isTruncated) {
+                    break;
+                }
+            }
+        }
+
+        const auto tracksResult = session_->tracks();
+
+        if (tracksResult.status == AnalysisSessionSampleStatus::UnsupportedSource) {
+            timelineStatusLabel_->setText(tr("Container tracks unavailable for elementary stream"));
+            timelineStatusLabel_->show();
+            timelineTrackComboBox_->setEnabled(false);
+            updateTimelinePageControls();
+            return;
+        }
+
+        if (isTruncated) {
+            timelineStatusLabel_->setText(tr("File is truncated; track list may be incomplete"));
+            timelineStatusLabel_->show();
+        }
+
+        if (!tracksResult.available() || tracksResult.tracks.empty()) {
+            if (!isTruncated) {
+                timelineStatusLabel_->setText(
+                    tracksResult.errorMessage.isEmpty()
+                        ? tr("No tracks found")
+                        : tr("No tracks: %1").arg(tracksResult.errorMessage));
+                timelineStatusLabel_->show();
+            }
+            timelineTrackComboBox_->setEnabled(false);
+            updateTimelinePageControls();
+            return;
+        }
+
+        if (!isTruncated) {
+            timelineStatusLabel_->clear();
+            timelineStatusLabel_->hide();
+        }
+
+        if (tracksResult.available() && !tracksResult.tracks.empty()) {
+            const QSignalBlocker blocker(timelineTrackComboBox_);
+            for (int i = 0; i < timelineTrackComboBox_->count() && i < static_cast<int>(tracksResult.tracks.size()); ++i) {
+                const auto& track = tracksResult.tracks[static_cast<std::size_t>(i)];
+                const QString formatText =
+                    track.targetFormat.isEmpty() ? tr("unknown") : track.targetFormat;
+                const QString itemText = tr("Track %1 (%2, %3 samples)")
+                                             .arg(track.trackId)
+                                             .arg(formatText)
+                                             .arg(track.sampleCount);
+                timelineTrackComboBox_->setItemText(i, itemText);
+            }
+            timelineTrackComboBox_->setEnabled(timelineTrackComboBox_->count() > 0);
+        } else {
+            timelineTrackComboBox_->setEnabled(false);
+        }
+        return;
+    }
+
     timelineTrackComboBox_->clear();
+    timelineTrackComboBox_->setEnabled(false);
     timelineModel_->clear();
     timelineStatusLabel_->clear();
     timelineStatusLabel_->hide();
@@ -1486,6 +1616,7 @@ void MainWindow::loadTracks() {
     if (tracksResult.status == AnalysisSessionSampleStatus::UnsupportedSource) {
         timelineStatusLabel_->setText(tr("Container tracks unavailable for elementary stream"));
         timelineStatusLabel_->show();
+        timelineTrackComboBox_->setEnabled(false);
         updateTimelinePageControls();
         return;
     }
@@ -1503,6 +1634,7 @@ void MainWindow::loadTracks() {
                     : tr("No tracks: %1").arg(tracksResult.errorMessage));
             timelineStatusLabel_->show();
         }
+        timelineTrackComboBox_->setEnabled(false);
         updateTimelinePageControls();
         return;
     }
@@ -1518,8 +1650,11 @@ void MainWindow::loadTracks() {
     }
 
     if (timelineTrackComboBox_->count() > 0) {
+        timelineTrackComboBox_->setEnabled(true);
         timelineTrackComboBox_->setCurrentIndex(0);
         onTrackSelectionChanged(0);
+    } else {
+        timelineTrackComboBox_->setEnabled(false);
     }
 }
 
@@ -1678,6 +1813,10 @@ void MainWindow::onDiagnosticSelected(core::AnalysisNodeId nodeId,
     if (!session_) {
         return;
     }
+    const auto nodeOpt = session_->activeTree().node(nodeId);
+    if (nodeOpt.has_value()) {
+        fieldInspector_->setNode(*nodeOpt);
+    }
     const QModelIndex nodeIndex = analysisModel_->indexForNodeId(nodeId);
     if (nodeIndex.isValid()) {
         for (QModelIndex ancestor = nodeIndex.parent(); ancestor.isValid();
@@ -1687,27 +1826,21 @@ void MainWindow::onDiagnosticSelected(core::AnalysisNodeId nodeId,
         analysisTreeView_->selectionModel()->setCurrentIndex(
             nodeIndex, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
         analysisTreeView_->scrollTo(nodeIndex, QAbstractItemView::PositionAtCenter);
-        const auto nodeOpt = session_->activeTree().node(nodeId);
-        if (nodeOpt.has_value()) {
-            fieldInspector_->setNode(*nodeOpt);
-        }
     }
+    std::vector<core::SourceSpan> spans;
     if (location.has_value() && !location->sourceSpans().empty()) {
+        spans = location->sourceSpans();
+    } else if (nodeOpt.has_value() && nodeOpt->location().has_value()) {
+        spans = nodeOpt->location()->sourceSpans();
+    }
+
+    if (!spans.empty()) {
         SourceSelection selection;
         selection.sourceIdentity = session_->identity();
-        selection.sourceSpans = location->sourceSpans();
+        selection.sourceSpans = std::move(spans);
         setSourceSelection(std::move(selection));
-        selectSourceBit(location->sourceSpans().front().start().absoluteBitOffset());
     } else {
-        const auto nodeOpt = session_->activeTree().node(nodeId);
-        if (nodeOpt.has_value() && nodeOpt->location().has_value() &&
-            !nodeOpt->location()->sourceSpans().empty()) {
-            SourceSelection selection;
-            selection.sourceIdentity = session_->identity();
-            selection.sourceSpans = nodeOpt->location()->sourceSpans();
-            setSourceSelection(std::move(selection));
-            selectSourceBit(nodeOpt->location()->sourceSpans().front().start().absoluteBitOffset());
-        }
+        clearSourceSelection();
     }
 }
 
@@ -1832,6 +1965,42 @@ void MainWindow::retranslateUi() {
     if (diagnosticsSummaryDock_ != nullptr) {
         diagnosticsSummaryDock_->retranslateUi();
     }
+    if (fieldInspector_ != nullptr) {
+        fieldInspector_->retranslateUi();
+    }
+    if (rawDataView_ != nullptr) {
+        rawDataView_->retranslateUi();
+    }
+    if (analysisModel_ != nullptr) {
+        analysisModel_->retranslate();
+    }
+    if (timelineModel_ != nullptr) {
+        timelineModel_->retranslate();
+    }
+
+    if (timelineTrackLabel_ != nullptr) {
+        timelineTrackLabel_->setText(tr("Track:"));
+    }
+    if (timelinePrevPageButton_ != nullptr) {
+        timelinePrevPageButton_->setToolTip(tr("Previous sample page"));
+    }
+    if (timelineNextPageButton_ != nullptr) {
+        timelineNextPageButton_->setToolTip(tr("Next sample page"));
+    }
+    loadTracks(true);
+
+    if (session_) {
+        if (!session_->finished()) {
+            statusBar()->showMessage(
+                tr("Analyzing %1: %2/%3 bytes, %4 nodes")
+                    .arg(session_->identity())
+                    .arg(session_->scanCursor())
+                    .arg(session_->sizeBytes())
+                    .arg(session_->tree().nodeCount()));
+        } else if (lastAnalysisStatus_.has_value()) {
+            publishAnalysisStatus(*lastAnalysisStatus_, lastAnalysisErrorMessage_);
+        }
+    }
 
     if (navigationBackButton_ != nullptr) {
         navigationBackButton_->setToolTip(tr("Return to parent"));
@@ -1847,6 +2016,8 @@ void MainWindow::retranslateUi() {
         formatAmbiguityLabel_->setText(tr("Ambiguous media format detected."));
     }
 
+    updateTimelinePageControls();
+    updateAmbiguityUI();
     updateWindowTitle();
 }
 

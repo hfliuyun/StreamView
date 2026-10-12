@@ -40,6 +40,8 @@ public:
     /// Clear all data.  Emits modelReset.
     void clear();
 
+    void retranslate();
+
     /// Append complete top-level subtrees without invalidating existing indexes.
     /// Returns false when the supplied nodes are not new direct children of the root.
     [[nodiscard]] bool appendTopLevelNodes(

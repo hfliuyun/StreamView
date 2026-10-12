@@ -54,6 +54,7 @@ public:
     void setDisplayMode(RawDisplayMode mode);
     void setHighlightedSourceSpans(std::vector<core::SourceSpan> sourceSpans);
     [[nodiscard]] QString lastError() const { return lastError_; }
+    void retranslate();
 
     [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
     [[nodiscard]] int columnCount(const QModelIndex& parent = {}) const override;

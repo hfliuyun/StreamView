@@ -1,4 +1,5 @@
 #include "raw_data_model.h"
+#include "localization_manager.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -9,6 +10,12 @@ namespace streamview::app {
 
 RawDataModel::RawDataModel(QObject* parent) : QAbstractTableModel(parent) {
     page_.status = core::SourcePageStatus::EndOfSource;
+    connect(&LocalizationManager::instance(), &LocalizationManager::languageChanged,
+            this, &RawDataModel::retranslate);
+}
+
+void RawDataModel::retranslate() {
+    emit headerDataChanged(Qt::Horizontal, 0, ColumnCount - 1);
 }
 
 bool RawDataModel::setSource(const core::RandomAccessSource* source, QString* errorMessage) {
