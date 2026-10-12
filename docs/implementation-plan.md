@@ -1,15 +1,20 @@
 # StreamView v0.1 分阶段实施计划
 
 Status: In Progress
-Current Phase: Phase 5/6 审计整改；Phase 7 暂停，不启动 P7d
-Last Completed Step: 历史开发记录至 Task P7c；本轮核心修复已按模块提交至本地代码基线 2ed9dffa395976c6f551e8e32ce8458b708021c0，三项定向独立只读复核未发现可确认的阻塞缺陷，未 push
-Next Action: 用户将 docs/audit-ui-remediation-task.md 交给快速模型执行 A06-A09；主代理复核后完成三平台门禁，再重新裁定 Phase 5/6 验收，不启动 P7d
-Last Verification: 2026-09-08 核心修复组合 dev 59/59（44.68s）、ci 59/59（22.76s）、sanitize 59/59（112.29s，无 ASan/UBSan 报告）；定向上下文/重绑定/预算与三类回滚测试通过；4 份官方规则全部 Rule OK；git diff --check 与 Markdown hygiene 通过。提交过程未改变上述代码/测试内容；历史 Hosted Run 34131133295 不覆盖本轮修复
-Blockers: A06-A09 UI 问题未修复，等待用户手动交接；本轮没有新的 Hosted CI，ADR-0113 保持 Proposed。此前自动启动 Gemini 的审批超时保留为历史事实，不阻止用户通过自己的模型执行交接文档
+Current Phase: Phase 5/6 审计整改交付收尾；Phase 7 从 P7d 接续的任务书准备，尚未开始 P7d 实现
+Last Completed Step: 历史开发记录至 Task P7c；A06-A09 整改及后续时间线下拉框 P2 已在原评审对话通过复核，UI 差异仍未提交
+Next Action: 主代理完成整改提交、对应提交的三平台 CI 与验收回写，固定干净代码基线后，按 docs/p7d-1-warning-gate-task.md 派发 P7d-1
+Last Verification: 原评审对话最后一轮：dev 构建、3 项定向用例、dev 全量 59/59（50.15s）和 git diff --check 通过；该轮未重跑 ci/sanitize，也未执行新的三平台 Hosted CI。2026-10-12 本轮仅核对现场并准备文档，不将历史测试声明为本轮执行结果
+Blockers: 整改差异尚未提交，没有覆盖本轮核心/UI 修复的新 Hosted CI；ADR-0113 保持 Proposed。P7d 实现等待整改交付基线；P7i-P7l 发布节奏待后续按个人使用需求重新讨论
 
 2026-09-08 审计修订：下面已勾选的 Phase 5/6 项保留为历史交付记录，不表示本轮
 缺陷已经关闭或当前版本可发布。本地分步指导手册仍停在旧 Phase 5 状态，不能覆盖本状态区。
 整改事实与未关闭门禁见尾部执行记录；不删除既有 SHA、CI 或历史验收证据。
+
+2026-10-12 接续修订：原评审对话已放行 UI 整改，当前阻塞已从实现/复核转为提交与
+跨平台交付。本地分步手册本轮同步恢复入口，权威状态仍以本文件为准。
+用户倾向个人使用、新版本通过 tag 自动构建并上传 GitHub Release；P7i-P7l 的
+alpha/beta/rc/GA 排程暂缓，待 P7d-P7h 接近完成时裁定，详见 ADR-0110 的本日修订。
 
 本文件是实施与恢复入口。英文产品需求、DSL 规范和 ADR 仍是权威设计来源。
 
@@ -292,6 +297,21 @@ Blockers: A06-A09 UI 问题未修复，等待用户手动交接；本轮没有�
 - [ ] **Task P7j**（跨环境验证与 `v0.1.0-beta`）：在目标环境中全量验证 beta 候选包；
 - [ ] **Task P7k**（发布候选与 `v0.1.0-rc`）：最终完整性核验、双语文档冻结与 RC 打标；
 - [ ] **Task P7l**（最终发布门禁与 `v0.1.0` GA）：全量清单 100% 验收、发布签字并发布 GA（设固定独立评审门禁）。
+
+P7i-P7l 上述名称保留为原始规划，当前不派发、不要求依次打出预发布标签；
+最终发布流程按 2026-10-12 用户方向另行讨论。P7d-P7h 的工程验证继续执行。
+
+P7d 按以下顺序交给快速模型，每次只实施一个切片：
+
+| 切片 | 单一目标 | 交付边界 |
+| :--- | :--- | :--- |
+| P7d-1 | 项目编译告警升级为 errors | 复用 warnings helper；暂不接 Clang-Tidy 或改 Hosted CI；[独立任务书](p7d-1-warning-gate-task.md) |
+| P7d-2 | Clang-Tidy 静态检查 | 主代理先固定版本、检查集、项目源码范围和失败策略，再派发任务书 |
+| P7d-3 | Linux/macOS Hosted ASan/UBSan | 主代理先明确环境、非零失败和日志保留合同，再派发任务书 |
+
+三个切片通过并留下对应提交的验证证据后才关闭 P7d。确定性 fuzz corpus 回放和
+持续 coverage-guided fuzzing 使用不同证据，不互相替代。每片沿用 Conditional
+自检与自动升级规则；主代理负责最终验证、提交和阶段回写。
 
 ### 阶段 7 检查清单
 - [ ] fuzz DSL lexer/parser/VM、规则包、映射和官方规则。
@@ -3701,4 +3721,26 @@ Blockers: A06-A09 UI 问题未修复，等待用户手动交接；本轮没有�
      与验收、真实 RED/GREEN、现有测试挂载位置、验证命令和最终报告要求。
      快速模型只留下未提交 diff，主代理复核后再决定后续交付。
   5. 本次文档提交在上述代码基线之后，不修改核心实现、不推进 Phase 7、不触发
-     新的 Hosted CI；`.omo/` 和 `scratch/` 仍为未触碰的用户资产。
+       新的 Hosted CI；`.omo/` 和 `scratch/` 仍为未触碰的用户资产。
+
+- 2026-10-12：接续原评审对话，准备 P7d 快速模型任务书与恢复入口。
+  1. 读取原对话 `01a086d3-b4ba-74b0-a04a-f03e7fd25993` 的最后评审：
+     A06-A09 整改后，最后一项时间线轨道下拉框 P2 已复核通过。其独立验证为 dev
+     构建、3 项定向用例、dev 全量 59/59（50.15s）及 diff check；该轮没有新的
+     ci/sanitize 或三平台 Hosted CI。本条转录历史结论，不声称本轮重审整个 UI。
+  2. 当前 Git 原始输出：
+     - HEAD：`3e2d3b2318f98274aae72f7c262c8ad5a810336a`
+     - 本地 origin/main tracking ref：`de6f8f4d988c58ee44d56b74d8123d0cfbdc13c3`
+     - `main...origin/main [ahead 5]`，19 个已跟踪 UI/测试文件有未提交差异；
+       `.omo/`、`pauches_6.md`、`scratch/` 为既有未跟踪资产。
+     - 本轮没有 fetch，不将 tracking ref 描述为实时远端状态。
+  3. P7d 现状核对：项目 target 已通过 `streamview_set_warnings` 集中配置告警，
+     尚无 warnings-as-errors；已有本地 sanitize preset，但 Hosted workflow 仍只
+     执行普通三平台 ci preset，尚无 Clang-Tidy 或 sanitizer job。
+     据此拆成 P7d-1/2/3，本轮仅制作 P7d-1 任务书。
+  4. 用户说明软件大概率仅供个人使用，倾向新版本自动构建并上传 GitHub Release，
+     待前面几项接近完成后再讨论发布节奏。双语 ADR-0110 和本地手册同步记录
+     P7i-P7l 暂缓，不创建版本标签、Release 或发布 workflow。
+  5. 本轮只修改文档，保留既有 UI 差异；没有提交、push 或新的 Hosted CI。
+     P7d-1 任务书在整改提交及三平台验证完成、基线回写前保持待派发状态，
+     不以新增文档解除原整改交付门禁。

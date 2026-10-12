@@ -118,7 +118,9 @@ Every release bundle must include:
 5. `README_QT_SOURCE.txt`: Explicit written offer and instructions for obtaining source code of LGPLv3-licensed Qt libraries used in binary distributions.
 
 #### 4.3 Staged Release Pipeline
-Releases proceed strictly through sequential git tags:
+The original staged proposal below is retained for historical context. The
+October 12 amendment holds its scheduling pending a personal-use release
+decision; these tags are not current implementation prerequisites.
 1. `v0.1.0-alpha`: Fuzzing and static analysis completed; packaging workflows verified.
 2. `v0.1.0-beta`: Performance baselines verified; community preview.
 3. `v0.1.0-rc`: Release candidate; final documentation and licensing audit.
@@ -174,3 +176,56 @@ Furthermore, state restoration lifecycle guarantees are hardened:
 ## Deferred Review Items
 
 - **P2-41**: Formal release build execution time profiling and performance regression harness is deferred to Task P7e (performance baselines), rather than using uncalibrated CI runner wall-clock times.
+
+## October 12, 2026 Amendment: P7d Slices and Release Scheduling
+
+### P7d Execution
+
+P7a-P7c remain completed historical deliveries. The Phase 5/6 audit remediation
+has passed its UI follow-up review but still needs a committed, cross-platform
+validated delivery baseline. P7d implementation resumes after that gate.
+
+P7d is delivered in three sequential slices: compiler warnings as errors,
+Clang-Tidy, then hosted Linux/macOS ASan/UBSan. Each has its own implementation,
+verification and review report; the parent task closes after all three.
+
+The first slice applies the existing warning contract through
+`streamview_set_warnings`, using the CMake target property
+`COMPILE_WARNING_AS_ERROR`. Introduce `STREAMVIEW_WARNINGS_AS_ERRORS`, default
+ON, and keep it ON in dev/ci/sanitize. An explicit local OFF configuration may
+be used to diagnose warnings, but is not gate evidence. The property is
+available within the project's CMake 3.28 minimum; `cmake --help-property
+COMPILE_WARNING_AS_ERROR` documents the supported GNU, Clang, AppleClang and
+MSVC compiler IDs.
+
+Apply the property to project-owned targets using the helper, including tests
+and standalone fuzz drivers. Preserve PRIVATE warning options and SYSTEM
+third-party headers. Do not set a global warning-as-error initializer that also
+captures Qt's internally created resource targets. AUTOMOC sources compiled
+as part of a project target inherit that target's compile policy.
+
+Prove enforcement with a temporary project that calls the real helper and
+builds a deliberate unused-local-variable warning. Before the change it must
+build with a warning; after the change it must fail; after fixing the probe it
+must build successfully. Also verify the local OFF path. This compiler failure
+probe supplies the gate regression evidence without adding product behavior
+tests that merely inspect flags. Ordinary clean builds alone cannot establish
+that the gate rejects warnings.
+
+Clang-Tidy's tool version and check set, and hosted sanitizer environment and
+failure/logging policy, are frozen in subsequent scoped task documents before
+their implementations. Slice one adds neither feature.
+
+### Release Scheduling
+
+On October 12 the user identified personal use as the likely deployment
+scenario and prefers new version tags to build artifacts automatically and
+attach them to GitHub Releases. The user deferred the release discussion until
+the earlier engineering tasks are nearly complete.
+
+Consequently, P7i-P7l and the alpha/beta/rc/GA sequence are held for
+reconsideration. Keep the original WBS as history rather than declaring these
+tasks complete or creating prerelease tags. P7d-P7h continue under their
+engineering and packaging contracts. The later decision will define the
+version trigger, package matrix and Release upload behavior; this amendment
+does not implement publication or claim release readiness.

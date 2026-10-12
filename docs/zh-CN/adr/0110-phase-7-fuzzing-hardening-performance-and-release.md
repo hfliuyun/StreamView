@@ -118,7 +118,8 @@ StreamView 在六个关键边界直接接触非信任或畸变的二进制输入
 5. `README_QT_SOURCE.txt`：遵循 LGPLv3 规范，提供获取分发二进制中所链接 Qt 源码的明确书面指引。
 
 #### 4.3 梯次发布管道
-发布严格依照版本标签有序推进：
+以下最初的梯次方案保留为历史背景。10 月 12 日修订暂缓其排程，等待个人使用场景的
+发布决策；这些标签不再是当前实施的前置条件。
 1. `v0.1.0-alpha`：Fuzzing 与静态分析完成；打包工作流初跑验证；
 2. `v0.1.0-beta`：性能基线全绿；社区预览体验；
 3. `v0.1.0-rc`：发布候选版本；双语文档封版与法律合规审查；
@@ -174,3 +175,42 @@ StreamView 在六个关键边界直接接触非信任或畸变的二进制输入
 ## 延期审查项说明
 
 - **P2-41**：正式 Release 构建耗时基准与性能回归测试延期至 Task P7e（性能基线与基准测试体系）专项建立，不以波动的 CI runner 墙钟耗时作为基线依据。
+
+## 2026-10-12 修订：P7d 切片与发布排程
+
+### P7d 执行
+
+P7a-P7c 保持历史完成状态。Phase 5/6 审计整改已通过 UI 后续复核，仍需要已提交且经
+跨平台验证的交付基线。通过该门禁后恢复 P7d 实现。
+
+P7d 按编译告警升级为 errors、Clang-Tidy、Hosted Linux/macOS ASan/UBSan 三个切片
+串行交付。每片有独立实现、验证与评审报告，三片均完成后才关闭总任务。
+
+第一片通过 `streamview_set_warnings` 应用已有告警合同，采用 CMake target property
+`COMPILE_WARNING_AS_ERROR`。新增 `STREAMVIEW_WARNINGS_AS_ERRORS`，默认 ON，
+dev/ci/sanitize 保持 ON。显式本地 OFF 配置可用于诊断告警，但不能作为门禁通过证据。
+该属性已包含在项目 CMake 3.28 最低版本中；`cmake --help-property
+COMPILE_WARNING_AS_ERROR` 列出支持的 GNU、Clang、AppleClang 和 MSVC compiler IDs。
+
+属性作用于调用 helper 的项目自有 target，包括测试与独立 fuzz 驱动。保留 PRIVATE
+告警选项和 SYSTEM 第三方头文件；不设置会覆盖 Qt 内部 resource targets 的全局
+warnings-as-errors 初始化变量。作为项目 target 一部分编译的 AUTOMOC 源码继承该
+target 的编译策略。
+
+使用临时小工程调用真实 helper，故意编译带未使用局部变量告警的源码，证明门禁有效：
+修改前带告警但构建成功，修改后构建失败，修正探针后构建成功；另验证本地 OFF 路径。
+该编译失败探针提供门禁回归证据，无需新增仅检查 flags 的产品行为测试。
+普通干净构建通过不足以证明门禁会拒绝告警。
+
+Clang-Tidy 的工具版本与检查集，以及 Hosted sanitizer 的环境、失败和日志合同，
+在后续限定范围任务文档中先冻结再实现；第一片不加入这两项。
+
+### 发布排程
+
+10 月 12 日，用户说明软件大概率仅供个人使用，倾向新版本 tag 自动构建产物并上传
+GitHub Release；待前面工程任务接近完成后再讨论发布。
+
+因此 P7i-P7l 和 alpha/beta/rc/GA 序列暂缓、等待重新裁定。保留原 WBS 作为历史，
+不将这些任务标为完成或创建预发布标签。P7d-P7h 继续按工程与打包合同执行。
+后续决策再定义版本触发方式、打包矩阵和 Release 上传行为；本次修订不实现发布，
+不声明发布就绪。
