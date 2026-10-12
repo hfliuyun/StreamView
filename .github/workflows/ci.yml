@@ -265,8 +265,10 @@ jobs:
           cache: true
       - name: Configure and analyze project targets
         run: |
+          clang++-18 --version
+          clang-tidy-18 --version
           cmake --preset clang-tidy \
             -DCMAKE_CXX_COMPILER=clang++-18 \
-            -DSTREAMVIEW_CLANG_TIDY_EXECUTABLE=clang-tidy-18 \
+            -DSTREAMVIEW_CLANG_TIDY_EXECUTABLE="$(command -v clang-tidy-18)" \
             -DSTREAMVIEW_BUILD_BENCHMARKS=ON
           cmake --build --preset clang-tidy --parallel 2

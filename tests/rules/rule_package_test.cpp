@@ -500,9 +500,10 @@ private slots:
         QCOMPARE(loaded.status, RulePackageLoadStatus::Loaded);
         QVERIFY(loaded.package.has_value());
         QCOMPARE(loaded.package->manifest().entryPoints.size(), std::size_t(2));
-        QCOMPARE(loaded.package->manifest().entryPoints[0].target, std::nullopt);
-        QCOMPARE(loaded.package->manifest().entryPoints[1].target,
-                 std::optional<QString>(QStringLiteral("CustomTarget")));
+        QVERIFY(!loaded.package->manifest().entryPoints[0].target.has_value());
+        QVERIFY(loaded.package->manifest().entryPoints[1].target.has_value());
+        QCOMPARE(*loaded.package->manifest().entryPoints[1].target,
+                 QStringLiteral("CustomTarget"));
     }
 
     void rejectsVersion2PackageWithMalformedTarget() {
@@ -541,8 +542,8 @@ private slots:
             RulePackage::fromFiles(packageFiles(version2ManifestWithTarget(validTarget)));
         QCOMPARE(accepted.status, RulePackageLoadStatus::Loaded);
         QVERIFY(accepted.package.has_value());
-        QCOMPARE(accepted.package->manifest().entryPoints.front().target,
-                 std::optional<QString>(validTarget));
+        QVERIFY(accepted.package->manifest().entryPoints.front().target.has_value());
+        QCOMPARE(*accepted.package->manifest().entryPoints.front().target, validTarget);
 
         const QString oversizedTarget = validTarget + QStringLiteral("a");
         QCOMPARE(oversizedTarget.size(), qsizetype(65));
@@ -665,9 +666,10 @@ private slots:
         QCOMPARE(loaded.status, RulePackageLoadStatus::Loaded);
         QVERIFY(loaded.package.has_value());
         QCOMPARE(loaded.package->manifest().entryPoints.size(), std::size_t(2));
-        QCOMPARE(loaded.package->manifest().entryPoints[0].target, std::nullopt);
-        QCOMPARE(loaded.package->manifest().entryPoints[1].target,
-                 std::optional<QString>(QStringLiteral("StructB")));
+        QVERIFY(!loaded.package->manifest().entryPoints[0].target.has_value());
+        QVERIFY(loaded.package->manifest().entryPoints[1].target.has_value());
+        QCOMPARE(*loaded.package->manifest().entryPoints[1].target,
+                 QStringLiteral("StructB"));
     }
 
     void supportsVersion2SharedSourceWithDistinctTargets() {
@@ -711,10 +713,12 @@ private slots:
         QCOMPARE(loaded.status, RulePackageLoadStatus::Loaded);
         QVERIFY(loaded.package.has_value());
         QCOMPARE(loaded.package->manifest().entryPoints.size(), std::size_t(2));
-        QCOMPARE(loaded.package->manifest().entryPoints[0].target,
-                 std::optional<QString>(QStringLiteral("StructA")));
-        QCOMPARE(loaded.package->manifest().entryPoints[1].target,
-                 std::optional<QString>(QStringLiteral("StructB")));
+        QVERIFY(loaded.package->manifest().entryPoints[0].target.has_value());
+        QCOMPARE(*loaded.package->manifest().entryPoints[0].target,
+                 QStringLiteral("StructA"));
+        QVERIFY(loaded.package->manifest().entryPoints[1].target.has_value());
+        QCOMPARE(*loaded.package->manifest().entryPoints[1].target,
+                 QStringLiteral("StructB"));
     }
 
     void memoryPackageBindsSharedSourceToCorrectTypedEntries() {

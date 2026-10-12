@@ -3726,7 +3726,7 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
             if (lastFieldSkipped) {
                 break;
             }
-            if (*lastValue == instruction.immediate) {
+            if (lastValue.value_or(0) == instruction.immediate) {
                 break;
             }
             result.status = DslExecutionStatus::InvalidSyntax;
@@ -3795,10 +3795,12 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
             const bool withinBound =
                 signedField
                     ? (checksMinimum
-                           ? *lastSignedValue >= static_cast<qlonglong>(instruction.immediate)
-                           : *lastSignedValue <= static_cast<qlonglong>(instruction.immediate))
-                    : (checksMinimum ? *lastValue >= instruction.immediate
-                                     : *lastValue <= instruction.immediate);
+                           ? lastSignedValue.value_or(0) >=
+                                 static_cast<qlonglong>(instruction.immediate)
+                           : lastSignedValue.value_or(0) <=
+                                 static_cast<qlonglong>(instruction.immediate))
+                    : (checksMinimum ? lastValue.value_or(0) >= instruction.immediate
+                                     : lastValue.value_or(0) <= instruction.immediate);
             if (withinBound) {
                 break;
             }
