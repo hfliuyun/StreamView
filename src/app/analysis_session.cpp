@@ -414,8 +414,8 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
         }
     }
 
-    const auto& ruleIdent = std::visit(
-        [](const auto& a) -> const rules::RuleEntryPointIdentity& { return a.ruleIdentity(); },
+    const rules::RuleEntryPointIdentity ruleIdent = std::visit(
+        [](const auto& a) -> rules::RuleEntryPointIdentity { return a.ruleIdentity(); },
         *analyzerVariant);
     SessionCacheSetup cacheSetup =
         setupSessionCache(*source, ruleIdent, std::move(cacheOptions), verifiedFingerprint);
@@ -1660,6 +1660,7 @@ AnalysisSessionNavigationResult AnalysisSession::enterChildFormat(
             .sourceMapping = sourceMapping,
             .tree = subSession.tree,
             .childRootStructureNodeId = childRootId,
+            .sample = std::nullopt,
         };
 
         navigationStack_.push_back(std::move(frame));
@@ -1688,6 +1689,7 @@ AnalysisSessionNavigationResult AnalysisSession::enterChildFormat(
         .sourceMapping = sourceMapping,
         .tree = execRes.tree,
         .childRootStructureNodeId = childRootId,
+        .sample = std::nullopt,
     };
 
     navigationStack_.push_back(std::move(frame));

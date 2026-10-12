@@ -34,6 +34,14 @@ struct FileSnapshot final {
 };
 
 #if defined(Q_OS_WIN)
+[[nodiscard]] QString nativeError(int error) {
+    char buffer[256]{};
+    if (strerror_s(buffer, sizeof(buffer), error) == 0) {
+        return QString::fromLocal8Bit(buffer);
+    }
+    return QStringLiteral("C runtime error %1").arg(error);
+}
+
 [[nodiscard]] QString nativeError(DWORD error) {
     wchar_t* buffer = nullptr;
     const DWORD length = FormatMessageW(
@@ -100,7 +108,7 @@ captureSnapshot(const QFile& file, SourceFingerprintStatus* failureStatus, QStri
     const intptr_t native = _get_osfhandle(descriptor);
     if (native == -1) {
         *failureStatus = SourceFingerprintStatus::IoError;
-        *errorMessage = QString::fromLocal8Bit(std::strerror(errno));
+        *errorMessage = nativeError(errno);
         return std::nullopt;
     }
     const HANDLE handle = reinterpret_cast<HANDLE>(native);
