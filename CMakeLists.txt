@@ -17,6 +17,13 @@ option(STREAMVIEW_BUILD_APP "Build the StreamView desktop application" ON)
 option(STREAMVIEW_BUILD_TESTS "Build StreamView tests" ON)
 option(STREAMVIEW_ENABLE_SANITIZERS "Enable supported sanitizers" OFF)
 option(STREAMVIEW_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
+option(STREAMVIEW_ENABLE_CLANG_TIDY "Run the pinned Clang-Tidy checks during builds" OFF)
+set(
+    STREAMVIEW_CLANG_TIDY_EXECUTABLE
+    ""
+    CACHE FILEPATH
+    "Clang-Tidy 18.x executable used by the static-analysis preset"
+)
 set(
     STREAMVIEW_MINIMUM_QT_VERSION
     "6.11"
@@ -38,6 +45,8 @@ endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(StreamViewWarnings)
+include(StreamViewClangTidy)
+streamview_configure_clang_tidy()
 
 add_subdirectory(src/core)
 add_subdirectory(src/rules)

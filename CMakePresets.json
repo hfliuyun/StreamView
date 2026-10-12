@@ -40,12 +40,21 @@
       "cacheVariables": {
         "STREAMVIEW_ENABLE_SANITIZERS": "ON"
       }
+    },
+    {
+      "name": "clang-tidy",
+      "displayName": "Clang-Tidy Static Analysis",
+      "inherits": "ci",
+      "cacheVariables": {
+        "STREAMVIEW_ENABLE_CLANG_TIDY": "ON"
+      }
     }
   ],
   "buildPresets": [
     { "name": "dev", "configurePreset": "dev" },
     { "name": "ci", "configurePreset": "ci" },
-    { "name": "sanitize", "configurePreset": "sanitize" }
+    { "name": "sanitize", "configurePreset": "sanitize" },
+    { "name": "clang-tidy", "configurePreset": "clang-tidy" }
   ],
   "testPresets": [
     {

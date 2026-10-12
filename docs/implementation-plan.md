@@ -1,11 +1,11 @@
 # StreamView v0.1 分阶段实施计划
 
 Status: In Progress
-Current Phase: Phase 5/6 审计整改已提交；P7d-1 已完成本地门禁实现但 Hosted CI 暴露跨平台告警修复项，发布流程已收敛为版本 tag 触发 GitHub Release
-Last Completed Step: UI 整改 A06-A09 与时间线轨道下拉框 P2 已提交为 `f42f54e`；媒体打开过滤器已提交为 `5a9f7a5`；阶段文档、P7d-1 任务书和本地验证回写已提交为 `c15eda2`
-Next Action: 修复并复核 P7d-1 的 Ubuntu/Windows Hosted CI 告警；随后继续 P7d-2。普通 push/PR CI 只保留构建与测试，版本 tag 发布 workflow 待 P7f-P7h 打包合同完成后实现
-Last Verification: Any CLI 报告 dev/UI 定向集合 10/10、dev 全量 59/59（51.40s）；主代理随后重新配置并完成 ci 构建与 CTest 59/59（15.61s），sanitize 构建与 CTest 59/59（166.52s、无 ASan/UBSan 报告），git diff --check 通过；本轮尚未完成新的三平台 Hosted CI
-Blockers: P7d-1 Hosted CI 尚未全绿；Windows Qt 6.10.1 fallback 不可用于发布产物。P7i-P7l alpha/beta/rc/GA 流程暂缓，未来仅由版本 tag 触发三平台构建并上传 GitHub Release
+Current Phase: Phase 5/6 审计整改已提交；P7d-1 跨平台告警修复已提交，等待对应 Hosted CI；P7d-2 Clang-Tidy 合同与可选 preset 已开始，发布流程已收敛为版本 tag 触发 GitHub Release
+Last Completed Step: P7d-1 告警门禁实现已提交为 `fc9146ae`，Ubuntu/GCC 与 Windows/MSVC 收尾修复已提交为 `076e6f2`；普通 CI 产物归属与版本 tag 发布方向已提交为 `bb60fa0`
+Next Action: 推送并验证 P7d-1 修复的三平台 Hosted CI；在 LLVM 18 工具环境运行 `clang-tidy` preset 并处理真实诊断。普通 push/PR CI 只保留构建与测试，版本 tag 发布 workflow 待 P7f-P7h 打包合同完成后实现
+Last Verification: P7d-1 收尾后主代理重新配置并完成 dev 246/246 目标构建、CTest 59/59（190.93s）与 `git diff --check`；交付报告另载 ci/sanitize 59/59 且无 sanitizer 诊断。P7d-1 修复提交尚未完成新的三平台 Hosted CI；P7d-2 专用 preset 已验证在缺少 LLVM Clang-Tidy 18 时明确失败
+Blockers: P7d-1 修复提交尚未获得新的 Hosted CI 结果；本机未安装 LLVM Clang-Tidy 18，P7d-2 尚未完成静态分析实证。Windows Qt 6.10.1 fallback 不可用于发布产物。P7i-P7l alpha/beta/rc/GA 流程暂缓，未来仅由版本 tag 触发三平台构建并上传 GitHub Release
 
 2026-09-08 审计修订：下面已勾选的 Phase 5/6 项保留为历史交付记录，不表示本轮
 缺陷已经关闭或当前版本可发布。本地分步指导手册仍停在旧 Phase 5 状态，不能覆盖本状态区。
@@ -306,7 +306,7 @@ P7d 按以下顺序交给快速模型，每次只实施一个切片：
 | 切片 | 单一目标 | 交付边界 |
 | :--- | :--- | :--- |
 | P7d-1 | 项目编译告警升级为 errors | 复用 warnings helper；暂不接 Clang-Tidy 或改 Hosted CI；[独立任务书](p7d-1-warning-gate-task.md) |
-| P7d-2 | Clang-Tidy 静态检查 | 主代理先固定版本、检查集、项目源码范围和失败策略，再派发任务书 |
+| P7d-2 | Clang-Tidy 静态检查 | 固定 LLVM 18.x、现有 `.clang-tidy` 检查集、`src/tools/tests` 范围和失败策略；[独立任务书](p7d-2-clang-tidy-task.md) |
 | P7d-3 | Linux/macOS Hosted ASan/UBSan | 主代理先明确环境、非零失败和日志保留合同，再派发任务书 |
 
 三个切片通过并留下对应提交的验证证据后才关闭 P7d。确定性 fuzz corpus 回放和
@@ -3743,3 +3743,16 @@ P7d 按以下顺序交给快速模型，每次只实施一个切片：
   5. 本轮只修改文档，保留既有 UI 差异；没有提交、push 或新的 Hosted CI。
      P7d-1 任务书在整改提交及三平台验证完成、基线回写前保持待派发状态，
      不以新增文档解除原整改交付门禁。
+
+- 2026-10-13：完成 P7d-1 跨平台告警收尾审阅并开始 P7d-2。
+  1. 主代理审阅 `src/app/analysis_session.cpp` 与 `src/core/source.cpp`：
+     `RuleEntryPointIdentity` 改为值语义以消除 GCC dangling-reference 诊断；
+     `NavigationFrame::sample` 显式初始化为 `std::nullopt`；Windows CRT 错误文本
+     改用 `strerror_s`。未发现行为或规范阻断项。
+  2. P7d-1 收尾提交为 `076e6f2`。主代理重新执行 dev preset 的 246/246 目标构建和
+     CTest 59/59；`git diff --check` 通过。交付报告载有 ci/sanitize 59/59 和零
+     sanitizer 诊断，但新的三平台 Hosted CI 仍待推送后确认。
+  3. P7d-2 已冻结 LLVM Clang-Tidy 18.x、现有 `.clang-tidy` 检查集、
+     `src/tools/tests` 项目源码范围以及诊断即失败策略；新增可选 `clang-tidy`
+     CMake preset 与任务书。当前本机未安装该工具，专用 preset 按合同明确失败，
+     不伪造静态分析通过结论。
