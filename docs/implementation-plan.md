@@ -2,7 +2,7 @@
 
 Status: In Progress
 Current Phase: Phase 5/6 审计整改已提交，等待本轮提交的 ci/sanitize 与三平台 Hosted CI；P7d 尚未开始
-Last Completed Step: UI 整改 A06-A09 与时间线轨道下拉框 P2 已提交为 `f42f54e`；媒体打开过滤器已提交为 `5a9f7a5`；阶段文档和 P7d-1 任务书已提交为 `35bf605`
+Last Completed Step: UI 整改 A06-A09 与时间线轨道下拉框 P2 已提交为 `f42f54e`；媒体打开过滤器已提交为 `5a9f7a5`；阶段文档、P7d-1 任务书和本地验证回写已提交为 `c15eda2`
 Next Action: 为 `f42f54e..5a9f7a5` 完成三平台 Hosted CI；验证通过后回写整改验收，再按 `docs/p7d-1-warning-gate-task.md` 派发 P7d-1
 Last Verification: Any CLI 报告 dev/UI 定向集合 10/10、dev 全量 59/59（51.40s）；主代理随后重新配置并完成 ci 构建与 CTest 59/59（15.61s），sanitize 构建与 CTest 59/59（166.52s、无 ASan/UBSan 报告），git diff --check 通过；本轮尚未完成新的三平台 Hosted CI
 Blockers: 本轮整改提交尚无对应 Hosted CI，ADR-0113 保持 Proposed。P7d 实现等待 Hosted CI 门禁；P7i-P7l 发布节奏待后续按个人使用需求重新讨论
