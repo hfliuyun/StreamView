@@ -13,6 +13,12 @@ function(streamview_set_warnings target)
         )
     endif()
 
+    if(STREAMVIEW_WARNINGS_AS_ERRORS)
+        set_target_properties(${target} PROPERTIES COMPILE_WARNING_AS_ERROR ON)
+    else()
+        set_target_properties(${target} PROPERTIES COMPILE_WARNING_AS_ERROR OFF)
+    endif()
+
     if(STREAMVIEW_ENABLE_SANITIZERS AND NOT MSVC)
         target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
         target_link_options(${target} PRIVATE -fsanitize=address,undefined)

@@ -16,6 +16,7 @@ set(CMAKE_AUTOMOC ON)
 option(STREAMVIEW_BUILD_APP "Build the StreamView desktop application" ON)
 option(STREAMVIEW_BUILD_TESTS "Build StreamView tests" ON)
 option(STREAMVIEW_ENABLE_SANITIZERS "Enable supported sanitizers" OFF)
+option(STREAMVIEW_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 set(
     STREAMVIEW_MINIMUM_QT_VERSION
     "6.11"
