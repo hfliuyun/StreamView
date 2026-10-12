@@ -20,7 +20,7 @@ jobs:
           - os: ubuntu-24.04
             qt-version: 6.11.1
           - os: windows-2022
-            qt-version: 6.10.1
+            qt-version: 6.11.1
           - os: macos-15
             qt-version: 6.11.1
     runs-on: ${{ matrix.os }}
@@ -76,8 +76,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           python -m pip install --disable-pip-version-check --quiet `
-            'aqtinstall==3.3.*' `
-            'py7zr==1.0.*'
+            'https://github.com/miurahr/aqtinstall/archive/076e1659807d0b362a3ed684d54c2e9c775eb9c7.zip' `
+            'py7zr==1.1.4'
 
           $qtRoot = Join-Path $env:GITHUB_WORKSPACE 'Qt'
           $qtVersion = '${{ matrix.qt-version }}'
@@ -124,7 +124,7 @@ jobs:
 
       - name: Configure
         if: runner.os != 'Windows'
-        run: cmake --preset ci
+        run: cmake --preset ci -DSTREAMVIEW_BUILD_BENCHMARKS=ON
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
@@ -138,13 +138,21 @@ jobs:
           cmake --preset ci `
             "-DCMAKE_PREFIX_PATH=$qtPrefix" `
             "-DQt6_DIR=$(Join-Path $qtPrefix 'lib/cmake/Qt6')" `
-            "-DSTREAMVIEW_MINIMUM_QT_VERSION=6.10"
+            "-DSTREAMVIEW_BUILD_BENCHMARKS=ON"
 
       - name: Build
         run: cmake --build --preset ci
 
       - name: Test
         run: ctest --preset ci --output-on-failure
+
+      - name: Measure release performance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/run_performance.py \
+            --binary "build/ci/benchmarks/streamview_benchmarks${{ runner.os == 'Windows' && '.exe' || '' }}" \
+            --output build/ci/performance.json
 
       - name: Report Windows test failure
         if: failure() && runner.os == 'Windows'
@@ -186,3 +194,79 @@ jobs:
             Write-Output "::error title=CTest $testName::$message"
           }
           exit 0
+
+  sanitize:
+    name: ASan / UBSan (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            leak-check: '1'
+          - os: macos-15
+            leak-check: '0'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      ASAN_OPTIONS: halt_on_error=1:detect_leaks=${{ matrix.leak-check }}
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - name: Check out source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Install FFmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install FFmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730
+        with:
+          version: '6.11.1'
+          cache: true
+
+      - name: Configure
+        run: cmake --preset sanitize
+
+      - name: Build
+        run: cmake --build --preset sanitize --parallel 2
+
+      - name: Test all suites and fuzz corpus replays
+        run: ctest --preset sanitize --parallel 2 --output-on-failure --timeout 600
+
+      - name: Print failed test details
+        if: failure()
+        run: |
+          for log in build/sanitize/Testing/Temporary/LastTestsFailed.log \
+                     build/sanitize/Testing/Temporary/LastTest.log; do
+            if test -f "$log"; then
+              tail -n 200 "$log"
+            fi
+          done
+
+  clang-tidy:
+    name: LLVM 18 static analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install pinned LLVM major
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 clang-tidy-18 ninja-build
+      - uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730
+        with:
+          version: '6.11.1'
+          cache: true
+      - name: Configure and analyze project targets
+        run: |
+          cmake --preset clang-tidy \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DSTREAMVIEW_CLANG_TIDY_EXECUTABLE=clang-tidy-18 \
+            -DSTREAMVIEW_BUILD_BENCHMARKS=ON
+          cmake --build --preset clang-tidy --parallel 2

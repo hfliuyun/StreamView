@@ -36,3 +36,22 @@ the Windows job does not yet exercise the exact preferred Qt patch version.
 The fallback must be removed before release packaging is treated as a fully
 uniform Qt 6.11.1 matrix. Release builds must not lower
 `STREAMVIEW_MINIMUM_QT_VERSION`.
+
+## October 13, 2026 Restoration
+
+The MSVC 2022 x64 repository is now present at
+`windows_x86/desktop/qt6_6111/qt6_6111_msvc2022_64/`.
+The old unqualified `qt6_6111/Updates.xml` subdirectory still returns 404:
+the repository layout changed, so availability must be checked at the
+architecture-specific directory.
+
+The published aqtinstall 3.3.0 does not resolve this Windows layout. CI and
+release packaging pin upstream aqtinstall commit
+`076e1659807d0b362a3ed684d54c2e9c775eb9c7` with Python 3.12 and py7zr 1.1.4.
+A local Python 3.11 dry-run of that exact installer successfully resolved
+qtbase, qtsvg, qttools and the remaining desktop archives for Qt 6.11.1
+`win64_msvc2022_64`. This proves repository resolution, not a Windows build.
+
+The ordinary matrix restores Qt 6.11.1 and removes the minimum-version
+override. Hosted compilation and tests must confirm the restoration before
+the platform gate closes; no fallback is permitted in release packages.

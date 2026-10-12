@@ -1,11 +1,11 @@
 # StreamView v0.1 分阶段实施计划
 
 Status: In Progress
-Current Phase: Phase 5/6 审计整改已提交；P7d-1 跨平台告警修复已提交，等待对应 Hosted CI；P7d-2 Clang-Tidy 合同与可选 preset 已开始，发布流程已收敛为版本 tag 触发 GitHub Release
-Last Completed Step: P7d-1 告警门禁实现已提交为 `fc9146ae`，Ubuntu/GCC 与 Windows/MSVC 收尾修复已提交为 `076e6f2`；普通 CI 产物归属与版本 tag 发布方向已提交为 `bb60fa0`
-Next Action: 推送并验证 P7d-1 修复的三平台 Hosted CI；在 LLVM 18 工具环境运行 `clang-tidy` preset 并处理真实诊断。普通 push/PR CI 只保留构建与测试，版本 tag 发布 workflow 待 P7f-P7h 打包合同完成后实现
-Last Verification: P7d-1 收尾后主代理重新配置并完成 dev 246/246 目标构建、CTest 59/59（190.93s）与 `git diff --check`；交付报告另载 ci/sanitize 59/59 且无 sanitizer 诊断。P7d-1 修复提交尚未完成新的三平台 Hosted CI；P7d-2 专用 preset 已验证在缺少 LLVM Clang-Tidy 18 时明确失败
-Blockers: P7d-1 修复提交尚未获得新的 Hosted CI 结果；本机未安装 LLVM Clang-Tidy 18，P7d-2 尚未完成静态分析实证。Windows Qt 6.10.1 fallback 不可用于发布产物。P7i-P7l alpha/beta/rc/GA 流程暂缓，未来仅由版本 tag 触发三平台构建并上传 GitHub Release
+Current Phase: Phase 7 收尾；P7d-2/3、P7e 与 P7f-P7h 已实现并完成本地门禁，正在独立评审和提交，Hosted 与三平台打包验证待执行
+Last Completed Step: LLVM 18.1.8 完整静态分析 314/314；dev/ci/sanitize 全量 60/60；macOS 部署、SPDX 语义校验、归档和解包 smoke 已通过
+Next Action: 完成发布链路独立复核、分任务提交并推送；验证普通 CI 的三平台测试、Linux/macOS sanitizer 和 LLVM 18 job；手动运行 Release workflow 验证三平台包，不创建发布 tag
+Last Verification: 2026-10-13 dev 60/60（43.37s）、ci 60/60（6.53s）、sanitize 60/60（173.72s）；LLVM 18.1.8 完整分析通过；Release 性能预算全部通过；macOS 解包后的签名及 SBOM 文件校验与运行时 smoke 通过；actionlint 和 git diff --check 通过
+Blockers: 最新实现尚待对应提交的 Hosted 结果；Windows/Linux 发布包尚待实际打包和解包验证。本机 Qt 6.11.2 的 macOS 证据不代替 Hosted 固定 Qt 6.11.1。P7i-P7l 暂缓，正式版本 tag 才发布 GitHub Release
 
 2026-09-08 审计修订：下面已勾选的 Phase 5/6 项保留为历史交付记录，不表示本轮
 缺陷已经关闭或当前版本可发布。本地分步指导手册仍停在旧 Phase 5 状态，不能覆盖本状态区。
@@ -48,7 +48,7 @@ alpha/beta/rc/GA 排程暂缓，待 P7d-P7h 接近完成时裁定，详见 ADR-0
 - 文件接口固定为 `.svfmt`、`.svrule`、`rule.toml` 和 `.svsession`；应用、DSL、官方规则初始版本分别为 `0.1.0`、`0.1`、`0.1.0`。
 - SQLite WAL 保存大型索引和物化结果；内存只保留 64 KiB 源页面及节点 LRU，默认预算 128 MiB。
 - 单窗口单会话；Qt UI 采用左右 dock、中央自绘原始数据视图、分页分析树和全局诊断面板。
-- Qt 基线为 6.11.x，CI 默认固定 6.11.1；Windows 暂时按 ADR-0017 使用 6.10.1，CMake 最低 3.28。FFmpeg 只用于开发验证，不进入运行时。
+- Qt 基线为 6.11.x，CI 三平台固定 6.11.1；Windows 按 ADR-0017 本次修订恢复基线，CMake 最低 3.28。FFmpeg 只用于开发验证，不进入运行时。
 
 ## 剩余工作重排（2026-07-21）
 
@@ -299,15 +299,16 @@ P7i-P7l 上述名称保留为历史规划，当前不派发，也不要求 alpha
 预发布标签。未来发布目标收敛为：创建符合约定的版本 tag 后，由独立 release
 workflow 构建 Windows、macOS、Linux 三平台产物并上传同一 GitHub Release。
 普通 push/PR CI 只负责构建与测试，不保存 deployment artifact；P7f-P7h 完成各平台
-打包、许可证、SBOM 和 Qt 版本合同后再实现该 release workflow。
+打包、许可证、SBOM 和 Qt 版本合同及 release workflow 已实现，完成 Hosted 打包
+验证后才关闭平台门禁。手动运行只验证包，正式 tag 才发布 Release。
 
-P7d 按以下顺序交给快速模型，每次只实施一个切片：
+P7d 按以下顺序实施；后续由主代理直接实现、验证并提交：
 
 | 切片 | 单一目标 | 交付边界 |
 | :--- | :--- | :--- |
 | P7d-1 | 项目编译告警升级为 errors | 复用 warnings helper；暂不接 Clang-Tidy 或改 Hosted CI；[独立任务书](p7d-1-warning-gate-task.md) |
 | P7d-2 | Clang-Tidy 静态检查 | 固定 LLVM 18.x、现有 `.clang-tidy` 检查集、`src/tools/tests` 范围和失败策略；[独立任务书](p7d-2-clang-tidy-task.md) |
-| P7d-3 | Linux/macOS Hosted ASan/UBSan | 主代理先明确环境、非零失败和日志保留合同，再派发任务书 |
+| P7d-3 | Linux/macOS Hosted ASan/UBSan | 非零失败、Linux 泄漏检测和 Actions 日志合同；[独立任务书](p7d-3-sanitizer-task.md) |
 
 三个切片通过并留下对应提交的验证证据后才关闭 P7d。确定性 fuzz corpus 回放和
 持续 coverage-guided fuzzing 使用不同证据，不互相替代。每片沿用 Conditional

@@ -224,3 +224,31 @@ alpha/beta/rc/GA 序列。
 
 因此 P7i-P7l 保留为历史 WBS 名称并明确暂缓。P7d-P7h 继续按工程与打包合同执行。
 本修订记录发布方向并移除普通 CI 产物留存；尚未实现发布，也不声明已具备发布条件。
+
+## 2026-10-13 修订：可执行的加固与打包门禁
+
+P7d-2 的 LLVM 18 检查集冻结于 `docs/p7d-2-clang-tidy-task.md`，替代早期的
+整族检查提案。Qt 值语义、断言处理和大量移动操作在原提案下产生低信号诊断。
+产品代码保留 core/C++ analyzer 检查。测试仅排除
+`clang-analyzer-core.CallAndMessage`，因为其路径在 QTest 断言失败后仍继续；
+其他检查保留。绝对路径 header filter 覆盖项目头文件。
+
+P7d-3 增加 Linux/macOS hosted ASan/UBSan，诊断不可恢复。Linux 检查泄漏，
+macOS 不提供 LeakSanitizer 证据。普通 CI 同时构建性能 harness，在三平台检查
+Release 预算，不上传报告；LLVM 18 静态分析有独立 job。
+
+P7f-P7h 采用 `docs/p7f-h-release-task.md` 的合同。Linux 发布使用 Ubuntu 22.04
+构建，满足 linuxdeployqt 接受的 glibc 2.35；普通 CI 仍用 Ubuntu 24.04。
+版本化的 supported-platforms 页面声明 Qt 6.11 x86_64 二进制要求 glibc 2.34。
+linuxdeployqt 固定资产摘要，continuous 资产变化时失败。Qt 源码归属清单与平台
+链接证据分开记录，生成材料进入每个包内。
+
+Windows CPack 直接归档已验证部署目录，不重复安装。Linux 部署后直接使用内嵌
+appimagetool，不再次 strip 或部署已记入清单的二进制。macOS 材料与已签名 bundle
+并列放入 `.app.zip`，保持 ad hoc 签名及资源封印有效。解包文件必须逐路径核对
+SHA256，归档前必须通过 SPDX 2.3 语义校验。手动运行只验证打包，正式版本 tag
+push 才发布 Release。
+
+Windows 官方 Qt 6.11.1 二进制已可获取；普通矩阵按 ADR-0017 恢复基线，
+发布不得使用旧 fallback。实现可以接续推进，但里程碑关闭仍要求真实 hosted
+结果及 P7h 独立评审，不重新引入 alpha、beta 或 release candidate 流程。

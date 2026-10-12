@@ -243,3 +243,40 @@ Consequently, P7i-P7l remain historical WBS labels and are explicitly
 deferred. P7d-P7h continue under their engineering and packaging contracts.
 This amendment records the release direction and removes ordinary CI artifact
 retention; it does not implement publication or claim release readiness.
+
+## October 13, 2026 Amendment: Executable Hardening and Packaging Gates
+
+P7d-2 freezes the LLVM 18 check list in `docs/p7d-2-clang-tidy-task.md`.
+This supersedes the earlier broad-family proposal: Qt value semantics,
+assertion handling and move-heavy execution produce excessive low-signal
+diagnostics under that proposal. Core/C++ analyzer checks remain enabled in
+product code. Tests exclude only `clang-analyzer-core.CallAndMessage`,
+whose paths continue after a QTest assertion failure; other checks remain.
+The absolute-path header filter includes project headers.
+
+P7d-3 adds Linux/macOS hosted ASan/UBSan jobs with non-recovering failures.
+Linux checks leaks; macOS cannot provide LeakSanitizer evidence. Ordinary
+CI also builds the performance harness and checks release budgets on each
+platform without uploading its report. LLVM 18 analysis has its own job.
+
+P7f-P7h use the contract in `docs/p7f-h-release-task.md`. Linux releases
+build on Ubuntu 22.04, where linuxdeployqt accepts glibc 2.35; the newer
+ordinary CI runner remains Ubuntu 24.04. Qt 6.11 x86_64 binaries require
+glibc 2.34 according to the versioned supported-platforms page. A fixed
+linuxdeployqt asset digest fails closed if the mutable continuous asset
+changes. Qt source attribution is kept distinct from platform linkage
+evidence, and generated material is placed in each package.
+
+Windows CPack archives the verified deployment tree without a second install.
+Linux invokes the embedded appimagetool after deployment without stripping or
+redeploying inventoried binaries. macOS materials are siblings of the signed
+bundle in `.app.zip`, preserving its ad hoc signature and resource seal.
+Extracted packages must match every inventoried path and SHA256 checksum;
+SPDX 2.3 semantic validation is required before archiving. Manual dispatch
+checks packages only; publishing remains restricted to stable tag pushes.
+
+Windows official Qt 6.11.1 binaries are now available. The ordinary matrix
+restores that baseline under ADR-0017; releases never use its old fallback.
+Packaging, sanitizer and performance code can be implemented together, but
+milestone closure still requires actual hosted results and the P7h review.
+No alpha, beta or release-candidate workflow is reintroduced.
