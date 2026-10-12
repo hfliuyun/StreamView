@@ -25,7 +25,8 @@ function(streamview_set_warnings target)
     endif()
 
     if(STREAMVIEW_ENABLE_SANITIZERS AND NOT MSVC)
-        target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_compile_options(${target} PRIVATE
+            -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
         target_link_options(${target} PRIVATE -fsanitize=address,undefined)
     endif()
 endfunction()
