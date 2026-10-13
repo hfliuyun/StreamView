@@ -3026,8 +3026,13 @@ DslCompileResult DslCompiler::compileForTarget(const DslProgram& program,
                      unsupported.range});
             }
         };
-        const auto compileItems =
-            [&](const auto& self, const std::vector<DslStructItem>& items,
+        std::function<OffsetTracker(
+            const std::vector<DslStructItem>&,
+            const std::vector<DslTypedFieldCondition>&,
+            OffsetTracker)>
+            compileItems;
+        compileItems =
+            [&](const std::vector<DslStructItem>& items,
                 const std::vector<DslTypedFieldCondition>& conditions,
                 OffsetTracker tracker) -> OffsetTracker {
             for (const DslStructItem& item : items) {
@@ -3135,13 +3140,12 @@ DslCompileResult DslCompiler::compileForTarget(const DslProgram& program,
                         elseConditions.push_back(negated);
                     }
                     const auto thenTracker =
-                        self(self, item.thenItems, thenConditions, tracker);
+                        compileItems(item.thenItems, thenConditions, tracker);
                     const auto elseTracker = item.elseItems.empty()
                                                 ? tracker
-                                                : self(self,
-                                                       item.elseItems,
-                                                       elseConditions,
-                                                       tracker);
+                                                : compileItems(item.elseItems,
+                                                               elseConditions,
+                                                               tracker);
                     tracker.exactBitOffset = thenTracker.exactBitOffset && elseTracker.exactBitOffset && *thenTracker.exactBitOffset == *elseTracker.exactBitOffset
                                       ? thenTracker.exactBitOffset
                                       : std::nullopt;
@@ -3221,10 +3225,9 @@ DslCompileResult DslCompiler::compileForTarget(const DslProgram& program,
                                      std::nullopt});
                             }
                             repeatIndices.push_back(iteration);
-                            tracker = self(self,
-                                           item.repeatItems,
-                                           iterationConditions,
-                                           tracker);
+                            tracker = compileItems(item.repeatItems,
+                                                   iterationConditions,
+                                                   tracker);
                             repeatIndices.pop_back();
                             declaredFields.resize(scopeStart);
                             allIterationBoundariesByteAligned =
@@ -3338,10 +3341,9 @@ DslCompileResult DslCompiler::compileForTarget(const DslProgram& program,
                             typedRepeat.firstFieldIndices.push_back(
                                 static_cast<quint32>(typedStruct.fields.size()));
                             repeatIndices.push_back(iteration);
-                            tracker = self(self,
-                                           item.repeatItems,
-                                           iterationConditions,
-                                           tracker);
+                            tracker = compileItems(item.repeatItems,
+                                                   iterationConditions,
+                                                   tracker);
                             repeatIndices.pop_back();
                             if (validSentinel) {
                                 const auto projectedSentinel = std::find_if(
@@ -3444,10 +3446,10 @@ DslCompileResult DslCompiler::compileForTarget(const DslProgram& program,
                             typedRepeat.firstFieldIndices.push_back(
                                 static_cast<quint32>(typedStruct.fields.size()));
                             repeatIndices.push_back(iteration);
-                            (void)self(self,
-                                       item.repeatItems,
-                                       iterationConditions,
-                                       OffsetTracker{std::nullopt, quint8(0), true});
+                            (void)compileItems(
+                                item.repeatItems,
+                                iterationConditions,
+                                OffsetTracker{std::nullopt, quint8(0), true});
                             repeatIndices.pop_back();
                             declaredFields.resize(scopeStart);
                         }
@@ -3558,7 +3560,7 @@ DslCompileResult DslCompiler::compileForTarget(const DslProgram& program,
                         }
                     }
                     armTrackers.push_back(
-                        self(self, arm.items, armConditions, tracker));
+                        compileItems(arm.items, armConditions, tracker));
                 }
                 if (!defaultSeen) {
                     armTrackers.push_back(tracker);
@@ -3608,7 +3610,7 @@ DslCompileResult DslCompiler::compileForTarget(const DslProgram& program,
             }
             return tracker;
         };
-        (void)compileItems(compileItems, structure.items, {}, OffsetTracker{});
+        (void)compileItems(structure.items, {}, OffsetTracker{});
 
         if (dependencyAnnotations.size() >
             DslTypedContextDefinition::maximumDependencies()) {

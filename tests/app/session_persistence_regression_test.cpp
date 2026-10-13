@@ -22,6 +22,9 @@
 #include <QTest>
 #include <QTreeView>
 
+#include <bit>
+#include <cstdint>
+
 #if defined(Q_OS_WIN)
 #include <windows.h>
 #include <io.h>
@@ -74,7 +77,7 @@ QByteArray makeAmbiguousMp4Bytes() {
             i += 3U;
             continue;
         }
-        bytes.append(char(0xEE));
+        bytes.append(std::bit_cast<char>(std::uint8_t{0xEEU}));
     }
     bytes.append(char(0x00));
     bytes.append(char(0x00));
