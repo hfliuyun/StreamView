@@ -3,6 +3,7 @@
 #include <QtGlobal>
 
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -2890,11 +2891,14 @@ private:
                 std::optional<quint8> bitOffsetModulo = 0;
                 bool byteAligned = true;
             };
-            const auto validateItems = [&](const auto& self,
-                                           const std::vector<DslStructItem>& items,
-                                           const std::vector<ActiveCondition>& active,
-                                           OffsetTracker tracker)
-                -> OffsetTracker {
+            std::function<OffsetTracker(const std::vector<DslStructItem>&,
+                                        const std::vector<ActiveCondition>&,
+                                        OffsetTracker)>
+                validateItems;
+            validateItems =
+                [&](const std::vector<DslStructItem>& items,
+                    const std::vector<ActiveCondition>& active,
+                    OffsetTracker tracker) -> OffsetTracker {
                 for (const DslStructItem& item : items) {
                     if (item.kind == DslStructItemKind::Assertion) {
                         const DslAssertion& assertion = item.assertion;
@@ -3038,17 +3042,16 @@ private:
                                                   item.condition.expectedValue,
                                                   false});
                         const auto thenTracker =
-                            self(self, item.thenItems, thenConditions, tracker);
+                            validateItems(item.thenItems, thenConditions, tracker);
                         std::vector<ActiveCondition> elseConditions = active;
                         elseConditions.push_back({conditionName,
                                                   item.condition.expectedValue,
                                                   true});
                         const auto elseTracker = item.elseItems.empty()
                                                     ? tracker
-                                                    : self(self,
-                                                           item.elseItems,
-                                                           elseConditions,
-                                                           tracker);
+                                                    : validateItems(item.elseItems,
+                                                                    elseConditions,
+                                                                    tracker);
                         tracker.exactBitOffset = thenTracker.exactBitOffset && elseTracker.exactBitOffset && *thenTracker.exactBitOffset == *elseTracker.exactBitOffset
                                           ? thenTracker.exactBitOffset
                                           : std::nullopt;
@@ -3133,7 +3136,7 @@ private:
                                 }
                             }
                             armTrackers.push_back(
-                                self(self, arm.items, armConditions, tracker));
+                                validateItems(arm.items, armConditions, tracker));
                         }
                         if (!defaultSeen) {
                             armTrackers.push_back(tracker);
@@ -3217,7 +3220,7 @@ private:
                         const std::size_t scopeStart = declaredFields.size();
                         const auto initialTracker = tracker;
                         const auto bodyTracker =
-                            self(self, item.repeatItems, active, tracker);
+                            validateItems(item.repeatItems, active, tracker);
                         declaredFields.resize(scopeStart);
                         tracker.exactBitOffset = std::nullopt;
                         tracker.bitOffsetModulo =
@@ -3300,7 +3303,7 @@ private:
                             }
                         }
                         const std::size_t scopeStart = declaredFields.size();
-                        (void)self(self, item.repeatItems, active, tracker);
+                        (void)validateItems(item.repeatItems, active, tracker);
                         declaredFields.resize(scopeStart);
                         tracker.exactBitOffset = std::nullopt;
                         tracker.byteAligned = false;
@@ -3324,7 +3327,7 @@ private:
                                  item.range});
                         }
                         const std::size_t scopeStart = declaredFields.size();
-                        (void)self(self, item.repeatItems, active, tracker);
+                        (void)validateItems(item.repeatItems, active, tracker);
                         declaredFields.resize(scopeStart);
                         tracker.exactBitOffset = std::nullopt;
                         tracker.byteAligned = false;
@@ -3599,7 +3602,7 @@ private:
                 }
                 return tracker;
             };
-            (void)validateItems(validateItems, structure.items, {}, OffsetTracker{});
+            (void)validateItems(structure.items, {}, OffsetTracker{});
             if (!structure.items.empty() && declaredFieldNames.empty() &&
                 !containsField(containsField, structure.items)) {
                 result_.diagnostics.push_back(

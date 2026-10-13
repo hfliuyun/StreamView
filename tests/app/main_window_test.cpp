@@ -40,6 +40,8 @@
 #include <QUuid>
 #include <QWidget>
 
+#include <bit>
+#include <cstdint>
 #include <optional>
 
 using streamview::app::AnalysisSessionCacheOptions;
@@ -125,7 +127,7 @@ QByteArray makeAmbiguousMp4Bytes() {
             i += 3U;
             continue;
         }
-        bytes.append(char(0xEE));
+        bytes.append(std::bit_cast<char>(std::uint8_t{0xEEU}));
     }
     bytes.append(char(0x00));
     bytes.append(char(0x00));
@@ -1005,7 +1007,7 @@ private slots:
                 i += 3U;
                 continue;
             }
-            bytes.append(char(0xEE));
+            bytes.append(std::bit_cast<char>(std::uint8_t{0xEEU}));
         }
         bytes.append(char(0x00));
         bytes.append(char(0x00));
@@ -1066,7 +1068,7 @@ private slots:
         bytes.append(char(0x00));
         bytes.append(char(0x00));
         bytes.append(char(0x13));
-        bytes.append(char(0x88));
+        bytes.append(std::bit_cast<char>(std::uint8_t{0x88U}));
         bytes.append("mdat", 4);
         bytes.append(QByteArray(12, '\0'));
 
