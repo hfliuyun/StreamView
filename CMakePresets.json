@@ -42,6 +42,16 @@
       }
     },
     {
+      "name": "fuzz",
+      "displayName": "Instrumented libFuzzer Build",
+      "inherits": "sanitize",
+      "cacheVariables": {
+        "STREAMVIEW_BUILD_APP": "OFF",
+        "STREAMVIEW_ENABLE_LIBFUZZER": "ON",
+        "CMAKE_CXX_SCAN_FOR_MODULES": "OFF"
+      }
+    },
+    {
       "name": "clang-tidy",
       "displayName": "Clang-Tidy Static Analysis",
       "inherits": "ci",
@@ -64,7 +74,8 @@
     { "name": "ci", "configurePreset": "ci" },
     { "name": "sanitize", "configurePreset": "sanitize" },
     { "name": "clang-tidy", "configurePreset": "clang-tidy" },
-    { "name": "performance", "configurePreset": "performance" }
+    { "name": "performance", "configurePreset": "performance" },
+    { "name": "fuzz", "configurePreset": "fuzz" }
   ],
   "testPresets": [
     {
@@ -80,6 +91,11 @@
     {
       "name": "sanitize",
       "configurePreset": "sanitize",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz",
       "output": { "outputOnFailure": true }
     }
   ]

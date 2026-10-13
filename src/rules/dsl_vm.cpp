@@ -2558,8 +2558,10 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
     std::vector<DslExecutionContextImport> stagedContextImports;
     stagedContextImports.reserve(structure.contextImports.size());
     std::optional<quint32> lastField;
-    std::optional<quint64> lastValue;
-    std::optional<qlonglong> lastSignedValue;
+    quint64 lastValue = 0;
+    qlonglong lastSignedValue = 0;
+    bool lastValuePresent = false;
+    bool lastSignedValuePresent = false;
     std::optional<core::AnalysisNodeId> lastFieldNode;
     bool lastFieldSkipped = false;
     quint32 nextFieldIndex = 0;
@@ -2850,8 +2852,8 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
             }
             if (!*fieldPresent) {
                 lastField = instruction.operand;
-                lastValue.reset();
-                lastSignedValue.reset();
+                lastValuePresent = false;
+                lastSignedValuePresent = false;
                 lastFieldSkipped = true;
                 ++nextFieldIndex;
                 break;
@@ -3032,12 +3034,10 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
             fieldRanges.at(instruction.operand) =
                 MaterializedFieldRange{fieldStart, consumedBits};
             lastField = instruction.operand;
-            lastValue = readsFixedBits || readsUnsignedExpGolomb || readsFfCoded
-                             ? std::optional<quint64>(unsignedValue)
-                             : std::nullopt;
-            lastSignedValue = readsFixedBits || readsUnsignedExpGolomb || readsFfCoded
-                                  ? std::nullopt
-                                  : std::optional<qlonglong>(signedValue);
+            lastValue = unsignedValue;
+            lastValuePresent = readsFixedBits || readsUnsignedExpGolomb || readsFfCoded;
+            lastSignedValue = signedValue;
+            lastSignedValuePresent = !lastValuePresent;
             lastFieldSkipped = false;
             ++nextFieldIndex;
             if (enumeration != nullptr && !enumContains(*enumeration, unsignedValue)) {
@@ -3180,7 +3180,8 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
                     MaterializedFieldRange{fieldStart, 1};
                 lastField = instruction.operand + fieldCount;
                 lastValue = readResult.value;
-                lastSignedValue.reset();
+                lastValuePresent = true;
+                lastSignedValuePresent = false;
                 lastFieldSkipped = false;
                 if (readResult.value != *field.equalsConstraint) {
                     markFailure(DslExecutionStatus::InvalidSyntax,
@@ -3247,8 +3248,8 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
             }
             if (!*fieldPresent) {
                 lastField = instruction.operand;
-                lastValue.reset();
-                lastSignedValue.reset();
+                lastValuePresent = false;
+                lastSignedValuePresent = false;
                 lastFieldSkipped = true;
                 ++nextFieldIndex;
                 break;
@@ -3312,8 +3313,8 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
                                 : evaluated.value.unsignedValue;
             fieldRanges.at(instruction.operand).reset();
             lastField = instruction.operand;
-            lastValue.reset();
-            lastSignedValue.reset();
+            lastValuePresent = false;
+            lastSignedValuePresent = false;
             lastFieldSkipped = false;
             ++nextFieldIndex;
             break;
@@ -3353,8 +3354,8 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
             }
             if (!*fieldPresent) {
                 lastField = instruction.operand;
-                lastValue.reset();
-                lastSignedValue.reset();
+                lastValuePresent = false;
+                lastSignedValuePresent = false;
                 lastFieldSkipped = true;
                 ++nextFieldIndex;
                 break;
@@ -3478,8 +3479,8 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
             fieldValues.at(instruction.operand).reset();
             fieldRanges.at(instruction.operand) = MaterializedFieldRange{fieldStart, bitCount};
             lastField = instruction.operand;
-            lastValue.reset();
-            lastSignedValue.reset();
+            lastValuePresent = false;
+            lastSignedValuePresent = false;
             lastFieldSkipped = false;
             ++nextFieldIndex;
             break;
@@ -3581,8 +3582,8 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
             fieldRanges.at(instruction.operand) =
                 MaterializedFieldRange{fieldStart, bitCount};
             lastField = instruction.operand;
-            lastValue.reset();
-            lastSignedValue.reset();
+            lastValuePresent = false;
+            lastSignedValuePresent = false;
             lastFieldSkipped = false;
             ++nextFieldIndex;
             break;
@@ -3717,7 +3718,7 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
                 field == nullptr || !field->equalsConstraint ||
                 field->kind != DslTypedFieldKind::Declared ||
                 *field->equalsConstraint != instruction.immediate ||
-                (lastFieldSkipped ? lastValue.has_value() : !lastValue.has_value())) {
+                (lastFieldSkipped ? lastValuePresent : !lastValuePresent)) {
                 markFailure(DslExecutionStatus::InvalidDefinition,
                             QStringLiteral("Typed IR equality instruction is invalid"),
                             nullptr);
@@ -3726,7 +3727,7 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
             if (lastFieldSkipped) {
                 break;
             }
-            if (lastValue.value_or(0) == instruction.immediate) {
+            if (lastValue == instruction.immediate) {
                 break;
             }
             result.status = DslExecutionStatus::InvalidSyntax;
@@ -3769,7 +3770,7 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
                              : (field->rangeConstraint.has_value() &&
                                 !field->signedRangeConstraint.has_value()));
             const bool valueMissing =
-                signedField ? !lastSignedValue.has_value() : !lastValue.has_value();
+                signedField ? !lastSignedValuePresent : !lastValuePresent;
             if (!result.structureNode || !lastField || *lastField != instruction.operand ||
                 field == nullptr || !constraintMatchesEncoding ||
                 field->kind != DslTypedFieldKind::Declared ||
@@ -3795,12 +3796,12 @@ DslExecutionResult DslVirtualMachine::executeWithFinalization(
             const bool withinBound =
                 signedField
                     ? (checksMinimum
-                           ? lastSignedValue.value_or(0) >=
+                           ? lastSignedValue >=
                                  static_cast<qlonglong>(instruction.immediate)
-                           : lastSignedValue.value_or(0) <=
+                           : lastSignedValue <=
                                  static_cast<qlonglong>(instruction.immediate))
-                    : (checksMinimum ? lastValue.value_or(0) >= instruction.immediate
-                                     : lastValue.value_or(0) <= instruction.immediate);
+                    : (checksMinimum ? lastValue >= instruction.immediate
+                                     : lastValue <= instruction.immediate);
             if (withinBound) {
                 break;
             }

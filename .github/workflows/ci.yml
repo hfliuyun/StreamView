@@ -257,6 +257,11 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - name: Install pinned LLVM major
         run: |
+          curl --fail --silent --show-error --location \
+            https://apt.llvm.org/llvm-snapshot.gpg.key |
+            sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb https://apt.llvm.org/noble/ llvm-toolchain-noble-18 main" |
+            sudo tee /etc/apt/sources.list.d/llvm-18.list >/dev/null
           sudo apt-get update
           sudo apt-get install -y clang-18 clang-tidy-18 ninja-build
       - uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730
@@ -267,6 +272,7 @@ jobs:
         run: |
           clang++-18 --version
           clang-tidy-18 --version
+          clang-tidy-18 --version | grep -E 'version 18\.1\.[89]([ .]|$)'
           cmake --preset clang-tidy \
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DSTREAMVIEW_CLANG_TIDY_EXECUTABLE="$(command -v clang-tidy-18)" \

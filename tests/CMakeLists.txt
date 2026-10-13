@@ -272,8 +272,6 @@ add_test(
     COMMAND ${CMAKE_COMMAND} -DPROJECT_SOURCE_DIR=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_markdown_hygiene.cmake
 )
 
-option(STREAMVIEW_ENABLE_LIBFUZZER "Enable LLVM libFuzzer engine for fuzz targets" OFF)
-
 function(streamview_add_fuzz_target target source corpus_dir)
     qt_add_executable(${target} ${source})
     target_link_libraries(${target} PRIVATE StreamView::Core StreamView::Rules Qt6::Core)
@@ -290,8 +288,10 @@ function(streamview_add_fuzz_target target source corpus_dir)
         target_compile_options(${target} PRIVATE -fsanitize=fuzzer)
         target_link_options(${target} PRIVATE -fsanitize=fuzzer)
         target_compile_definitions(${target} PRIVATE STREAMVIEW_ENABLE_LIBFUZZER=1)
+    else()
+        add_test(NAME ${target} COMMAND ${target})
+        set_tests_properties(${target} PROPERTIES TIMEOUT 600)
     endif()
-    add_test(NAME ${target} COMMAND ${target})
 endfunction()
 
 streamview_add_fuzz_target(

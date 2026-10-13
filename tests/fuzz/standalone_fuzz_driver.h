@@ -14,6 +14,12 @@
 // Canonical LLVM libFuzzer entry point
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size);
 
+namespace streamview::fuzz {
+
+inline constexpr std::size_t kMaxFuzzInputSize = 4U * 1024U * 1024U;
+
+} // namespace streamview::fuzz
+
 #if !defined(STREAMVIEW_ENABLE_LIBFUZZER)
 
 namespace streamview::fuzz {
@@ -22,6 +28,11 @@ inline bool runFile(const QString& filePath) {
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly)) {
         std::cerr << "[FUZZ ERROR] Cannot open file: " << qPrintable(filePath) << std::endl;
+        return false;
+    }
+    if (file.size() > static_cast<qint64>(kMaxFuzzInputSize)) {
+        std::cerr << "[FUZZ ERROR] Input exceeds 4 MiB limit: "
+                  << qPrintable(filePath) << std::endl;
         return false;
     }
     const QByteArray data = file.readAll();
@@ -39,8 +50,8 @@ inline bool runFile(const QString& filePath) {
 inline int runDirectory(const QString& dirPath) {
     QDir dir(dirPath);
     if (!dir.exists()) {
-        std::cerr << "[FUZZ WARNING] Corpus directory not found: " << qPrintable(dirPath) << std::endl;
-        return 0;
+        std::cerr << "[FUZZ ERROR] Corpus directory not found: " << qPrintable(dirPath) << std::endl;
+        return 1;
     }
     const QFileInfoList entries = dir.entryInfoList(QDir::Files | QDir::Readable, QDir::Name);
     int executed = 0;
@@ -53,7 +64,7 @@ inline int runDirectory(const QString& dirPath) {
     }
     std::cout << "[FUZZ] Executed " << executed << " corpus files from "
               << qPrintable(dirPath) << " (" << failed << " failed)" << std::endl;
-    return (failed == 0 && executed > 0) ? 0 : (failed > 0 ? 1 : 0);
+    return (failed == 0 && executed > 0) ? 0 : 1;
 }
 
 inline int runStandalone(int argc, char** argv, const char* defaultCorpusDir = nullptr) {
@@ -79,7 +90,7 @@ inline int runStandalone(int argc, char** argv, const char* defaultCorpusDir = n
                 ++failed;
             }
         }
-        return (failed == 0 && executed > 0) ? 0 : (failed > 0 ? 1 : 0);
+        return (failed == 0 && executed > 0) ? 0 : 1;
     }
 
     if (defaultCorpusDir != nullptr && defaultCorpusDir[0] != '\0') {
@@ -90,7 +101,7 @@ inline int runStandalone(int argc, char** argv, const char* defaultCorpusDir = n
     }
 
     std::cout << "[FUZZ] No input files specified and default corpus directory missing." << std::endl;
-    return 0;
+    return 1;
 }
 
 } // namespace streamview::fuzz

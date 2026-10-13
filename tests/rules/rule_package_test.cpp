@@ -117,10 +117,10 @@ class RulePackageTest final : public QObject {
 
 private slots:
     void parsesAndOrdersSemanticVersions() {
-        const auto alpha = SemanticVersion::parse(u"1.0.0-alpha");
-        const auto alphaOne = SemanticVersion::parse(u"1.0.0-alpha.1");
-        const auto beta = SemanticVersion::parse(u"1.0.0-beta");
-        const auto release = SemanticVersion::parse(u"1.0.0");
+        const auto alpha = SemanticVersion::parse(QStringLiteral("1.0.0-alpha"));
+        const auto alphaOne = SemanticVersion::parse(QStringLiteral("1.0.0-alpha.1"));
+        const auto beta = SemanticVersion::parse(QStringLiteral("1.0.0-beta"));
+        const auto release = SemanticVersion::parse(QStringLiteral("1.0.0"));
         QVERIFY(alpha.has_value());
         QVERIFY(alphaOne.has_value());
         QVERIFY(beta.has_value());
@@ -143,27 +143,32 @@ private slots:
     }
 
     void appliesLanguageAndEngineCompatibility() {
-        const auto zero = LanguageContract::parse(u"0.1");
-        const auto stable = LanguageContract::parse(u"1.2");
+        const auto zero = LanguageContract::parse(QStringLiteral("0.1"));
+        const auto stable = LanguageContract::parse(QStringLiteral("1.2"));
         QVERIFY(zero.has_value());
         QVERIFY(stable.has_value());
-        QVERIFY(zero->accepts(u"0.1"));
-        QVERIFY(!zero->accepts(u"0.2"));
-        QVERIFY(stable->accepts(u"1.2"));
-        QVERIFY(stable->accepts(u"1.9"));
-        QVERIFY(!stable->accepts(u"1.1"));
-        QVERIFY(!stable->accepts(u"2.0"));
-        QVERIFY(!LanguageContract::parse(u"01.2").has_value());
+        QVERIFY(zero->accepts(QStringLiteral("0.1")));
+        QVERIFY(!zero->accepts(QStringLiteral("0.2")));
+        QVERIFY(stable->accepts(QStringLiteral("1.2")));
+        QVERIFY(stable->accepts(QStringLiteral("1.9")));
+        QVERIFY(!stable->accepts(QStringLiteral("1.1")));
+        QVERIFY(!stable->accepts(QStringLiteral("2.0")));
+        QVERIFY(!LanguageContract::parse(QStringLiteral("01.2")).has_value());
 
-        const auto range = EngineCompatibilityRange::parse(u">=0.1.0 <0.2.0");
+        const auto range =
+            EngineCompatibilityRange::parse(QStringLiteral(">=0.1.0 <0.2.0"));
         QVERIFY(range.has_value());
-        QVERIFY(range->contains(u"0.1.0"));
-        QVERIFY(range->contains(u"0.1.9"));
-        QVERIFY(!range->contains(u"0.0.9"));
-        QVERIFY(!range->contains(u"0.2.0"));
-        QVERIFY(!range->contains(u"0.2.0-alpha"));
-        QVERIFY(!EngineCompatibilityRange::parse(u">=0.2.0 <0.1.0").has_value());
-        QVERIFY(!EngineCompatibilityRange::parse(u">=0.1.0-alpha <0.2.0").has_value());
+        QVERIFY(range->contains(QStringLiteral("0.1.0")));
+        QVERIFY(range->contains(QStringLiteral("0.1.9")));
+        QVERIFY(!range->contains(QStringLiteral("0.0.9")));
+        QVERIFY(!range->contains(QStringLiteral("0.2.0")));
+        QVERIFY(!range->contains(QStringLiteral("0.2.0-alpha")));
+        QVERIFY(!EngineCompatibilityRange::parse(
+                     QStringLiteral(">=0.2.0 <0.1.0"))
+                     .has_value());
+        QVERIFY(!EngineCompatibilityRange::parse(
+                     QStringLiteral(">=0.1.0-alpha <0.2.0"))
+                     .has_value());
     }
 
     void loadsAStandardTomlManifestAndHashesTheLogicalTree() {
@@ -190,10 +195,11 @@ private slots:
         QCOMPARE(loaded.package->identity().contentHashText(),
                  QStringLiteral(
                      "sha256:ce9e80e12d7dcd6ab40237f7acf047dcd27f7f1d748fbd5273c595b8bf567f98"));
-        const QByteArray* source = loaded.package->fileContents(u"src/packet.svfmt");
+        const QByteArray* source =
+            loaded.package->fileContents(QStringLiteral("src/packet.svfmt"));
         QVERIFY(source != nullptr);
         QCOMPARE(*source, files.at(1).contents);
-        QVERIFY(loaded.package->fileContents(u"src/missing.svfmt") == nullptr);
+        QVERIFY(loaded.package->fileContents(QStringLiteral("src/missing.svfmt")) == nullptr);
 
         std::reverse(files.begin(), files.end());
         const auto reordered = RulePackage::fromFiles(std::move(files));
@@ -344,7 +350,8 @@ private slots:
         RulePackageCatalog catalog;
         QVERIFY(catalog.registerPackage(std::move(*loaded.package)).succeeded());
 
-        const auto found = catalog.resolve(identity, u"packet", u"0.1", u"0.1.0");
+        const auto found = catalog.resolve(
+            identity, QStringLiteral("packet"), QStringLiteral("0.1"), QStringLiteral("0.1.0"));
         QCOMPARE(found.status, RuleCatalogLookupStatus::Found);
         QVERIFY(found.succeeded());
         QCOMPARE(found.entryPoint->sourcePath, QStringLiteral("src/packet.svfmt"));
@@ -352,23 +359,43 @@ private slots:
         auto wrongHash = RulePackageIdentity::create(
             identity.packageId(), identity.packageVersion(), QByteArray(32, '\0'));
         QVERIFY(wrongHash.has_value());
-        QCOMPARE(catalog.resolve(*wrongHash, u"packet", u"0.1", u"0.1.0").status,
+        QCOMPARE(catalog.resolve(*wrongHash,
+                                 QStringLiteral("packet"),
+                                 QStringLiteral("0.1"),
+                                 QStringLiteral("0.1.0"))
+                     .status,
                  RuleCatalogLookupStatus::VersionConflict);
 
         auto missingVersion = RulePackageIdentity::create(
             identity.packageId(), QStringLiteral("0.2.0"), identity.contentHash());
         QVERIFY(missingVersion.has_value());
-        QCOMPARE(catalog.resolve(*missingVersion, u"packet", u"0.1", u"0.1.0").status,
+        QCOMPARE(catalog.resolve(*missingVersion,
+                                 QStringLiteral("packet"),
+                                 QStringLiteral("0.1"),
+                                 QStringLiteral("0.1.0"))
+                     .status,
                  RuleCatalogLookupStatus::MissingContent);
         QVERIFY(!RulePackageIdentity::create(identity.packageId(),
                                              identity.packageVersion(),
                                              QByteArray(31, '\0'))
                      .has_value());
-        QCOMPARE(catalog.resolve(identity, u"missing", u"0.1", u"0.1.0").status,
+        QCOMPARE(catalog.resolve(identity,
+                                 QStringLiteral("missing"),
+                                 QStringLiteral("0.1"),
+                                 QStringLiteral("0.1.0"))
+                     .status,
                  RuleCatalogLookupStatus::UnknownEntryPoint);
-        QCOMPARE(catalog.resolve(identity, u"packet", u"0.2", u"0.1.0").status,
+        QCOMPARE(catalog.resolve(identity,
+                                 QStringLiteral("packet"),
+                                 QStringLiteral("0.2"),
+                                 QStringLiteral("0.1.0"))
+                     .status,
                  RuleCatalogLookupStatus::IncompatibleLanguage);
-        QCOMPARE(catalog.resolve(identity, u"packet", u"0.1", u"0.2.0").status,
+        QCOMPARE(catalog.resolve(identity,
+                                 QStringLiteral("packet"),
+                                 QStringLiteral("0.1"),
+                                 QStringLiteral("0.2.0"))
+                     .status,
                  RuleCatalogLookupStatus::IncompatibleEngine);
     }
     void resolvesPackageByFormat() {
@@ -377,21 +404,30 @@ private slots:
         RulePackageCatalog catalog;
         QVERIFY(catalog.registerPackage(std::move(*loaded.package)).succeeded());
 
-        const auto found = catalog.resolveByFormat(u"application.example.packet", u"0.1", u"0.1.0");
+        const auto found = catalog.resolveByFormat(QStringLiteral("application.example.packet"),
+                                                   QStringLiteral("0.1"),
+                                                   QStringLiteral("0.1.0"));
         QCOMPARE(found.status, RuleCatalogLookupStatus::Found);
         QVERIFY(found.succeeded());
         QCOMPARE(found.entryPoint->format, QStringLiteral("application.example.packet"));
 
-        const auto missing = catalog.resolveByFormat(u"video/unknown", u"0.1", u"0.1.0");
+        const auto missing = catalog.resolveByFormat(QStringLiteral("video/unknown"),
+                                                     QStringLiteral("0.1"),
+                                                     QStringLiteral("0.1.0"));
         QCOMPARE(missing.status, RuleCatalogLookupStatus::MissingContent);
 
-        const auto empty = catalog.resolveByFormat(u"", u"0.1", u"0.1.0");
+        const auto empty = catalog.resolveByFormat(
+            QStringLiteral(""), QStringLiteral("0.1"), QStringLiteral("0.1.0"));
         QCOMPARE(empty.status, RuleCatalogLookupStatus::MissingContent);
 
-        const auto badLang = catalog.resolveByFormat(u"application.example.packet", u"0.2", u"0.1.0");
+        const auto badLang = catalog.resolveByFormat(QStringLiteral("application.example.packet"),
+                                                      QStringLiteral("0.2"),
+                                                      QStringLiteral("0.1.0"));
         QCOMPARE(badLang.status, RuleCatalogLookupStatus::IncompatibleLanguage);
 
-        const auto badEngine = catalog.resolveByFormat(u"application.example.packet", u"0.1", u"0.2.0");
+        const auto badEngine = catalog.resolveByFormat(QStringLiteral("application.example.packet"),
+                                                       QStringLiteral("0.1"),
+                                                       QStringLiteral("0.2.0"));
         QCOMPARE(badEngine.status, RuleCatalogLookupStatus::IncompatibleEngine);
     }
 
@@ -406,7 +442,9 @@ private slots:
         QVERIFY(catalog.registerPackage(std::move(*second.package)).succeeded());
 
         const auto conflict =
-            catalog.resolveByFormat(u"application.example.packet", u"0.1", u"0.1.0");
+            catalog.resolveByFormat(QStringLiteral("application.example.packet"),
+                                    QStringLiteral("0.1"),
+                                    QStringLiteral("0.1.0"));
         QCOMPARE(conflict.status, RuleCatalogLookupStatus::VersionConflict);
         QVERIFY(!conflict.succeeded());
         QVERIFY(!conflict.package);
@@ -438,7 +476,9 @@ private slots:
         QVERIFY(catalog.registerPackage(std::move(*loaded.package)).succeeded());
 
         const auto conflict =
-            catalog.resolveByFormat(u"application.example.packet", u"0.1", u"0.1.0");
+            catalog.resolveByFormat(QStringLiteral("application.example.packet"),
+                                    QStringLiteral("0.1"),
+                                    QStringLiteral("0.1.0"));
         QCOMPARE(conflict.status, RuleCatalogLookupStatus::VersionConflict);
         QVERIFY(!conflict.succeeded());
         QVERIFY(!conflict.package);

@@ -19,6 +19,15 @@ option(STREAMVIEW_BUILD_BENCHMARKS "Build the opt-in performance observation har
 option(STREAMVIEW_ENABLE_SANITIZERS "Enable supported sanitizers" OFF)
 option(STREAMVIEW_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(STREAMVIEW_ENABLE_CLANG_TIDY "Run the pinned Clang-Tidy checks during builds" OFF)
+option(STREAMVIEW_ENABLE_LIBFUZZER "Enable LLVM libFuzzer engine for fuzz targets" OFF)
+if(STREAMVIEW_ENABLE_LIBFUZZER)
+    if(MSVC OR NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$")
+        message(FATAL_ERROR "libFuzzer requires a Clang toolchain")
+    endif()
+    if(NOT STREAMVIEW_ENABLE_SANITIZERS)
+        message(FATAL_ERROR "libFuzzer requires STREAMVIEW_ENABLE_SANITIZERS=ON")
+    endif()
+endif()
 set(
     STREAMVIEW_CLANG_TIDY_EXECUTABLE
     ""

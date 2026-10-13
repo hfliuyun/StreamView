@@ -8,10 +8,10 @@
 #include <QFile>
 #include <QString>
 #include <QTemporaryDir>
-#include <QTemporaryFile>
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <vector>
 
 using streamview::rules::RulePackage;
@@ -22,7 +22,7 @@ using streamview::rules::RulePackageStore;
 using streamview::rules::RulePackageWriteResult;
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
-    if (data == nullptr || size == 0) {
+    if (data == nullptr || size == 0 || size > streamview::fuzz::kMaxFuzzInputSize) {
         return 0;
     }
 
@@ -31,28 +31,36 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     // Test 1: Archive ingestion via RulePackageStore::importArchive.
     // Ingests untrusted binary stream as a .svrule ZIP archive.
     {
-        QTemporaryFile tempArchive;
-        if (tempArchive.open()) {
-            tempArchive.write(inputBytes);
-            tempArchive.flush();
-            const QString archivePath = tempArchive.fileName();
+        QTemporaryDir temporary;
+        if (!temporary.isValid()) {
+            std::abort();
+        }
+        const QString archivePath = temporary.filePath(QStringLiteral("input.svrule"));
+        QFile tempArchive(archivePath);
+        if (!tempArchive.open(QIODevice::WriteOnly) ||
+            tempArchive.write(inputBytes) != inputBytes.size()) {
+            std::abort();
+        }
+        tempArchive.close();
 
-            const RulePackageImportResult importResult = RulePackageStore::importArchive(archivePath);
-            if (importResult.succeeded() && importResult.package.has_value()) {
-                const RulePackage& pkg = *importResult.package;
-                (void)pkg.identity().toString();
-                (void)pkg.manifest().packageId;
-                (void)pkg.manifest().packageVersion.text();
-                (void)pkg.files().size();
-
-                // Re-serialize imported package to verify write consistency.
-                QTemporaryFile roundtripFile;
-                if (roundtripFile.open()) {
-                    const RulePackageWriteResult writeResult =
-                        RulePackageStore::writeArchive(pkg, roundtripFile.fileName());
-                    (void)writeResult.succeeded();
-                }
+        const RulePackageImportResult importResult = RulePackageStore::importArchive(archivePath);
+        if (importResult.succeeded()) {
+            const RulePackage& pkg = *importResult.package;
+            const QString roundtripPath =
+                temporary.filePath(QStringLiteral("roundtrip.svrule"));
+            const RulePackageWriteResult writeResult =
+                RulePackageStore::writeArchive(pkg, roundtripPath);
+            if (!writeResult.succeeded()) {
+                std::abort();
             }
+            const auto reimported = RulePackageStore::importArchive(roundtripPath);
+            if (!reimported.succeeded() ||
+                reimported.package->identity().toString() != pkg.identity().toString()) {
+                std::abort();
+            }
+#if !defined(STREAMVIEW_ENABLE_LIBFUZZER)
+            std::cout << "[FUZZ] Canonical archive round trip passed\n";
+#endif
         }
     }
 

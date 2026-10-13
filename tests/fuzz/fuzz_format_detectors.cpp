@@ -2,17 +2,25 @@
 
 #include <streamview/core/source.h>
 #include <streamview/rules/aac_adts_detector.h>
+#include <streamview/rules/aac_adts_analyzer.h>
 #include <streamview/rules/aac_adts_scanner.h>
+#include <streamview/rules/dsl.h>
+#include <streamview/rules/dsl_ir.h>
+#include <streamview/rules/h264_annex_b_analyzer.h>
 #include <streamview/rules/h264_annex_b_detector.h>
+#include <streamview/rules/h264_ebsp_rbsp_mapper.h>
 #include <streamview/rules/h264_start_code_scanner.h>
 #include <streamview/rules/mp4_box_detector.h>
 #include <streamview/rules/mp4_box_scanner.h>
+#include <streamview/rules/structural_entry_runner.h>
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <span>
+#include <utility>
 
 namespace {
 
@@ -50,10 +58,30 @@ private:
     size_t size_ = 0;
 };
 
+const streamview::rules::DslTypedProgram& ascProgram() {
+    static const auto program = [] {
+        const auto package = streamview::rules::loadAacAdtsRulePackage();
+        if (!package.succeeded()) {
+            std::abort();
+        }
+        const auto* text = package.package->fileContents(QStringLiteral("src/aac_asc.svfmt"));
+        if (text == nullptr) {
+            std::abort();
+        }
+        const auto parsed = streamview::rules::DslParser::parse(QString::fromUtf8(*text));
+        auto compiled = streamview::rules::DslCompiler::compile(parsed.program);
+        if (!parsed.succeeded() || !compiled.succeeded()) {
+            std::abort();
+        }
+        return std::move(*compiled.program);
+    }();
+    return program;
+}
+
 } // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
-    if (data == nullptr || size == 0) {
+    if (data == nullptr || size == 0 || size > streamview::fuzz::kMaxFuzzInputSize) {
         return 0;
     }
 
@@ -104,6 +132,68 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             if (scanBatch.complete()) {
                 break;
             }
+        }
+    }
+
+    auto h264 = streamview::rules::H264AnnexBAnalyzer::create(source);
+    auto aac = streamview::rules::AacAdtsAnalyzer::create(source);
+    if (!h264 || !aac) {
+        std::abort();
+    }
+    for (int batch = 0; batch < 4; ++batch) {
+        if (h264->analyzeBatch(8, 4096, 4096).status !=
+            streamview::rules::H264AnnexBAnalysisStatus::InProgress) {
+            break;
+        }
+    }
+    for (int batch = 0; batch < 4; ++batch) {
+        if (aac->analyzeBatch(8, 4096).status !=
+            streamview::rules::AacAdtsAnalysisStatus::InProgress) {
+            break;
+        }
+    }
+
+    const quint64 sourceBits = sourceSizeBytes * 8U;
+    const auto span = streamview::core::SourceSpan::create(
+        streamview::core::SourceBitAddress(0), sourceBits);
+    if (!span) {
+        std::abort();
+    }
+    const auto mapping = streamview::core::SourceMapping::create(
+        streamview::core::LogicalViewId(1), {*span});
+    if (!mapping) {
+        std::abort();
+    }
+    streamview::rules::StructuralExecutionOptions options;
+    options.limits.maximumInstructions = 10'000;
+    options.limits.maximumMaterializedNodes = 1'000;
+    (void)streamview::rules::StructuralEntryRunner::execute(
+        source, *mapping, ascProgram(), options);
+
+    streamview::rules::H264EbspRbspMapper mapper(
+        source, streamview::core::LogicalViewId(2), *span, {512, 512, 512});
+    for (int batch = 0; batch < 4; ++batch) {
+        const auto result = mapper.mapBatch(4096);
+        if (result.complete()) {
+            quint64 accountedBits = mapper.mapping().logicalBitLength();
+            for (const auto& forwarded : mapper.mapping().sourceSpans()) {
+                if (forwarded.endExclusive().absoluteBitOffset() > sourceBits) {
+                    std::abort();
+                }
+            }
+            for (const auto& excluded : mapper.excludedSpans()) {
+                if (excluded.sourceSpan.endExclusive().absoluteBitOffset() > sourceBits) {
+                    std::abort();
+                }
+                accountedBits += excluded.sourceSpan.bitLength();
+            }
+            if (accountedBits != sourceBits) {
+                std::abort();
+            }
+            break;
+        }
+        if (result.status != streamview::rules::H264EbspRbspMapStatus::InProgress) {
+            break;
         }
     }
 

@@ -4,7 +4,7 @@
 #include <QString>
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
-    if (data == nullptr) {
+    if (data == nullptr || size > streamview::fuzz::kMaxFuzzInputSize) {
         return 0;
     }
 

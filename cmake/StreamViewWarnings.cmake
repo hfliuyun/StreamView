@@ -29,4 +29,8 @@ function(streamview_set_warnings target)
             -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
         target_link_options(${target} PRIVATE -fsanitize=address,undefined)
     endif()
+
+    if(STREAMVIEW_ENABLE_LIBFUZZER)
+        target_compile_options(${target} PRIVATE -fsanitize=fuzzer-no-link)
+    endif()
 endfunction()

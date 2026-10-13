@@ -62,7 +62,7 @@ private:
 
 template <typename T>
 T readScalar(const uint8_t*& cursor, const uint8_t* end) {
-    if (cursor + sizeof(T) > end) {
+    if (static_cast<std::size_t>(end - cursor) < sizeof(T)) {
         return 0;
     }
     T val;
@@ -74,7 +74,7 @@ T readScalar(const uint8_t*& cursor, const uint8_t* end) {
 } // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
-    if (data == nullptr || size == 0) {
+    if (data == nullptr || size == 0 || size > streamview::fuzz::kMaxFuzzInputSize) {
         return 0;
     }
 
@@ -120,13 +120,13 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
         // Populate run-length tables with bounds-capped rows
         const size_t rowBudget = 32;
-        while (cursor + 16 <= end && tables.timeToSample.size() < rowBudget) {
+        while (end - cursor >= 16 && tables.timeToSample.size() < rowBudget) {
             const quint64 count = readScalar<quint64>(cursor, end);
             const quint64 delta = readScalar<quint64>(cursor, end);
             tables.timeToSample.push_back(Mp4TimeToSampleRow{count, delta});
         }
 
-        while (cursor + 24 <= end && tables.sampleToChunk.size() < rowBudget) {
+        while (end - cursor >= 20 && tables.sampleToChunk.size() < rowBudget) {
             const quint64 firstChunk = readScalar<quint64>(cursor, end);
             const quint64 samplesPerChunk = readScalar<quint64>(cursor, end);
             const quint32 descIndex = readScalar<quint32>(cursor, end);
