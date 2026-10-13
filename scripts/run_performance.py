@@ -15,6 +15,7 @@ def create_sparse(path, prefix):
     with path.open("w+b") as source:
         if os.name == "nt":
             import msvcrt
+            from ctypes import wintypes
 
             kernel = ctypes.WinDLL("kernel32", use_last_error=True)
             control = kernel.DeviceIoControl
@@ -28,8 +29,32 @@ def create_sparse(path, prefix):
             if not control(msvcrt.get_osfhandle(source.fileno()), 0x000900C4,
                            None, 0, None, 0, ctypes.byref(returned), None):
                 raise ctypes.WinError(ctypes.get_last_error())
+            set_file_pointer = kernel.SetFilePointerEx
+            set_file_pointer.argtypes = [
+                wintypes.HANDLE,
+                ctypes.c_longlong,
+                ctypes.POINTER(ctypes.c_longlong),
+                wintypes.DWORD,
+            ]
+            set_file_pointer.restype = wintypes.BOOL
+            set_end_of_file = kernel.SetEndOfFile
+            set_end_of_file.argtypes = [wintypes.HANDLE]
+            set_end_of_file.restype = wintypes.BOOL
         source.write(prefix)
-        source.truncate(100 * 1024**3)
+        logical_size = 100 * 1024**3
+        if os.name == "nt":
+            # Python's truncate() may use a CRT path that materializes the
+            # extension on some hosted Windows images.  Extend the already
+            # sparse file through the Win32 API instead.
+            source.flush()
+            position = ctypes.c_longlong()
+            handle = msvcrt.get_osfhandle(source.fileno())
+            if not set_file_pointer(handle, logical_size, ctypes.byref(position), 0):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if not set_end_of_file(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+        else:
+            source.truncate(logical_size)
 
 
 def run(binary, mode, path=None):
