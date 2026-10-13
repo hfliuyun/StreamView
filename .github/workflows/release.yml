@@ -163,9 +163,16 @@ jobs:
           cp packaging/streamview.desktop release/AppDir/usr/share/applications/streamview.desktop
           cp packaging/streamview.svg release/AppDir/usr/share/icons/hicolor/scalable/apps/streamview.svg
           # StreamView only uses SQLite; omit optional Qt SQL drivers whose
-          # vendor libraries are not part of this portable package.
-          find release/AppDir/usr/plugins/sqldrivers -type f \
-            -name 'libqsql*.so' ! -name 'libqsqlite.so' -delete
+          # vendor libraries are not part of this portable package. Clean both
+          # the copied AppDir and the SDK tree scanned by linuxdeployqt.
+          for sqldrivers in \
+            "$PWD/release/AppDir/usr/plugins/sqldrivers" \
+            "$(qmake -query QT_INSTALL_PLUGINS)/sqldrivers"; do
+            if [[ -d "$sqldrivers" ]]; then
+              find "$sqldrivers" -type f -name 'libqsql*.so' \
+                ! -name 'libqsqlite.so' -delete
+            fi
+          done
           curl -L --fail --retry 3 -o linuxdeployqt.AppImage \
             https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
           printf '%s  %s\n' "$LINUXDEPLOYQT_SHA256" linuxdeployqt.AppImage | sha256sum -c -
