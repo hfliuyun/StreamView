@@ -3817,3 +3817,9 @@ P7d 按以下顺序实施；后续由主代理直接实现、验证并提交：
   3. P7f、P7g、P7h 及阶段 7 发布检查清单关闭；P7i-P7l 继续保留为暂缓的
      历史 WBS。未来创建与 `CMakeLists.txt` 版本一致的 `vX.Y.Z` tag 后，
      同一 workflow 才执行 `publish` 并创建 GitHub Release。
+
+- 2026-10-13：新增 ADR-0114 与 `docs/format-extension-contract.md`，为后续
+  WAV、RF64、FLAC、MKV 等格式扩展建立长期交付门禁。契约要求先写双语 ADR 和
+  中英文格式文档，再实现规则包/检测器；要求确定性 fixture、规则检查、定向测试、
+  dev/ci/sanitize、Hosted CI 和真实证据回写，并明确 `src/core/`、Qt UI 与规则包
+  的不可越界边界。该维护契约不重新开启已完成的 Phase 7。

@@ -14,6 +14,7 @@ English is the normative language for technical specifications, ADRs, the format
 - [Core source and bit model](core-model.md)
 - [Analysis node and diagnostic model](analysis-model.md)
 - [Rule package format](rule-packages.md)
+- [Format extension delivery contract](format-extension-contract.md)
 - [Saved session format](session-format.md)
 - [Analysis cache owner payloads](analysis-cache-payloads.md)
 - [Format Definition Language](format-language/README.md)
@@ -22,6 +23,7 @@ English is the normative language for technical specifications, ADRs, the format
 - [Windows Qt CI artifact fallback ADR](adr/0017-windows-qt-ci-artifact-fallback.md)
 - [Portable cancellation state ADR](adr/0018-portable-cancellation-state.md)
 - [Markdown-only CI skip ADR](adr/0019-skip-ci-for-markdown-only-changes.md)
+- [Format extension delivery contract ADR](adr/0114-format-extension-delivery-contract.md)
 
 ## Architecture Decisions
 

@@ -12,6 +12,7 @@ StreamView 的技术规范、ADR、格式语言参考和 API 契约以英文版�
 - [核心 Source 与 Bit 模型](core-model.md)
 - [分析节点与诊断模型](analysis-model.md)
 - [规则包格式](rule-packages.md)
+- [格式扩展交付契约](format-extension-contract.md)
 - [保存会话格式](session-format.md)
 - [Analysis Cache Owner Payloads](analysis-cache-payloads.md)
 - [格式定义语言](format-language/README.md)
@@ -21,6 +22,7 @@ StreamView 的技术规范、ADR、格式语言参考和 API 契约以英文版�
 - [Windows Qt CI 构建产物临时回退 ADR](adr/0017-windows-qt-ci-artifact-fallback.md)
 - [可移植的取消状态 ADR](adr/0018-portable-cancellation-state.md)
 - [仅 Markdown 修改跳过 CI ADR](adr/0019-skip-ci-for-markdown-only-changes.md)
+- [格式扩展交付契约 ADR](adr/0114-format-extension-delivery-contract.md)
 
 ## 架构决策
 
