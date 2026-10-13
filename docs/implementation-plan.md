@@ -1,10 +1,10 @@
 # StreamView v0.1 分阶段实施计划
 
 Status: In Progress
-Current Phase: Phase 7 收尾；P7d-P7h 的实现已完成，Hosted 普通构建与 sanitizer 已通过，当前修复 LLVM 18 的一个 Qt 宏误报并等待复验
-Last Completed Step: 提交 `39966d7` 修复 Hosted Windows 稀疏文件性能门禁与 LLVM 18 `QTest::keyClick` 误报；Run `38388217673` 的三平台普通构建/性能和 Linux/macOS ASan/UBSan 已通过
-Next Action: 提交 LLVM 18 局部抑制与 Release tag glob 修复并推送；跟踪 Hosted CI 全绿；通过 `workflow_dispatch` 验证三平台包，不创建版本 tag 或正式 Release；完成 P7f-P7h 收尾复核
-Last Verification: 2026-10-13，Run `38388217673`：Ubuntu/Windows/macOS build-test success，Ubuntu/macOS ASan/UBSan success；LLVM 18 仅剩 `tests/app/main_window_test.cpp:650` 的 `QTRY_VERIFY` 宏展开误报。普通 CI 不上传 artifacts；Release 临时 artifacts 保留 1 天
+Current Phase: Phase 7 收尾；P7d-P7h 的实现已完成，Hosted 普通构建与 sanitizer 已通过，当前修复 LLVM 18 的 Qt 宏误报并等待复验
+Last Completed Step: 提交 `57c0115` 修复 Hosted Windows 稀疏文件性能门禁、LLVM 18 局部误报与 Release tag glob；Run `38392100441` 的三平台普通构建/性能和 Linux/macOS ASan/UBSan 已通过
+Next Action: 提交 `QVERIFY2(window.openMediaSource(...))` 的 LLVM 18 局部抑制并推送；跟踪 Hosted CI 全绿；通过 `workflow_dispatch` 验证三平台包，不创建版本 tag 或正式 Release；完成 P7f-P7h 收尾复核
+Last Verification: 2026-10-13，Run `38392100441`：Ubuntu/Windows/macOS build-test success，Ubuntu/macOS ASan/UBSan success；LLVM 18 仍在 `tests/app/main_window_test.cpp:639` 报 Qt/QWeakPointer `NewDelete` 误报。普通 CI 不上传 artifacts；Release 临时 artifacts 保留 1 天
 Blockers: LLVM 18 Hosted 复验尚未通过；Release workflow 的 `workflow_dispatch` 三平台包尚未实际验证。P7i-P7l 暂缓，正式版本 tag 才发布 GitHub Release
 
 2026-09-08 审计修订：下面已勾选的 Phase 5/6 项保留为历史交付记录，不表示本轮
@@ -3781,3 +3781,12 @@ P7d 按以下顺序实施；后续由主代理直接实现、验证并提交：
      `on.push.tags` 使用 glob，改为 `v*.*.*`；`validate` job 继续用严格
      `^vX.Y.Z$` 正则并校验 CMake 版本一致性。普通 CI 未引入 artifact 上传，
      Release workflow 的临时 artifact 保持 1 天保留。
+
+- 2026-10-13：Run `38392100441` 的 LLVM 18 复验继续暴露同类 Qt 误报。
+  1. Hosted 结果：三平台 build-test、性能以及 Ubuntu/macOS ASan/UBSan 全部
+     success；LLVM 18 在前一处 `QTRY_VERIFY` 抑制后继续沿 Qt/QWeakPointer
+     路径定位到 `tests/app/main_window_test.cpp:639` 的
+     `QVERIFY2(window.openMediaSource(...))`，因此 Run 仍不通过。
+  2. 主代理在该具体调用点补充 `NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete)`；
+     本地 clang-tidy preset 增量构建、键盘导航定向测试和 `git diff --check` 通过，
+     提交新的 Hosted 复验后再关闭 P7d 门禁。

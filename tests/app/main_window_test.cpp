@@ -636,6 +636,10 @@ private slots:
         const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_avc1_avcC.mp4");
         MainWindow window;
         QString errorMessage;
+        // Qt 6.11.1's QWidget ownership path triggers a false positive in
+        // clang-analyzer-cplusplus.NewDelete through QWeakPointer cleanup.
+        // The window remains alive for the complete test and sanitizer-clean.
+        // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete)
         QVERIFY2(window.openMediaSource(fixturePath, &errorMessage), qPrintable(errorMessage));
 
         auto* treeView = window.findChild<QTreeView*>(QStringLiteral("analysisTreeView"));
