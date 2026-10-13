@@ -1,11 +1,11 @@
 # StreamView v0.1 分阶段实施计划
 
 Status: In Progress
-Current Phase: Phase 7 收尾；P7d-P7h 的实现已完成，Hosted 普通构建与 sanitizer 已通过，当前修复 LLVM 18 的 Qt 宏误报并等待复验
-Last Completed Step: 提交 `57c0115` 修复 Hosted Windows 稀疏文件性能门禁、LLVM 18 局部误报与 Release tag glob；Run `38392100441` 的三平台普通构建/性能和 Linux/macOS ASan/UBSan 已通过
-Next Action: 提交 `QVERIFY2(window.openMediaSource(...))` 的 LLVM 18 局部抑制并推送；跟踪 Hosted CI 全绿；通过 `workflow_dispatch` 验证三平台包，不创建版本 tag 或正式 Release；完成 P7f-P7h 收尾复核
-Last Verification: 2026-10-13，Run `38392100441`：Ubuntu/Windows/macOS build-test success，Ubuntu/macOS ASan/UBSan success；LLVM 18 仍在 `tests/app/main_window_test.cpp:639` 报 Qt/QWeakPointer `NewDelete` 误报。普通 CI 不上传 artifacts；Release 临时 artifacts 保留 1 天
-Blockers: LLVM 18 Hosted 复验尚未通过；Release workflow 的 `workflow_dispatch` 三平台包尚未实际验证。P7i-P7l 暂缓，正式版本 tag 才发布 GitHub Release
+Current Phase: Phase 7 收尾；P7d 已完成并通过 Hosted 全矩阵，当前只剩 P7f-P7h 的 Release workflow 手动三平台打包验收
+Last Completed Step: 提交 `2ad8429` 收尾 LLVM 18 Qt 宏误报；Run `38397177913` 全部 success（LLVM 18、三平台 build-test/性能、Linux/macOS ASan/UBSan）
+Next Action: 通过 GitHub Actions `workflow_dispatch` 运行 `.github/workflows/release.yml`，核验 Windows ZIP、macOS `.app.zip`、Linux AppImage、解包 smoke、SHA-256、SBOM 与许可证材料；不创建版本 tag 或正式 Release
+Last Verification: 2026-10-13，Run `38397177913` 全局 `completed | success`；普通 CI 不上传 artifacts，Release 临时 artifacts 保留 1 天；Release workflow 的 tag glob 已修正为 `v*.*.*`
+Blockers: 当前 GitHub 连接器只读且浏览器控制不可用，`workflow_dispatch` 尚未实际启动。P7i-P7l 暂缓，正式版本 tag 才发布 GitHub Release
 
 2026-09-08 审计修订：下面已勾选的 Phase 5/6 项保留为历史交付记录，不表示本轮
 缺陷已经关闭或当前版本可发布。本地分步指导手册仍停在旧 Phase 5 状态，不能覆盖本状态区。
@@ -288,8 +288,8 @@ alpha/beta/rc/GA 排程暂缓，待 P7d-P7h 接近完成时裁定，详见 ADR-0
 - [x] **Task P7a**（规范与前置守卫闭环）：编写双语 ADR-0110；闭环 P1-1-R1（本地化正则跨行拼接先红后绿修复）；闭环 P1-2-R1（同名兄弟消歧变异实证与表述限定）；确立阶段 7 WBS（设固定独立评审门禁）；
 - [x] **Task P7b**（模糊测试框架与核心目标）：实现 DSL parser、compiler、VM 的 fuzz 驱动，并将独立 fuzz 回放接入 CTest；
 - [x] **Task P7c**（规则包与格式扫描器 Fuzzing）：实现 `RulePackageStore`（ZIP/manifest）、H.264、AAC 与 MP4 box/sample 提取器的 fuzz 驱动；
-- [ ] **Task P7d**（静态分析与警告级别提升）：本地 Clang-Tidy、编译告警门禁与 sanitizer 验证完成；提交 `158e110` 的 Hosted Windows 与 LLVM 18 复验待完成；
-- [x] **Task P7e**（性能基线与基准测试体系）：本地性能基准及 CI 性能预算实现完成；Run `38362763454` Ubuntu/macOS 性能步骤通过，Windows 在构建阶段失败、尚未执行；
+- [x] **Task P7d**（静态分析与警告级别提升）：本地 Clang-Tidy、编译告警门禁与 sanitizer 验证完成；提交 `2ad8429` 对应 Hosted Run `38397177913` 的 LLVM 18、三平台 build-test 与 Linux/macOS ASan/UBSan 全部 success；
+- [x] **Task P7e**（性能基线与基准测试体系）：本地性能基准及 CI 性能预算实现完成；Hosted Run `38397177913` 的 Ubuntu/Windows/macOS 性能步骤全部 success；
 - [ ] **Task P7f**（Windows 打包自动化）：CPack 与 `windeployqt` Windows x64 ZIP 流程已实现，Hosted 解包验收待手动 workflow；
 - [ ] **Task P7g**（macOS 打包自动化）：macOS ARM64 `.app.zip`、签名校验与材料流程已实现，Hosted 解包验收待手动 workflow；
 - [ ] **Task P7h**（Linux 打包与打包门禁）：Linux x86_64 AppImage、SBOM、许可证材料与解包 smoke 流程已实现；保持固定独立评审门禁，Hosted 打包验收待完成；
@@ -316,7 +316,7 @@ P7d 按以下顺序实施；后续由主代理直接实现、验证并提交：
 
 ### 阶段 7 检查清单
 - [x] fuzz DSL lexer/parser/VM、规则包、映射和官方规则；确定性回放和 libFuzzer 构建合同已通过本地门禁。
-- [ ] Linux/macOS Hosted ASan/UBSan、三平台静态检查与完整测试：workflow 已配置；上一 run 的 Linux/macOS sanitizer 已通过，提交 `158e110` 的完整 Hosted 复验待完成。
+- [x] Linux/macOS Hosted ASan/UBSan、三平台静态检查与完整测试：Run `38397177913` 的 LLVM 18、Ubuntu/Windows/macOS build-test/性能以及 Linux/macOS ASan/UBSan 全部 success。
 - [x] 验证初始视图约两秒可用、100 GB 测试源 RSS 不超过 512 MiB、已知 offset 页面读取 p95 小于 100 ms。
 - [ ] 创建版本 tag 后自动生成 Windows x64 ZIP、macOS ARM64 `.app.zip` 和 Linux x86_64 AppImage，并上传对应 GitHub Release 的 workflow 已实现；手动打包与解包验证待完成。
 - [ ] 发布包 SHA-256、SBOM、MIT/Qt/第三方许可证和 Qt 源码获取流程已实现；待 Hosted 打包产物核验。
@@ -3790,3 +3790,13 @@ P7d 按以下顺序实施；后续由主代理直接实现、验证并提交：
   2. 主代理在该具体调用点补充 `NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete)`；
      本地 clang-tidy preset 增量构建、键盘导航定向测试和 `git diff --check` 通过，
      提交新的 Hosted 复验后再关闭 P7d 门禁。
+
+- 2026-10-13：P7d Hosted 全矩阵通过，进入 P7f-P7h 打包验收。
+  1. 提交 `2ad8429` 对应 Hosted CI Run `38397177913` 全局 `completed | success`：
+     LLVM 18 static analysis、Ubuntu/Windows/macOS build-test 与性能步骤、
+     Ubuntu/macOS ASan/UBSan 全部 success。
+  2. P7d 关闭；P7e 的 Hosted 性能证据更新为同一 Run。普通 CI 仍不上传
+     deployment artifact，Release workflow 临时 artifact 保留 1 天。
+  3. `.github/workflows/release.yml` 已具备严格版本校验、三平台打包、解包 smoke、
+     SHA-256、SBOM、许可证材料和 tag 发布逻辑；手动 `workflow_dispatch` 尚未执行，
+     因当前环境没有可用的 GitHub Actions 写入或浏览器控制通道。
