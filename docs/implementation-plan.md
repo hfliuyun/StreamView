@@ -1,11 +1,11 @@
 # StreamView v0.1 分阶段实施计划
 
 Status: In Progress
-Current Phase: Phase 7 收尾；P7d-P7h 的实现已完成，代码修复已提交，当前等待该提交的 Hosted CI 与三平台手动打包验收
-Last Completed Step: 提交 `158e110` 修复 LLVM 18 在 `dsl.cpp` 递归校验 lambda 的前端崩溃及 Windows 测试 fixture 的 C4310；本地 dev/ci/sanitize 全量 CTest 60/60、LLVM 18.1.8 干净全目标构建 314/314 通过
-Next Action: 推送 `158e110` 及阶段记录；跟踪 Hosted CI 至全绿；通过 `workflow_dispatch` 验证三平台包，不创建版本 tag 或正式 Release；完成 P7h 独立复核后收尾
-Last Verification: 2026-10-13，dev 60/60（73.66s）、ci 60/60（14.63s）、sanitize 60/60（354.61s，零 ASan/UBSan 诊断）；LLVM 18.1.8 Clang-Tidy 全目标 314/314；`git diff --check` 通过。libFuzzer 变异长跑未纳入通过证据
-Blockers: 新提交的 Hosted CI 尚未运行；Release workflow 的 `workflow_dispatch` 三平台包尚未实际验证。P7i-P7l 暂缓，正式版本 tag 才发布 GitHub Release
+Current Phase: Phase 7 收尾；P7d-P7h 的实现已完成，Hosted 普通构建与 sanitizer 已通过，当前修复 LLVM 18 的一个 Qt 宏误报并等待复验
+Last Completed Step: 提交 `39966d7` 修复 Hosted Windows 稀疏文件性能门禁与 LLVM 18 `QTest::keyClick` 误报；Run `38388217673` 的三平台普通构建/性能和 Linux/macOS ASan/UBSan 已通过
+Next Action: 提交 LLVM 18 局部抑制与 Release tag glob 修复并推送；跟踪 Hosted CI 全绿；通过 `workflow_dispatch` 验证三平台包，不创建版本 tag 或正式 Release；完成 P7f-P7h 收尾复核
+Last Verification: 2026-10-13，Run `38388217673`：Ubuntu/Windows/macOS build-test success，Ubuntu/macOS ASan/UBSan success；LLVM 18 仅剩 `tests/app/main_window_test.cpp:650` 的 `QTRY_VERIFY` 宏展开误报。普通 CI 不上传 artifacts；Release 临时 artifacts 保留 1 天
+Blockers: LLVM 18 Hosted 复验尚未通过；Release workflow 的 `workflow_dispatch` 三平台包尚未实际验证。P7i-P7l 暂缓，正式版本 tag 才发布 GitHub Release
 
 2026-09-08 审计修订：下面已勾选的 Phase 5/6 项保留为历史交付记录，不表示本轮
 缺陷已经关闭或当前版本可发布。本地分步指导手册仍停在旧 Phase 5 状态，不能覆盖本状态区。
@@ -3767,3 +3767,17 @@ P7d 按以下顺序实施；后续由主代理直接实现、验证并提交：
   3. 提交前验证：dev 60/60、ci 60/60、sanitize 60/60；LLVM 18.1.8 干净全目标
      Clang-Tidy 构建 314/314；`git diff --check` 通过。Hosted 复验与 P7f-P7h
      手动打包仍未完成，不提前关闭阶段门禁。
+
+- 2026-10-13：Run `38388217673` 收尾复核与发布触发器修正。
+  1. Hosted 结果：Ubuntu/Windows/macOS build-test、性能步骤以及 Ubuntu/macOS
+     ASan/UBSan 全部 success；LLVM 18 job 在 `tests/app/main_window_test.cpp:650`
+     的 `QTRY_VERIFY` 宏展开处剩余 1 个 `clang-analyzer-cplusplus.NewDelete`
+     诊断，故 Run 总结不通过。该诊断与此前 `QTest::keyClick` 的 Qt/QWeakPointer
+     误报同类，局部 `NOLINTNEXTLINE` 不改变全局检查集。
+  2. 主代理在该宏调用点补充局部抑制；本地 `cmake --build --preset clang-tidy
+     --parallel 2`、定向键盘导航测试与 `git diff --check` 通过，等待新的 Hosted
+     复验。
+  3. 修正 `.github/workflows/release.yml` 的 tag 触发器：GitHub Actions 的
+     `on.push.tags` 使用 glob，改为 `v*.*.*`；`validate` job 继续用严格
+     `^vX.Y.Z$` 正则并校验 CMake 版本一致性。普通 CI 未引入 artifact 上传，
+     Release workflow 的临时 artifact 保持 1 天保留。

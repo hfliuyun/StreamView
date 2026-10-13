@@ -647,6 +647,10 @@ private slots:
 
         // 1. Find and enter SPS NAL via Enter key
         QModelIndex spsIndex;
+        // Qt 6.11.1's QTRY_VERIFY macro exposes a false positive in
+        // clang-analyzer-cplusplus.NewDelete through QWeakPointer cleanup.
+        // The test owns the view for the whole call and remains sanitizer-clean.
+        // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete)
         QTRY_VERIFY((spsIndex = findIndexByName(*treeView->model(), QStringLiteral("sequenceParameterSetNALUnit[0]"))).isValid());
         treeView->setCurrentIndex(spsIndex);
         // Qt 6.11's QTest key-event helper trips a false positive in

@@ -3,7 +3,9 @@ name: Release
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
+      # GitHub Actions uses glob patterns here, not regular expressions.
+      # The validate job applies the strict vX.Y.Z and CMake-version checks.
+      - 'v*.*.*'
   workflow_dispatch:
 
 permissions:
