@@ -123,3 +123,25 @@ All targets export the standard entry point `extern "C" int LLVMFuzzerTestOneInp
 
 ### Negative
 - CTest suite expands by 3 tests; additional build and execution time (~2-3 seconds).
+
+## October 13, 2026 Amendment: Reachable Archive and Media Paths
+
+Archive temporary paths must retain the `.svrule` suffix required by the
+production API. Accepted archives must be written and reimported with an
+identical package identity; temporary-file I/O failures fail the harness.
+This corrects the historical harness, whose suffix-free temporary paths
+returned before canonical ZIP parsing. Historical corpus passes do not prove
+that archive parsing was reached.
+
+The format target retains detector/scanner coverage and additionally runs
+bounded official H.264/AAC analyzers, AAC ASC structural execution and the
+EBSP/RBSP mapper. Mapping output must stay within the source and its forwarded
+and excluded bit counts must account for the complete input after completion.
+The sample target uses remaining byte counts rather than forming pointers
+past the input end when decoding synthetic table rows.
+
+The finite CTest and fully instrumented mutation contracts are defined by the
+October 13 amendment to ADR-0111. Existing seeds are supplemented from small
+official-format regression fixtures. A corpus pass or short campaign cannot
+establish exhaustive input coverage, path-restoration isolation, or a general
+zero-crash guarantee.

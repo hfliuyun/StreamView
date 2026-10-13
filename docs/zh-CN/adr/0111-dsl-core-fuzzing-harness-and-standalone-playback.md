@@ -113,3 +113,22 @@ StreamView 深度依赖其自研声明式领域特定语言（DSL）来描述和
 
 ### 代价
 - CTest 测试总数增加 3 项，整体构建与测试耗时微增约 1-2 秒。
+
+## 2026-10-13 修订：可执行 Fuzz 门禁
+
+独立语料回放是回归证据，不是变异 fuzz。缺失或空语料目录必须失败，不能静默
+通过。现有合成 VM schema 只覆盖语言子集；上文完整功能清单表示覆盖方向，
+不能作为每个构造都已经 fuzz 的证据。
+
+可选 `fuzz` preset 要求 Clang 与 ASan/UBSan。包括 Core、Rules 在内的项目 target
+使用 `-fsanitize=fuzzer-no-link` 编译；只有 fuzz 可执行文件链接 libFuzzer 引擎。
+确定性语料回放继续由 sanitizer preset 下的 standalone 可执行文件注册为 CTest
+门禁；可选 fuzz preset 只构建变异二进制，不把它们注册为 CTest 测试。主动变异
+使用复制后的可写语料、显式时间/次数限制和最终统计，不能修改仓库种子。
+
+每个 harness 入口和独立回放驱动都拒绝超过 4 MiB 的输入，使 parser、compiler、
+VM、归档和媒体路径在确定性回放与变异运行中采用一致的工作上限。
+
+格式目标新增官方 H.264 Annex B、AAC ADTS、AAC ASC 完整执行和直接 EBSP/RBSP
+映射；官方 MP4 执行仍在 sample extractor 目标中。输入和分析批次保持有界。
+短时变异只证明插桩和执行路径可运行，不代表穷尽安全验证或没有未知缺陷。

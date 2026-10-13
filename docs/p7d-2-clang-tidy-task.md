@@ -1,8 +1,11 @@
 # P7d-2：Clang-Tidy 静态检查任务书
 
-状态：2026-10-13，本地实现与完整 LLVM 18.1.8 分析已通过，314/314 构建步骤完成。
-P7d-1 的跨平台告警修复已提交为 `076e6f2`；Hosted CI 仍需在推送后确认。
-普通 dev/ci 构建不依赖本机安装 Clang-Tidy。
+状态：2026-10-13，本地实现、LLVM 18.1.8 全目标分析及 dev/ci/sanitize 矩阵已通过，
+代码修复已提交为 `158e110`。
+首次提交后的 Hosted run `38362763454` 在 `src/rules/dsl_ir.cpp:3030` 的 Clang 前端
+模板实例化期间崩溃；同一 run 的 Windows job 另因测试 fixture 常量转换告警失败。
+两处已在本地修复并通过干净全目标分析；修复提交的 Hosted 复验仍是关闭 P7d 的必要
+门禁。普通 dev/ci 构建不依赖本机安装 Clang-Tidy。
 
 ## 1. 合同
 
@@ -51,5 +54,16 @@ cmake --build --preset clang-tidy -j2
 Clang-Tidy，不伪造静态分析通过结论；应记录配置失败原因为工具缺失，并在 Hosted
 或专用工具环境中完成实证。
 
-2026-10-13 本地完整输出保留在 `build/clang-tidy/closeout-full-analysis.log`。
+2026-10-13 本地完整输出保留在 `build/clang-tidy/closeout-full-analysis.log`；
+干净重建执行 `cmake --build --preset clang-tidy -j3`，314/314 步骤通过。
 CI 集成在单独提交中增加 LLVM 18 job；P7d-3 使用独立任务书，不混入该切片。
+
+## 4. Hosted 崩溃修复复验
+
+Run `38362763454` 的 LLVM 18.1.8 job 在 `src/rules/dsl_ir.cpp:3030` 实例化
+`compileItems` 的递归泛型 lambda 时，于 Clang Sema 约束/模板推导路径段错误；
+后续 run `38374975699` 又在 `src/rules/dsl.cpp:2893` 的 `validateItems` 暴露同类
+前端崩溃。本轮将两处触发点均改为显式签名的 `std::function` 递归闭包，保留原捕获
+状态、参数、返回值和各递归分支；未修改 `.clang-tidy`、检查集、警告级别或分析范围。
+本地 LLVM 18.1.8 专用 preset 全目标干净构建通过（314/314）；提交后的 Hosted job
+结果仍需追加。

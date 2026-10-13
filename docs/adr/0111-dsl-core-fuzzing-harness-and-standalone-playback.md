@@ -113,3 +113,28 @@ Per ADR-0110, Phase 7 requires establishing a robust, continuous fuzzing harness
 
 ### Negative
 - CTest test count expands by 3 tests; additional build time for fuzz targets (~1-2 seconds).
+
+## October 13, 2026 Amendment: Executable Fuzz Gates
+
+Standalone corpus replay is regression evidence, not mutation fuzzing. Missing
+or empty corpora must fail instead of silently passing. The existing synthetic
+VM schema exercises a subset of the language; the earlier comprehensive list
+is a coverage direction, not evidence that every construct is fuzzed.
+
+The opt-in `fuzz` preset requires Clang and ASan/UBSan. Project targets, including
+Core and Rules, compile with `-fsanitize=fuzzer-no-link`; only fuzz executables
+link the libFuzzer engine. Deterministic corpus replay remains a standalone
+CTest gate under the sanitizer preset; the opt-in libFuzzer preset builds
+mutation binaries without registering them as CTest tests. Active mutation runs
+use copied writable corpora, explicit time/run limits, and final statistics.
+They must never modify checked-in seeds.
+
+Every harness entry point and the standalone driver rejects inputs larger than
+4 MiB. This bounds parser, compiler, VM, archive, and media work consistently
+for both deterministic replay and mutation runs.
+
+Full official H.264 Annex B, AAC ADTS and AAC ASC execution and direct
+EBSP/RBSP mapping are added to the format target; official MP4 execution remains
+in the sample extractor target. These paths use bounded inputs and batches.
+Short mutation runs demonstrate executable instrumentation and reachability,
+not exhaustive security assurance or absence of undiscovered defects.
