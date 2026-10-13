@@ -21,7 +21,12 @@ def main():
     for key in list(environment):
         if key.startswith(("QT_", "QML", "DYLD_", "LD_LIBRARY_PATH")):
             environment.pop(key)
-    environment["QT_QPA_PLATFORM"] = "cocoa" if args.platform.startswith("macos") else "offscreen"
+    if args.platform.startswith("macos"):
+        environment["QT_QPA_PLATFORM"] = "cocoa"
+    elif os.name == "nt":
+        environment["QT_QPA_PLATFORM"] = "windows"
+    else:
+        environment["QT_QPA_PLATFORM"] = "offscreen"
     environment["PATH"] = (
         str(Path(os.environ["SystemRoot"]) / "System32")
         if os.name == "nt" else "/usr/bin:/bin"

@@ -162,6 +162,9 @@ jobs:
           cp -a release/stage/. release/AppDir/usr/
           cp packaging/streamview.desktop release/AppDir/usr/share/applications/streamview.desktop
           cp packaging/streamview.svg release/AppDir/usr/share/icons/hicolor/scalable/apps/streamview.svg
+          # Qt ships an optional Mimer SQL driver whose private dependency is
+          # not part of this portable package and is not used by StreamView.
+          rm -f release/AppDir/usr/plugins/sqldrivers/libqsqlmimer.so
           curl -L --fail --retry 3 -o linuxdeployqt.AppImage \
             https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
           printf '%s  %s\n' "$LINUXDEPLOYQT_SHA256" linuxdeployqt.AppImage | sha256sum -c -
