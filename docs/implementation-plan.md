@@ -1,11 +1,11 @@
 # StreamView v0.1 分阶段实施计划
 
-Status: In Progress
-Current Phase: Phase 7 收尾；P7d 已完成并通过 Hosted 全矩阵，当前只剩 P7f-P7h 的 Release workflow 手动三平台打包验收
-Last Completed Step: 提交 `2ad8429` 收尾 LLVM 18 Qt 宏误报；Run `38397177913` 全部 success（LLVM 18、三平台 build-test/性能、Linux/macOS ASan/UBSan）
-Next Action: 通过 GitHub Actions `workflow_dispatch` 运行 `.github/workflows/release.yml`，核验 Windows ZIP、macOS `.app.zip`、Linux AppImage、解包 smoke、SHA-256、SBOM 与许可证材料；不创建版本 tag 或正式 Release
-Last Verification: 2026-10-13，Run `38397177913` 全局 `completed | success`；普通 CI 不上传 artifacts，Release 临时 artifacts 保留 1 天；Release workflow 的 tag glob 已修正为 `v*.*.*`
-Blockers: 当前 GitHub 连接器只读且浏览器控制不可用，`workflow_dispatch` 尚未实际启动。P7i-P7l 暂缓，正式版本 tag 才发布 GitHub Release
+Status: Complete（P7i-P7l 暂缓）
+Current Phase: Phase 7 已收尾；P7a-P7h 已完成，未来仅在创建匹配版本 tag 时发布 GitHub Release
+Last Completed Step: Hosted Release Run `38412786136` 使用提交 `124f7aa` 完成三平台打包、解包 smoke、合规材料生成与 artifact 上传
+Next Action: 发布新版本时创建与 `CMakeLists.txt` 版本一致的 `vX.Y.Z` tag；tag push 会自动构建并上传 GitHub Release
+Last Verification: 2026-10-13，Run `38412786136` 全局 `completed | success`（9m48s）；生成 Windows x64、macOS ARM64、Linux x86_64 三个临时 artifact，保留 1 天；普通 CI 不上传 deployment artifact
+Blockers: 当前范围无阻塞项。P7i-P7l 保留为历史规划并暂缓，不执行 alpha/beta/rc/GA 流程
 
 2026-09-08 审计修订：下面已勾选的 Phase 5/6 项保留为历史交付记录，不表示本轮
 缺陷已经关闭或当前版本可发布。本地分步指导手册仍停在旧 Phase 5 状态，不能覆盖本状态区。
@@ -290,9 +290,9 @@ alpha/beta/rc/GA 排程暂缓，待 P7d-P7h 接近完成时裁定，详见 ADR-0
 - [x] **Task P7c**（规则包与格式扫描器 Fuzzing）：实现 `RulePackageStore`（ZIP/manifest）、H.264、AAC 与 MP4 box/sample 提取器的 fuzz 驱动；
 - [x] **Task P7d**（静态分析与警告级别提升）：本地 Clang-Tidy、编译告警门禁与 sanitizer 验证完成；提交 `2ad8429` 对应 Hosted Run `38397177913` 的 LLVM 18、三平台 build-test 与 Linux/macOS ASan/UBSan 全部 success；
 - [x] **Task P7e**（性能基线与基准测试体系）：本地性能基准及 CI 性能预算实现完成；Hosted Run `38397177913` 的 Ubuntu/Windows/macOS 性能步骤全部 success；
-- [ ] **Task P7f**（Windows 打包自动化）：CPack 与 `windeployqt` Windows x64 ZIP 流程已实现，Hosted 解包验收待手动 workflow；
-- [ ] **Task P7g**（macOS 打包自动化）：macOS ARM64 `.app.zip`、签名校验与材料流程已实现，Hosted 解包验收待手动 workflow；
-- [ ] **Task P7h**（Linux 打包与打包门禁）：Linux x86_64 AppImage、SBOM、许可证材料与解包 smoke 流程已实现；保持固定独立评审门禁，Hosted 打包验收待完成；
+- [x] **Task P7f**（Windows 打包自动化）：CPack 与 `windeployqt` Windows x64 ZIP 流程已实现；Hosted Run `38412786136` 解包 smoke、合规材料与 artifact 上传通过；
+- [x] **Task P7g**（macOS 打包自动化）：macOS ARM64 `.app.zip`、签名校验与材料流程已实现；Hosted Run `38412786136` 解包 smoke、合规材料与 artifact 上传通过；
+- [x] **Task P7h**（Linux 打包与打包门禁）：Linux x86_64 AppImage、SBOM、许可证材料与解包 smoke 流程已实现；Hosted Run `38412786136` 解包 smoke、合规材料与 artifact 上传通过；
 - [ ] **Task P7i-P7l（暂缓，历史 WBS）**：原 alpha/beta/rc/GA 梯次发布条目不再派发、不再执行。
 
 P7i-P7l 上述名称保留为历史规划，当前不派发，也不要求 alpha/beta/rc/GA
@@ -318,8 +318,8 @@ P7d 按以下顺序实施；后续由主代理直接实现、验证并提交：
 - [x] fuzz DSL lexer/parser/VM、规则包、映射和官方规则；确定性回放和 libFuzzer 构建合同已通过本地门禁。
 - [x] Linux/macOS Hosted ASan/UBSan、三平台静态检查与完整测试：Run `38397177913` 的 LLVM 18、Ubuntu/Windows/macOS build-test/性能以及 Linux/macOS ASan/UBSan 全部 success。
 - [x] 验证初始视图约两秒可用、100 GB 测试源 RSS 不超过 512 MiB、已知 offset 页面读取 p95 小于 100 ms。
-- [ ] 创建版本 tag 后自动生成 Windows x64 ZIP、macOS ARM64 `.app.zip` 和 Linux x86_64 AppImage，并上传对应 GitHub Release 的 workflow 已实现；手动打包与解包验证待完成。
-- [ ] 发布包 SHA-256、SBOM、MIT/Qt/第三方许可证和 Qt 源码获取流程已实现；待 Hosted 打包产物核验。
+- [x] 创建版本 tag 后自动生成 Windows x64 ZIP、macOS ARM64 `.app.zip` 和 Linux x86_64 AppImage，并上传对应 GitHub Release 的 workflow 已实现；Hosted Run `38412786136` 手动打包与解包验证通过。
+- [x] 发布包 SHA-256、SBOM、MIT/Qt/第三方许可证和 Qt 源码获取流程已实现；Hosted Run `38412786136` 的三个 package job 均完成材料生成、校验与上传。普通 CI 不保留 deployment artifact，Release 临时 artifact 保留 1 天。
 
 ## 测试与阶段门禁
 
@@ -3800,3 +3800,20 @@ P7d 按以下顺序实施；后续由主代理直接实现、验证并提交：
   3. `.github/workflows/release.yml` 已具备严格版本校验、三平台打包、解包 smoke、
      SHA-256、SBOM、许可证材料和 tag 发布逻辑；手动 `workflow_dispatch` 尚未执行，
      因当前环境没有可用的 GitHub Actions 写入或浏览器控制通道。
+
+- 2026-10-13：P7f-P7h Hosted Release 打包验收完成，Phase 7 当前范围收尾。
+  1. 提交 `124f7aa` 对应手动 Release Run `38412786136` 全局
+     `completed | success`，总耗时 `9m48s`；`validate`、Windows x64、
+     macOS ARM64、Linux x86_64 四个执行 job 均成功，workflow_dispatch 下
+     `publish` 按设计 skipped。
+  2. 三个平台均完成安装树部署、合规材料生成、SBOM 校验、平台 smoke、
+     解包后 smoke 与 artifact 上传。临时 artifact 均按 workflow 配置保留 1 天：
+     `release-linux-x86_64`（43.8 MB，artifact `11823355731`，
+     digest `sha256:7f6cefc46d0c512b68fb12c24cefaad34bffa4ca92f0ac93a9da4605b9163f80`）；
+     `release-macos-arm64`（27.1 MB，artifact `11822813410`，
+     digest `sha256:c1aabf3717187b0901524412949d3f66f82f13e0982bded7abc7c924a792d36e`）；
+     `release-windows-x64`（192 MB，artifact `11823915045`，
+     digest `sha256:3edce922305d96e01178d8cf359c2bdbd1e39131274f5eadd7f3155c39e9356b`）。
+  3. P7f、P7g、P7h 及阶段 7 发布检查清单关闭；P7i-P7l 继续保留为暂缓的
+     历史 WBS。未来创建与 `CMakeLists.txt` 版本一致的 `vX.Y.Z` tag 后，
+     同一 workflow 才执行 `publish` 并创建 GitHub Release。
