@@ -1717,6 +1717,9 @@ void MainWindow::updateAmbiguityUI() {
     if (!session_) {
         formatAmbiguityLabel_->clear();
         formatAmbiguityLabel_->hide();
+        if (resolveAmbiguityButton_ != nullptr) {
+            resolveAmbiguityButton_->show();
+        }
         if (formatAmbiguityBannerWidget_ != nullptr) {
             formatAmbiguityBannerWidget_->hide();
         }
@@ -1726,12 +1729,34 @@ void MainWindow::updateAmbiguityUI() {
         formatAmbiguityLabel_->setText(
             tr("Warning: Ambiguous format (container vs elementary stream detected)"));
         formatAmbiguityLabel_->show();
+        if (resolveAmbiguityButton_ != nullptr) {
+            resolveAmbiguityButton_->show();
+        }
+        if (formatAmbiguityBannerWidget_ != nullptr) {
+            formatAmbiguityBannerWidget_->show();
+        }
+    } else if (!session_->formatSelection().decided()) {
+        // Detection returned no confident candidate. The session still opens on
+        // the H.264 fallback rule (single-NAL and truncated streams rely on it),
+        // so the banner states that plainly instead of passing the analysis off
+        // as a recognized format. The ambiguity-resolution button stays hidden:
+        // this is not an ambiguity, and Analysis > Override Format... remains
+        // the manual escape hatch.
+        formatAmbiguityLabel_->setText(
+            tr("Media format not confidently recognized; analysis uses the H.264 fallback rule"));
+        formatAmbiguityLabel_->show();
+        if (resolveAmbiguityButton_ != nullptr) {
+            resolveAmbiguityButton_->hide();
+        }
         if (formatAmbiguityBannerWidget_ != nullptr) {
             formatAmbiguityBannerWidget_->show();
         }
     } else {
         formatAmbiguityLabel_->clear();
         formatAmbiguityLabel_->hide();
+        if (resolveAmbiguityButton_ != nullptr) {
+            resolveAmbiguityButton_->show();
+        }
         if (formatAmbiguityBannerWidget_ != nullptr) {
             formatAmbiguityBannerWidget_->hide();
         }

@@ -192,8 +192,8 @@ void ThemeLocalizationTest::testAllAppTrLiteralsHaveChineseTranslations() {
              qPrintable(QStringLiteral("Missing Chinese translations for literals:\n%1")
                             .arg(missingLiterals.join(QStringLiteral("\n")))));
     QCOMPARE(uniqueScannedLiterals.size(), static_cast<qsizetype>(LocalizationManager::chineseDictionarySize()));
-    QCOMPARE(uniqueScannedLiterals.size(), qsizetype{155});
-    QCOMPARE(totalCalls, 267);
+    QCOMPARE(uniqueScannedLiterals.size(), qsizetype{156});
+    QCOMPARE(totalCalls, 268);
 }
 
 static QModelIndex findIndexByName(const QAbstractItemModel& model,

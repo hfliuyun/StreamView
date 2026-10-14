@@ -571,6 +571,16 @@ private slots:
                  QStringLiteral("11"));
         QCOMPARE(treeView->model()->rowCount(), 0);
         QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("partial")));
+
+        // Undecided detection surfaces the explicit fallback notice
+        auto* fallbackBanner =
+            window.findChild<QWidget*>(QStringLiteral("formatAmbiguityBanner"));
+        QVERIFY(fallbackBanner != nullptr);
+        QVERIFY(!fallbackBanner->isHidden());
+        auto* fallbackLabel =
+            window.findChild<QLabel*>(QStringLiteral("formatAmbiguityLabel"));
+        QVERIFY(fallbackLabel != nullptr);
+        QVERIFY(fallbackLabel->text().contains(QStringLiteral("not confidently recognized")));
     }
 
     void navigatesIntoAacAscViaDoubleClickAndReturnsViaBackButton() {
@@ -996,8 +1006,10 @@ private slots:
         QVERIFY(!trackCombo->isEnabled());
         QCOMPARE(tableView->model()->rowCount(), 0);
 
-        // Ambiguity label is hidden for clean elementary stream
-        QVERIFY(ambiguityLabel->isHidden());
+        // A single-NAL stream is not confidently recognized by detection, so the
+        // fallback notice shows even though analysis itself succeeds.
+        QVERIFY(!ambiguityLabel->isHidden());
+        QVERIFY(ambiguityLabel->text().contains(QStringLiteral("not confidently recognized")));
     }
 
     void surfacesFormatAmbiguityWarningWhenDetectionIsAmbiguous() {
@@ -1653,14 +1665,22 @@ private slots:
         QVERIFY(!btn->isHidden());
         QVERIFY(label->text().contains(QStringLiteral("Ambiguous format")));
 
-        // Clean elementary stream in another window hides banner
+        // Clean elementary stream in another window: detection is undecided for a
+        // single-NAL file, so the fallback notice shows without the resolve button
         const QString cleanPath = writeFixture(
             directory, QStringLiteral("clean.264"), QByteArray::fromHex("00000165"));
         MainWindow cleanWindow;
         QVERIFY2(cleanWindow.openMediaSource(cleanPath, &errorMessage), qPrintable(errorMessage));
         auto* cleanBanner = cleanWindow.findChild<QWidget*>(QStringLiteral("formatAmbiguityBanner"));
         QVERIFY(cleanBanner != nullptr);
-        QVERIFY(cleanBanner->isHidden());
+        QTRY_VERIFY(!cleanBanner->isHidden());
+        auto* cleanLabel = cleanWindow.findChild<QLabel*>(QStringLiteral("formatAmbiguityLabel"));
+        QVERIFY(cleanLabel != nullptr);
+        QVERIFY(cleanLabel->text().contains(QStringLiteral("not confidently recognized")));
+        auto* cleanButton =
+            cleanWindow.findChild<QPushButton*>(QStringLiteral("resolveAmbiguityButton"));
+        QVERIFY(cleanButton != nullptr);
+        QVERIFY(cleanButton->isHidden());
     }
 
     void resolveAmbiguityButtonTriggersOverrideFormatAndReanalyzes() {

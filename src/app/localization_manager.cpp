@@ -20,6 +20,8 @@ const std::unordered_map<std::string_view, QString>& chineseTranslations() {
         {" [Candidate]", QString::fromUtf8(" [候选]")},
         {" [Current]", QString::fromUtf8(" [当前]")},
         {"Ambiguous media format detected.", QString::fromUtf8("检测到存在歧义的媒体格式。")},
+        {"Media format not confidently recognized; analysis uses the H.264 fallback rule",
+         QString::fromUtf8("未能高置信识别媒体格式；分析使用 H.264 兜底规则")},
         {"Resolve Ambiguity...", QString::fromUtf8("解决歧义...")},
         {"Select the target format to override automatic format detection:",
          QString::fromUtf8("选择目标格式以覆盖自动格式检测：")},

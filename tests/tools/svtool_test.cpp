@@ -107,7 +107,12 @@ private slots:
         QVERIFY(standardOutput.contains(QStringLiteral("nal_ref_idc = 3")));
         QVERIFY(standardOutput.contains(QStringLiteral("nal_unit_type = 12")));
         QVERIFY(standardOutput.contains(QStringLiteral("source bits [24, 25)")));
-        QVERIFY(process.readAllStandardError().isEmpty());
+        // A single valid NAL header leaves detection undecided, so the tool notes
+        // the H.264 fallback on stderr even though analysis itself succeeds.
+        const QString standardError = QString::fromUtf8(process.readAllStandardError());
+        QVERIFY(standardError.contains(
+            QStringLiteral("media format not confidently recognized")));
+        QVERIFY(standardError.contains(QStringLiteral("H.264 fallback rule")));
     }
 
     void printsPartialResultsAndDiagnosticsForTruncatedInput() {
@@ -155,6 +160,33 @@ private slots:
         QCOMPARE(process.exitCode(), 1);
         const QString standardError = QString::fromUtf8(process.readAllStandardError());
         QVERIFY(standardError.contains(QStringLiteral("invalid-syntax")));
+        QVERIFY(standardError.contains(QStringLiteral("No H.264 Annex B start code")));
+    }
+
+    void notesUnrecognizedMediaFormatBeforeFallbackAnalysis() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString sourcePath = directory.filePath(QStringLiteral("unknown.bin"));
+        QFile sourceFile(sourcePath);
+        QVERIFY(sourceFile.open(QIODevice::WriteOnly));
+        const QByteArray sourceBytes("\x11\x22\x33", 3);
+        QCOMPARE(sourceFile.write(sourceBytes), static_cast<qint64>(sourceBytes.size()));
+        sourceFile.close();
+
+        QProcess process;
+        process.start(QStringLiteral(SVTOOL_PATH),
+                      {QStringLiteral("analyze"), sourcePath});
+        QVERIFY2(process.waitForFinished(), qPrintable(process.errorString()));
+
+        // Detection has no confident candidate, so the tool says so before the
+        // H.264 fallback analysis runs; the fallback itself still reports its
+        // diagnostics with the historical exit code.
+        QCOMPARE(process.exitStatus(), QProcess::NormalExit);
+        QCOMPARE(process.exitCode(), 1);
+        const QString standardError = QString::fromUtf8(process.readAllStandardError());
+        QVERIFY(standardError.contains(
+            QStringLiteral("media format not confidently recognized")));
+        QVERIFY(standardError.contains(QStringLiteral("H.264 fallback rule")));
         QVERIFY(standardError.contains(QStringLiteral("No H.264 Annex B start code")));
     }
 

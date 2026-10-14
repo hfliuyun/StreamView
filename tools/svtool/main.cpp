@@ -144,6 +144,12 @@ int analyzeSource(const QString& path) {
     const auto selection = streamview::rules::selectFormatFromDetection(
         mp4Detection, aacDetection, h264Detection);
 
+    if (selection.format == streamview::rules::DetectedFormat::None) {
+        QTextStream(stderr) << path
+                            << ": media format not confidently recognized; "
+                               "analysis uses the H.264 fallback rule\n";
+    }
+
     if (selection.format == streamview::rules::DetectedFormat::Mp4Isobmff) {
         auto analyzer = streamview::rules::Mp4IsobmffAnalyzer::create(*source, &errorMessage);
         if (!analyzer) {
