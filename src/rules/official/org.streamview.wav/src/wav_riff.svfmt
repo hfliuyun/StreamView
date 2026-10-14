@@ -1,0 +1,73 @@
+// WAV (RIFF/WAVE) container grammar — ADR-0115.
+//
+// The scanner emits the 12-byte RIFF form header as the first record; the
+// sequence element dispatches on the leading FourCC. Conditions are
+// equality-only and switch arms share one namespace (probe evidence in
+// ADR-0115), so fmt extensions dispatch on the exact canonical sizes
+// 16/18/40 and every other payload stays opaque.
+
+struct RiffRecord {
+    bits<32> fourcc
+        @description("First FourCC: 'RIFF' identifies the form header record.");
+    if (fourcc == 0x52494646) {
+        bits<32, little> riff_size
+            @description("Form size in bytes after the first 8 bytes, little-endian.");
+        bits<32> wave_id
+            @description("Form type 'WAVE', stored as raw bytes.");
+    } else {
+        bits<32, little> chunk_size
+            @description("Chunk payload size in bytes, little-endian.");
+        if (fourcc == 0x666D7420) {
+            bits<16, little> audio_format
+                @description("Format tag: 1 PCM, 3 IEEE float, 6 A-law, 7 mu-law, 17 IMA ADPCM, 0xFFFE extensible.");
+            bits<16, little> num_channels
+                @description("Number of interleaved channels.");
+            bits<32, little> sample_rate
+                @description("Sampling rate in Hz.");
+            bits<32, little> byte_rate
+                @description("Average bytes per second: sample_rate * block_align.");
+            bits<16, little> block_align
+                @description("Bytes per sample frame across all channels.");
+            bits<16, little> bits_per_sample
+                @description("Bits per sample in one channel.");
+            switch (chunk_size) {
+                case 18: {
+                    bits<16, little> fmt_cb_size
+                        @description("WAVEFORMATEX extension size in bytes; 0 for plain PCM headers of this size.");
+                }
+                case 40: {
+                    bits<16, little> extensible_cb_size
+                        @description("Extension size in bytes; 22 for WAVE_FORMAT_EXTENSIBLE.");
+                    bits<16, little> valid_bits_per_sample
+                        @description("Significant bits per sample.");
+                    bits<32, little> channel_mask
+                        @description("Speaker position mask.");
+                    bits<32, little> subformat_guid_data1
+                        @description("SubFormat GUID Data1; mirrors the format tag for known subformats.");
+                    bits<8> subformat_guid_tail[12]
+                        @description("SubFormat GUID bytes 4-15.");
+                }
+                default: {
+                    @lazy(chunk_size - 16) bytes fmt_tail
+                        @description("Remaining fmt bytes not decoded by this slice.");
+                }
+            }
+        } else {
+            if (fourcc == 0x66616374) {
+                if (chunk_size == 4) {
+                    bits<32, little> sample_length
+                        @description("fact chunk: sample length per channel.");
+                } else {
+                    @lazy(chunk_size) bytes fact_tail
+                        @description("Non-canonical fact payload.");
+                }
+            } else {
+                @lazy(chunk_size) bytes chunk_payload
+                    @description("Opaque chunk payload (data, LIST, JUNK, unknown).");
+            }
+        }
+    }
+}
+
+@index(progressive) sequence<RiffRecord> records = scan(riff_chunk);
+entry records;

@@ -1,0 +1,20 @@
+manifest-version = 1
+
+[package]
+id = "org.streamview.wav"
+version = "0.1.0"
+authors = ["StreamView contributors"]
+license = "MIT"
+dependencies = []
+
+[compatibility]
+language = "0.1"
+engine = ">=0.1.0 <0.2.0"
+
+[[entrypoints]]
+id = "wave"
+format = "audio.wav"
+source = "src/wav_riff.svfmt"
+profiles = ["wave"]
+depth = "chunks"
+detector = "riff-wave"

@@ -16,6 +16,8 @@
 #include <streamview/rules/h264_annex_b_detector.h>
 #include <streamview/rules/mp4_box_detector.h>
 #include <streamview/rules/mp4_isobmff_analyzer.h>
+#include <streamview/rules/riff_wave_detector.h>
+#include <streamview/rules/wav_riff_analyzer.h>
 #include <streamview/rules/payload_transform.h>
 #include <streamview/rules/rule_catalog.h>
 #include <streamview/rules/rule_execution_session.h>
@@ -396,7 +398,7 @@ private:
                     rules::AacAdtsDetectionResult aacFormatDetection,
                     rules::Mp4DetectionResult mp4FormatDetection,
                     rules::FormatSelection formatSelection,
-                    std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer> analyzer,
+                    std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer, rules::WavRiffAnalyzer> analyzer,
                     SessionUserState userState,
                     std::unique_ptr<rules::AnalysisCacheOwner> cacheOwner,
                     AnalysisSessionCacheStatus cacheStatus,
@@ -442,7 +444,7 @@ private:
     rules::AacAdtsDetectionResult aacFormatDetection_;
     rules::Mp4DetectionResult mp4FormatDetection_;
     rules::FormatSelection formatSelection_;
-    std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer> analyzer_;
+    std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer, rules::WavRiffAnalyzer> analyzer_;
     SessionUserState userState_;
     std::unique_ptr<rules::AnalysisCacheOwner> cacheOwner_;
     std::vector<std::future<rules::AnalysisCacheOwnerWriteResult>> pendingCacheWrites_;

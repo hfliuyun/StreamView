@@ -21,6 +21,8 @@ using streamview::rules::Mp4DetectionResult;
 using streamview::rules::detectAacAdtsCandidate;
 using streamview::rules::detectH264AnnexBCandidate;
 using streamview::rules::detectMp4Candidate;
+using streamview::rules::detectRiffWaveCandidate;
+using streamview::rules::RiffWaveDetectionResult;
 using streamview::rules::selectFormatFromDetection;
 
 namespace {
@@ -30,6 +32,13 @@ void appendBigEndianU32(std::vector<std::byte>& out, quint32 value) {
     out.push_back(static_cast<std::byte>((value >> 16) & 0xFFU));
     out.push_back(static_cast<std::byte>((value >> 8) & 0xFFU));
     out.push_back(static_cast<std::byte>(value & 0xFFU));
+}
+
+void appendLittleEndianU32(std::vector<std::byte>& out, quint32 value) {
+    out.push_back(static_cast<std::byte>(value & 0xFFU));
+    out.push_back(static_cast<std::byte>((value >> 8) & 0xFFU));
+    out.push_back(static_cast<std::byte>((value >> 16) & 0xFFU));
+    out.push_back(static_cast<std::byte>((value >> 24) & 0xFFU));
 }
 
 void appendFourCharCode(std::vector<std::byte>& out, const char (&code)[5]) {
@@ -125,7 +134,8 @@ void appendAdtsFrame(std::vector<std::byte>& out,
     const AacAdtsDetectionResult aac = detectAacAdtsCandidate(prefix, declaredSourceSize);
     const H264AnnexBDetectionResult h264 =
         detectH264AnnexBCandidate(prefix, declaredSourceSize);
-    return selectFormatFromDetection(mp4, aac, h264);
+    const RiffWaveDetectionResult riff = detectRiffWaveCandidate(prefix, declaredSourceSize);
+    return selectFormatFromDetection(mp4, aac, h264, riff);
 }
 
 [[nodiscard]] streamview::rules::FormatSelection selectFor(const std::vector<std::byte>& bytes) {
@@ -350,6 +360,112 @@ private slots:
         QVERIFY(!selection.ambiguous());
     }
 
+    void selectsRiffWaveWhenTheTilingIsStrong() {
+        std::vector<std::byte> bytes;
+        appendFourCharCode(bytes, "RIFF");
+        appendLittleEndianU32(bytes, 8U + 16U + 8U + 4U);
+        appendFourCharCode(bytes, "WAVE");
+        appendFourCharCode(bytes, "fmt ");
+        appendLittleEndianU32(bytes, 16U);
+        for (int index = 0; index < 16; ++index) {
+            bytes.push_back(std::byte{0x00});
+        }
+        appendFourCharCode(bytes, "data");
+        appendLittleEndianU32(bytes, 4U);
+        bytes.insert(bytes.end(), 4, std::byte{0x55});
+
+        const auto selection = selectFor(bytes);
+        QCOMPARE(selection.format, DetectedFormat::RiffWave);
+        QCOMPARE(selection.reason, DetectedFormatReason::RiffStructuralTiling);
+        QVERIFY(!selection.ambiguous());
+    }
+
+    void leavesWeakRiffTilingUndecided() {
+        // RIFF/WAVE magics with no framable chunk stay Weak and lose to the
+        // undecided outcome.
+        std::vector<std::byte> bytes;
+        appendFourCharCode(bytes, "RIFF");
+        appendLittleEndianU32(bytes, 8U + 64U);
+        appendFourCharCode(bytes, "WAVE");
+        bytes.insert(bytes.end(), 3, std::byte{0x11});
+
+        const auto selection = selectFor(bytes);
+        QCOMPARE(selection.format, DetectedFormat::None);
+        QCOMPARE(selection.reason, DetectedFormatReason::NoCandidate);
+    }
+
+    void keepsMp4PrecedenceWhenBothContainerTilingsAreStrong() {
+        using streamview::rules::RiffWaveCandidate;
+        using streamview::rules::RiffWaveDetectionConfidence;
+        using streamview::rules::RiffWaveDetectionEvidence;
+
+        Mp4DetectionResult mp4;
+        Mp4Candidate mp4Cand;
+        mp4Cand.confidence = streamview::rules::Mp4DetectionConfidence::Strong;
+        mp4.candidate = mp4Cand;
+        mp4.inspectedByteCount = 300;
+
+        RiffWaveDetectionResult riff;
+        RiffWaveCandidate riffCand;
+        riffCand.confidence = RiffWaveDetectionConfidence::Strong;
+        RiffWaveDetectionEvidence riffEv;
+        riffEv.chunkSpan = streamview::core::SourceSpan::create(
+            streamview::core::SourceBitAddress(0), 96);
+        riffCand.evidence.push_back(riffEv);
+        riff.candidate = riffCand;
+        riff.inspectedByteCount = 300;
+
+        H264AnnexBDetectionResult h264;
+        AacAdtsDetectionResult aac;
+
+        const auto selection = selectFormatFromDetection(mp4, aac, h264, riff);
+        QCOMPARE(selection.format, DetectedFormat::Mp4Isobmff);
+    }
+
+    void strongRiffTilingSubsumesUnanchoredPatternEvidence() {
+        // An H.264 stream cannot anchor at offset 0 under real RIFF bytes (the
+        // form header occupies bytes 0-3 and anchored start codes must sit
+        // within the first 3 bytes), so the independence escape hatch can
+        // never fire against a RIFF tiling: unanchored start codes reaching
+        // past the coverage are still subsumed.
+        using streamview::rules::RiffWaveCandidate;
+        using streamview::rules::RiffWaveDetectionConfidence;
+        using streamview::rules::RiffWaveDetectionEvidence;
+
+        RiffWaveDetectionResult riff;
+        RiffWaveCandidate riffCand;
+        riffCand.confidence = RiffWaveDetectionConfidence::Strong;
+        RiffWaveDetectionEvidence riffEv;
+        riffEv.chunkSpan = streamview::core::SourceSpan::create(
+            streamview::core::SourceBitAddress(0), 96);
+        riffCand.evidence.push_back(riffEv);
+        riff.candidate = riffCand;
+        riff.inspectedByteCount = 300;
+
+        std::vector<std::byte> bytes;
+        appendFourCharCode(bytes, "RIFF");
+        appendLittleEndianU32(bytes, 8U + 64U);
+        appendFourCharCode(bytes, "WAVE");
+        bytes.insert(bytes.end(), 64, std::byte{0x00});
+        appendStartCodeFourByte(bytes);
+        bytes.push_back(std::byte{0x67});
+        bytes.insert(bytes.end(), 8, std::byte{0x42});
+        appendStartCodeFourByte(bytes);
+        bytes.push_back(std::byte{0x68});
+        bytes.insert(bytes.end(), 8, std::byte{0x42});
+
+        const auto h264 = detectH264AnnexBCandidate({bytes.data(), bytes.size()},
+                                                    static_cast<quint64>(bytes.size()));
+        QVERIFY(h264.candidate.has_value());
+        QCOMPARE(h264.candidate->confidence,
+                 streamview::rules::H264AnnexBDetectionConfidence::Strong);
+
+        const auto selection = selectFormatFromDetection(
+            Mp4DetectionResult{}, AacAdtsDetectionResult{}, h264, riff);
+        QCOMPARE(selection.format, DetectedFormat::RiffWave);
+        QCOMPARE(selection.reason, DetectedFormatReason::RiffStructuralTiling);
+    }
+
     void unanchoredH264PatternCannotOutrankPartialContainerTiling() {
         // Regression test for P1-2: three complete boxes (ftyp, free, moov)
         // establish an MP4 Strong candidate with coverageEnd == 72. A fourth
@@ -385,6 +501,7 @@ private slots:
         QCOMPARE(selection.reason, DetectedFormatReason::Mp4SubsumesPatternEvidence);
         QVERIFY(!selection.ambiguous());
     }
+
 
     void annexBWithFourLeadingZeroBytesIsNotAnchored() {
         // Annex B allows up to 3 leading zero bytes (maximumAnnexBLeadingZeroBytes == 3).
@@ -433,7 +550,8 @@ private slots:
 
         H264AnnexBDetectionResult h264;
 
-        const auto selection = selectFormatFromDetection(mp4, aac, h264);
+        RiffWaveDetectionResult riff;
+        const auto selection = selectFormatFromDetection(mp4, aac, h264, riff);
         QCOMPARE(selection.format, DetectedFormat::Mp4Isobmff);
         QCOMPARE(selection.reason,
                  DetectedFormatReason::AmbiguousContainerVersusElementaryStream);
@@ -480,6 +598,7 @@ private slots:
         QCOMPARE(selection.reason, DetectedFormatReason::Mp4SubsumesPatternEvidence);
         QVERIFY(!selection.ambiguous());
     }
+
 };
 
 QTEST_MAIN(FormatSelectionTest)

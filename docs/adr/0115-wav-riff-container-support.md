@@ -140,7 +140,7 @@ FourCC and dispatches:
   `block_align`, `bits_per_sample`, all little-endian), then
   `switch (chunk_size)` with `case 18` (`fmt_cb_size`), `case 40`
   (`extensible_cb_size`, `valid_bits_per_sample`, `channel_mask`,
-  `subformat_guid_tail[12]`), and `default` registering
+  `subformat_guid_data1`, `subformat_guid_tail[12]`), and `default` registering
   `@lazy(chunk_size - 16) bytes fmt_tail`.
 - `fourcc == 0x66616374` (`'fact'`): `sample_length` (LE32) when
   `chunk_size == 4`, otherwise an opaque lazy payload.

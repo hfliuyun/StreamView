@@ -23,6 +23,8 @@ add_library(streamview_rules STATIC
     mp4_sample_table_index.cpp
     riff_chunk_scanner.cpp
     riff_wave_detector.cpp
+    wav_riff_analyzer.cpp
+    riff_wave_detector.cpp
     window_decoder.cpp
     structural_entry_runner.cpp
     compound_structural_runner.cpp
@@ -63,6 +65,7 @@ add_library(streamview_rules STATIC
     include/streamview/rules/mp4_sample_table_index.h
     include/streamview/rules/riff_chunk_scanner.h
     include/streamview/rules/riff_wave_detector.h
+    include/streamview/rules/wav_riff_analyzer.h
     include/streamview/rules/structural_entry_runner.h
     include/streamview/rules/compound_structural_runner.h
     include/streamview/rules/sample_payload_runner.h
@@ -132,4 +135,13 @@ qt_add_resources(
     FILES
         official/org.streamview.mp4/rule.toml
         official/org.streamview.mp4/src/mp4_isobmff.svfmt
+)
+qt_add_resources(
+    streamview_rules
+    streamview_official_rules_wav
+    PREFIX "/streamview/rules/org.streamview.wav"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/official/org.streamview.wav"
+    FILES
+        official/org.streamview.wav/rule.toml
+        official/org.streamview.wav/src/wav_riff.svfmt
 )

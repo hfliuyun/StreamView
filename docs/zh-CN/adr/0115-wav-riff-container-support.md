@@ -118,7 +118,8 @@ detector = "riff-wave"
   （`audio_format`、`num_channels`、`sample_rate`、`byte_rate`、
   `block_align`、`bits_per_sample`，全小端），随后 `switch (chunk_size)`
   分派 `case 18`（`fmt_cb_size`）、`case 40`（`extensible_cb_size`、
-  `valid_bits_per_sample`、`channel_mask`、`subformat_guid_tail[12]`）、
+  `valid_bits_per_sample`、`channel_mask`、`subformat_guid_data1`、
+  `subformat_guid_tail[12]`）、
   `default` 登记 `@lazy(chunk_size - 16) bytes fmt_tail`。
 - `fourcc == 0x66616374`（`'fact'`）：`chunk_size == 4` 时为
   `sample_length`（LE32），否则为 opaque 惰性载荷。

@@ -132,13 +132,14 @@ struct SessionCacheSetup final {
 }
 
 using SessionAnalyzerVariant =
-    std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer>;
+    std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer, rules::WavRiffAnalyzer>;
 
 struct ResolvedAnalyzerSetup final {
     rules::FormatSelection formatSelection;
     rules::H264AnnexBDetectionResult formatDetection;
     rules::AacAdtsDetectionResult aacFormatDetection;
     rules::Mp4DetectionResult mp4FormatDetection;
+    rules::RiffWaveDetectionResult riffFormatDetection;
     std::optional<SessionAnalyzerVariant> analyzer;
 };
 
@@ -184,6 +185,22 @@ struct ResolvedAnalyzerSetup final {
             return std::nullopt;
         }
         setup.analyzer.emplace(std::move(*mp4Analyzer));
+    } else if (resolvedRule.package->manifest().packageId == QStringLiteral("org.streamview.wav") ||
+               (resolvedRule.entryPoint &&
+                resolvedRule.entryPoint->format == QStringLiteral("audio.wav"))) {
+        setup.formatSelection.format = rules::DetectedFormat::RiffWave;
+        setup.formatSelection.reason = rules::DetectedFormatReason::RiffStructuralTiling;
+        setup.riffFormatDetection =
+            rules::detectRiffWaveCandidate(initialPage.bytes, source.sizeBytes());
+        auto wavAnalyzer =
+            rules::WavRiffAnalyzer::create(source, resolvedRule, &analyzerError, cancellation);
+        if (!wavAnalyzer) {
+            if (errorMessage != nullptr) {
+                *errorMessage = analyzerError;
+            }
+            return std::nullopt;
+        }
+        setup.analyzer.emplace(std::move(*wavAnalyzer));
     } else {
         setup.formatSelection.format = rules::DetectedFormat::H264AnnexB;
         setup.formatSelection.reason = rules::DetectedFormatReason::H264AnchoredStartCodes;
@@ -211,7 +228,7 @@ AnalysisSession::AnalysisSession(std::unique_ptr<core::RandomAccessSource> sourc
                                  rules::AacAdtsDetectionResult aacFormatDetection,
                                  rules::Mp4DetectionResult mp4FormatDetection,
                                  rules::FormatSelection formatSelection,
-                                 std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer> analyzer,
+                                 std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer, rules::WavRiffAnalyzer> analyzer,
                                  SessionUserState userState,
                                  std::unique_ptr<rules::AnalysisCacheOwner> cacheOwner,
                                  AnalysisSessionCacheStatus cacheStatus,
@@ -332,7 +349,8 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
     rules::H264AnnexBDetectionResult formatDetection;
     rules::AacAdtsDetectionResult aacFormatDetection;
     rules::Mp4DetectionResult mp4FormatDetection;
-    std::optional<std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer>> analyzerVariant;
+    rules::RiffWaveDetectionResult riffFormatDetection;
+    std::optional<std::variant<rules::H264AnnexBAnalyzer, rules::AacAdtsAnalyzer, rules::Mp4IsobmffAnalyzer, rules::WavRiffAnalyzer>> analyzerVariant;
     QString analyzerError;
 
     rules::FormatSelection formatSelection;
@@ -355,11 +373,14 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
             rules::detectAacAdtsCandidate(initialPage.bytes, source->sizeBytes());
         mp4FormatDetection =
             rules::detectMp4Candidate(initialPage.bytes, source->sizeBytes());
+        riffFormatDetection =
+            rules::detectRiffWaveCandidate(initialPage.bytes, source->sizeBytes());
 
         formatSelection = rules::selectFormatFromDetection(
-            mp4FormatDetection, aacFormatDetection, formatDetection);
+            mp4FormatDetection, aacFormatDetection, formatDetection, riffFormatDetection);
         const bool chooseMp4 = formatSelection.format == rules::DetectedFormat::Mp4Isobmff;
         const bool chooseAac = formatSelection.format == rules::DetectedFormat::AacAdts;
+        const bool chooseRiff = formatSelection.format == rules::DetectedFormat::RiffWave;
 
         if (chooseMp4) {
             auto mp4Analyzer =
@@ -370,6 +391,19 @@ AnalysisSession::createPrepared(std::unique_ptr<core::RandomAccessSource> source
                 if (errorMessage != nullptr) {
                     *errorMessage = analyzerError.isEmpty()
                                         ? QStringLiteral("No installed package matches format: video/mp4")
+                                        : analyzerError;
+                }
+                return nullptr;
+            }
+        } else if (chooseRiff) {
+            auto wavAnalyzer =
+                rules::WavRiffAnalyzer::create(*source, &analyzerError, cancellationSource->token());
+            if (wavAnalyzer.has_value()) {
+                analyzerVariant.emplace(std::move(*wavAnalyzer));
+            } else {
+                if (errorMessage != nullptr) {
+                    *errorMessage = analyzerError.isEmpty()
+                                        ? QStringLiteral("No installed package matches format: audio.wav")
                                         : analyzerError;
                 }
                 return nullptr;
@@ -686,6 +720,45 @@ AnalysisBatchResult AnalysisSession::analyzeBatch(
             break;
         }
         result.topLevelNodes = batch.frameNodes;
+        result.errorMessage = batch.errorMessage;
+        if (cacheStatus_ == AnalysisSessionCacheStatus::Active && cacheOwner_ &&
+            finished() && !materializedCacheSubmitted_) {
+            materializedCacheSubmitted_ = true;
+            rules::MaterializedResultCacheExportResult exported =
+                rules::exportMaterializedResultCachePages(tree(), 0);
+            if (!exported.succeeded()) {
+                disableCache(exported.errorMessage);
+            } else {
+                acceptCacheWrite(cacheOwner_->writeMaterializedResult(std::move(exported.pages)));
+            }
+        }
+    } else if (std::holds_alternative<rules::WavRiffAnalyzer>(analyzer_)) {
+        auto& wav = std::get<rules::WavRiffAnalyzer>(analyzer_);
+        const auto batch = wav.analyzeBatch(maximumRecords, maximumInspectedPositions);
+        switch (batch.status) {
+        case rules::WavRiffAnalysisStatus::InProgress:
+            result.status = AnalysisBatchStatus::InProgress;
+            break;
+        case rules::WavRiffAnalysisStatus::Complete:
+            result.status = AnalysisBatchStatus::Complete;
+            break;
+        case rules::WavRiffAnalysisStatus::Cancelled:
+            result.status = AnalysisBatchStatus::Cancelled;
+            break;
+        case rules::WavRiffAnalysisStatus::SourceError:
+            result.status = AnalysisBatchStatus::SourceError;
+            break;
+        case rules::WavRiffAnalysisStatus::ResourceLimit:
+            result.status = AnalysisBatchStatus::ResourceLimit;
+            break;
+        case rules::WavRiffAnalysisStatus::InvalidRule:
+            result.status = AnalysisBatchStatus::InvalidRule;
+            break;
+        case rules::WavRiffAnalysisStatus::InvalidBatchSize:
+            result.status = AnalysisBatchStatus::InvalidBatchSize;
+            break;
+        }
+        result.topLevelNodes = batch.recordNodes;
         result.errorMessage = batch.errorMessage;
         if (cacheStatus_ == AnalysisSessionCacheStatus::Active && cacheOwner_ &&
             finished() && !materializedCacheSubmitted_) {

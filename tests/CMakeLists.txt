@@ -119,6 +119,10 @@ streamview_add_rules_test(
     rules/riff_wave_detector_test.cpp
 )
 streamview_add_rules_test(
+    streamview_wav_riff_analyzer_tests
+    rules/wav_riff_analyzer_test.cpp
+)
+streamview_add_rules_test(
     streamview_format_selection_tests
     rules/format_selection_test.cpp
 )

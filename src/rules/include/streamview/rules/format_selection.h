@@ -3,6 +3,7 @@
 #include <streamview/rules/aac_adts_detector.h>
 #include <streamview/rules/h264_annex_b_detector.h>
 #include <streamview/rules/mp4_box_detector.h>
+#include <streamview/rules/riff_wave_detector.h>
 
 #include <QtGlobal>
 
@@ -13,6 +14,7 @@ enum class DetectedFormat : quint8 {
     Mp4Isobmff,
     AacAdts,
     H264AnnexB,
+    RiffWave,
 };
 
 /// Why a format won, so a caller can surface an ambiguity instead of presenting
@@ -22,6 +24,7 @@ enum class DetectedFormat : quint8 {
 enum class DetectedFormatReason : quint8 {
     NoCandidate,
     Mp4StructuralTiling,
+    RiffStructuralTiling,
     Mp4SubsumesPatternEvidence,
     AmbiguousContainerVersusElementaryStream,
     AacFrameChain,
@@ -39,18 +42,21 @@ struct FormatSelection final {
     }
 };
 
-/// Arbitrates the three bounded detectors into one decision. The three
-/// confidences are not commensurate: an MP4 `Strong` is a global invariant (a
-/// gapless box tiling anchored at offset 0), while an H.264 or AAC `Strong` is a
-/// local byte pattern that routinely occurs inside bytes the tiling already
+/// Arbitrates the four bounded detectors into one decision. The confidences
+/// are not commensurate: an MP4 or RIFF/WAVE `Strong` is a global invariant (a
+/// gapless tiling anchored at offset 0), while an H.264 or AAC `Strong` is a
+/// local byte pattern that routinely occurs inside bytes a tiling already
 /// accounts for. Pattern evidence therefore only outranks a container tiling
 /// when it is independent of it.
 ///
-/// Decides on source coordinates alone. No box type, brand, or codec name is
-/// inspected here, so ADR-0099 keeps FourCC semantics inside the DSL rules.
+/// Decides on source coordinates alone. No box type, brand, chunk id, or codec
+/// name is inspected here, so ADR-0099 keeps FourCC semantics inside the DSL
+/// rules. When both container tilings reach Strong (pathological: their anchor
+/// bytes are disjoint), MP4 keeps its documented precedence.
 [[nodiscard]] FormatSelection
 selectFormatFromDetection(const Mp4DetectionResult& mp4,
                           const AacAdtsDetectionResult& aac,
-                          const H264AnnexBDetectionResult& h264) noexcept;
+                          const H264AnnexBDetectionResult& h264,
+                          const RiffWaveDetectionResult& riff);
 
 } // namespace streamview::rules

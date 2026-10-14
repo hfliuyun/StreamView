@@ -11,6 +11,8 @@
 #include <streamview/rules/language_version.h>
 #include <streamview/rules/mp4_box_detector.h>
 #include <streamview/rules/mp4_isobmff_analyzer.h>
+#include <streamview/rules/riff_wave_detector.h>
+#include <streamview/rules/wav_riff_analyzer.h>
 
 #include <QCoreApplication>
 #include <QFile>
@@ -140,9 +142,11 @@ int analyzeSource(const QString& path) {
         streamview::rules::detectAacAdtsCandidate(prefix, source->sizeBytes());
     const auto mp4Detection =
         streamview::rules::detectMp4Candidate(prefix, source->sizeBytes());
+    const auto riffDetection =
+        streamview::rules::detectRiffWaveCandidate(prefix, source->sizeBytes());
 
     const auto selection = streamview::rules::selectFormatFromDetection(
-        mp4Detection, aacDetection, h264Detection);
+        mp4Detection, aacDetection, h264Detection, riffDetection);
 
     if (selection.format == streamview::rules::DetectedFormat::None) {
         QTextStream(stderr) << path
@@ -168,6 +172,30 @@ int analyzeSource(const QString& path) {
         QTextStream errors(stderr);
         printNode(analyzer->tree(), analyzer->tree().rootId(), 0, output, errors);
         if (finalStatus != streamview::rules::Mp4IsobmffAnalysisStatus::Complete ||
+            analyzer->tree().hasPartialResults()) {
+            return 1;
+        }
+        return 0;
+    }
+
+    if (selection.format == streamview::rules::DetectedFormat::RiffWave) {
+        auto analyzer = streamview::rules::WavRiffAnalyzer::create(*source, &errorMessage);
+        if (!analyzer) {
+            QTextStream(stderr) << path << ": " << errorMessage << '\n';
+            return 2;
+        }
+
+        streamview::rules::WavRiffAnalysisStatus finalStatus =
+            streamview::rules::WavRiffAnalysisStatus::InProgress;
+        while (!analyzer->finished()) {
+            const auto batch = analyzer->analyzeBatch();
+            finalStatus = batch.status;
+        }
+
+        QTextStream output(stdout);
+        QTextStream errors(stderr);
+        printNode(analyzer->tree(), analyzer->tree().rootId(), 0, output, errors);
+        if (finalStatus != streamview::rules::WavRiffAnalysisStatus::Complete ||
             analyzer->tree().hasPartialResults()) {
             return 1;
         }

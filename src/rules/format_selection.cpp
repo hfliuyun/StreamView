@@ -23,6 +23,24 @@ namespace {
     return coverageEnd;
 }
 
+/// End of the byte range the RIFF/WAVE tiling actually verified. Every
+/// recorded chunk is contiguous from offset 0 (the form header record
+/// included), so the furthest chunk end is the coverage end.
+[[nodiscard]] quint64 riffCoverageEndBytes(const RiffWaveDetectionResult& riff) noexcept {
+    if (!riff.candidate.has_value()) {
+        return 0;
+    }
+    quint64 coverageEnd = 0;
+    for (const auto& evidence : riff.candidate->evidence) {
+        if (!evidence.chunkSpan.has_value()) {
+            continue;
+        }
+        const quint64 chunkEnd = evidence.chunkSpan->endExclusive().absoluteBitOffset() / 8U;
+        coverageEnd = std::max(coverageEnd, std::min(chunkEnd, riff.inspectedByteCount));
+    }
+    return coverageEnd;
+}
+
 /// True when every start code sits inside the range the box tiling explains, so
 /// the pattern carries no evidence the container has not already accounted for.
 /// An empty candidate is vacuously contained and cannot outrank a tiling.
@@ -100,7 +118,8 @@ constexpr quint64 maximumAnnexBLeadingZeroBytes = 3U;
 FormatSelection
 selectFormatFromDetection(const Mp4DetectionResult& mp4,
                           const AacAdtsDetectionResult& aac,
-                          const H264AnnexBDetectionResult& h264) noexcept {
+                          const H264AnnexBDetectionResult& h264,
+                          const RiffWaveDetectionResult& riff) {
     const bool mp4Strong = mp4.candidate.has_value() &&
                            mp4.candidate->confidence == Mp4DetectionConfidence::Strong;
     const bool aacStrong = aac.candidate.has_value() &&
@@ -108,12 +127,17 @@ selectFormatFromDetection(const Mp4DetectionResult& mp4,
     const bool h264Strong = h264.candidate.has_value() &&
                             h264.candidate->confidence ==
                                 H264AnnexBDetectionConfidence::Strong;
+    const bool riffStrong = riff.candidate.has_value() &&
+                            riff.candidate->confidence ==
+                                RiffWaveDetectionConfidence::Strong;
 
     // Containment is only meaningful against a tiling strong enough to claim the
     // bytes. A Weak tiling is often just a payload byte pattern read as a box
     // size, and letting it mark evidence as "already explained" would suppress a
     // genuine elementary stream.
-    const quint64 coverageEnd = mp4Strong ? mp4CoverageEndBytes(mp4) : 0;
+    const quint64 mp4Coverage = mp4Strong ? mp4CoverageEndBytes(mp4) : 0;
+    const quint64 riffCoverage = riffStrong ? riffCoverageEndBytes(riff) : 0;
+    const quint64 coverageEnd = std::max(mp4Coverage, riffCoverage);
     const bool h264Contained = h264EvidenceIsContained(h264, coverageEnd);
     const bool aacContained = aacEvidenceIsContained(aac, coverageEnd);
     const bool h264Anchored = h264IsAnchoredAtSourceStart(h264);
@@ -136,6 +160,13 @@ selectFormatFromDetection(const Mp4DetectionResult& mp4,
         } else {
             selection.reason = DetectedFormatReason::Mp4StructuralTiling;
         }
+        return selection;
+    }
+
+    if (riffStrong && !h264Independent && !aacIndependent) {
+        FormatSelection selection;
+        selection.format = DetectedFormat::RiffWave;
+        selection.reason = DetectedFormatReason::RiffStructuralTiling;
         return selection;
     }
 

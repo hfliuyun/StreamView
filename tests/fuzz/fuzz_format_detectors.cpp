@@ -12,6 +12,9 @@
 #include <streamview/rules/h264_start_code_scanner.h>
 #include <streamview/rules/mp4_box_detector.h>
 #include <streamview/rules/mp4_box_scanner.h>
+#include <streamview/rules/riff_chunk_scanner.h>
+#include <streamview/rules/riff_wave_detector.h>
+#include <streamview/rules/wav_riff_analyzer.h>
 #include <streamview/rules/structural_entry_runner.h>
 
 #include <algorithm>
@@ -135,9 +138,25 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         }
     }
 
+    // 4. RIFF/WAVE detection and chunk scanning
+    {
+        const auto detectResult = streamview::rules::detectRiffWaveCandidate(
+            sourcePrefix, sourceSizeBytes);
+        (void)detectResult.candidate.has_value();
+
+        streamview::rules::RiffChunkScanner riffScanner(source);
+        for (int batch = 0; batch < 4; ++batch) {
+            const auto scanBatch = riffScanner.scanBatch(32, 4096);
+            if (scanBatch.complete()) {
+                break;
+            }
+        }
+    }
+
     auto h264 = streamview::rules::H264AnnexBAnalyzer::create(source);
     auto aac = streamview::rules::AacAdtsAnalyzer::create(source);
-    if (!h264 || !aac) {
+    auto wav = streamview::rules::WavRiffAnalyzer::create(source);
+    if (!h264 || !aac || !wav) {
         std::abort();
     }
     for (int batch = 0; batch < 4; ++batch) {
@@ -149,6 +168,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     for (int batch = 0; batch < 4; ++batch) {
         if (aac->analyzeBatch(8, 4096).status !=
             streamview::rules::AacAdtsAnalysisStatus::InProgress) {
+            break;
+        }
+    }
+    for (int batch = 0; batch < 4; ++batch) {
+        if (wav->analyzeBatch(8, 4096).status !=
+            streamview::rules::WavRiffAnalysisStatus::InProgress) {
             break;
         }
     }

@@ -1301,6 +1301,26 @@ private slots:
         QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
     }
 
+    void opensRiffWaveContainerAndAnalyzesChunks() {
+        const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/wav_w2_minimal_pcm.wav");
+        QString errorMessage;
+        auto session = AnalysisSession::openFile(fixturePath, &errorMessage);
+        QVERIFY2(session != nullptr, qPrintable(errorMessage));
+
+        QCOMPARE(session->formatSelection().format,
+                 streamview::rules::DetectedFormat::RiffWave);
+        QCOMPARE(session->formatSelection().reason,
+                 streamview::rules::DetectedFormatReason::RiffStructuralTiling);
+
+        QCOMPARE(session->ruleIdentity().packageIdentity().packageId(),
+                 QStringLiteral("org.streamview.wav"));
+        QCOMPARE(session->ruleIdentity().entryPointId(), QStringLiteral("wave"));
+
+        const auto batch = session->analyzeBatch();
+        QCOMPARE(batch.status, AnalysisBatchStatus::Complete);
+        QCOMPARE(batch.topLevelNodes.size(), std::size_t(3));
+    }
+
     void navigatesIntoAacAscSubFormatAndReturnsToParent() {
         const QString fixturePath = QStringLiteral(STREAMVIEW_SOURCE_DIR "/tests/fixtures/mp4_p5h_mp4a_esds.mp4");
         QString errorMessage;
