@@ -1,6 +1,6 @@
 # StreamView UI 整改任务书：交给快速模型直接执行
 
-状态：2026-10-12，A06-A09 与时间线轨道下拉框修复已实现并提交为 `f42f54e`；
+状态：2026-10-12，A06-A09 与时间线轨道下拉框修复已实现并提交为 `b8db0eb`；
 本文件保留为历史执行任务与验收依据。Any CLI 的交付报告已记录 dev/UI 定向验证，
 主代理仍需完成 ci/sanitize 与三平台 Hosted CI。
 本文原本是自包含执行任务，不要求读取之前的对话；现阶段不应重复实现已完成整改。
@@ -8,9 +8,9 @@
 ## 角色、基线与开工检查
 
 你负责 UI/边界整改，主代理随后复核。工作区 `/Users/yun/code/streamview`。
-核心修复代码基线为 `2ed9dffa395976c6f551e8e32ce8458b708021c0`。
+核心修复代码基线为 `7135a1ac3d3174edf6b599bcfc234b5dd90e6821`。
 当前 HEAD 可以是该提交，也可以是其后仅增加 Markdown 文档的后代提交；本文自身的
-文档提交不改变代码基线。禁止退回审计前的 `de6f8f4` 或重新实现已提交的核心修复。
+文档提交不改变代码基线。禁止退回审计前的 `be153e6` 或重新实现已提交的核心修复。
 
 先运行并在交付报告中记录：
 
@@ -18,8 +18,8 @@
 git status --short --branch
 git rev-parse HEAD
 git log -6 --oneline
-git merge-base --is-ancestor 2ed9dffa395976c6f551e8e32ce8458b708021c0 HEAD
-git diff --name-only 2ed9dffa395976c6f551e8e32ce8458b708021c0 HEAD
+git merge-base --is-ancestor 7135a1ac3d3174edf6b599bcfc234b5dd90e6821 HEAD
+git diff --name-only 7135a1ac3d3174edf6b599bcfc234b5dd90e6821 HEAD
 ```
 
 如果基线不是 HEAD 的祖先，或上述差异包含非 Markdown 文件，停止并说明差异，

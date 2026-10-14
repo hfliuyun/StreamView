@@ -177,8 +177,8 @@ Furthermore, state restoration lifecycle guarantees are hardened:
 
 ## Review Items Addressed
 
-- **P1-1-R1**: Multiline concatenated string literal localization guard and strict dictionary mapping (red-then-green verified in `tests/app/theme_localization_test.cpp:140-164`, commit `6e8f9a0`).
-- **P1-2-R1**: Sibling disambiguation mutation testing proof (verified with inverted `#<row>` deletion failure test in `tests/app/main_window_test.cpp:2248-2281`, commit `6e8f9a0`).
+- **P1-1-R1**: Multiline concatenated string literal localization guard and strict dictionary mapping (red-then-green verified in `tests/app/theme_localization_test.cpp:140-164`, commit `d3d785a`).
+- **P1-2-R1**: Sibling disambiguation mutation testing proof (verified with inverted `#<row>` deletion failure test in `tests/app/main_window_test.cpp:2248-2281`, commit `d3d785a`).
 - **P2-36**: Aligning review item status definitions between documentation and review reports.
 - **P2-37**: Synchronizing historical task status in `docs/implementation-plan.md:253` ("P2-19 缓解").
 - **P2-38**: Standardizing test count reporting metrics to "N test slots (QTest totals M)".

@@ -171,8 +171,8 @@ alpha、beta 或 release candidate 标签。
 
 ## 历史与整改审查项对应
 
-- **P1-1-R1**：跨行拼接字符串字面量本地化守卫与严格词典映射（在 `tests/app/theme_localization_test.cpp:140-164` 经先红后绿验证，commit `6e8f9a0`）；
-- **P1-2-R1**：同名兄弟消歧变异实证与表述限定（在 `tests/app/main_window_test.cpp:2248-2281` 经删除 `#<row>` 反向变异转红验证，commit `6e8f9a0`）；
+- **P1-1-R1**：跨行拼接字符串字面量本地化守卫与严格词典映射（在 `tests/app/theme_localization_test.cpp:140-164` 经先红后绿验证，commit `d3d785a`）；
+- **P1-2-R1**：同名兄弟消歧变异实证与表述限定（在 `tests/app/main_window_test.cpp:2248-2281` 经删除 `#<row>` 反向变异转红验证，commit `d3d785a`）；
 - **P2-36**：报告与仓库文档定性完全对齐；
 - **P2-37**：同步历史任务在 `docs/implementation-plan.md:253` 中的状态为「P2-19 缓解」；
 - **P2-38**：统一测试用例计数格式为「N 槽（QTest totals M）」；

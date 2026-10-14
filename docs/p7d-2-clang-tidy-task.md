@@ -1,7 +1,7 @@
 # P7d-2：Clang-Tidy 静态检查任务书
 
 状态：2026-10-13，本地实现、LLVM 18.1.8 全目标分析及 dev/ci/sanitize 矩阵已通过，
-代码修复已提交为 `158e110`。
+代码修复已提交为 `59f1cfe`。
 首次提交后的 Hosted run `38362763454` 在 `src/rules/dsl_ir.cpp:3030` 的 Clang 前端
 模板实例化期间崩溃；同一 run 的 Windows job 另因测试 fixture 常量转换告警失败。
 两处已在本地修复并通过干净全目标分析；修复提交的 Hosted 复验仍是关闭 P7d 的必要
