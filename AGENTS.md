@@ -104,7 +104,7 @@ cmake --preset sanitize && cmake --build --preset sanitize && ctest --preset san
 
 - 实现 commit：`feat(h264): ...` / `feat(dsl): ...` / `feat(rules): ...`
 - 测试记录 commit：`docs: record ... coverage`
-- push 失败时先尝试 60630 代理回退。
+- push 失败时先尝试本地代理回退。
 
 ### 步骤 5：Hosted CI 验证
 
