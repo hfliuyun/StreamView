@@ -3932,10 +3932,12 @@ DslCompileResult DslCompiler::compileForTarget(const DslProgram& program,
             scannerKind = DslScannerKind::AacAdtsFrame;
         } else if (scan.scannerName == QStringLiteral("mp4_box")) {
             scannerKind = DslScannerKind::Mp4Box;
+        } else if (scan.scannerName == QStringLiteral("riff_chunk")) {
+            scannerKind = DslScannerKind::RiffChunk;
         } else {
             addDiagnostic(result.diagnostics,
                           DslDiagnosticCode::UnsupportedScanner,
-                          QStringLiteral("Only h264_start_code, adts_frame, and mp4_box are supported"),
+                          QStringLiteral("Only h264_start_code, adts_frame, mp4_box, and riff_chunk are supported"),
                           scan.range);
             continue;
         }

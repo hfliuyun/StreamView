@@ -226,6 +226,7 @@ enum class DslScannerKind : quint8 {
     H264StartCode,
     AacAdtsFrame,
     Mp4Box,
+    RiffChunk,
 };
 
 struct DslTypedScan final {

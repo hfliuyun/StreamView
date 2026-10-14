@@ -1839,6 +1839,28 @@ private slots:
         QCOMPARE(parsed.program.scans.front().scannerName, QStringLiteral("mp4_box"));
     }
 
+    void parsesRiffChunkScanSequence() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct RiffChunk { bits<32> chunk_id; bits<32, little> chunk_size; }
+            @index(progressive) sequence<RiffChunk> records = scan(riff_chunk);
+            entry records;
+        )"));
+        QVERIFY(parsed.succeeded());
+        QCOMPARE(parsed.program.scans.size(), std::size_t(1));
+        QCOMPARE(parsed.program.scans.front().name, QStringLiteral("records"));
+        QCOMPARE(parsed.program.scans.front().elementType, QStringLiteral("RiffChunk"));
+        QCOMPARE(parsed.program.scans.front().scannerName, QStringLiteral("riff_chunk"));
+    }
+
+    void rejectsRiffChunkScanNameVariants() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct RiffChunk { bits<32> chunk_id; bits<32, little> chunk_size; }
+            @index(progressive) sequence<RiffChunk> records = scan(riff);
+            entry records;
+        )"));
+        QVERIFY(hasDiagnostic(parsed, DslDiagnosticCode::UnsupportedScanner));
+    }
+
     void parsesPayloadDispatchDeclaration() {
         const auto result = DslParser::parse(kPayloadDispatchSource);
 

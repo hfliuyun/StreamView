@@ -3664,6 +3664,22 @@ private slots:
         QCOMPARE(compiled.program->entry.targetIndex, quint32(0));
     }
 
+    void compilesRiffChunkScanSequence() {
+        const auto parsed = DslParser::parse(QStringLiteral(R"(
+            struct RiffChunk { bits<32> chunk_id; bits<32, little> chunk_size; }
+            @index(progressive) sequence<RiffChunk> records = scan(riff_chunk);
+            entry records;
+        )"));
+        QVERIFY(parsed.succeeded());
+        const auto compiled = DslCompiler::compile(parsed.program);
+        QVERIFY(compiled.succeeded());
+        QCOMPARE(compiled.program->scans.size(), std::size_t(1));
+        QCOMPARE(compiled.program->scans.front().name, QStringLiteral("records"));
+        QCOMPARE(compiled.program->scans.front().scanner, streamview::rules::DslScannerKind::RiffChunk);
+        QCOMPARE(compiled.program->entry.kind, DslEntryKind::Sequence);
+        QCOMPARE(compiled.program->entry.targetIndex, quint32(0));
+    }
+
     void deduplicatesUnsupportedDiagnosticsInsideRepeats() {
         const auto parsed = DslParser::parse(QStringLiteral(R"(
             struct S {

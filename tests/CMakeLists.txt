@@ -111,6 +111,14 @@ streamview_add_rules_test(
     rules/mp4_box_detector_test.cpp
 )
 streamview_add_rules_test(
+    streamview_riff_chunk_scanner_tests
+    rules/riff_chunk_scanner_test.cpp
+)
+streamview_add_rules_test(
+    streamview_riff_wave_detector_tests
+    rules/riff_wave_detector_test.cpp
+)
+streamview_add_rules_test(
     streamview_format_selection_tests
     rules/format_selection_test.cpp
 )

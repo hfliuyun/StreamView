@@ -21,6 +21,8 @@ add_library(streamview_rules STATIC
     mp4_isobmff_analyzer.cpp
     mp4_sample_table_extractor.cpp
     mp4_sample_table_index.cpp
+    riff_chunk_scanner.cpp
+    riff_wave_detector.cpp
     window_decoder.cpp
     structural_entry_runner.cpp
     compound_structural_runner.cpp
@@ -59,6 +61,8 @@ add_library(streamview_rules STATIC
     include/streamview/rules/mp4_isobmff_analyzer.h
     include/streamview/rules/mp4_sample_table_extractor.h
     include/streamview/rules/mp4_sample_table_index.h
+    include/streamview/rules/riff_chunk_scanner.h
+    include/streamview/rules/riff_wave_detector.h
     include/streamview/rules/structural_entry_runner.h
     include/streamview/rules/compound_structural_runner.h
     include/streamview/rules/sample_payload_runner.h
