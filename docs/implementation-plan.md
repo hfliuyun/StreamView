@@ -1,11 +1,11 @@
 # StreamView v0.1 分阶段实施计划
 
-Status: In Progress（阶段 8 WAV/RIFF 本地交付完成；Hosted CI 待推送后执行）
-Current Phase: Phase 8（WAV/RIFF 容器支持）W1-W3 已完成；W4 本地验证完成，Hosted 三平台 CI 待推送后执行
-Last Completed Step: Task W3（commit `0402c2d`）：官方包 org.streamview.wav v0.1.0、WavRiffAnalyzer、四路仲裁、session/svtool 激活、fixture 矩阵、fuzz 覆盖；此前 W2（commit `091d0e7`）与 W1 规范（commit `a68de9a`）
-Next Action: 推送 `11330e5`/`a68de9a`/`091d0e7`/`0402c2d` 及记录提交，等待 Hosted 三平台 CI 并回写 run/job ID，关闭 Task W4
-Last Verification: 2026-10-14 本地三套矩阵：dev 63/63、ci 63/63、sanitize 63/63（无 sanitizer 报告）、`git diff --check` 通过；scratch 探测 probe5 `Rule OK`；svtool analyze 全部 fixture 冒烟通过
-Blockers: 四个提交（`11330e5`/`a68de9a`/`091d0e7`/`0402c2d`）尚未推送，Hosted 三平台验证与 Task W4 关闭依赖推送
+Status: Complete（阶段 8 WAV/RIFF 交付完成；P7i-P7l 保持暂缓）
+Current Phase: Phase 8 已收尾：W1-W4 全部完成，WAV/RIFF 支持随 Hosted Run `38537581317` 三平台验证通过
+Last Completed Step: Task W4：Hosted Run `38537581317`（head `0631e7d`）全局 completed | success，六个 job 全部 success 后回写关闭；此前 W3（commit `0402c2d`）、W2（commit `091d0e7`）、W1（commit `a68de9a`）
+Next Action: 无进行中任务。新格式扩展（RF64、FLAC、MKV 等）按 docs/format-extension-contract.md 与 ADR-0115 先例走 specify→feat→record 流程
+Last Verification: 2026-10-14，Hosted CI Run `38537581317` 全局 completed | success：build-test (ubuntu-24.04, 6.11.1) job `115764125737`、build-test (windows-2022, 6.11.1) job `115764125636`、build-test (macos-15, 6.11.1) job `115764125714`、ASan/UBSan (ubuntu-24.04) job `115764125794`、ASan/UBSan (macos-15) job `115764125399`、LLVM 18 static analysis job `115764125598` 全部 success；本地 dev/ci/sanitize 63/63 与 `git diff --check` 已记录
+Blockers: 当前范围无阻塞项。P7i-P7l 保留为历史规划并暂缓
 
 2026-09-08 审计修订：下面已勾选的 Phase 5/6 项保留为历史交付记录，不表示本轮
 缺陷已经关闭或当前版本可发布。本地分步指导手册仍停在旧 Phase 5 状态，不能覆盖本状态区。
@@ -342,9 +342,9 @@ scratch 探测证据（lazy→小端闸门、等值条件限制、嵌套断言�
   四路 `selectFormatFromDetection` 仲裁、`AnalysisSession` 变体接入、
   `svtool` 分发、`generate_wav_fixtures.py` 与 ADR-0115 fixture 矩阵、
   分析器/应用测试、fuzz 驱动；
-- [ ] **Task W4**（验证与记录）：本地 dev/ci/sanitize 63/63 与
-  `git diff --check` 已完成（2026-10-14）；Hosted 三平台 CI 待推送后执行，
-  完成后回写 run/job ID。
+- [x] **Task W4**（验证与记录）：本地 dev/ci/sanitize 63/63 与
+  `git diff --check` 已完成（2026-10-14）；Hosted Run `38537581317`
+  （head `0631e7d`）全部 6 job success 后回写并关闭。
 
 ## 测试与阶段门禁
 
@@ -3871,3 +3871,15 @@ scratch 探测证据（lazy→小端闸门、等值条件限制、嵌套断言�
   ci 63/63、sanitize 63/63（无 sanitizer 报告）、`git diff --check` 通过、
   `svtool rule check` 官方规则与探测通过、全部 fixture `svtool analyze`
   冒烟通过。Hosted 三平台 CI 待推送后执行并回写。
+
+- 2026-10-14：阶段 8 WAV（RIFF/WAVE）Hosted 验证与 Task W4 关闭。提交
+  `11330e5`（未决格式提示）、`a68de9a`（W1 规范）、`091d0e7`（W2 能力
+  切片）、`0402c2d`（W3 激活）、`0631e7d`（本地验证记录）随推送
+  `2150331..0631e7d` 进入 Hosted Run `38537581317`（CI workflow，push
+  event，head `0631e7d`），全局 completed | success：build-test
+  (ubuntu-24.04, 6.11.1) job `115764125737`、build-test (windows-2022,
+  6.11.1) job `115764125636`、build-test (macos-15, 6.11.1) job
+  `115764125714`、ASan/UBSan (ubuntu-24.04) job `115764125794`、
+  ASan/UBSan (macos-15) job `115764125399`、LLVM 18 static analysis job
+  `115764125598` 全部 success。WAV/RIFF 支持自本 run 起进入可发布基线；
+  本地三套矩阵证据见上一条记录。
