@@ -1,11 +1,11 @@
 # StreamView v0.1 分阶段实施计划
 
-Status: In Progress（阶段 8 WAV/RIFF 进行中；P7i-P7l 保持暂缓）
-Current Phase: Phase 8（WAV/RIFF 容器支持）W1 规范已交付；W2 扫描器/探测器能力切片待实现
-Last Completed Step: Task W1：RIFF/WAVE 架构探测与双语 ADR-0115 规范；此前未决格式显式提示修复 commit `11330e5`（本地三套件通过，Hosted CI 待推送后验证）
-Next Action: Task W2（feat(rules)）：`RiffChunkScanner`、`RiffWaveDetector`、`DslScannerKind::RiffChunk` 解析器/编译器白名单切片与能力单测
-Last Verification: 2026-10-14 本地：ThemeLocalizationTest 6/6、SvtoolTest 10/10、MainWindowTest 62/62；scratch 探测 probe1/probe2/probe5 `Rule OK`，probe3/probe4 记录原始报错（证据见 ADR-0115）；未跑 ci/sanitize 与 Hosted CI（`11330e5` 尚未推送）
-Blockers: commit `11330e5` 与阶段 8 规范提交尚未推送，Hosted 三平台验证待推送后补
+Status: In Progress（阶段 8 WAV/RIFF 本地交付完成；Hosted CI 待推送后执行）
+Current Phase: Phase 8（WAV/RIFF 容器支持）W1-W3 已完成；W4 本地验证完成，Hosted 三平台 CI 待推送后执行
+Last Completed Step: Task W3（commit `0402c2d`）：官方包 org.streamview.wav v0.1.0、WavRiffAnalyzer、四路仲裁、session/svtool 激活、fixture 矩阵、fuzz 覆盖；此前 W2（commit `091d0e7`）与 W1 规范（commit `a68de9a`）
+Next Action: 推送 `11330e5`/`a68de9a`/`091d0e7`/`0402c2d` 及记录提交，等待 Hosted 三平台 CI 并回写 run/job ID，关闭 Task W4
+Last Verification: 2026-10-14 本地三套矩阵：dev 63/63、ci 63/63、sanitize 63/63（无 sanitizer 报告）、`git diff --check` 通过；scratch 探测 probe5 `Rule OK`；svtool analyze 全部 fixture 冒烟通过
+Blockers: 四个提交（`11330e5`/`a68de9a`/`091d0e7`/`0402c2d`）尚未推送，Hosted 三平台验证与 Task W4 关闭依赖推送
 
 2026-09-08 审计修订：下面已勾选的 Phase 5/6 项保留为历史交付记录，不表示本轮
 缺陷已经关闭或当前版本可发布。本地分步指导手册仍停在旧 Phase 5 状态，不能覆盖本状态区。
@@ -329,21 +329,22 @@ P7d 按以下顺序实施；后续由主代理直接实现、验证并提交：
 scratch 探测证据（lazy→小端闸门、等值条件限制、嵌套断言限制、扫描器
 白名单）。
 
-- [ ] **Task W1**（规范）：RIFF/WAVE 分类、支持子集与延期边界确认；双语
+- [x] **Task W1**（规范）：RIFF/WAVE 分类、支持子集与延期边界确认；双语
   ADR-0115 与英中语言参考 `scan(riff_chunk)` 形式更新。（Markdown-only，
   按 ADR-0019 跳过 Hosted CI）
-- [ ] **Task W2**（能力切片，feat(rules)）：`RiffChunkScanner`（chunk 链
+- [x] **Task W2**（能力切片，feat(rules)，commit `091d0e7`）：`RiffChunkScanner`（chunk 链
   步进、偶数对齐 pad、终点钳制、表单头首记录、取消传播）、
   `RiffWaveDetector`（Strong/Probable/Weak 置信度与误报边界）、
   `DslScannerKind::RiffChunk` 与解析器/编译器白名单扩展、扫描器/探测器/
   dsl 能力单测；
-- [ ] **Task W3**（规则包与激活，feat(wav)）：官方包 `org.streamview.wav`
+- [x] **Task W3**（规则包与激活，feat(wav)，commit `0402c2d`）：官方包 `org.streamview.wav`
   v0.1.0（`wav_riff.svfmt`、双语包文档、资源注册）、`WavRiffAnalyzer`、
   四路 `selectFormatFromDetection` 仲裁、`AnalysisSession` 变体接入、
   `svtool` 分发、`generate_wav_fixtures.py` 与 ADR-0115 fixture 矩阵、
   分析器/应用测试、fuzz 驱动；
-- [ ] **Task W4**（验证与记录）：dev/ci/sanitize 全量、Hosted 三平台 CI、
-  `git diff --check`、计划回写。
+- [ ] **Task W4**（验证与记录）：本地 dev/ci/sanitize 63/63 与
+  `git diff --check` 已完成（2026-10-14）；Hosted 三平台 CI 待推送后执行，
+  完成后回写 run/job ID。
 
 ## 测试与阶段门禁
 
@@ -3859,3 +3860,14 @@ scratch 探测证据（lazy→小端闸门、等值条件限制、嵌套断言�
   嵌套断言三处语言边界（`wav_probe4`）与 switch 分支命名空间合并
   （`wav_probe5` 最终形态通过全部静态检查）。语言参考英中同步
   `scan(riff_chunk)` 形式；实施计划新增阶段 8（W1-W4）。
+
+- 2026-10-14：WAV（RIFF/WAVE）能力切片与激活（任务 W2 / commit `091d0e7`、
+  任务 W3 / commit `0402c2d`）。`RiffChunkScanner`（表单头首记录、偶数对齐
+  pad、终点钳制、无重同步）、`RiffWaveDetector`（证据计数三级置信度）、
+  `DslScannerKind::RiffChunk` 白名单扩展、官方包 org.streamview.wav v0.1.0
+  （fmt 16/18/40 精确分派、GUID Data1+tail、channel_mask 小端）、
+  `WavRiffAnalyzer`、四路仲裁（强 WAV 平铺吞没未锚定模式证据）、session/
+  svtool 激活、10 个确定性 fixture 与 fuzz 覆盖。本地验证：dev 63/63、
+  ci 63/63、sanitize 63/63（无 sanitizer 报告）、`git diff --check` 通过、
+  `svtool rule check` 官方规则与探测通过、全部 fixture `svtool analyze`
+  冒烟通过。Hosted 三平台 CI 待推送后执行并回写。
