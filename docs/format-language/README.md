@@ -648,8 +648,9 @@ The static rules for this subset are:
   Pure calls are expanded statically and introduce no runtime call, recursion,
   source access, host access, time, randomness, or mutable state.
 - The accepted progressive sequence forms are
-  `@index(progressive) sequence<Element> name = scan(h264_start_code);`
-  and `@index(progressive) sequence<Element> name = scan(adts_frame);`.
+  `@index(progressive) sequence<Element> name = scan(h264_start_code);`,
+  `@index(progressive) sequence<Element> name = scan(adts_frame);`,
+  and `@index(progressive) sequence<Element> name = scan(riff_chunk);`.
   `Element` must name a declared structure.
 - A program declares at most one payload dispatch. Its view kind is an opaque
   DSL identifier preserved into typed IR and resolved by the runtime provider

@@ -1,11 +1,11 @@
 # StreamView v0.1 分阶段实施计划
 
-Status: Complete（P7i-P7l 暂缓）
-Current Phase: Phase 7 已收尾；P7a-P7h 已完成，未来仅在创建匹配版本 tag 时发布 GitHub Release
-Last Completed Step: Hosted Release Run `38412786136` 使用提交 `fb2770e` 完成三平台打包、解包 smoke、合规材料生成与 artifact 上传
-Next Action: 发布新版本时创建与 `CMakeLists.txt` 版本一致的 `vX.Y.Z` tag；tag push 会自动构建并上传 GitHub Release
-Last Verification: 2026-10-13，Run `38412786136` 全局 `completed | success`（9m48s）；生成 Windows x64、macOS ARM64、Linux x86_64 三个临时 artifact，保留 1 天；普通 CI 不上传 deployment artifact
-Blockers: 当前范围无阻塞项。P7i-P7l 保留为历史规划并暂缓，不执行 alpha/beta/rc/GA 流程
+Status: In Progress（阶段 8 WAV/RIFF 进行中；P7i-P7l 保持暂缓）
+Current Phase: Phase 8（WAV/RIFF 容器支持）W1 规范已交付；W2 扫描器/探测器能力切片待实现
+Last Completed Step: Task W1：RIFF/WAVE 架构探测与双语 ADR-0115 规范；此前未决格式显式提示修复 commit `11330e5`（本地三套件通过，Hosted CI 待推送后验证）
+Next Action: Task W2（feat(rules)）：`RiffChunkScanner`、`RiffWaveDetector`、`DslScannerKind::RiffChunk` 解析器/编译器白名单切片与能力单测
+Last Verification: 2026-10-14 本地：ThemeLocalizationTest 6/6、SvtoolTest 10/10、MainWindowTest 62/62；scratch 探测 probe1/probe2/probe5 `Rule OK`，probe3/probe4 记录原始报错（证据见 ADR-0115）；未跑 ci/sanitize 与 Hosted CI（`11330e5` 尚未推送）
+Blockers: commit `11330e5` 与阶段 8 规范提交尚未推送，Hosted 三平台验证待推送后补
 
 2026-09-08 审计修订：下面已勾选的 Phase 5/6 项保留为历史交付记录，不表示本轮
 缺陷已经关闭或当前版本可发布。本地分步指导手册仍停在旧 Phase 5 状态，不能覆盖本状态区。
@@ -320,6 +320,30 @@ P7d 按以下顺序实施；后续由主代理直接实现、验证并提交：
 - [x] 验证初始视图约两秒可用、100 GB 测试源 RSS 不超过 512 MiB、已知 offset 页面读取 p95 小于 100 ms。
 - [x] 创建版本 tag 后自动生成 Windows x64 ZIP、macOS ARM64 `.app.zip` 和 Linux x86_64 AppImage，并上传对应 GitHub Release 的 workflow 已实现；Hosted Run `38412786136` 手动打包与解包验证通过。
 - [x] 发布包 SHA-256、SBOM、MIT/Qt/第三方许可证和 Qt 源码获取流程已实现；Hosted Run `38412786136` 的三个 package job 均完成材料生成、校验与上传。普通 CI 不保留 deployment artifact，Release 临时 artifact 保留 1 天。
+
+## 阶段 8：WAV/RIFF 容器支持
+
+按 `docs/format-extension-contract.md` 完成门禁交付 WAV（RIFF/WAVE）容器
+解析：RIFF 表单头 + chunk 链扫描、`fmt `/`fact` 结构化解析、`data`/`LIST`/
+未知 chunk 惰性 opaque 封装、检测与仲裁接入。设计依据双语 ADR-0115 与
+scratch 探测证据（lazy→小端闸门、等值条件限制、嵌套断言限制、扫描器
+白名单）。
+
+- [ ] **Task W1**（规范）：RIFF/WAVE 分类、支持子集与延期边界确认；双语
+  ADR-0115 与英中语言参考 `scan(riff_chunk)` 形式更新。（Markdown-only，
+  按 ADR-0019 跳过 Hosted CI）
+- [ ] **Task W2**（能力切片，feat(rules)）：`RiffChunkScanner`（chunk 链
+  步进、偶数对齐 pad、终点钳制、表单头首记录、取消传播）、
+  `RiffWaveDetector`（Strong/Probable/Weak 置信度与误报边界）、
+  `DslScannerKind::RiffChunk` 与解析器/编译器白名单扩展、扫描器/探测器/
+  dsl 能力单测；
+- [ ] **Task W3**（规则包与激活，feat(wav)）：官方包 `org.streamview.wav`
+  v0.1.0（`wav_riff.svfmt`、双语包文档、资源注册）、`WavRiffAnalyzer`、
+  四路 `selectFormatFromDetection` 仲裁、`AnalysisSession` 变体接入、
+  `svtool` 分发、`generate_wav_fixtures.py` 与 ADR-0115 fixture 矩阵、
+  分析器/应用测试、fuzz 驱动；
+- [ ] **Task W4**（验证与记录）：dev/ci/sanitize 全量、Hosted 三平台 CI、
+  `git diff --check`、计划回写。
 
 ## 测试与阶段门禁
 
@@ -3823,3 +3847,15 @@ P7d 按以下顺序实施；后续由主代理直接实现、验证并提交：
   中英文格式文档，再实现规则包/检测器；要求确定性 fixture、规则检查、定向测试、
   dev/ci/sanitize、Hosted CI 和真实证据回写，并明确 `src/core/`、Qt UI 与规则包
   的不可越界边界。该维护契约不重新开启已完成的 Phase 7。
+
+- 2026-10-14：未决格式显式提示修复（commit `11330e5`）：GUI 格式横幅新增
+  "未高置信识别"状态、`svtool analyze` 对未决格式先打印 stderr 提示；保留
+  H.264 兜底（探测证实单 NAL/截断流依赖它打开）。本地 ThemeLocalizationTest
+  6/6、SvtoolTest 10/10（新增未识别提示用例）、MainWindowTest 62/62；未推送，
+  Hosted CI 待补。
+- 2026-10-14：WAV（RIFF/WAVE）架构探测与双语 ADR-0115 规范（任务 W1）。
+  scratch 探测确认：chunk 链无法在 DSL 内自举（`wav_probe3_le_after_lazy.svfmt:14:5`
+  小端闸门原始报错），须按 MP4 先例增加 host 扫描器；并记录等值条件、三元、
+  嵌套断言三处语言边界（`wav_probe4`）与 switch 分支命名空间合并
+  （`wav_probe5` 最终形态通过全部静态检查）。语言参考英中同步
+  `scan(riff_chunk)` 形式；实施计划新增阶段 8（W1-W4）。

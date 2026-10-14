@@ -482,8 +482,9 @@ primary       := integer | "true" | "false" | identifier
   没有使用某个参数，该参数仍计入上限。pure call 在编译期展开，不引入 runtime call、递归、
   source/host 访问、时间、随机数或可变状态。
 - 接受的渐进 sequence 形式包括
-  `@index(progressive) sequence<Element> name = scan(h264_start_code);`
-  与 `@index(progressive) sequence<Element> name = scan(adts_frame);`。
+  `@index(progressive) sequence<Element> name = scan(h264_start_code);`、
+  `@index(progressive) sequence<Element> name = scan(adts_frame);`
+  与 `@index(progressive) sequence<Element> name = scan(riff_chunk);`。
   `Element` 必须是已声明结构。
 - 一个程序至多声明一个 payload 派发。其 view kind 是保留到 Typed IR 并由运行时 provider
   registry 解析的不透明 DSL identifier。派发目标必须命名已声明的渐进 sequence 或 structure；
